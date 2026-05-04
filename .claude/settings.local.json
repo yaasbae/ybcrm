@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx tsx *)",
+      "Bash(curl -s -X POST http://localhost:3000/api/tg/accounts/upload-session-file -H 'Content-Type: application/json' -d '{}')",
+      "Bash(python3 -m json.tool)",
+      "Bash(pkill -f \"tsx server.ts\")",
+      "Read(//private/tmp/**)",
+      "Bash(node -e ' *)",
+      "Read(//tmp/**)",
+      "Bash(./google-cloud-sdk/bin/gcloud auth *)",
+      "Bash(zip -r /tmp/ybcrm_deploy.zip . --exclude '*/node_modules/*' --exclude '*/.git/*' --exclude '*/dist/*' --exclude '*/google-cloud-sdk/*' --exclude '*.tar.gz' --exclude '*/.session')",
+      "Bash(zip -r /tmp/ybcrm_deploy.zip . --exclude '*/node_modules/*' --exclude '*/.git/*' --exclude '*/dist/*' --exclude '*/google-cloud-sdk/*' --exclude '*.tar.gz' --exclude '*.session' --exclude '*/temp_*')"
+    ]
+  }
+}

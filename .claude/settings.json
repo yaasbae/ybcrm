@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(firebase deploy *)",
+      "Bash(npx firebase *)",
+      "Read(//usr/local/bin/**)",
+      "Read(//Users/ndtiger86/.npm/bin/**)",
+      "Bash(npm list *)",
+      "Bash(sudo npm *)",
+      "Bash(~/.npm-global/bin/firebase deploy *)",
+      "Bash(~/.npm-global/bin/firebase hosting:sites:list --project gen-lang-client-0267383721)",
+      "Bash(~/.npm-global/bin/firebase hosting:channel:list --project gen-lang-client-0267383721)",
+      "WebFetch(domain:3seller.com)",
+      "Bash(curl -s -X POST http://localhost:3000/api/tg/auth/send-code -H \"Content-Type: application/json\" -d '{\"phone\":\"+79196977790\"}')",
+      "Bash(curl -s http://localhost:3000/api/ping)",
+      "Bash(lsof -ti:3000)",
+      "Bash(xargs kill *)"
+    ]
+  }
+}

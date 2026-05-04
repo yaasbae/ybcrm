@@ -1,0 +1,78 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isAdmin() {
+      return isAuthenticated() && 
+        (request.auth.token.email == "ndtiger86@gmail.com" && request.auth.token.email_verified == true);
+    }
+
+    // Products collection
+    match /products/{document=**} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // Orders collection
+    match /orders/{document=**} {
+      allow read, write: if isAuthenticated();
+    }
+
+    // New Orders collection
+    match /orders_new/{document=**} {
+      allow read, write: if isAuthenticated();
+    }
+
+    // Expenses collection
+    match /expenses/{document=**} {
+      allow read, write: if isAuthenticated();
+    }
+
+    // Marketing stats collection
+    match /marketing_stats/{document=**} {
+      allow read, write: if isAuthenticated();
+    }
+
+    // Sales goals collection
+    match /sales_goals/{document=**} {
+      allow read, write: if isAuthenticated();
+    }
+
+    // Settings collection
+    match /settings/{document=**} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // AI Logs collection
+    match /ai_logs/{document=**} {
+      allow read, write: if isAuthenticated();
+    }
+
+    // Contacts collection
+    match /contacts/{document=**} {
+      allow read, write: if isAuthenticated();
+    }
+
+    // Dialog Knowledge Base collection
+    match /dialog_knowledge_base/{document=**} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // References collection
+    match /references/{document=**} {
+      allow read, write: if isAuthenticated();
+    }
+
+    // Test connection doc
+    match /test/connection {
+      allow read: if true;
+    }
+  }
+}

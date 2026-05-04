@@ -1,0 +1,86 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+:root {
+  --bg: #ffffff;
+  --card-bg: #ffffff;
+  --card-border: #f1f5f9;
+  --input-bg: #f8fafc;
+  --text: #0f172a;
+  --text-muted: #64748b;
+  --accent: #0f172a;
+  --accent-foreground: #ffffff;
+}
+
+[data-theme='pink'] {
+  --bg: #fdf2f8;
+  --card-bg: #fff1f2;
+  --card-border: #fecdd3;
+  --input-bg: #fff5f5;
+  --text: #9d174d;
+  --text-muted: #be185d;
+  --accent: #db2777;
+  --accent-foreground: #ffffff;
+}
+
+[data-theme='grey'] {
+  --bg: #f8fafc;
+  --card-bg: #ffffff;
+  --card-border: #e2e8f0;
+  --input-bg: #f1f5f9;
+  --text: #334155;
+  --text-muted: #64748b;
+  --accent: #334155;
+  --accent-foreground: #ffffff;
+}
+
+@layer base {
+  body {
+    background-color: var(--bg);
+    color: var(--text);
+    -webkit-font-smoothing: antialiased;
+  }
+}
+
+@utility no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+/* Telegram-like compact utilities */
+.compact-mode {
+  --spacing-unit: 0.75rem;
+}
+
+.tg-card {
+  background-color: var(--card-bg);
+  border: 1px solid var(--card-border);
+  @apply shadow-sm rounded-xl overflow-hidden;
+}
+
+.tg-btn {
+  background-color: var(--accent);
+  color: var(--accent-foreground);
+  @apply px-3 py-1.5 rounded-md text-[10px] font-semibold uppercase tracking-tight transition-all active:scale-[0.98] flex items-center justify-center gap-2;
+}
+
+.tg-btn-secondary {
+  background-color: var(--card-border);
+  color: var(--text-muted);
+  @apply px-3 py-1.5 rounded-md text-[10px] font-semibold uppercase tracking-tight hover:opacity-80 transition-all active:scale-[0.98] flex items-center justify-center gap-2;
+}
+
+.tg-input {
+  background-color: var(--input-bg);
+  border: 1px solid var(--card-border);
+  color: var(--text);
+  @apply w-full rounded-lg px-3 py-1.5 text-xs outline-none focus:ring-1 focus:ring-pink-200 transition-all;
+}

@@ -1,0 +1,4 @@
+TIMESTAMP: 2026-04-23 17:55:06 UTC
+VERSION_NAME: STABLE_GOLDEN_RELEASE
+STATUS: FULLY_FUNCTIONAL
+FEATURES: Analytics (Sheets), Order Management (Kanban/Calendar), CRM (Loyalty), Product Catalog (Unit Economics), AI Agent (ManyChat/Gemini), Finance (DDS).

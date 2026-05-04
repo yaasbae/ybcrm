@@ -1,0 +1,206 @@
+{
+  "entities": {
+    "Product": {
+      "title": "Product",
+      "description": "A product in the inventory",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "color": { "type": "string" },
+        "sizeGrid": { "type": "string" },
+        "girths": { "type": "string" },
+        "height": { "type": "string" },
+        "weight": { "type": "string" },
+        "applicationType": { "type": "string" },
+        "patternNumber": { "type": "string" },
+        "releaseYear": { "type": "string" },
+        "costPrice": { "type": "number", "description": "Production cost per unit" },
+        "sellingPrice": { "type": "number", "description": "Target selling price" },
+        "unitEconomics": { "type": "object", "description": "Detailed unit economics data" },
+        "photos": { "type": "array", "items": { "type": "string" } },
+        "postUrl": { "type": "string", "description": "Legacy single post URL" },
+        "posts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string" },
+              "url": { "type": "string" }
+            }
+          }
+        }
+      },
+      "required": ["name"]
+    },
+    "Order": {
+      "title": "Order",
+      "description": "A customer order",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "orderNumber": { "type": "string" },
+        "manager": { "type": "string" },
+        "products": { "type": "string" },
+        "clientName": { "type": "string" },
+        "orderDate": { "type": "string" },
+        "shipmentDate": { "type": "string" },
+        "status": { "type": "string" },
+        "color": { "type": "string" },
+        "size": { "type": "string" },
+        "height": { "type": "string" },
+        "phone": { "type": "string" },
+        "city": { "type": "string" },
+        "price": { "type": "string" },
+        "productImage": { "type": "string" },
+        "date": { "type": "string" }
+      },
+      "required": ["orderNumber", "clientName"]
+    },
+    "Contact": {
+      "title": "Contact",
+      "description": "A customer profile from ManyChat interaction",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "firstMessageAt": { "type": "string" },
+        "lastMessageAt": { "type": "string" },
+        "status": { "type": "string" },
+        "messagesCount": { "type": "number" },
+        "lastProduct": { "type": "string" }
+      },
+      "required": ["userId"]
+    },
+    "AILog": {
+      "title": "AILog",
+      "description": "Logging of AI agent interactions",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "input": { "type": "string" },
+        "response": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "status": { "type": "string" }
+      }
+    },
+    "DialogKnowledgeBase": {
+      "title": "DialogKnowledgeBase",
+      "description": "Examples of good responses for the AI to follow",
+      "type": "object",
+      "properties": {
+        "userMessage": { "type": "string" },
+        "aiResponse": { "type": "string" },
+        "category": { "type": "string", "enum": ["размер", "доставка", "цена", "характеристики", "возражения"] },
+        "tag": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "active": { "type": "boolean" }
+      },
+      "required": ["userMessage", "aiResponse", "category"]
+    },
+    "Expense": {
+      "title": "Expense",
+      "description": "Business expense record",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "category": { "type": "string", "enum": ["rent", "payroll", "credit", "marketing", "other"] },
+        "amount": { "type": "number" },
+        "date": { "type": "string", "format": "date-time" },
+        "description": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["category", "amount", "description", "date"]
+    },
+    "Reference": {
+      "title": "Reference",
+      "description": "Product reference data (Справочник)",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "color": { "type": "string" },
+        "size": { "type": "string" },
+        "height": { "type": "string" },
+        "composition": { "type": "string" },
+        "description": { "type": "string" },
+        "fabric": { "type": "string" },
+        "category": { "type": "string" },
+        "delivery": { "type": "string" },
+        "saleSource": { "type": "string" },
+        "price": { "type": "number" }
+      }
+    },
+    "MarketingStats": {
+      "title": "MarketingStats",
+      "description": "Monthly marketing and sales performance data",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Format: YYYY-MM" },
+        "bloggerMentions": { "type": "number" },
+        "instagramViews": { "type": "number" },
+        "marketingSales": { "type": "number" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "SalesGoal": {
+      "title": "SalesGoal",
+      "description": "Monthly sales and traffic targets",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Format: YYYY-MM" },
+        "targetSalesCount": { "type": "number" },
+        "targetSalesAmount": { "type": "number", "description": "Target sales in currency" },
+        "targetViews": { "type": "number" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      }
+    }
+  },
+  "firestore": {
+    "/products/{productId}": {
+      "schema": "Product",
+      "description": "Collection of products"
+    },
+    "/orders/{orderId}": {
+      "schema": "Order",
+      "description": "Collection of orders"
+    },
+    "/expenses/{expenseId}": {
+      "schema": "Expense",
+      "description": "Collection of business expenses"
+    },
+    "/marketing_stats/{monthYear}": {
+      "schema": "MarketingStats",
+      "description": "Monthly marketing metrics"
+    },
+    "/sales_goals/{monthYear}": {
+      "schema": "SalesGoal",
+      "description": "Monthly sales and attention targets"
+    },
+    "/settings/{settingId}": {
+      "schema": {
+        "title": "Settings",
+        "type": "object",
+        "properties": {
+          "aiPrompt": { "type": "string" },
+          "isActive": { "type": "boolean" }
+        }
+      },
+      "description": "App settings and AI configuration"
+    },
+    "/contacts/{contactId}": {
+      "schema": "Contact",
+      "description": "Collection of user contacts from ManyChat"
+    },
+    "/ai_logs/{logId}": {
+      "schema": "AILog",
+      "description": "History of AI bot interactions"
+    },
+    "/dialog_knowledge_base/{docId}": {
+      "schema": "DialogKnowledgeBase",
+      "description": "Curated examples of good Q&A pairs for the AI"
+    },
+    "/references/{refId}": {
+      "schema": "Reference",
+      "description": "Master reference database for products"
+    }
+  }
+}
