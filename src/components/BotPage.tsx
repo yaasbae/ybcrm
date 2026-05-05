@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import heic2any from 'heic2any';
 import { Bot, Users, MessageSquare, Settings, RefreshCw, Send, CheckCircle2, Loader2, Shirt, Trash2, Plus, Image, Layout, Pencil, X } from 'lucide-react';
 import { motion } from 'motion/react';
 import { cn } from '../lib/utils';
@@ -87,27 +88,16 @@ export const BotPage: React.FC = () => {
     setIsLoading(false);
   };
 
-  const toJpegFile = (file: File): Promise<File> => new Promise((resolve) => {
-    const url = URL.createObjectURL(file);
-    const img = new window.Image();
-    img.onload = () => {
-      URL.revokeObjectURL(url);
-      const MAX = 1600;
-      let w = img.naturalWidth, h = img.naturalHeight;
-      if (w > MAX || h > MAX) {
-        if (w > h) { h = Math.round(h * MAX / w); w = MAX; }
-        else { w = Math.round(w * MAX / h); h = MAX; }
-      }
-      const canvas = document.createElement('canvas');
-      canvas.width = w; canvas.height = h;
-      canvas.getContext('2d')!.drawImage(img, 0, 0, w, h);
-      canvas.toBlob(blob => {
-        resolve(new File([blob!], file.name.replace(/\.[^.]+$/, '.jpg'), { type: 'image/jpeg' }));
-      }, 'image/jpeg', 0.9);
-    };
-    img.onerror = () => { URL.revokeObjectURL(url); resolve(file); };
-    img.src = url;
-  });
+  const toJpegFile = async (file: File): Promise<File> => {
+    const isHeic = /\.(heic|heif)$/i.test(file.name) || file.type === 'image/heic' || file.type === 'image/heif';
+    if (isHeic) {
+      try {
+        const blob = await heic2any({ blob: file, toType: 'image/jpeg', quality: 0.9 }) as Blob;
+        return new File([blob], file.name.replace(/\.[^.]+$/, '.jpg'), { type: 'image/jpeg' });
+      } catch { return file; }
+    }
+    return file;
+  };
 
   const handleCostumeFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []).slice(0, 4);
