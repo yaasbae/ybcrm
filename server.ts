@@ -1498,17 +1498,29 @@ function startTelegramBot() {
     } catch (e: any) { console.error("text handler error:", e.message); }
   });
 
-  // bot.launch() hangs on Node 24 — use startPolling directly
   botInstance = bot;
-  bot.telegram.getMe()
-    .then(me => {
-      console.log(`Telegram бот запущен: @${me.username}`);
-      (bot as any).startPolling();
-    })
-    .catch(e => console.error("Ошибка запуска бота:", e.message));
+  const webhookUrl = process.env.WEBHOOK_URL;
 
-  process.once("SIGINT", () => bot.stop("SIGINT"));
-  process.once("SIGTERM", () => bot.stop("SIGTERM"));
+  if (webhookUrl) {
+    // Webhook mode for Cloud Run
+    const webhookPath = "/tg-webhook-" + BOT_TOKEN.split(":")[0];
+    bot.telegram.setWebhook(`${webhookUrl}${webhookPath}`)
+      .then(() => bot.telegram.getMe())
+      .then(me => console.log(`Telegram бот запущен (webhook): @${me.username}`))
+      .catch(e => console.error("Webhook setup error:", e.message));
+    app.post(webhookPath, (req, res) => bot.handleUpdate(req.body, res));
+  } else {
+    // Polling mode for local dev
+    bot.telegram.deleteWebhook().catch(() => {});
+    bot.telegram.getMe()
+      .then(me => {
+        console.log(`Telegram бот запущен (polling): @${me.username}`);
+        (bot as any).startPolling();
+      })
+      .catch(e => console.error("Ошибка запуска бота:", e.message));
+    process.once("SIGINT", () => bot.stop("SIGINT"));
+    process.once("SIGTERM", () => bot.stop("SIGTERM"));
+  }
 }
 
 loadBotCfg().then(() => startTelegramBot());
