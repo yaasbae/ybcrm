@@ -46,6 +46,9 @@ export const BroadcastPage: React.FC = () => {
   const [sessionError, setSessionError] = useState('');
   const [isUploadingFile, setIsUploadingFile] = useState(false);
   const [fileUploadError, setFileUploadError] = useState('');
+  const [bulkSessions, setBulkSessions] = useState('');
+  const [isBulkAdding, setIsBulkAdding] = useState(false);
+  const [bulkResult, setBulkResult] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [isSavingName, setIsSavingName] = useState(false);
 
@@ -112,6 +115,28 @@ export const BroadcastPage: React.FC = () => {
       });
     } finally {
       setIsSavingName(false);
+    }
+  };
+
+  const handleBulkAddSessions = async () => {
+    const sessions = bulkSessions.split('\n').map(s => s.trim()).filter(Boolean);
+    if (!sessions.length) return;
+    setIsBulkAdding(true);
+    setBulkResult('');
+    try {
+      const res = await fetch('/api/tg/accounts/bulk-add-sessions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessions })
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      setBulkResult(`Добавлено: ${data.added}, Ошибок: ${data.failed}`);
+      if (data.added > 0) { setBulkSessions(''); await loadTgStatus(); }
+    } catch (e: any) {
+      setBulkResult('Ошибка: ' + e.message);
+    } finally {
+      setIsBulkAdding(false);
     }
   };
 
@@ -405,10 +430,30 @@ export const BroadcastPage: React.FC = () => {
               )}
             </div>
 
+            {/* Массовая загрузка сессий */}
+            <div className="space-y-2">
+              <label className="text-[9px] font-black text-zinc-400 uppercase tracking-widest ml-1">Массовая загрузка аккаунтов</label>
+              <p className="text-[9px] text-zinc-400 ml-1">Вставь несколько StringSession строк — каждая с новой строки</p>
+              <textarea
+                value={bulkSessions}
+                onChange={e => setBulkSessions(e.target.value)}
+                placeholder={"1AgAOMTQ5LjE1NC4xNjcuNDEB...\n1BgAOMTQ5LjE1NC4xNjcuNDEC...\n1CgAOMTQ5LjE1NC4xNjcuNDED..."}
+                rows={5}
+                className="w-full bg-zinc-50 border border-zinc-200 rounded-xl px-3 py-2.5 text-[10px] font-mono focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 transition-all resize-none"
+              />
+              {bulkResult && (
+                <p className="text-[10px] font-medium ml-1" style={{ color: bulkResult.includes('Добавлено') ? '#22c55e' : '#ef4444' }}>{bulkResult}</p>
+              )}
+              <button onClick={handleBulkAddSessions} disabled={isBulkAdding || !bulkSessions.trim()}
+                className="w-full py-2.5 bg-emerald-500 text-white rounded-xl text-[10px] font-black hover:bg-emerald-600 transition-all disabled:opacity-40 flex items-center justify-center gap-2">
+                {isBulkAdding ? <Loader2 size={12} className="animate-spin" /> : null}
+                {isBulkAdding ? 'Проверяю...' : 'Загрузить все аккаунты'}
+              </button>
+            </div>
+
             {/* StringSession — добавить купленный аккаунт */}
             <div className="space-y-2">
-              <label className="text-[9px] font-black text-zinc-400 uppercase tracking-widest ml-1">Или вставить StringSession строку</label>
-              <p className="text-[9px] text-zinc-400 ml-1">Вставь строку сессии от купленного аккаунта</p>
+              <label className="text-[9px] font-black text-zinc-400 uppercase tracking-widest ml-1">Или вставить одну StringSession строку</label>
               <textarea
                 value={sessionInput}
                 onChange={e => setSessionInput(e.target.value)}

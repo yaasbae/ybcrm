@@ -371,6 +371,34 @@ app.post("/api/tg/accounts/add-session", async (req, res) => {
   }
 });
 
+app.post("/api/tg/accounts/bulk-add-sessions", async (req, res) => {
+  const { sessions } = req.body; // string[]
+  if (!sessions?.length) return res.status(400).json({ error: "Нужен массив sessions" });
+  if (!db) return res.status(500).json({ error: "БД не подключена" });
+  const snap = await getDoc(doc(db, "settings", "tg_accounts"));
+  const existing: any[] = snap.exists() ? snap.data().accounts || [] : [];
+  const added: string[] = [], failed: string[] = [];
+  for (const sessionString of sessions) {
+    const s = sessionString.trim();
+    if (!s) continue;
+    try {
+      const client = new TelegramClient(new StringSession(s), TG_API_ID, TG_API_HASH, { connectionRetries: 2 });
+      await client.connect();
+      const me = await client.getMe();
+      const phone = (me as any).phone ? `+${(me as any).phone}` : `id${(me as any).id}`;
+      await client.disconnect();
+      if (!existing.find((a: any) => a.phone === phone)) {
+        existing.push({ phone, sessionString: s, addedAt: new Date().toISOString(), active: true });
+        added.push(phone);
+      }
+    } catch (e: any) {
+      failed.push(s.slice(0, 20) + "...");
+    }
+  }
+  await setDoc(doc(db, "settings", "tg_accounts"), { accounts: existing });
+  res.json({ success: true, added: added.length, failed: failed.length, addedPhones: added });
+});
+
 app.post("/api/tg/accounts/upload-session-file", async (req, res) => {
   const { fileBase64, fileName } = req.body;
   if (!fileBase64) return res.status(400).json({ error: "Нужен файл" });
@@ -587,7 +615,15 @@ app.post("/api/broadcast/gramjs", async (req, res) => {
         const errMsg = e.message || String(e);
         const isFrozen = errMsg.includes("FROZEN") || errMsg.includes("AUTH_KEY_UNREGISTERED") || errMsg.includes("USER_DEACTIVATED");
         results.push({ phone: rawPhone, status: "error", error: errMsg });
-        // Switch account on error (especially if frozen)
+        if (isFrozen && db) {
+          const accSnap = await getDoc(doc(db, "settings", "tg_accounts"));
+          if (accSnap.exists()) {
+            const allAccs = accSnap.data().accounts || [];
+            const bannedPhone = accounts[accIdx]?.phone;
+            const updated = allAccs.map((a: any) => a.phone === bannedPhone ? { ...a, active: false, bannedAt: new Date().toISOString() } : a);
+            await setDoc(doc(db, "settings", "tg_accounts"), { accounts: updated });
+          }
+        }
         if (clients.length > 1 || isFrozen) {
           accIdx = (accIdx + 1) % clients.length;
           msgCount = 0;
