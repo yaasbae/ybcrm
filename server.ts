@@ -1065,7 +1065,7 @@ app.post("/api/content/process", async (req, res) => {
 
     // Generate try-on image
     const imgResp = await ai.models.generateContent({
-      model: "gemini-3.1-flash-image-preview",
+      model: "gemini-2.0-flash-exp-image-generation",
       contents: [{ role: "user", parts: [
         { text: "You are a virtual try-on AI. Replace the clothing on the person in the SECOND image with the exact garment from the FIRST image. Keep face, pose, background, lighting identical. Only swap the clothing. Photorealistic result." },
         { inlineData: { mimeType: "image/jpeg", data: lookBase64 } },
@@ -1250,7 +1250,7 @@ async function runGeminiTryOn(userPhotoBase64: string, costumeBase64: string, at
   let response: any;
   try {
   response = await ai.models.generateContent({
-    model: "gemini-3.1-flash-image-preview",
+    model: "gemini-2.0-flash-exp-image-generation",
     contents: [{
       role: "user",
       parts: [
