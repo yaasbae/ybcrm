@@ -79,16 +79,39 @@ export const BotPage: React.FC = () => {
     setIsLoading(false);
   };
 
-  const handleCostumeFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files || []).slice(0, 4);
-    if (!files.length) return;
-    setCostumeFiles(files);
-    if (!costumeName) setCostumeName(files[0].name.replace(/\.[^.]+$/, ''));
-    Promise.all(files.map(f => new Promise<string>(res => {
+  const normalizeImageFile = (file: File): Promise<{ file: File; preview: string }> =>
+    new Promise((resolve) => {
       const reader = new FileReader();
-      reader.onload = () => res(reader.result as string);
-      reader.readAsDataURL(f);
-    }))).then(setCostumePreviews);
+      reader.onload = () => {
+        const img = new Image();
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          const MAX = 1600;
+          let w = img.width, h = img.height;
+          if (w > MAX || h > MAX) {
+            if (w > h) { h = Math.round(h * MAX / w); w = MAX; }
+            else { w = Math.round(w * MAX / h); h = MAX; }
+          }
+          canvas.width = w; canvas.height = h;
+          canvas.getContext('2d')!.drawImage(img, 0, 0, w, h);
+          const preview = canvas.toDataURL('image/jpeg', 0.88);
+          canvas.toBlob(blob => {
+            const normalized = new File([blob!], file.name.replace(/\.[^.]+$/, '.jpg'), { type: 'image/jpeg' });
+            resolve({ file: normalized, preview });
+          }, 'image/jpeg', 0.88);
+        };
+        img.src = reader.result as string;
+      };
+      reader.readAsDataURL(file);
+    });
+
+  const handleCostumeFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const raw = Array.from(e.target.files || []).slice(0, 4);
+    if (!raw.length) return;
+    if (!costumeName) setCostumeName(raw[0].name.replace(/\.[^.]+$/, ''));
+    const results = await Promise.all(raw.map(normalizeImageFile));
+    setCostumeFiles(results.map(r => r.file));
+    setCostumePreviews(results.map(r => r.preview));
   };
 
   const handleUploadCostume = async () => {
@@ -380,7 +403,7 @@ export const BotPage: React.FC = () => {
                       "flex flex-col items-center justify-center gap-2 border-2 border-dashed rounded-xl cursor-pointer transition-all overflow-hidden",
                       costumePreviews.length ? "border-violet-200 p-2" : "border-zinc-200 hover:border-violet-300 p-6"
                     )}>
-                      <input ref={costumeInputRef} type="file" accept="image/*" multiple className="hidden" onChange={handleCostumeFileChange} />
+                      <input ref={costumeInputRef} type="file" accept="image/*,image/heic,image/heif,.heic,.heif" multiple className="hidden" onChange={handleCostumeFileChange} />
                       {costumePreviews.length > 0
                         ? <div className="grid grid-cols-4 gap-1 w-full">
                             {costumePreviews.map((p, i) => (
