@@ -9,6 +9,7 @@ import { initializeApp } from "firebase/app";
 import { getFirestore, doc, getDoc, collection, getDocs, addDoc, setDoc, updateDoc, deleteDoc, serverTimestamp, query, where, orderBy } from "firebase/firestore";
 import { getStorage, ref as storageRef, uploadBytes as fbUploadBytes, getDownloadURL as fbGetDownloadURL } from "firebase/storage";
 import fs from "fs";
+import https from "https";
 import { tmpdir } from "os";
 import { randomBytes } from "crypto";
 import { createRequire } from "module";
@@ -1417,10 +1418,15 @@ function startTelegramBot() {
     // Run Gemini in background — don't await so Telegraf handler returns immediately
     (async () => {
       try {
-        const file = await ctx.telegram.getFile(fileId);
-        const fileUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`;
-        const fileResp = await axios.get(fileUrl, { responseType: "arraybuffer" });
-        const userPhotoBase64 = Buffer.from(fileResp.data).toString("base64");
+        const fileLink = await ctx.telegram.getFileLink(fileId);
+        const userPhotoBase64 = await new Promise<string>((resolve, reject) => {
+          https.get(fileLink.href, (res) => {
+            const chunks: Buffer[] = [];
+            res.on("data", (c: Buffer) => chunks.push(c));
+            res.on("end", () => resolve(Buffer.concat(chunks).toString("base64")));
+            res.on("error", reject);
+          }).on("error", reject);
+        });
 
         const resultBase64 = await runGeminiTryOn(userPhotoBase64, costumeBase64, 1, state.costumeBase64s);
         if (!resultBase64) throw new Error("Gemini не вернул изображение");
