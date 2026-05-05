@@ -55,8 +55,8 @@ export const BotPage: React.FC = () => {
   // Catalog state
   const [costumes, setCostumes] = useState<any[]>([]);
   const [costumeName, setCostumeName] = useState('');
-  const [costumePreview, setCostumePreview] = useState<string | null>(null);
-  const [costumeFile, setCostumeFile] = useState<File | null>(null);
+  const [costumeFiles, setCostumeFiles] = useState<File[]>([]);
+  const [costumePreviews, setCostumePreviews] = useState<string[]>([]);
   const [isUploadingCostume, setIsUploadingCostume] = useState(false);
   const costumeInputRef = useRef<HTMLInputElement>(null);
 
@@ -80,34 +80,36 @@ export const BotPage: React.FC = () => {
   };
 
   const handleCostumeFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setCostumeFile(file);
-    const reader = new FileReader();
-    reader.onload = () => setCostumePreview(reader.result as string);
-    reader.readAsDataURL(file);
-    if (!costumeName) setCostumeName(file.name.replace(/\.[^.]+$/, ''));
+    const files = Array.from(e.target.files || []).slice(0, 4);
+    if (!files.length) return;
+    setCostumeFiles(files);
+    if (!costumeName) setCostumeName(files[0].name.replace(/\.[^.]+$/, ''));
+    Promise.all(files.map(f => new Promise<string>(res => {
+      const reader = new FileReader();
+      reader.onload = () => res(reader.result as string);
+      reader.readAsDataURL(f);
+    }))).then(setCostumePreviews);
   };
 
   const handleUploadCostume = async () => {
-    if (!costumeFile || !costumeName.trim()) return;
+    if (!costumeFiles.length || !costumeName.trim()) return;
     setIsUploadingCostume(true);
     try {
-      // Upload to Firebase Storage — no size limit
-      const storageRef = ref(storage, `costumes/${Date.now()}_${costumeFile.name}`);
-      await uploadBytes(storageRef, costumeFile);
-      const imageUrl = await getDownloadURL(storageRef);
-
+      const imageUrls = await Promise.all(costumeFiles.map(async (file) => {
+        const storageRef = ref(storage, `costumes/${Date.now()}_${file.name}`);
+        await uploadBytes(storageRef, file);
+        return getDownloadURL(storageRef);
+      }));
       const r = await fetch('/api/bot/costumes', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: costumeName.trim(), imageUrl }),
+        body: JSON.stringify({ name: costumeName.trim(), imageUrls }),
       });
       const data = await r.json();
       if (data.error) throw new Error(data.error);
       setCostumeName('');
-      setCostumeFile(null);
-      setCostumePreview(null);
+      setCostumeFiles([]);
+      setCostumePreviews([]);
       if (costumeInputRef.current) costumeInputRef.current.value = '';
       await loadData();
     } catch (e: any) { alert(e.message); }
@@ -373,14 +375,22 @@ export const BotPage: React.FC = () => {
                   {/* Upload form */}
                   <div className="space-y-2 p-3 bg-zinc-50 border border-zinc-100 rounded-xl">
                     <p className="text-[9px] font-black text-zinc-400 uppercase tracking-widest">Добавить костюм</p>
+                    <p className="text-[9px] text-zinc-400 ml-0.5">Выбери 2-4 фото изделия для лучшего результата примерки</p>
                     <label className={cn(
                       "flex flex-col items-center justify-center gap-2 border-2 border-dashed rounded-xl cursor-pointer transition-all overflow-hidden",
-                      costumePreview ? "border-violet-200 p-0" : "border-zinc-200 hover:border-violet-300 p-6"
+                      costumePreviews.length ? "border-violet-200 p-2" : "border-zinc-200 hover:border-violet-300 p-6"
                     )}>
-                      <input ref={costumeInputRef} type="file" accept="image/*" className="hidden" onChange={handleCostumeFileChange} />
-                      {costumePreview
-                        ? <img src={costumePreview} className="w-full max-h-48 object-contain rounded-xl" />
-                        : <><Image size={24} className="text-zinc-300" /><span className="text-[10px] font-bold text-zinc-400">Нажми чтобы выбрать фото костюма</span></>
+                      <input ref={costumeInputRef} type="file" accept="image/*" multiple className="hidden" onChange={handleCostumeFileChange} />
+                      {costumePreviews.length > 0
+                        ? <div className="grid grid-cols-4 gap-1 w-full">
+                            {costumePreviews.map((p, i) => (
+                              <div key={i} className="relative">
+                                <img src={p} className="w-full h-20 object-cover rounded-lg" />
+                                <span className="absolute top-0.5 left-0.5 bg-violet-500 text-white text-[8px] font-black rounded px-1">{i + 1}</span>
+                              </div>
+                            ))}
+                          </div>
+                        : <><Image size={24} className="text-zinc-300" /><span className="text-[10px] font-bold text-zinc-400">Нажми чтобы выбрать 2-4 фото</span></>
                       }
                     </label>
                     <input
@@ -390,10 +400,10 @@ export const BotPage: React.FC = () => {
                       placeholder="Название костюма..."
                       className="w-full bg-white border border-zinc-200 rounded-xl px-3 py-2.5 text-[12px] focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-400 transition-all"
                     />
-                    <button onClick={handleUploadCostume} disabled={isUploadingCostume || !costumeFile || !costumeName.trim()}
+                    <button onClick={handleUploadCostume} disabled={isUploadingCostume || !costumeFiles.length || !costumeName.trim()}
                       className="w-full py-2.5 bg-violet-500 text-white rounded-xl text-[10px] font-black hover:bg-violet-600 transition-all disabled:opacity-40 flex items-center justify-center gap-2">
                       {isUploadingCostume ? <Loader2 size={12} className="animate-spin" /> : <Plus size={12} />}
-                      Добавить в каталог
+                      {isUploadingCostume ? `Загружаю ${costumeFiles.length} фото...` : 'Добавить в каталог'}
                     </button>
                   </div>
 
@@ -405,19 +415,29 @@ export const BotPage: React.FC = () => {
                       <p className="text-[10px] mt-1">Добавь первый костюм выше</p>
                     </div>
                   ) : (
-                    <div className="grid grid-cols-2 gap-3">
-                      {costumes.map(c => (
-                        <div key={c.id} className="relative rounded-xl overflow-hidden border border-zinc-100 group">
-                          <img src={c.imageUrl} className="w-full h-36 object-cover" />
-                          <div className="p-2 bg-white">
-                            <p className="text-[11px] font-bold text-zinc-800 truncate">{c.name}</p>
+                    <div className="space-y-3">
+                      {costumes.map(c => {
+                        const imgs: string[] = c.imageUrls?.length ? c.imageUrls : [c.imageUrl];
+                        return (
+                          <div key={c.id} className="relative rounded-xl overflow-hidden border border-zinc-100 group bg-white">
+                            <div className={cn("grid gap-1 p-1", imgs.length === 1 ? "grid-cols-1" : imgs.length === 2 ? "grid-cols-2" : "grid-cols-4")}>
+                              {imgs.map((url, i) => (
+                                <img key={i} src={url} className={cn("object-cover rounded-lg", imgs.length === 1 ? "w-full h-48" : "w-full h-24")} />
+                              ))}
+                            </div>
+                            <div className="px-3 py-2 flex items-center justify-between">
+                              <div>
+                                <p className="text-[11px] font-bold text-zinc-800">{c.name}</p>
+                                <p className="text-[9px] text-zinc-400">{imgs.length} фото</p>
+                              </div>
+                              <button onClick={() => handleDeleteCostume(c.id, c.name)}
+                                className="p-1.5 bg-red-50 text-red-400 rounded-lg hover:bg-red-100 transition-colors">
+                                <Trash2 size={11} />
+                              </button>
+                            </div>
                           </div>
-                          <button onClick={() => handleDeleteCostume(c.id, c.name)}
-                            className="absolute top-2 right-2 p-1.5 bg-red-500 text-white rounded-lg opacity-0 group-hover:opacity-100 transition-opacity">
-                            <Trash2 size={11} />
-                          </button>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   )}
                 </div>

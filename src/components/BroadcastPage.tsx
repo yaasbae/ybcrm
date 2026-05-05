@@ -25,6 +25,11 @@ export const BroadcastPage: React.FC = () => {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [message, setMessage] = useState('');
   const [isSending, setIsSending] = useState(false);
+  const [broadcastMode, setBroadcastMode] = useState<'burn' | 'safe'>('safe');
+  const [clientRevenue, setClientRevenue] = useState<Map<string, number>>(new Map());
+  const [clientOrders, setClientOrders] = useState<Map<string, number>>(new Map());
+  const [sentPhones, setSentPhones] = useState<Set<string>>(new Set());
+  const [sendLog, setSendLog] = useState<Array<{ phone: string; name: string; status: 'sent' | 'error'; error?: string }>>([]);
   const [result, setResult] = useState<any>(null);
   const [activeTab, setActiveTab] = useState<'compose' | 'settings'>('compose');
   const [isLoadingClients, setIsLoadingClients] = useState(true);
@@ -82,27 +87,32 @@ export const BroadcastPage: React.FC = () => {
   };
 
   const handleSessionFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
     setIsUploadingFile(true);
     setFileUploadError('');
-    try {
-      const arrayBuffer = await file.arrayBuffer();
-      const base64 = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
-      const res = await fetch('/api/tg/accounts/upload-session-file', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fileBase64: base64, fileName: file.name })
-      });
-      const data = await res.json();
-      if (data.error) throw new Error(data.error);
-      await loadTgStatus();
-    } catch (err: any) {
-      setFileUploadError(err.message);
-    } finally {
-      setIsUploadingFile(false);
-      e.target.value = '';
+    let added = 0, failed = 0;
+    for (const file of files) {
+      try {
+        const arrayBuffer = await file.arrayBuffer();
+        const base64 = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
+        const res = await fetch('/api/tg/accounts/upload-session-file', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ fileBase64: base64, fileName: file.name })
+        });
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+        added++;
+      } catch (err: any) {
+        failed++;
+        setFileUploadError(`${file.name}: ${err.message}`);
+      }
     }
+    if (added > 0) await loadTgStatus();
+    if (files.length > 1) setFileUploadError(prev => `Добавлено: ${added}, ошибок: ${failed}` + (prev ? `. ${prev}` : ''));
+    setIsUploadingFile(false);
+    e.target.value = '';
   };
 
   const handleSaveDisplayName = async () => {
@@ -153,8 +163,33 @@ export const BroadcastPage: React.FC = () => {
   useEffect(() => {
     const loadData = async () => {
       try {
-        const snap = await getDocs(collection(db, 'contacts'));
-        const data = snap.docs
+        const [contactsSnap, ordersSnap, broadcastsSnap] = await Promise.all([
+          getDocs(collection(db, 'contacts')),
+          getDocs(collection(db, 'orders')),
+          getDocs(collection(db, 'broadcasts')),
+        ]);
+        // Build revenue + orders map
+        const revMap = new Map<string, number>();
+        const ordMap = new Map<string, number>();
+        ordersSnap.docs.forEach(d => {
+          const o = d.data() as any;
+          const p = String(o.clientPhone || '').replace(/\D/g, '');
+          if (p.length >= 10) {
+            const key = p.slice(-10);
+            revMap.set(key, (revMap.get(key) || 0) + (o.revenue || 0));
+            ordMap.set(key, (ordMap.get(key) || 0) + 1);
+          }
+        });
+        setClientRevenue(revMap);
+        setClientOrders(ordMap);
+        // Build sent phones from broadcasts history
+        const sent = new Set<string>();
+        broadcastsSnap.docs.forEach(d => {
+          const b = d.data() as any;
+          (b.phones || []).forEach((p: string) => sent.add(String(p)));
+        });
+        setSentPhones(sent);
+        const data = contactsSnap.docs
           .map(d => {
             const docData = d.data() as any;
             const phone = docData.phone || d.id;
@@ -168,7 +203,11 @@ export const BroadcastPage: React.FC = () => {
             const hasDigits = /\d/.test(name);
             return hasCyrillic && !hasDigits;
           })
-          .sort((a, b) => (a.fullName || a.name || '').localeCompare(b.fullName || b.name || '', 'ru'));
+          .sort((a, b) => {
+            const ra = revMap.get(String(a.phone).slice(-10)) || 0;
+            const rb = revMap.get(String(b.phone).slice(-10)) || 0;
+            return rb - ra;
+          });
         setClients(data);
       } finally {
         setIsLoadingClients(false);
@@ -274,6 +313,7 @@ export const BroadcastPage: React.FC = () => {
     if (!message.trim() || selected.size === 0 || !tgStatus?.authorized) return;
     setIsSending(true);
     setResult(null);
+    setSendLog([]);
     try {
       const phones = Array.from(selected);
       let imageBase64: string | null = null;
@@ -289,10 +329,18 @@ export const BroadcastPage: React.FC = () => {
       const response = await fetch('/api/broadcast/gramjs', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ phones, message, imageBase64, imageName, displayName: displayName.trim() || null })
+        body: JSON.stringify({ phones, message, imageBase64, imageName, displayName: displayName.trim() || null, mode: broadcastMode })
       });
       const data = await response.json();
       setResult(data);
+      if (data.results) {
+        const log = data.results.map((r: any) => {
+          const client = clients.find(c => String(c.phone) === String(r.phone).replace('+', ''));
+          return { phone: r.phone, name: client?.fullName || client?.name || r.phone, status: r.status, error: r.error };
+        });
+        setSendLog(log);
+        setSentPhones(prev => { const next = new Set(prev); log.filter((l: any) => l.status === 'sent').forEach((l: any) => next.add(l.phone.replace('+', ''))); return next; });
+      }
       await addDoc(collection(db, 'broadcasts'), {
         phones,
         message,
@@ -417,12 +465,13 @@ export const BroadcastPage: React.FC = () => {
                   type="file"
                   accept=".session,.json"
                   className="hidden"
+                  multiple
                   onChange={handleSessionFileUpload}
                   disabled={isUploadingFile}
                 />
                 {isUploadingFile
                   ? <><Loader2 size={14} className="animate-spin text-blue-500" /><span className="text-[10px] font-bold text-blue-500">Загружаю...</span></>
-                  : <><Smartphone size={14} className="text-zinc-400" /><span className="text-[10px] font-bold text-zinc-500">Выбрать .session или .json файл</span></>
+                  : <><Smartphone size={14} className="text-zinc-400" /><span className="text-[10px] font-bold text-zinc-500">Выбрать .session файлы (можно несколько)</span></>
                 }
               </label>
               {fileUploadError && (
@@ -634,12 +683,16 @@ export const BroadcastPage: React.FC = () => {
                   {visibleClients.map((client, i) => {
                     const phone = client.phone || client.userId;
                     const isSelected = selected.has(phone);
+                    const key = String(phone).slice(-10);
+                    const rev = clientRevenue.get(key) || 0;
+                    const ords = clientOrders.get(key) || 0;
+                    const wasSent = sentPhones.has(String(phone));
                     return (
                       <div
                         key={i}
                         onClick={() => handleToggle(phone)}
                         className={cn(
-                          "flex items-center gap-3 px-3 py-2.5 cursor-pointer transition-colors border-b border-zinc-50 last:border-b-0",
+                          "flex items-center gap-3 px-4 py-3 cursor-pointer transition-colors border-b border-zinc-100 last:border-b-0",
                           isSelected ? "bg-blue-50" : "hover:bg-zinc-50"
                         )}
                       >
@@ -650,8 +703,19 @@ export const BroadcastPage: React.FC = () => {
                           {isSelected && <CheckCircle2 size={10} className="text-white" />}
                         </div>
                         <div className="flex-1 min-w-0">
-                          <p className="text-[11px] font-bold text-zinc-900 truncate">{client.fullName || client.name || 'Без имени'}</p>
-                          <p className="text-[10px] text-zinc-400 font-mono">+{phone}</p>
+                          <p className="text-[12px] font-bold text-zinc-900 truncate">{client.fullName || client.name || 'Без имени'}</p>
+                          <p className="text-[10px] text-zinc-400 font-mono mt-0.5">+{phone}</p>
+                        </div>
+                        <div className="flex flex-col items-end gap-0.5 shrink-0">
+                          {rev > 0 ? (
+                            <>
+                              <span className="text-[12px] font-black text-zinc-900">{rev.toLocaleString('ru')} ₽</span>
+                              <span className="text-[9px] text-zinc-400">{ords} {ords === 1 ? 'заказ' : ords < 5 ? 'заказа' : 'заказов'}</span>
+                            </>
+                          ) : (
+                            <span className="text-[10px] text-zinc-300">нет заказов</span>
+                          )}
+                          {wasSent && <span className="text-[9px] font-black text-blue-400">✓ отправлено</span>}
                         </div>
                       </div>
                     );
@@ -676,6 +740,20 @@ export const BroadcastPage: React.FC = () => {
               </div>
             )}
 
+            <div className="flex gap-2">
+              <button onClick={() => setBroadcastMode('safe')}
+                className={`flex-1 py-2 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all border ${broadcastMode === 'safe' ? 'bg-emerald-500 text-white border-emerald-500' : 'bg-white text-zinc-400 border-zinc-200'}`}>
+                🐢 Бережный
+              </button>
+              <button onClick={() => setBroadcastMode('burn')}
+                className={`flex-1 py-2 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all border ${broadcastMode === 'burn' ? 'bg-red-500 text-white border-red-500' : 'bg-white text-zinc-400 border-zinc-200'}`}>
+                🔥 Расходный
+              </button>
+            </div>
+            <p className="text-[9px] text-zinc-400 ml-1">
+              {broadcastMode === 'burn' ? '🔥 Расходный — максимальная скорость, аккаунты в расход' : '🐢 Бережный — медленно, аккаунты живут дольше'}
+            </p>
+
             <button
               onClick={handleSend}
               disabled={isSending || selected.size === 0 || !message.trim() || !tgStatus.authorized}
@@ -684,6 +762,28 @@ export const BroadcastPage: React.FC = () => {
               {isSending ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
               {isSending ? 'Отправляем...' : `Отправить ${selected.size > 0 ? `(${selected.size} чел.)` : ''}`}
             </button>
+
+            {/* Лог отправки */}
+            {sendLog.length > 0 && (
+              <div className="border border-zinc-100 rounded-xl overflow-hidden">
+                <div className="px-3 py-2 bg-zinc-50 border-b border-zinc-100 flex items-center justify-between">
+                  <span className="text-[9px] font-black text-zinc-500 uppercase tracking-widest">Лог отправки</span>
+                  <span className="text-[9px] font-black text-emerald-500">{sendLog.filter(l => l.status === 'sent').length} ✓ / {sendLog.filter(l => l.status !== 'sent').length} ✗</span>
+                </div>
+                <div className="max-h-48 overflow-y-auto divide-y divide-zinc-50">
+                  {sendLog.map((l, i) => (
+                    <div key={i} className={cn("flex items-center gap-2 px-3 py-1.5", l.status === 'sent' ? 'bg-white' : 'bg-red-50')}>
+                      <span className={cn("text-[10px] font-black shrink-0", l.status === 'sent' ? 'text-emerald-500' : 'text-red-500')}>
+                        {l.status === 'sent' ? '✓' : '✗'}
+                      </span>
+                      <span className="text-[10px] font-bold text-zinc-700 truncate flex-1">{l.name}</span>
+                      <span className="text-[9px] font-mono text-zinc-400 shrink-0">+{l.phone}</span>
+                      {l.error && <span className="text-[9px] text-red-400 truncate max-w-24">{l.error.slice(0, 30)}</span>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
 
             <AnimatePresence>
               {result && (

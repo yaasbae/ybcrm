@@ -535,10 +535,11 @@ app.post("/api/tg/accounts/remove", async (req, res) => {
   }
 });
 
-const MESSAGES_PER_ACCOUNT = 20;
-
 app.post("/api/broadcast/gramjs", async (req, res) => {
-  const { phones, message, imageBase64, imageName, displayName } = req.body;
+  const { phones, message, imageBase64, imageName, displayName, mode } = req.body;
+  // mode: "burn" = расходный (быстро, до бана), "safe" = бережный (медленно)
+  const MESSAGES_PER_ACCOUNT = mode === "burn" ? 9999 : 20;
+  const MSG_DELAY = mode === "burn" ? 200 : 1500 + Math.random() * 2000;
   if (!phones?.length || !message) {
     return res.status(400).json({ error: "Нужны phones и message" });
   }
@@ -610,7 +611,7 @@ app.post("/api/broadcast/gramjs", async (req, res) => {
         }
         results.push({ phone: rawPhone, status: "sent", account: accounts[accIdx].phone });
         msgCount++;
-        await new Promise(r => setTimeout(r, 1500 + Math.random() * 2000));
+        await new Promise(r => setTimeout(r, MSG_DELAY));
       } catch (e: any) {
         const errMsg = e.message || String(e);
         const isFrozen = errMsg.includes("FROZEN") || errMsg.includes("AUTH_KEY_UNREGISTERED") || errMsg.includes("USER_DEACTIVATED");
@@ -944,12 +945,13 @@ app.get("/api/bot/costumes", async (req, res) => {
 });
 
 app.post("/api/bot/costumes", async (req, res) => {
-  const { name, imageUrl, category } = req.body;
-  if (!name || !imageUrl) return res.status(400).json({ error: "Нужны name и imageUrl" });
+  const { name, imageUrl, imageUrls, category } = req.body;
+  if (!name || (!imageUrl && !imageUrls?.length)) return res.status(400).json({ error: "Нужны name и imageUrls" });
   try {
     if (!db) return res.status(500).json({ error: "DB not connected" });
+    const urls: string[] = imageUrls?.length ? imageUrls : [imageUrl];
     const docRef = await addDoc(collection(db, "costumes"), {
-      name, imageUrl, category: category || "Костюм",
+      name, imageUrl: urls[0], imageUrls: urls, category: category || "Костюм",
       addedAt: new Date().toISOString(),
     });
     res.json({ success: true, id: docRef.id });
@@ -1195,7 +1197,7 @@ const BOT_TOKEN = process.env.TG_BOT_TOKEN;
 let botInstance: any = null;
 
 // try-on state per user: step + selected costume
-const tryOnState = new Map<string, { step: "select" | "photo"; costumeId?: string; costumeBase64?: string; costumeName?: string }>();
+const tryOnState = new Map<string, { step: "select" | "photo"; costumeId?: string; costumeBase64?: string; costumeBase64s?: string[]; costumeName?: string }>();
 
 // Bot button config — editable from CRM
 interface BotButton { id: string; label: string; response: string; }
@@ -1204,7 +1206,8 @@ interface BotCfg { welcomeText: string; buttons: BotButton[]; }
 const DEFAULT_BOT_CFG: BotCfg = {
   welcomeText: "Привет, {name}! 👋\n\nДобро пожаловать в *YB Studio* — твой личный стилист.\n\n✨ Здесь ты можешь:\n👗 Примерить любой костюм онлайн\n🎁 Получить персональную скидку\n🆕 Первым узнавать о новинках\n\n*Специально для тебя — скидка 10% на первый заказ!*\nВыбери что тебя интересует 👇",
   buttons: [
-    { id: "tryon",   label: "👗 Примерить онлайн",   response: "" },
+    { id: "catalog", label: "👗 Каталог",             response: "👗 *Каталог YB Studio*\n\nПосмотреть все модели можно на нашем сайте и в Instagram.\n\nЕсли хочешь примерить понравившийся костюм онлайн — нажми кнопку ниже 👇" },
+    { id: "tryon",   label: "✨ Примерить онлайн",    response: "" },
     { id: "bonuses", label: "🎁 Мои бонусы",          response: "🎁 *Твои бонусы*\n\nОтправь свой номер телефона чтобы проверить баланс." },
     { id: "news",    label: "🆕 Новинки",             response: "🆕 *Новинки YB Studio*\n\nСледи за обновлениями — скоро здесь появятся новые коллекции!" },
     { id: "contact", label: "📞 Связаться с нами",    response: "📞 *Связь с нами*\n\nНапиши своё сообщение — менеджер ответит в течение нескольких минут 🙏" },
@@ -1227,7 +1230,7 @@ async function loadBotCfg() {
   } catch {}
 }
 
-async function runGeminiTryOn(userPhotoBase64: string, costumeBase64: string, attempt = 1): Promise<string | null> {
+async function runGeminiTryOn(userPhotoBase64: string, costumeBase64: string, attempt = 1, allCostumeBase64s?: string[]): Promise<string | null> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error("GEMINI_API_KEY не задан");
   const ai = new GoogleGenAI({ apiKey });
@@ -1238,9 +1241,12 @@ async function runGeminiTryOn(userPhotoBase64: string, costumeBase64: string, at
     contents: [{
       role: "user",
       parts: [
-        { text: "You are a virtual try-on AI. Your ONLY task: replace the clothing on the person in the SECOND image with the exact garment from the FIRST image. STRICT RULES: 1) CLOTHING ONLY — swap only the garment. Reproduce its exact design, fabric texture, color, pattern, cut and every detail from image 1 with zero changes. The garment must fit naturally on the body with realistic folds and drape. 2) KEEP EVERYTHING ELSE IDENTICAL — preserve the person's face, skin tone, hair, body shape, pose, hand/leg position, expression, and ALL accessories (jewelry, bags, shoes, etc.) exactly as in image 2. 3) KEEP BACKGROUND & LIGHTING IDENTICAL — do not change the background, environment, shadows, or lighting. Everything around the person stays exactly as in image 2. 4) OUTPUT — photorealistic result, same composition and framing as image 2. Only the clothing changes. Nothing else." },
+        { text: `You are a virtual try-on AI. Your ONLY task: replace the clothing on the person in the LAST image with the exact garment shown in the FIRST ${allCostumeBase64s?.length || 1} image(s). Use ALL provided garment photos to fully understand the design, fabric, texture, color, pattern and cut. STRICT RULES: 1) CLOTHING ONLY — swap only the garment. Reproduce every detail exactly. The garment must fit naturally on the body. 2) KEEP EVERYTHING ELSE IDENTICAL — face, skin tone, hair, body shape, pose, expression, accessories. 3) KEEP BACKGROUND & LIGHTING IDENTICAL. 4) OUTPUT — photorealistic result, same composition as the person's photo.` },
+        ...(allCostumeBase64s && allCostumeBase64s.length > 1
+          ? allCostumeBase64s.map(b64 => ({ inlineData: { mimeType: "image/jpeg", data: b64 } }))
+          : [{ inlineData: { mimeType: "image/jpeg", data: costumeBase64 } }]
+        ),
         { inlineData: { mimeType: "image/jpeg", data: userPhotoBase64 } },
-        { inlineData: { mimeType: "image/jpeg", data: costumeBase64 } },
       ] as any
     }],
     config: { responseModalities: [Modality.IMAGE, Modality.TEXT] },
@@ -1304,6 +1310,49 @@ function startTelegramBot() {
   });
 
   // Callback when user picks a costume
+  bot.action(/^catalog_(.+)$/, async (ctx) => {
+    try {
+      await ctx.answerCbQuery().catch(() => {});
+      const costumeId = ctx.match[1];
+      if (!db) return;
+      const snap = await getDoc(doc(db, "costumes", costumeId)).catch(() => null);
+      if (!snap?.exists()) return ctx.reply("Модель не найдена").catch(() => {});
+      const c = snap.data() as any;
+      const urls: string[] = c.imageUrls?.length ? c.imageUrls : [c.imageUrl];
+
+      // Send photos album
+      try {
+        const buffers = await Promise.all(
+          urls.map(async (url: string) => {
+            const resp = await axios.get(url, { responseType: "arraybuffer" });
+            return Buffer.from(resp.data);
+          })
+        );
+        if (buffers.length === 1) {
+          await ctx.replyWithPhoto({ source: buffers[0] }, { caption: c.name });
+        } else {
+          await ctx.replyWithMediaGroup(
+            buffers.map((buf, j) => ({
+              type: "photo" as const,
+              media: { source: buf },
+              ...(j === 0 ? { caption: c.name } : {}),
+            }))
+          );
+        }
+      } catch (e: any) {
+        await ctx.replyWithPhoto({ url: c.imageUrl }, { caption: c.name }).catch(() => {});
+      }
+
+      // Show try-on button
+      await ctx.reply(
+        `*${c.name}*\n\nХочешь примерить эту модель онлайн?`,
+        { parse_mode: "Markdown", ...Markup.inlineKeyboard([[Markup.button.callback("✨ Примерить онлайн", `tryon_${costumeId}`)]]) }
+      );
+    } catch (e: any) {
+      console.error("catalog action error:", e.message);
+    }
+  });
+
   bot.action(/^tryon_(.+)$/, async (ctx) => {
     try {
       await ctx.answerCbQuery().catch(() => {});
@@ -1312,12 +1361,18 @@ function startTelegramBot() {
       const snap = await getDoc(doc(db, "costumes", costumeId)).catch(() => null);
       if (!snap?.exists()) return ctx.reply("Костюм не найден, попробуй выбрать снова").catch(() => {});
       const costume = snap.data() as any;
-      const costumeResp = await axios.get(costume.imageUrl, { responseType: "arraybuffer" });
-      const costumeBase64 = Buffer.from(costumeResp.data).toString("base64");
+      const urls: string[] = costume.imageUrls?.length ? costume.imageUrls : [costume.imageUrl];
+      const costumeBuffers = await Promise.all(
+        urls.map(async (url: string) => {
+          const resp = await axios.get(url, { responseType: "arraybuffer" });
+          return Buffer.from(resp.data).toString("base64");
+        })
+      );
       tryOnState.set(String(ctx.from!.id), {
         step: "photo",
         costumeId,
-        costumeBase64,
+        costumeBase64: costumeBuffers[0],
+        costumeBase64s: costumeBuffers,
         costumeName: costume.name,
       });
       await ctx.reply(
@@ -1354,7 +1409,7 @@ function startTelegramBot() {
         const fileResp = await axios.get(fileUrl, { responseType: "arraybuffer" });
         const userPhotoBase64 = Buffer.from(fileResp.data).toString("base64");
 
-        const resultBase64 = await runGeminiTryOn(userPhotoBase64, costumeBase64);
+        const resultBase64 = await runGeminiTryOn(userPhotoBase64, costumeBase64, 1, state.costumeBase64s);
         if (!resultBase64) throw new Error("Gemini не вернул изображение");
 
         await ctx.telegram.deleteMessage(ctx.chat.id, processing.message_id).catch(() => {});
@@ -1390,53 +1445,23 @@ function startTelegramBot() {
     // Check if text matches any menu button label
     const btn = botCfg.buttons.find(b => b.label === text);
     if (btn) {
-      if (btn.id === "tryon") {
-        // Special action: show costume catalog as compact album
+      if (btn.id === "catalog" || btn.id === "tryon") {
+        // Show catalog as list of model name buttons
         await saveSubscriber(ctx);
         if (!db) return ctx.reply("Каталог временно недоступен");
         const snap = await getDocs(collection(db, "costumes")).catch(() => null);
         if (!snap || snap.empty) return ctx.reply("Каталог костюмов пока пустой — скоро добавим! 👗");
         const costumes = snap.docs.map(d => ({ id: d.id, ...d.data() } as any));
 
-        await ctx.reply("👗 *Выбери костюм для примерки:*", { parse_mode: "Markdown" });
-
-        try {
-          // Download all images first (Firebase Storage URLs need proxying)
-          const costumeBuffers = await Promise.all(
-            costumes.map(async (c: any) => {
-              const resp = await axios.get(c.imageUrl, { responseType: "arraybuffer" });
-              return { c, buf: Buffer.from(resp.data) };
-            })
-          );
-
-          // Send photos as compact album (max 10 per group)
-          for (let i = 0; i < costumeBuffers.length; i += 10) {
-            const chunk = costumeBuffers.slice(i, i + 10);
-            await ctx.replyWithMediaGroup(
-              chunk.map(({ c, buf }, j) => ({
-                type: "photo" as const,
-                media: { source: buf },
-                caption: `${i + j + 1}. ${c.name}`,
-              }))
-            );
-          }
-        } catch (e: any) {
-          console.error("media group error:", e.message);
-          // Fallback: send individually
-          for (const c of costumes) {
-            await ctx.replyWithPhoto({ url: c.imageUrl }, { caption: c.name }).catch(() => {});
-          }
-        }
-
-        // Send selection buttons after album
-        const selectionButtons = costumes.map((c: any, idx: number) =>
-          Markup.button.callback(`${idx + 1}. ${c.name}`, `tryon_${c.id}`)
+        const modelButtons = costumes.map((c: any) =>
+          [Markup.button.callback(`👗 ${c.name}`, `catalog_${c.id}`)]
         );
-        const buttonRows: any[][] = [];
-        for (let i = 0; i < selectionButtons.length; i += 2) {
-          buttonRows.push(selectionButtons.slice(i, i + 2));
-        }
-        await ctx.reply("Нажми на костюм который хочешь примерить 👇", Markup.inlineKeyboard(buttonRows));
+        await ctx.reply(
+          btn.id === "tryon"
+            ? "✨ *Онлайн примерка* _(тестовый режим)_\n\nВыбери модель для примерки 👇"
+            : "👗 *Каталог YB Studio*\n\nВыбери модель чтобы посмотреть фото 👇",
+          { parse_mode: "Markdown", ...Markup.inlineKeyboard(modelButtons) }
+        );
       } else if (btn.response) {
         await ctx.reply(btn.response, { parse_mode: "Markdown" });
       }
