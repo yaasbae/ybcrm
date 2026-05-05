@@ -1402,7 +1402,7 @@ function startTelegramBot() {
     const costumeName = state.costumeName;
     tryOnState.delete(userId);
 
-    const processing = await ctx.reply("⏳ Обрабатываю... Это займёт ~30-90 секунд. Подожди немного 🙏");
+    const processing = await ctx.reply("⏳ Создаю примерку... Это занимает 3-7 минут. Не уходи! 🙏");
 
     const downloadUrl = (url: string): Promise<string> => new Promise((resolve, reject) => {
       https.get(url, (res) => {
