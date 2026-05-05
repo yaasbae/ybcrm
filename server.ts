@@ -1289,6 +1289,7 @@ async function runGeminiTryOn(userPhotoBase64: string, costumeBase64: string, at
 
 function startTelegramBot() {
   if (!BOT_TOKEN) { console.warn("TG_BOT_TOKEN не задан — бот не запущен"); return; }
+  if (process.env.BOT_DISABLED === "true") { console.log("BOT_DISABLED=true — бот не запущен локально"); return; }
 
   const bot = new Telegraf(BOT_TOKEN, { handlerTimeout: 600_000 });
 
