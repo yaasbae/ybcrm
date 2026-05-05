@@ -1419,6 +1419,8 @@ function startTelegramBot() {
     const costumeName = state.costumeName;
     await deleteTryOnState(userId);
 
+    // Get file link BEFORE background task — ctx.telegram works here
+    const fileLink = await ctx.telegram.getFileLink(fileId);
     const processing = await ctx.reply("⏳ Создаю примерку... Это занимает 3-7 минут. Не уходи! 🙏");
 
     const downloadUrl = (url: string): Promise<string> => new Promise((resolve, reject) => {
@@ -1433,7 +1435,6 @@ function startTelegramBot() {
     // Run Gemini in background — don't await so Telegraf handler returns immediately
     (async () => {
       try {
-        const fileLink = await ctx.telegram.getFileLink(fileId);
         const [userPhotoBase64, ...costumeBase64s] = await Promise.all([
           downloadUrl(fileLink.href),
           ...costumeUrls.map(downloadUrl),
