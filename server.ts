@@ -1209,8 +1209,21 @@ app.post("/api/content/instagram-settings", async (req, res) => {
 const BOT_TOKEN = process.env.TG_BOT_TOKEN;
 let botInstance: any = null;
 
-// try-on state per user: step + selected costume
-const tryOnState = new Map<string, { step: "select" | "photo"; costumeId?: string; costumeBase64?: string; costumeBase64s?: string[]; costumeUrls?: string[]; costumeName?: string }>();
+// try-on state stored in Firestore — survives deploys and multiple instances
+async function setTryOnState(userId: string, data: { costumeUrls: string[]; costumeName: string }) {
+  if (!db) return;
+  await setDoc(doc(db, "tryon_state", userId), { ...data, updatedAt: new Date().toISOString() });
+}
+async function getTryOnState(userId: string): Promise<{ costumeUrls: string[]; costumeName: string } | null> {
+  if (!db) return null;
+  const snap = await getDoc(doc(db, "tryon_state", userId)).catch(() => null);
+  if (!snap?.exists()) return null;
+  return snap.data() as any;
+}
+async function deleteTryOnState(userId: string) {
+  if (!db) return;
+  await deleteDoc(doc(db, "tryon_state", userId)).catch(() => {});
+}
 
 // Bot button config — editable from CRM
 interface BotButton { id: string; label: string; response: string; }
@@ -1382,14 +1395,7 @@ function startTelegramBot() {
       if (!snap?.exists()) return ctx.reply("Костюм не найден, попробуй выбрать снова").catch(() => {});
       const costume = snap.data() as any;
       const urls: string[] = costume.imageUrls?.length ? costume.imageUrls : [costume.imageUrl];
-      tryOnState.set(String(ctx.from!.id), {
-        step: "photo",
-        costumeId,
-        costumeBase64: "",
-        costumeBase64s: [],
-        costumeUrls: urls,
-        costumeName: costume.name,
-      });
+      await setTryOnState(String(ctx.from!.id), { costumeUrls: urls, costumeName: costume.name });
       await ctx.reply(
         `Отлично! Ты выбрала *${costume.name}* 👗\n\nТеперь пришли *своё фото в полный рост* — и я сделаю примерку через ИИ!\n\n📸 Загрузи фотографию 👇`,
         { parse_mode: "Markdown" }
@@ -1402,17 +1408,16 @@ function startTelegramBot() {
   // Photo handler — virtual try-on
   bot.on("photo", async (ctx) => {
     const userId = String(ctx.from.id);
-    const state = tryOnState.get(userId);
-    if (!state || state.step !== "photo") {
+    const state = await getTryOnState(userId);
+    if (!state) {
       return ctx.reply("Сначала выбери костюм для примерки 👗\nНажми *«Примерить онлайн»*", { parse_mode: "Markdown" });
     }
 
-    // Capture data but keep state — restore on error so user can retry with same costume
     const photos = (ctx.message as any).photo;
     const fileId = photos[photos.length - 1].file_id;
     const costumeUrls = state.costumeUrls || [];
     const costumeName = state.costumeName;
-    tryOnState.delete(userId);
+    await deleteTryOnState(userId);
 
     const processing = await ctx.reply("⏳ Создаю примерку... Это занимает 3-7 минут. Не уходи! 🙏");
 
@@ -1449,7 +1454,7 @@ function startTelegramBot() {
       } catch (e: any) {
         console.error("tryon photo error:", e.message);
         // Restore state so user can retry without reselecting costume
-        tryOnState.set(userId, { step: "photo", costumeUrls, costumeName });
+        await setTryOnState(userId, { costumeUrls, costumeName });
         await ctx.telegram.deleteMessage(ctx.chat.id, processing.message_id).catch(() => {});
         const isOverload = e.message?.includes("502") || e.message?.includes("503") || e.message?.includes("429");
         await ctx.reply(
