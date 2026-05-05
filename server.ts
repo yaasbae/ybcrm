@@ -1210,7 +1210,7 @@ const BOT_TOKEN = process.env.TG_BOT_TOKEN;
 let botInstance: any = null;
 
 // try-on state per user: step + selected costume
-const tryOnState = new Map<string, { step: "select" | "photo"; costumeId?: string; costumeBase64?: string; costumeBase64s?: string[]; costumeName?: string }>();
+const tryOnState = new Map<string, { step: "select" | "photo"; costumeId?: string; costumeBase64?: string; costumeBase64s?: string[]; costumeUrls?: string[]; costumeName?: string }>();
 
 // Bot button config — editable from CRM
 interface BotButton { id: string; label: string; response: string; }
@@ -1334,21 +1334,15 @@ function startTelegramBot() {
       const c = snap.data() as any;
       const urls: string[] = c.imageUrls?.length ? c.imageUrls : [c.imageUrl];
 
-      // Send photos album
+      // Send photos album — pass URLs directly, Telegram downloads them
       try {
-        const buffers = await Promise.all(
-          urls.map(async (url: string) => {
-            const resp = await axios.get(url, { responseType: "arraybuffer" });
-            return Buffer.from(resp.data);
-          })
-        );
-        if (buffers.length === 1) {
-          await ctx.replyWithPhoto({ source: buffers[0] }, { caption: c.name });
+        if (urls.length === 1) {
+          await ctx.replyWithPhoto({ url: urls[0] }, { caption: c.name });
         } else {
           await ctx.replyWithMediaGroup(
-            buffers.map((buf, j) => ({
+            urls.map((url, j) => ({
               type: "photo" as const,
-              media: { source: buf },
+              media: url,
               ...(j === 0 ? { caption: c.name } : {}),
             }))
           );
@@ -1376,17 +1370,12 @@ function startTelegramBot() {
       if (!snap?.exists()) return ctx.reply("Костюм не найден, попробуй выбрать снова").catch(() => {});
       const costume = snap.data() as any;
       const urls: string[] = costume.imageUrls?.length ? costume.imageUrls : [costume.imageUrl];
-      const costumeBuffers = await Promise.all(
-        urls.map(async (url: string) => {
-          const resp = await axios.get(url, { responseType: "arraybuffer" });
-          return Buffer.from(resp.data).toString("base64");
-        })
-      );
       tryOnState.set(String(ctx.from!.id), {
         step: "photo",
         costumeId,
-        costumeBase64: costumeBuffers[0],
-        costumeBase64s: costumeBuffers,
+        costumeBase64: "",
+        costumeBase64s: [],
+        costumeUrls: urls,
         costumeName: costume.name,
       });
       await ctx.reply(
@@ -1409,26 +1398,31 @@ function startTelegramBot() {
     // Capture data but keep state — restore on error so user can retry with same costume
     const photos = (ctx.message as any).photo;
     const fileId = photos[photos.length - 1].file_id;
-    const costumeBase64 = state.costumeBase64!;
+    const costumeUrls = state.costumeUrls || [];
     const costumeName = state.costumeName;
     tryOnState.delete(userId);
 
     const processing = await ctx.reply("⏳ Обрабатываю... Это займёт ~30-90 секунд. Подожди немного 🙏");
 
+    const downloadUrl = (url: string): Promise<string> => new Promise((resolve, reject) => {
+      https.get(url, (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (c: Buffer) => chunks.push(c));
+        res.on("end", () => resolve(Buffer.concat(chunks).toString("base64")));
+        res.on("error", reject);
+      }).on("error", reject);
+    });
+
     // Run Gemini in background — don't await so Telegraf handler returns immediately
     (async () => {
       try {
         const fileLink = await ctx.telegram.getFileLink(fileId);
-        const userPhotoBase64 = await new Promise<string>((resolve, reject) => {
-          https.get(fileLink.href, (res) => {
-            const chunks: Buffer[] = [];
-            res.on("data", (c: Buffer) => chunks.push(c));
-            res.on("end", () => resolve(Buffer.concat(chunks).toString("base64")));
-            res.on("error", reject);
-          }).on("error", reject);
-        });
+        const [userPhotoBase64, ...costumeBase64s] = await Promise.all([
+          downloadUrl(fileLink.href),
+          ...costumeUrls.map(downloadUrl),
+        ]);
 
-        const resultBase64 = await runGeminiTryOn(userPhotoBase64, costumeBase64, 1, state.costumeBase64s);
+        const resultBase64 = await runGeminiTryOn(userPhotoBase64, costumeBase64s[0] || "", 1, costumeBase64s);
         if (!resultBase64) throw new Error("Gemini не вернул изображение");
 
         await ctx.telegram.deleteMessage(ctx.chat.id, processing.message_id).catch(() => {});
@@ -1443,7 +1437,7 @@ function startTelegramBot() {
       } catch (e: any) {
         console.error("tryon photo error:", e.message);
         // Restore state so user can retry without reselecting costume
-        tryOnState.set(userId, { step: "photo", costumeBase64, costumeName });
+        tryOnState.set(userId, { step: "photo", costumeUrls, costumeName });
         await ctx.telegram.deleteMessage(ctx.chat.id, processing.message_id).catch(() => {});
         const isOverload = e.message?.includes("502") || e.message?.includes("503") || e.message?.includes("429");
         await ctx.reply(
