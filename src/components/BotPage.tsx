@@ -89,7 +89,7 @@ export const BotPage: React.FC = () => {
 
   const toJpegFile = (file: File): Promise<File> => new Promise((resolve) => {
     const url = URL.createObjectURL(file);
-    const img = new Image();
+    const img = new window.Image();
     img.onload = () => {
       URL.revokeObjectURL(url);
       const MAX = 1600;
