@@ -1243,10 +1243,25 @@ async function loadBotCfg() {
   } catch {}
 }
 
+async function resizeToBase64(b64: string, maxPx = 768): Promise<string> {
+  try {
+    const buf = Buffer.from(b64, "base64");
+    const resized = await sharp(buf).resize(maxPx, maxPx, { fit: "inside", withoutEnlargement: true }).jpeg({ quality: 85 }).toBuffer();
+    return resized.toString("base64");
+  } catch { return b64; }
+}
+
 async function runGeminiTryOn(userPhotoBase64: string, costumeBase64: string, attempt = 1, allCostumeBase64s?: string[]): Promise<string | null> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error("GEMINI_API_KEY не задан");
   const ai = new GoogleGenAI({ apiKey });
+
+  // Resize all inputs before sending — reduces Gemini processing time significantly
+  const costumes = allCostumeBase64s?.length ? allCostumeBase64s : [costumeBase64];
+  const [resizedUser, ...resizedCostumes] = await Promise.all([
+    resizeToBase64(userPhotoBase64, 1024),
+    ...costumes.map(b => resizeToBase64(b, 768)),
+  ]);
   let response: any;
   try {
   response = await ai.models.generateContent({
@@ -1255,11 +1270,8 @@ async function runGeminiTryOn(userPhotoBase64: string, costumeBase64: string, at
       role: "user",
       parts: [
         { text: `You are a virtual try-on AI. You receive ${(allCostumeBase64s?.length || 1) + 1} images. The FIRST ${allCostumeBase64s?.length || 1} image(s) show a garment from different angles — use ALL of them ONLY to understand the garment's design, cut, fabric, color, texture and details. The LAST image is the REFERENCE PHOTO of a person. TASK: generate a new photorealistic image of the person wearing the garment. STRICT RULES: 1) PERSON — copy EXACTLY: face, skin tone, hair, body shape, pose, expression, accessories from the LAST image only. 2) BACKGROUND & LIGHTING — copy EXACTLY from the LAST image only. Do NOT use backgrounds or people from garment photos. 3) GARMENT — reproduce every detail faithfully from the garment photos. It must fit naturally on the person's body. 4) OUTPUT — same framing and composition as the LAST image, photorealistic.` },
-        ...(allCostumeBase64s && allCostumeBase64s.length > 1
-          ? allCostumeBase64s.map(b64 => ({ inlineData: { mimeType: "image/jpeg", data: b64 } }))
-          : [{ inlineData: { mimeType: "image/jpeg", data: costumeBase64 } }]
-        ),
-        { inlineData: { mimeType: "image/jpeg", data: userPhotoBase64 } },
+        ...resizedCostumes.map(b64 => ({ inlineData: { mimeType: "image/jpeg", data: b64 } })),
+        { inlineData: { mimeType: "image/jpeg", data: resizedUser } },
       ] as any
     }],
     config: { responseModalities: [Modality.IMAGE, Modality.TEXT] },
