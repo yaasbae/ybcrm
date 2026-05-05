@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Bot, Users, MessageSquare, Settings, RefreshCw, Send, CheckCircle2, Loader2, Shirt, Trash2, Plus, Image, Layout } from 'lucide-react';
+import { Bot, Users, MessageSquare, Settings, RefreshCw, Send, CheckCircle2, Loader2, Shirt, Trash2, Plus, Image, Layout, Pencil, X } from 'lucide-react';
 import { motion } from 'motion/react';
 import { cn } from '../lib/utils';
 import { db, storage } from '../firebase';
@@ -60,6 +60,14 @@ export const BotPage: React.FC = () => {
   const [isUploadingCostume, setIsUploadingCostume] = useState(false);
   const costumeInputRef = useRef<HTMLInputElement>(null);
 
+  // Edit costume state
+  const [editingCostume, setEditingCostume] = useState<any | null>(null);
+  const [editName, setEditName] = useState('');
+  const [editFiles, setEditFiles] = useState<File[]>([]);
+  const [editPreviews, setEditPreviews] = useState<string[]>([]);
+  const [isSavingEdit, setIsSavingEdit] = useState(false);
+  const editInputRef = useRef<HTMLInputElement>(null);
+
   const loadData = async () => {
     setIsLoading(true);
     try {
@@ -79,20 +87,42 @@ export const BotPage: React.FC = () => {
     setIsLoading(false);
   };
 
+  const toJpegFile = (file: File): Promise<File> => new Promise((resolve) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const MAX = 1600;
+      let w = img.naturalWidth, h = img.naturalHeight;
+      if (w > MAX || h > MAX) {
+        if (w > h) { h = Math.round(h * MAX / w); w = MAX; }
+        else { w = Math.round(w * MAX / h); h = MAX; }
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = w; canvas.height = h;
+      canvas.getContext('2d')!.drawImage(img, 0, 0, w, h);
+      canvas.toBlob(blob => {
+        resolve(new File([blob!], file.name.replace(/\.[^.]+$/, '.jpg'), { type: 'image/jpeg' }));
+      }, 'image/jpeg', 0.9);
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); resolve(file); };
+    img.src = url;
+  });
+
   const handleCostumeFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []).slice(0, 4);
     if (!files.length) return;
     setCostumeFiles(files);
     if (!costumeName) setCostumeName(files[0].name.replace(/\.[^.]+$/, ''));
-    const previews = files.map(f => URL.createObjectURL(f));
-    setCostumePreviews(previews);
+    setCostumePreviews(files.map(f => URL.createObjectURL(f)));
   };
 
   const handleUploadCostume = async () => {
     if (!costumeFiles.length || !costumeName.trim()) return;
     setIsUploadingCostume(true);
     try {
-      const imageUrls = await Promise.all(costumeFiles.map(async (file) => {
+      const jpegFiles = await Promise.all(costumeFiles.map(toJpegFile));
+      const imageUrls = await Promise.all(jpegFiles.map(async (file) => {
         const storageRef = ref(storage, `costumes/${Date.now()}_${file.name}`);
         await uploadBytes(storageRef, file);
         return getDownloadURL(storageRef);
@@ -117,6 +147,44 @@ export const BotPage: React.FC = () => {
     if (!confirm(`Удалить «${name}»?`)) return;
     await fetch(`/api/bot/costumes/${id}`, { method: 'DELETE' });
     await loadData();
+  };
+
+  const openEdit = (c: any) => {
+    setEditingCostume(c);
+    setEditName(c.name);
+    setEditFiles([]);
+    setEditPreviews(c.imageUrls?.length ? c.imageUrls : [c.imageUrl]);
+  };
+
+  const handleEditFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []).slice(0, 4);
+    if (!files.length) return;
+    setEditFiles(files);
+    setEditPreviews(files.map(f => URL.createObjectURL(f)));
+  };
+
+  const handleSaveEdit = async () => {
+    if (!editingCostume || !editName.trim()) return;
+    setIsSavingEdit(true);
+    try {
+      let imageUrls = editingCostume.imageUrls || [editingCostume.imageUrl];
+      if (editFiles.length) {
+        const jpegFiles = await Promise.all(editFiles.map(toJpegFile));
+        imageUrls = await Promise.all(jpegFiles.map(async (file) => {
+          const sRef = ref(storage, `costumes/${Date.now()}_${file.name}`);
+          await uploadBytes(sRef, file);
+          return getDownloadURL(sRef);
+        }));
+      }
+      await fetch(`/api/bot/costumes/${editingCostume.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: editName.trim(), imageUrls }),
+      });
+      setEditingCostume(null);
+      await loadData();
+    } catch (e: any) { alert(e.message); }
+    setIsSavingEdit(false);
   };
 
   useEffect(() => { loadData(); }, []);
@@ -195,6 +263,34 @@ export const BotPage: React.FC = () => {
 
   return (
     <div className="max-w-4xl mx-auto px-4 py-4 space-y-4 font-sans text-zinc-900">
+
+      {/* Edit costume modal */}
+      {editingCostume && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm p-5 space-y-4">
+            <div className="flex items-center justify-between">
+              <p className="text-[13px] font-black text-zinc-900">Редактировать костюм</p>
+              <button onClick={() => setEditingCostume(null)} className="p-1 text-zinc-400 hover:text-zinc-600"><X size={16} /></button>
+            </div>
+            <input value={editName} onChange={e => setEditName(e.target.value)}
+              className="w-full bg-zinc-50 border border-zinc-200 rounded-xl px-3 py-2 text-[12px] focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-400" placeholder="Название" />
+            <label className="flex flex-col items-center justify-center gap-1 border-2 border-dashed border-zinc-200 rounded-xl cursor-pointer p-3 hover:border-violet-300 transition-colors">
+              <input ref={editInputRef} type="file" accept="image/*,image/heic,image/heif,.heic,.heif" multiple className="hidden" onChange={handleEditFileChange} />
+              <div className="grid grid-cols-4 gap-1 w-full">
+                {editPreviews.map((p, i) => (
+                  <img key={i} src={p} className="w-full h-16 object-cover rounded-lg" onError={e => (e.currentTarget.style.display='none')} />
+                ))}
+              </div>
+              <p className="text-[10px] text-zinc-400 mt-1">Нажми чтобы заменить фото</p>
+            </label>
+            <button onClick={handleSaveEdit} disabled={isSavingEdit || !editName.trim()}
+              className="w-full py-2.5 bg-violet-500 text-white rounded-xl text-[11px] font-black hover:bg-violet-600 transition-all disabled:opacity-40 flex items-center justify-center gap-2">
+              {isSavingEdit ? <Loader2 size={12} className="animate-spin" /> : null}
+              {isSavingEdit ? 'Сохраняю...' : 'Сохранить'}
+            </button>
+          </div>
+        </div>
+      )}
       <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
         className="bg-white border border-zinc-100 shadow-sm rounded-2xl overflow-hidden">
 
@@ -427,10 +523,16 @@ export const BotPage: React.FC = () => {
                                 <p className="text-[11px] font-bold text-zinc-800">{c.name}</p>
                                 <p className="text-[9px] text-zinc-400">{imgs.length} фото</p>
                               </div>
-                              <button onClick={() => handleDeleteCostume(c.id, c.name)}
-                                className="p-1.5 bg-red-50 text-red-400 rounded-lg hover:bg-red-100 transition-colors">
-                                <Trash2 size={11} />
-                              </button>
+                              <div className="flex gap-1">
+                                <button onClick={() => openEdit(c)}
+                                  className="p-1.5 bg-violet-50 text-violet-500 rounded-lg hover:bg-violet-100 transition-colors">
+                                  <Pencil size={11} />
+                                </button>
+                                <button onClick={() => handleDeleteCostume(c.id, c.name)}
+                                  className="p-1.5 bg-red-50 text-red-400 rounded-lg hover:bg-red-100 transition-colors">
+                                  <Trash2 size={11} />
+                                </button>
+                              </div>
                             </div>
                           </div>
                         );

@@ -967,6 +967,18 @@ app.delete("/api/bot/costumes/:id", async (req, res) => {
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
+app.put("/api/bot/costumes/:id", async (req, res) => {
+  try {
+    if (!db) return res.status(500).json({ error: "DB not connected" });
+    const { name, imageUrls } = req.body;
+    const updates: any = { updatedAt: new Date().toISOString() };
+    if (name) updates.name = name;
+    if (imageUrls?.length) { updates.imageUrls = imageUrls; updates.imageUrl = imageUrls[0]; }
+    await setDoc(doc(db, "costumes", req.params.id), updates, { merge: true });
+    res.json({ success: true });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
 // ─── Bot API endpoints ───────────────────────────────────────────────────────
 
 app.post("/api/bot/broadcast", async (req, res) => {
