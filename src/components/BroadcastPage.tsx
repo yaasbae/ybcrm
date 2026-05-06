@@ -168,22 +168,23 @@ export const BroadcastPage: React.FC = () => {
           getDocs(collection(db, 'broadcasts')),
         ]);
 
-        // Build client list from orders_new — same as clients page
+        // Build client list from orders_new — same logic as clients page
         const clientMap = new Map<string, { fullName: string; phone: string; revenue: number; orders: number }>();
         ordersSnap.docs.forEach(d => {
           const o = d.data() as any;
+          const key = o.clientPhone || o.clientName;
+          if (!key) return;
           let p = String(o.clientPhone || '').replace(/\D/g, '');
           if (p.length === 10) p = '7' + p;
           else if (p.length === 11 && p.startsWith('8')) p = '7' + p.substring(1);
-          if (!/^7\d{10}$/.test(p)) return;
-          const name = (o.clientName || '').trim();
-          if (!name || /\d/.test(name) || !/[а-яёА-ЯЁ]/i.test(name)) return;
+          if (!p || !/^7\d{10}$/.test(p)) return;
           const existing = clientMap.get(p);
           if (existing) {
             existing.revenue += o.revenue || 0;
             existing.orders += 1;
+            if (o.clientName && !existing.fullName) existing.fullName = o.clientName;
           } else {
-            clientMap.set(p, { fullName: name, phone: p, revenue: o.revenue || 0, orders: 1 });
+            clientMap.set(p, { fullName: o.clientName || p, phone: p, revenue: o.revenue || 0, orders: 1 });
           }
         });
 
