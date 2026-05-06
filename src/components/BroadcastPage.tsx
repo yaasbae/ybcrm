@@ -179,8 +179,8 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
         const history: typeof broadcastHistory = [];
         broadcastsSnap.docs.forEach(d => {
           const b = d.data() as any;
-          const hasRealSends = (b.sentCount ?? b.phones?.length ?? 0) > 0;
-          if (!hasRealSends) return; // skip old test/failed broadcasts
+            if (b.sentCount === undefined) return; // old broadcast saved before fix — skip
+          if (b.sentCount === 0) return; // failed broadcast
           (b.phones || []).forEach((p: string) => sent.add(String(p).replace(/\D/g, '')));
           history.push({ id: d.id, sentAt: b.sentAt, phones: b.phones || [], message: b.message || '', sentCount: b.sentCount || b.phones?.length || 0 });
         });

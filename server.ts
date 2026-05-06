@@ -1018,6 +1018,7 @@ app.post("/api/bot/costumes", async (req, res) => {
       name, imageUrl: urls[0], imageUrls: urls, category: category || "Костюм",
       addedAt: new Date().toISOString(),
     });
+    costumesCache = null; // invalidate cache
     res.json({ success: true, id: docRef.id });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
@@ -1027,6 +1028,7 @@ app.delete("/api/bot/costumes/:id", async (req, res) => {
     if (!db) return res.status(500).json({ error: "DB not connected" });
     const { deleteDoc } = await import("firebase/firestore");
     await deleteDoc(doc(db, "costumes", req.params.id));
+    costumesCache = null;
     res.json({ success: true });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
@@ -1039,6 +1041,7 @@ app.put("/api/bot/costumes/:id", async (req, res) => {
     if (name) updates.name = name;
     if (imageUrls?.length) { updates.imageUrls = imageUrls; updates.imageUrl = imageUrls[0]; }
     await setDoc(doc(db, "costumes", req.params.id), updates, { merge: true });
+    costumesCache = null;
     res.json({ success: true });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
@@ -1289,6 +1292,19 @@ async function getTryOnState(userId: string): Promise<{ costumeUrls: string[]; c
 async function deleteTryOnState(userId: string) {
   if (!db) return;
   await deleteDoc(doc(db, "tryon_state", userId)).catch(() => {});
+}
+
+// Costumes cache — refreshed every 5 minutes to avoid Firestore reads on every catalog open
+let costumesCache: any[] | null = null;
+let costumesCacheAt = 0;
+async function getCostumes(): Promise<any[]> {
+  if (costumesCache && Date.now() - costumesCacheAt < 5 * 60 * 1000) return costumesCache;
+  if (!db) return [];
+  const snap = await getDocs(collection(db, "costumes")).catch(() => null);
+  if (!snap) return costumesCache || [];
+  costumesCache = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  costumesCacheAt = Date.now();
+  return costumesCache;
 }
 
 // Bot button config — editable from CRM
@@ -1551,10 +1567,8 @@ function startTelegramBot() {
       if (btn.id === "catalog" || btn.id === "tryon") {
         // Show catalog as list of model name buttons
         await saveSubscriber(ctx);
-        if (!db) return ctx.reply("Каталог временно недоступен");
-        const snap = await getDocs(collection(db, "costumes")).catch(() => null);
-        if (!snap || snap.empty) return ctx.reply("Каталог костюмов пока пустой — скоро добавим! 👗");
-        const costumes = snap.docs.map(d => ({ id: d.id, ...d.data() } as any));
+        const costumes = await getCostumes();
+        if (!costumes.length) return ctx.reply("Каталог костюмов пока пустой — скоро добавим! 👗");
 
         const modelButtons = costumes.map((c: any) =>
           [Markup.button.callback(`👗 ${c.name}`, `catalog_${c.id}`)]
