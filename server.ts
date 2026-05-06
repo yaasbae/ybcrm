@@ -578,6 +578,7 @@ app.post("/api/broadcast/gramjs", async (req, res) => {
     let msgCount = 0;
     const results: Array<{ phone: string; status: string; account?: string; error?: string }> = [];
     const frozenAccounts = new Set<number>();
+    const importFrozenAccounts = new Set<number>(); // ImportContacts frozen but account still usable
 
     const markFrozen = async (idx: number) => {
       frozenAccounts.add(idx);
@@ -615,39 +616,45 @@ app.post("/api/broadcast/gramjs", async (req, res) => {
       const rawPhone = String(phones[i]);
       const phone = rawPhone.startsWith("+") ? rawPhone : `+${rawPhone}`;
       try {
-        // ResolvePhone works even if contact was previously imported (no cache issues)
         let entity: any = null;
         let resolveErr = '';
-        let importErr = '';
+
+        // ResolvePhone — works even for previously imported contacts
         const resolved = await client.invoke(new Api.contacts.ResolvePhone({ phone })).catch((e: any) => { resolveErr = e?.message || String(e); return null; }) as any;
         entity = resolved?.users?.[0] ?? null;
-        if (resolveErr) console.log(`[broadcast] ResolvePhone ${phone}: ${resolveErr}`);
 
-        // Fallback: ImportContacts (for first-time contacts)
-        if (!entity) {
-          const importResult = await client.invoke(new Api.contacts.ImportContacts({
-            contacts: [new Api.InputPhoneContact({ clientId: i + 1 as any, phone, firstName: "User", lastName: "" })]
-          })).catch((e: any) => { importErr = e?.message || String(e); return null; }) as any;
-          if (importErr) console.log(`[broadcast] ImportContacts ${phone}: ${importErr}`);
-          entity = importResult?.users?.[0] ?? null;
-
-          // Last resort: importedContacts userId (privacy mode)
-          if (!entity) {
-            const userId = importResult?.importedContacts?.[0]?.userId;
-            if (userId && Number(userId) > 0) {
-              entity = await client.getEntity(userId).catch((e: any) => { console.log(`[broadcast] getEntity ${userId}: ${e?.message}`); return null; });
-            }
-          }
-        }
-
-        // If frozen during entity resolution — rotate to next account and retry this phone
-        if (!entity && (resolveErr.includes('FROZEN') || importErr.includes('FROZEN'))) {
-          console.log(`[broadcast] account ${accounts[accIdx]?.phone} frozen, rotating`);
+        // ResolvePhone FROZEN → account is truly dead, rotate and retry
+        if (resolveErr.includes('FROZEN') || resolveErr.includes('AUTH_KEY_UNREGISTERED')) {
+          console.log(`[broadcast] account ${accounts[accIdx]?.phone} dead (${resolveErr}), rotating`);
           await markFrozen(accIdx);
           accIdx = (accIdx + 1) % clients.length;
           msgCount = 0;
           i--;
           continue;
+        }
+        if (resolveErr) console.log(`[broadcast] ResolvePhone ${phone}: ${resolveErr}`);
+
+        // Fallback: ImportContacts — only if not frozen for this account
+        if (!entity && !importFrozenAccounts.has(accIdx)) {
+          let importErr = '';
+          const importResult = await client.invoke(new Api.contacts.ImportContacts({
+            contacts: [new Api.InputPhoneContact({ clientId: i + 1 as any, phone, firstName: "User", lastName: "" })]
+          })).catch((e: any) => { importErr = e?.message || String(e); return null; }) as any;
+
+          if (importErr.includes('FROZEN')) {
+            // ImportContacts frozen but account still alive — skip this method for this account
+            console.log(`[broadcast] ImportContacts frozen for ${accounts[accIdx]?.phone}, skipping method`);
+            importFrozenAccounts.add(accIdx);
+          } else {
+            if (importErr) console.log(`[broadcast] ImportContacts ${phone}: ${importErr}`);
+            entity = importResult?.users?.[0] ?? null;
+            if (!entity) {
+              const userId = importResult?.importedContacts?.[0]?.userId;
+              if (userId && Number(userId) > 0) {
+                entity = await client.getEntity(userId).catch((e: any) => { console.log(`[broadcast] getEntity ${userId}: ${e?.message}`); return null; });
+              }
+            }
+          }
         }
 
         if (!entity) {
