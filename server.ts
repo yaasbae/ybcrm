@@ -537,7 +537,7 @@ app.post("/api/tg/accounts/remove", async (req, res) => {
 });
 
 app.post("/api/broadcast/gramjs", async (req, res) => {
-  const { phones, message, images, imageBase64, imageName, displayName, mode } = req.body;
+  const { phones, message, images, imageBase64, imageName, displayName, mode, contactButton } = req.body;
   // images: Array<{base64: string, name: string}> (new multi-photo) or legacy imageBase64/imageName
   const imageFiles: Array<{ base64: string; name: string }> = images?.length
     ? images
@@ -675,13 +675,15 @@ app.post("/api/broadcast/gramjs", async (req, res) => {
             const name = f.name.replace(/\.[^.]+$/, '.jpg');
             return new CustomFile(name, jpg.length, "", jpg);
           }));
+          const buttons = contactButton ? new Api.ReplyInlineMarkup({ rows: [new Api.KeyboardButtonRow({ buttons: [new Api.KeyboardButtonUrl({ text: "💬 Написать менеджеру", url: "https://t.me/yaasbae_ru" })] })] }) : undefined;
           if (fileObjs.length === 1) {
-            await client.sendFile(entity as any, { file: fileObjs[0], caption: message, forceDocument: false });
+            await client.sendFile(entity as any, { file: fileObjs[0], caption: message, forceDocument: false, buttons } as any);
           } else {
-            await client.sendFile(entity as any, { file: fileObjs as any, caption: message, forceDocument: false });
+            await client.sendFile(entity as any, { file: fileObjs as any, caption: message, forceDocument: false, buttons } as any);
           }
         } else {
-          await client.sendMessage(entity as any, { message });
+          const buttons = contactButton ? new Api.ReplyInlineMarkup({ rows: [new Api.KeyboardButtonRow({ buttons: [new Api.KeyboardButtonUrl({ text: "💬 Написать менеджеру", url: "https://t.me/yaasbae_ru" })] })] }) : undefined;
+          await client.sendMessage(entity as any, { message, buttons } as any);
         }
         results.push({ phone: rawPhone, status: "sent", account: accounts[accIdx].phone });
         msgCount++;

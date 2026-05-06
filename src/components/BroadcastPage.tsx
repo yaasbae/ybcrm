@@ -42,6 +42,7 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
   const [search, setSearch] = useState('');
   const [images, setImages] = useState<File[]>([]);
   const [imagePreviews, setImagePreviews] = useState<string[]>([]);
+  const [contactButton, setContactButton] = useState(true);
   const [clientFilter, setClientFilter] = useState<'unsent' | 'sent'>('unsent');
 
   // Telegram auth state
@@ -327,7 +328,7 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
       const response = await fetch('/api/broadcast/gramjs', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ phones, message, images: imageFiles, displayName: displayName.trim() || null, mode: broadcastMode })
+        body: JSON.stringify({ phones, message, images: imageFiles, displayName: displayName.trim() || null, mode: broadcastMode, contactButton })
       });
       const data = await response.json();
       setResult(data);
@@ -655,6 +656,18 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
                 rows={4}
                 className="w-full bg-zinc-50 border border-zinc-200 rounded-xl px-4 py-3 text-[12px] font-medium focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 transition-all resize-none"
               />
+            </div>
+
+            {/* Кнопка под сообщением */}
+            <div className="flex items-center justify-between px-1">
+              <div>
+                <p className="text-[10px] font-bold text-zinc-700">Кнопка "Написать менеджеру"</p>
+                <p className="text-[9px] text-zinc-400">Ссылка на @yaasbae_ru под каждым сообщением</p>
+              </div>
+              <button onClick={() => setContactButton(v => !v)}
+                className={cn("w-10 h-6 rounded-full transition-all relative shrink-0", contactButton ? "bg-blue-500" : "bg-zinc-200")}>
+                <span className={cn("absolute top-1 w-4 h-4 bg-white rounded-full shadow transition-all", contactButton ? "left-5" : "left-1")} />
+              </button>
             </div>
 
             {/* Фото — несколько */}
