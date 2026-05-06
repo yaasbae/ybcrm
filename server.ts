@@ -6,7 +6,7 @@ import dotenv from "dotenv";
 import cors from "cors";
 import Anthropic from "@anthropic-ai/sdk";
 import { initializeApp } from "firebase/app";
-import { getFirestore, doc, getDoc, collection, getDocs, addDoc, setDoc, updateDoc, deleteDoc, serverTimestamp, query, where, orderBy } from "firebase/firestore";
+import { initializeFirestore, doc, getDoc, collection, getDocs, addDoc, setDoc, updateDoc, deleteDoc, serverTimestamp, query, where, orderBy } from "firebase/firestore";
 import { getStorage, ref as storageRef, uploadBytes as fbUploadBytes, getDownloadURL as fbGetDownloadURL } from "firebase/storage";
 import fs from "fs";
 import https from "https";
@@ -68,7 +68,7 @@ try {
   }
   if (firebaseConfig) {
     const firebaseApp = initializeApp(firebaseConfig);
-    db = getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId);
+    db = initializeFirestore(firebaseApp, { experimentalForceLongPolling: true }, firebaseConfig.firestoreDatabaseId);
     fbStorage = getStorage(firebaseApp);
     console.log("Firebase initialized on server");
   } else {
