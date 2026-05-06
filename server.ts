@@ -1353,9 +1353,12 @@ function startTelegramBot() {
     try {
       await ctx.answerCbQuery().catch(() => {});
       const costumeId = ctx.match[1];
-      if (!db) return;
-      const snap = await getDoc(doc(db, "costumes", costumeId)).catch(() => null);
-      if (!snap?.exists()) return ctx.reply("Модель не найдена").catch(() => {});
+      if (!db) return ctx.reply("База данных недоступна, попробуй позже").catch(() => {});
+      const snap = await Promise.race([
+        getDoc(doc(db, "costumes", costumeId)),
+        new Promise<never>((_, rej) => setTimeout(() => rej(new Error("timeout")), 8000))
+      ]).catch(() => null) as any;
+      if (!snap?.exists()) return ctx.reply("Модель не найдена, попробуй ещё раз").catch(() => {});
       const c = snap.data() as any;
       const urls: string[] = c.imageUrls?.length ? c.imageUrls : [c.imageUrl];
 
@@ -1390,8 +1393,11 @@ function startTelegramBot() {
     try {
       await ctx.answerCbQuery().catch(() => {});
       const costumeId = ctx.match[1];
-      if (!db) return;
-      const snap = await getDoc(doc(db, "costumes", costumeId)).catch(() => null);
+      if (!db) return ctx.reply("База данных недоступна, попробуй позже").catch(() => {});
+      const snap = await Promise.race([
+        getDoc(doc(db, "costumes", costumeId)),
+        new Promise<never>((_, rej) => setTimeout(() => rej(new Error("timeout")), 8000))
+      ]).catch(() => null) as any;
       if (!snap?.exists()) return ctx.reply("Костюм не найден, попробуй выбрать снова").catch(() => {});
       const costume = snap.data() as any;
       const urls: string[] = costume.imageUrls?.length ? costume.imageUrls : [costume.imageUrl];
