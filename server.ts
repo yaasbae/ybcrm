@@ -1290,9 +1290,9 @@ async function runGeminiTryOn(userPhotoBase64: string, costumeBase64: string, at
     config: { responseModalities: [Modality.IMAGE, Modality.TEXT] },
   });
   } catch (e: any) {
-    const isRetryable = e.message?.includes("502") || e.message?.includes("503") || e.message?.includes("500") || e.message?.includes("429") || e.message?.includes("fetch failed");
+    const isRetryable = e.message?.includes("502") || e.message?.includes("503") || e.message?.includes("500") || e.message?.includes("429") || e.message?.includes("fetch failed") || e.message?.includes("aborted") || e.message?.includes("CANCELLED");
     if (isRetryable && attempt < 3) {
-      const delay = attempt * 10000;
+      const delay = attempt * 15000;
       console.log(`Gemini error "${e.message?.slice(0, 50)}" — retry ${attempt}/3 через ${delay/1000}s`);
       await new Promise(r => setTimeout(r, delay));
       return runGeminiTryOn(userPhotoBase64, costumeBase64, attempt + 1, allCostumeBase64s);
@@ -1453,7 +1453,7 @@ function startTelegramBot() {
         // Restore state so user can retry without reselecting costume
         await setTryOnState(userId, { costumeUrls, costumeName });
         await ctx.telegram.deleteMessage(ctx.chat.id, processing.message_id).catch(() => {});
-        const isOverload = e.message?.includes("502") || e.message?.includes("503") || e.message?.includes("429") || e.message?.includes("fetch failed");
+        const isOverload = e.message?.includes("502") || e.message?.includes("503") || e.message?.includes("429") || e.message?.includes("fetch failed") || e.message?.includes("aborted") || e.message?.includes("CANCELLED");
         await ctx.reply(
           isOverload
             ? `⚠️ AI сервис сейчас перегружен. Просто пришли фото ещё раз — попробуем снова 🔄`
