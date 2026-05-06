@@ -8,7 +8,7 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '../lib/utils';
 import { db } from '../firebase';
-import { collection, getDocs, addDoc } from 'firebase/firestore';
+import { collection, getDocs, addDoc, query, orderBy } from 'firebase/firestore';
 
 interface TgAccount {
   phone: string;
@@ -166,8 +166,8 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
   useEffect(() => {
     const loadData = async () => {
       try {
-        const [ordersSnap, broadcastsSnap] = await Promise.all([
-          getDocs(collection(db, 'orders_new')),
+        const [contactsSnap, broadcastsSnap] = await Promise.all([
+          getDocs(query(collection(db, 'contacts'), orderBy('totalSpent', 'desc'))),
           getDocs(collection(db, 'broadcasts')),
         ]);
 
@@ -179,68 +179,20 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
         });
         setSentPhones(sent);
 
-        // Build client map — same logic as AnalyticsDashboard
-        const clientMap = new Map<string, { fullName: string; phone: string; revenue: number; orders: number }>();
-
-        const normalizePhone = (raw: string) => {
-          let p = raw.replace(/\D/g, '');
-          if (p.length === 10) p = '7' + p;
-          else if (p.length === 11 && p.startsWith('8')) p = '7' + p.substring(1);
-          else if (p.length > 11 && p.startsWith('77')) p = p.substring(1);
-          return /^7\d{10}$/.test(p) ? p : '';
-        };
-
-        const addClient = (name: string, phone: string, revenue: number) => {
-          const p = normalizePhone(phone);
-          if (!p || !name.trim()) return;
-          const ex = clientMap.get(p);
-          if (ex) { ex.revenue += revenue; ex.orders += 1; if (!ex.fullName && name.trim()) ex.fullName = name.trim(); }
-          else clientMap.set(p, { fullName: name.trim(), phone: p, revenue, orders: 1 });
-        };
-
-        // Google Sheets — with PapaParse exactly like AnalyticsDashboard
-        try {
-          const sid = sheetId && sheetId !== 'your_sheet_id_here' ? sheetId : '1xTDxiOMqJR-KBnLdbikKp2--ZBQBDkII-xMCoO2lSbM';
-          const csvText = await fetch(`https://docs.google.com/spreadsheets/d/${sid}/export?format=csv`).then(r => r.text());
-          const parsed = Papa.parse(csvText, { header: false, skipEmptyLines: true });
-          const rows = parsed.data as string[][];
-          if (rows.length > 1) {
-            const headerRow = rows[0];
-            const headerMap: Record<string, number> = {};
-            headerRow.forEach((v, j) => { headerMap[String(v).trim().toLowerCase().replace(/\s+/g, ' ')] = j; });
-            const getVal = (row: string[], names: string[], def: number) => {
-              for (const c of names) { const i = headerMap[c.toLowerCase()]; if (i !== undefined && row[i] !== undefined) return String(row[i]).trim(); }
-              return row[def] !== undefined ? String(row[def]).trim() : '';
-            };
-            let lastOrderId = '';
-            for (let i = 1; i < rows.length; i++) {
-              const row = rows[i];
-              if (!row || row.length < 5) continue;
-              const rawId = getVal(row, ['номер заказа', '№ заказа'], 0);
-              if (rawId && !rawId.toLowerCase().includes('номер')) lastOrderId = rawId.replace('#', '').trim();
-              if (!lastOrderId) continue;
-              const name = getVal(row, ['фио заказчика', 'фио', 'покупатель', 'клиент'], 18);
-              const phone = getVal(row, ['телефон заказчика', 'телефон'], 19);
-              const revStr = getVal(row, ['сумма заказа', 'сумма'], 14).replace(/\s/g, '').replace(',', '.').replace('₽', '').replace('(', '-').replace(')', '');
-              const revenue = Math.abs(parseFloat(revStr) || 0);
-              if (name && phone) addClient(name, phone, revenue);
-            }
-          }
-        } catch (e) { console.error('Sheets fetch error:', e); }
-
-        // Firebase orders_new (manually added clients)
-        ordersSnap.docs.forEach(d => {
-          const o = d.data() as any;
-          if (o.clientName && o.clientPhone) addClient(o.clientName, String(o.clientPhone), o.revenue || 0);
-        });
-
+        // Клиентская база — коллекция contacts, отсортирована по totalSpent
         const revMap = new Map<string, number>();
         const ordMap = new Map<string, number>();
-        clientMap.forEach((v, p) => { revMap.set(p.slice(-10), v.revenue); ordMap.set(p.slice(-10), v.orders); });
+        const data = contactsSnap.docs.map(d => {
+          const c = d.data() as any;
+          const phone = String(c.phone || d.id || '').replace(/\D/g, '');
+          const rev = c.totalSpent || 0;
+          const ords = c.ordersCount || 0;
+          revMap.set(phone.slice(-10), rev);
+          ordMap.set(phone.slice(-10), ords);
+          return { ...c, id: d.id, phone, fullName: c.fullName || c.name || '' };
+        }).filter(c => c.phone.length >= 10 && c.fullName);
         setClientRevenue(revMap);
         setClientOrders(ordMap);
-
-        const data = Array.from(clientMap.values()).sort((a, b) => b.revenue - a.revenue);
         setClients(data);
       } finally {
         setIsLoadingClients(false);
