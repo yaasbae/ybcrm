@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import Papa from 'papaparse';
 import {
   Send, CheckCircle2, XCircle,
   Loader2, ChevronDown, ChevronUp,
@@ -178,13 +179,14 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
         });
         setSentPhones(sent);
 
-        // Build client map from Google Sheets (same source as clients page)
+        // Build client map — same logic as AnalyticsDashboard
         const clientMap = new Map<string, { fullName: string; phone: string; revenue: number; orders: number }>();
 
         const normalizePhone = (raw: string) => {
           let p = raw.replace(/\D/g, '');
           if (p.length === 10) p = '7' + p;
           else if (p.length === 11 && p.startsWith('8')) p = '7' + p.substring(1);
+          else if (p.length > 11 && p.startsWith('77')) p = p.substring(1);
           return /^7\d{10}$/.test(p) ? p : '';
         };
 
@@ -192,35 +194,44 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
           const p = normalizePhone(phone);
           if (!p || !name.trim()) return;
           const ex = clientMap.get(p);
-          if (ex) { ex.revenue += revenue; ex.orders += 1; }
+          if (ex) { ex.revenue += revenue; ex.orders += 1; if (!ex.fullName && name.trim()) ex.fullName = name.trim(); }
           else clientMap.set(p, { fullName: name.trim(), phone: p, revenue, orders: 1 });
         };
 
-        // Google Sheets
+        // Google Sheets — with PapaParse exactly like AnalyticsDashboard
         try {
           const sid = sheetId && sheetId !== 'your_sheet_id_here' ? sheetId : '1xTDxiOMqJR-KBnLdbikKp2--ZBQBDkII-xMCoO2lSbM';
-          const csv = await fetch(`https://docs.google.com/spreadsheets/d/${sid}/export?format=csv&t=${Date.now()}`).then(r => r.text());
-          const rows = csv.split('\n').map(r => r.split(',').map(c => c.replace(/^"|"$/g, '').trim()));
-          let headers: string[] = [];
-          const gi = (row: string[], names: string[], fallback: number) => {
-            if (headers.length) { const i = names.map(n => headers.findIndex(h => h.toLowerCase().includes(n))).find(i => i >= 0); return row[i ?? fallback] || ''; }
-            return row[fallback] || '';
-          };
-          for (const row of rows) {
-            if (!headers.length && row.some(c => /фио|покупатель|клиент/i.test(c))) { headers = row.map(c => c.toLowerCase()); continue; }
-            if (!headers.length) continue;
-            const name = gi(row, ['фио заказчика', 'фио', 'покупатель', 'клиент'], 18);
-            const phone = gi(row, ['телефон заказчика', 'телефон'], 19);
-            const revStr = gi(row, ['сумма заказа', 'сумма'], 14).replace(/\s/g, '').replace(',', '.').replace('₽', '');
-            const revenue = Math.abs(parseFloat(revStr) || 0);
-            if (name && phone) addClient(name, phone, revenue);
+          const csvText = await fetch(`https://docs.google.com/spreadsheets/d/${sid}/export?format=csv`).then(r => r.text());
+          const parsed = Papa.parse(csvText, { header: false, skipEmptyLines: true });
+          const rows = parsed.data as string[][];
+          if (rows.length > 1) {
+            const headerRow = rows[0];
+            const headerMap: Record<string, number> = {};
+            headerRow.forEach((v, j) => { headerMap[String(v).trim().toLowerCase().replace(/\s+/g, ' ')] = j; });
+            const getVal = (row: string[], names: string[], def: number) => {
+              for (const c of names) { const i = headerMap[c.toLowerCase()]; if (i !== undefined && row[i] !== undefined) return String(row[i]).trim(); }
+              return row[def] !== undefined ? String(row[def]).trim() : '';
+            };
+            let lastOrderId = '';
+            for (let i = 1; i < rows.length; i++) {
+              const row = rows[i];
+              if (!row || row.length < 5) continue;
+              const rawId = getVal(row, ['номер заказа', '№ заказа'], 0);
+              if (rawId && !rawId.toLowerCase().includes('номер')) lastOrderId = rawId.replace('#', '').trim();
+              if (!lastOrderId) continue;
+              const name = getVal(row, ['фио заказчика', 'фио', 'покупатель', 'клиент'], 18);
+              const phone = getVal(row, ['телефон заказчика', 'телефон'], 19);
+              const revStr = getVal(row, ['сумма заказа', 'сумма'], 14).replace(/\s/g, '').replace(',', '.').replace('₽', '').replace('(', '-').replace(')', '');
+              const revenue = Math.abs(parseFloat(revStr) || 0);
+              if (name && phone) addClient(name, phone, revenue);
+            }
           }
-        } catch {}
+        } catch (e) { console.error('Sheets fetch error:', e); }
 
-        // Firebase orders_new
+        // Firebase orders_new (manually added clients)
         ordersSnap.docs.forEach(d => {
           const o = d.data() as any;
-          if (o.clientName && o.clientPhone) addClient(o.clientName, o.clientPhone, o.revenue || 0);
+          if (o.clientName && o.clientPhone) addClient(o.clientName, String(o.clientPhone), o.revenue || 0);
         });
 
         const revMap = new Map<string, number>();
