@@ -592,26 +592,32 @@ app.post("/api/broadcast/gramjs", async (req, res) => {
       try {
         // ResolvePhone works even if contact was previously imported (no cache issues)
         let entity: any = null;
-        const resolved = await client.invoke(new Api.contacts.ResolvePhone({ phone })).catch(() => null) as any;
+        let resolveErr = '';
+        const resolved = await client.invoke(new Api.contacts.ResolvePhone({ phone })).catch((e: any) => { resolveErr = e?.message || String(e); return null; }) as any;
         entity = resolved?.users?.[0] ?? null;
+        if (resolveErr) console.log(`[broadcast] ResolvePhone ${phone}: ${resolveErr}`);
 
         // Fallback: ImportContacts (for first-time contacts)
         if (!entity) {
+          let importErr = '';
           const importResult = await client.invoke(new Api.contacts.ImportContacts({
             contacts: [new Api.InputPhoneContact({ clientId: i + 1 as any, phone, firstName: "User", lastName: "" })]
-          })).catch(() => null) as any;
+          })).catch((e: any) => { importErr = e?.message || String(e); return null; }) as any;
+          if (importErr) console.log(`[broadcast] ImportContacts ${phone}: ${importErr}`);
           entity = importResult?.users?.[0] ?? null;
+          console.log(`[broadcast] ImportContacts ${phone}: users=${importResult?.users?.length ?? 'null'} imported=${importResult?.importedContacts?.length ?? 'null'}`);
 
           // Last resort: importedContacts userId (privacy mode)
           if (!entity) {
             const userId = importResult?.importedContacts?.[0]?.userId;
             if (userId && Number(userId) > 0) {
-              entity = await client.getEntity(userId).catch(() => null);
+              entity = await client.getEntity(userId).catch((e: any) => { console.log(`[broadcast] getEntity ${userId}: ${e?.message}`); return null; });
             }
           }
         }
 
         if (!entity) {
+          console.log(`[broadcast] no entity for ${phone} — marking no_telegram`);
           results.push({ phone: rawPhone, status: "no_telegram", error: "Нет Telegram" });
           continue;
         }
