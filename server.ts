@@ -1272,8 +1272,8 @@ async function runGeminiTryOn(userPhotoBase64: string, costumeBase64: string, at
   // Use only first costume photo — multiple photos don't improve quality but slow Gemini significantly
   const costumePhoto = (allCostumeBase64s?.length ? allCostumeBase64s[0] : costumeBase64) || costumeBase64;
   const [resizedUser, resizedCostume] = await Promise.all([
-    resizeToBase64(userPhotoBase64, 768),
-    resizeToBase64(costumePhoto, 512),
+    resizeToBase64(userPhotoBase64, 1024),
+    resizeToBase64(costumePhoto, 768),
   ]);
   let response: any;
   try {
@@ -1304,7 +1304,7 @@ async function runGeminiTryOn(userPhotoBase64: string, costumeBase64: string, at
     if (part.inlineData?.data) {
       const imgBuf = Buffer.from(part.inlineData.data, "base64");
       const resized = await sharp(imgBuf)
-        .resize(1080, 1920, { fit: "cover", position: "center" })
+        .resize(1440, 2560, { fit: "cover", position: "center" })
         .jpeg({ quality: 95 })
         .toBuffer();
       return resized.toString("base64");
