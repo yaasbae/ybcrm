@@ -577,8 +577,33 @@ app.post("/api/broadcast/gramjs", async (req, res) => {
     let accIdx = 0;
     let msgCount = 0;
     const results: Array<{ phone: string; status: string; account?: string; error?: string }> = [];
+    const frozenAccounts = new Set<number>();
+
+    const markFrozen = async (idx: number) => {
+      frozenAccounts.add(idx);
+      if (!db) return;
+      const accSnap = await getDoc(doc(db, "settings", "tg_accounts")).catch(() => null);
+      if (accSnap?.exists()) {
+        const allAccs = accSnap.data().accounts || [];
+        const bannedPhone = accounts[idx]?.phone;
+        const updated = allAccs.map((a: any) => a.phone === bannedPhone ? { ...a, active: false, bannedAt: new Date().toISOString() } : a);
+        await setDoc(doc(db, "settings", "tg_accounts"), { accounts: updated }).catch(() => {});
+      }
+    };
 
     for (let i = 0; i < phones.length; i++) {
+      // Skip frozen accounts
+      let skipTries = 0;
+      while (frozenAccounts.has(accIdx) && skipTries < clients.length) {
+        accIdx = (accIdx + 1) % clients.length;
+        skipTries++;
+      }
+      if (frozenAccounts.size >= clients.length) {
+        const rawPhone = String(phones[i]);
+        results.push({ phone: rawPhone, status: "error", error: "Все аккаунты заморожены" });
+        continue;
+      }
+
       // Rotate account every MESSAGES_PER_ACCOUNT messages
       if (msgCount >= MESSAGES_PER_ACCOUNT && clients.length > 1) {
         accIdx = (accIdx + 1) % clients.length;
@@ -593,19 +618,18 @@ app.post("/api/broadcast/gramjs", async (req, res) => {
         // ResolvePhone works even if contact was previously imported (no cache issues)
         let entity: any = null;
         let resolveErr = '';
+        let importErr = '';
         const resolved = await client.invoke(new Api.contacts.ResolvePhone({ phone })).catch((e: any) => { resolveErr = e?.message || String(e); return null; }) as any;
         entity = resolved?.users?.[0] ?? null;
         if (resolveErr) console.log(`[broadcast] ResolvePhone ${phone}: ${resolveErr}`);
 
         // Fallback: ImportContacts (for first-time contacts)
         if (!entity) {
-          let importErr = '';
           const importResult = await client.invoke(new Api.contacts.ImportContacts({
             contacts: [new Api.InputPhoneContact({ clientId: i + 1 as any, phone, firstName: "User", lastName: "" })]
           })).catch((e: any) => { importErr = e?.message || String(e); return null; }) as any;
           if (importErr) console.log(`[broadcast] ImportContacts ${phone}: ${importErr}`);
           entity = importResult?.users?.[0] ?? null;
-          console.log(`[broadcast] ImportContacts ${phone}: users=${importResult?.users?.length ?? 'null'} imported=${importResult?.importedContacts?.length ?? 'null'}`);
 
           // Last resort: importedContacts userId (privacy mode)
           if (!entity) {
@@ -614,6 +638,16 @@ app.post("/api/broadcast/gramjs", async (req, res) => {
               entity = await client.getEntity(userId).catch((e: any) => { console.log(`[broadcast] getEntity ${userId}: ${e?.message}`); return null; });
             }
           }
+        }
+
+        // If frozen during entity resolution — rotate to next account and retry this phone
+        if (!entity && (resolveErr.includes('FROZEN') || importErr.includes('FROZEN'))) {
+          console.log(`[broadcast] account ${accounts[accIdx]?.phone} frozen, rotating`);
+          await markFrozen(accIdx);
+          accIdx = (accIdx + 1) % clients.length;
+          msgCount = 0;
+          i--;
+          continue;
         }
 
         if (!entity) {
@@ -639,15 +673,7 @@ app.post("/api/broadcast/gramjs", async (req, res) => {
         const errMsg = e.message || String(e);
         const isFrozen = errMsg.includes("FROZEN") || errMsg.includes("AUTH_KEY_UNREGISTERED") || errMsg.includes("USER_DEACTIVATED");
         results.push({ phone: rawPhone, status: "error", error: errMsg });
-        if (isFrozen && db) {
-          const accSnap = await getDoc(doc(db, "settings", "tg_accounts"));
-          if (accSnap.exists()) {
-            const allAccs = accSnap.data().accounts || [];
-            const bannedPhone = accounts[accIdx]?.phone;
-            const updated = allAccs.map((a: any) => a.phone === bannedPhone ? { ...a, active: false, bannedAt: new Date().toISOString() } : a);
-            await setDoc(doc(db, "settings", "tg_accounts"), { accounts: updated });
-          }
-        }
+        if (isFrozen) await markFrozen(accIdx);
         if (clients.length > 1 || isFrozen) {
           accIdx = (accIdx + 1) % clients.length;
           msgCount = 0;
