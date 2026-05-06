@@ -537,7 +537,11 @@ app.post("/api/tg/accounts/remove", async (req, res) => {
 });
 
 app.post("/api/broadcast/gramjs", async (req, res) => {
-  const { phones, message, imageBase64, imageName, displayName, mode } = req.body;
+  const { phones, message, images, imageBase64, imageName, displayName, mode } = req.body;
+  // images: Array<{base64: string, name: string}> (new multi-photo) or legacy imageBase64/imageName
+  const imageFiles: Array<{ base64: string; name: string }> = images?.length
+    ? images
+    : imageBase64 ? [{ base64: imageBase64, name: imageName || 'photo.jpg' }] : [];
   // mode: "burn" = расходный (быстро, до бана), "safe" = бережный (медленно)
   const MESSAGES_PER_ACCOUNT = mode === "burn" ? 9999 : 20;
   const MSG_DELAY = mode === "burn" ? 200 : 1500 + Math.random() * 2000;
@@ -662,14 +666,18 @@ app.post("/api/broadcast/gramjs", async (req, res) => {
           results.push({ phone: rawPhone, status: "no_telegram", error: "Нет Telegram" });
           continue;
         }
-        if (imageBase64 && imageName) {
-          const imgBuffer = Buffer.from(imageBase64, "base64");
+        if (imageFiles.length > 0) {
           const { CustomFile } = await import("telegram/client/uploads");
-          await client.sendFile(entity as any, {
-            file: new CustomFile(imageName, imgBuffer.length, "", imgBuffer),
-            caption: message,
-            forceDocument: false,
+          const fileObjs = imageFiles.map(f => {
+            const buf = Buffer.from(f.base64, "base64");
+            return new CustomFile(f.name, buf.length, "", buf);
           });
+          if (fileObjs.length === 1) {
+            await client.sendFile(entity as any, { file: fileObjs[0], caption: message, forceDocument: false });
+          } else {
+            // Send as album — first file gets caption
+            await client.sendFile(entity as any, { file: fileObjs as any, caption: message, forceDocument: false });
+          }
         } else {
           await client.sendMessage(entity as any, { message });
         }

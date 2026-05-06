@@ -38,8 +38,9 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
   const [isLoadingClients, setIsLoadingClients] = useState(true);
   const [showAllClients, setShowAllClients] = useState(false);
   const [search, setSearch] = useState('');
-  const [image, setImage] = useState<File | null>(null);
-  const [imagePreview, setImagePreview] = useState<string | null>(null);
+  const [images, setImages] = useState<File[]>([]);
+  const [imagePreviews, setImagePreviews] = useState<string[]>([]);
+  const [clientFilter, setClientFilter] = useState<'unsent' | 'sent'>('unsent');
 
   // Telegram auth state
   const [tgStatus, setTgStatus] = useState<TgStatus>({ authorized: false, accounts: [] });
@@ -228,15 +229,20 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
   };
 
   const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0] || null;
-    setImage(file);
-    if (file) {
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
+    setImages(prev => [...prev, ...files]);
+    files.forEach(file => {
       const reader = new FileReader();
-      reader.onload = () => setImagePreview(reader.result as string);
+      reader.onload = () => setImagePreviews(prev => [...prev, reader.result as string]);
       reader.readAsDataURL(file);
-    } else {
-      setImagePreview(null);
-    }
+    });
+    e.target.value = '';
+  };
+
+  const handleRemoveImage = (idx: number) => {
+    setImages(prev => prev.filter((_, i) => i !== idx));
+    setImagePreviews(prev => prev.filter((_, i) => i !== idx));
   };
 
   const handleSendCode = async () => {
@@ -301,20 +307,19 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
     setSendLog([]);
     try {
       const phones = Array.from(selected);
-      let imageBase64: string | null = null;
-      let imageName: string | null = null;
-      if (image) {
+      const imageFiles: Array<{ base64: string; name: string }> = [];
+      for (const img of images) {
         const reader = new FileReader();
-        imageBase64 = await new Promise(res => {
+        const base64 = await new Promise<string>(res => {
           reader.onload = () => res((reader.result as string).split(',')[1]);
-          reader.readAsDataURL(image);
+          reader.readAsDataURL(img);
         });
-        imageName = image.name;
+        imageFiles.push({ base64, name: img.name });
       }
       const response = await fetch('/api/broadcast/gramjs', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ phones, message, imageBase64, imageName, displayName: displayName.trim() || null, mode: broadcastMode })
+        body: JSON.stringify({ phones, message, images: imageFiles, displayName: displayName.trim() || null, mode: broadcastMode })
       });
       const data = await response.json();
       setResult(data);
@@ -341,10 +346,13 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
   };
 
   const filteredClients = clients.filter(c => {
+    const phone = String(c.phone || '');
+    const wasSent = sentPhones.has(phone.replace(/\D/g, ''));
+    if (clientFilter === 'unsent' && wasSent) return false;
+    if (clientFilter === 'sent' && !wasSent) return false;
     if (!search) return true;
     const q = search.toLowerCase();
     const name = (c.fullName || c.name || '').toLowerCase();
-    const phone = String(c.phone || '');
     return name.includes(q) || phone.includes(q);
   });
   const visibleClients = showAllClients ? filteredClients : filteredClients.slice(0, 10);
@@ -592,7 +600,31 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
 
         {/* Рассылка */}
         {activeTab === 'compose' && (
-          <div className="p-4 space-y-4">
+          <div className="space-y-4">
+
+            {/* Sticky кнопка отправить */}
+            <div className="sticky top-0 z-10 bg-white border-b border-zinc-100 px-4 py-3 flex items-center gap-3">
+              <button
+                onClick={handleSend}
+                disabled={isSending || selected.size === 0 || !message.trim() || !tgStatus.authorized}
+                className="flex-1 py-2.5 bg-blue-500 text-white rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-blue-600 transition-all flex items-center justify-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed shadow-md shadow-blue-500/20"
+              >
+                {isSending ? <Loader2 size={13} className="animate-spin" /> : <Send size={13} />}
+                {isSending ? 'Отправляем...' : `Отправить${selected.size > 0 ? ` (${selected.size})` : ''}`}
+              </button>
+              <div className="flex gap-1">
+                <button onClick={() => setBroadcastMode('safe')}
+                  className={`px-2.5 py-2 rounded-lg text-[8px] font-black uppercase transition-all border ${broadcastMode === 'safe' ? 'bg-emerald-500 text-white border-emerald-500' : 'bg-white text-zinc-400 border-zinc-200'}`}>
+                  🐢
+                </button>
+                <button onClick={() => setBroadcastMode('burn')}
+                  className={`px-2.5 py-2 rounded-lg text-[8px] font-black uppercase transition-all border ${broadcastMode === 'burn' ? 'bg-red-500 text-white border-red-500' : 'bg-white text-zinc-400 border-zinc-200'}`}>
+                  🔥
+                </button>
+              </div>
+            </div>
+
+            <div className="px-4 space-y-4">
 
             <div className="space-y-1">
               <div className="flex items-center justify-between ml-1">
@@ -610,24 +642,24 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
               />
             </div>
 
-            {/* Картинка */}
+            {/* Фото — несколько */}
             <div className="space-y-1">
-              <label className="text-[9px] font-black text-zinc-400 uppercase tracking-widest ml-1">Фото (необязательно)</label>
-              <div className="flex items-center gap-3">
-                <label className="flex items-center gap-2 px-4 py-2.5 bg-zinc-50 border border-zinc-200 border-dashed rounded-xl cursor-pointer hover:bg-zinc-100 transition-all text-[10px] font-bold text-zinc-500">
-                  <Image size={14} className="text-zinc-400" />
-                  {image ? image.name : 'Выбрать фото'}
-                  <input type="file" accept="image/*" onChange={handleImageChange} className="hidden" />
-                </label>
-                {imagePreview && (
-                  <div className="relative">
-                    <img src={imagePreview} alt="preview" className="w-12 h-12 rounded-xl object-cover border border-zinc-200" />
-                    <button onClick={() => { setImage(null); setImagePreview(null); }}
+              <label className="text-[9px] font-black text-zinc-400 uppercase tracking-widest ml-1">Фото (необязательно, можно несколько)</label>
+              <div className="flex items-center gap-2 flex-wrap">
+                {imagePreviews.map((src, idx) => (
+                  <div key={idx} className="relative">
+                    <img src={src} alt="" className="w-14 h-14 rounded-xl object-cover border border-zinc-200" />
+                    <button onClick={() => handleRemoveImage(idx)}
                       className="absolute -top-1.5 -right-1.5 w-4 h-4 bg-red-500 text-white rounded-full flex items-center justify-center">
                       <XCircle size={10} />
                     </button>
                   </div>
-                )}
+                ))}
+                <label className="flex items-center gap-2 px-3 py-2.5 bg-zinc-50 border border-zinc-200 border-dashed rounded-xl cursor-pointer hover:bg-zinc-100 transition-all text-[10px] font-bold text-zinc-500">
+                  <Image size={14} className="text-zinc-400" />
+                  {images.length === 0 ? 'Добавить фото' : '+ ещё'}
+                  <input type="file" accept="image/*" multiple onChange={handleImageChange} className="hidden" />
+                </label>
               </div>
             </div>
 
@@ -645,6 +677,20 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
                     {selected.size === clients.length ? 'Снять всё' : 'Все'}
                   </button>
                 </div>
+              </div>
+
+              {/* Фильтр: не отправляли / отправляли */}
+              <div className="flex gap-1 p-1 bg-zinc-100 rounded-xl w-fit">
+                <button onClick={() => { setClientFilter('unsent'); setSelected(new Set()); }}
+                  className={cn("px-3 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all",
+                    clientFilter === 'unsent' ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-400 hover:text-zinc-700")}>
+                  Не отправляли
+                </button>
+                <button onClick={() => { setClientFilter('sent'); setSelected(new Set()); }}
+                  className={cn("px-3 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all",
+                    clientFilter === 'sent' ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-400 hover:text-zinc-700")}>
+                  Отправляли
+                </button>
               </div>
 
               {/* Поиск */}
@@ -739,29 +785,6 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
               </div>
             )}
 
-            <div className="flex gap-2">
-              <button onClick={() => setBroadcastMode('safe')}
-                className={`flex-1 py-2 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all border ${broadcastMode === 'safe' ? 'bg-emerald-500 text-white border-emerald-500' : 'bg-white text-zinc-400 border-zinc-200'}`}>
-                🐢 Бережный
-              </button>
-              <button onClick={() => setBroadcastMode('burn')}
-                className={`flex-1 py-2 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all border ${broadcastMode === 'burn' ? 'bg-red-500 text-white border-red-500' : 'bg-white text-zinc-400 border-zinc-200'}`}>
-                🔥 Расходный
-              </button>
-            </div>
-            <p className="text-[9px] text-zinc-400 ml-1">
-              {broadcastMode === 'burn' ? '🔥 Расходный — максимальная скорость, аккаунты в расход' : '🐢 Бережный — медленно, аккаунты живут дольше'}
-            </p>
-
-            <button
-              onClick={handleSend}
-              disabled={isSending || selected.size === 0 || !message.trim() || !tgStatus.authorized}
-              className="w-full py-3 bg-blue-500 text-white rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-blue-600 transition-all flex items-center justify-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed shadow-lg shadow-blue-500/20"
-            >
-              {isSending ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
-              {isSending ? 'Отправляем...' : `Отправить ${selected.size > 0 ? `(${selected.size} чел.)` : ''}`}
-            </button>
-
             {/* Лог отправки */}
             {sendLog.length > 0 && (
               <div className="border border-zinc-100 rounded-xl overflow-hidden">
@@ -824,6 +847,7 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
               )}
             </AnimatePresence>
 
+            </div>{/* /px-4 */}
           </div>
         )}
       </motion.div>
