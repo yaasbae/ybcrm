@@ -596,11 +596,21 @@ app.post("/api/broadcast/gramjs", async (req, res) => {
         })).catch(() => null) as any;
 
         const importedUsers = importResult?.users || [];
-        if (importedUsers.length === 0) {
+        let entity: any = importedUsers[0];
+
+        // Fallback: user has Telegram but privacy hides them from users[] — use userId from importedContacts
+        if (!entity) {
+          const imported = importResult?.importedContacts || [];
+          const userId = imported[0]?.userId;
+          if (userId && Number(userId) > 0) {
+            entity = await client.getEntity(userId).catch(() => null);
+          }
+        }
+
+        if (!entity) {
           results.push({ phone: rawPhone, status: "no_telegram", error: "Нет Telegram" });
           continue;
         }
-        const entity = importedUsers[0];
         if (imageBase64 && imageName) {
           const imgBuffer = Buffer.from(imageBase64, "base64");
           const { CustomFile } = await import("telegram/client/uploads");
