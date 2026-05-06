@@ -32,6 +32,8 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
   const [clientRevenue, setClientRevenue] = useState<Map<string, number>>(new Map());
   const [clientOrders, setClientOrders] = useState<Map<string, number>>(new Map());
   const [sentPhones, setSentPhones] = useState<Set<string>>(new Set());
+  const [broadcastHistory, setBroadcastHistory] = useState<Array<{ id: string; sentAt: string; phones: string[]; message: string; sentCount: number }>>([]);
+  const [selectedBroadcast, setSelectedBroadcast] = useState<string | null>(null);
   const [sendLog, setSendLog] = useState<Array<{ phone: string; name: string; status: 'sent' | 'error'; error?: string }>>([]);
   const [result, setResult] = useState<any>(null);
   const [activeTab, setActiveTab] = useState<'compose' | 'settings'>('compose');
@@ -172,13 +174,19 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
           getDocs(collection(db, 'broadcasts')),
         ]);
 
-        // Sent phones
+        // Only count broadcasts that actually sent messages (sentCount > 0 or phones saved from real sends)
         const sent = new Set<string>();
+        const history: typeof broadcastHistory = [];
         broadcastsSnap.docs.forEach(d => {
           const b = d.data() as any;
+          const hasRealSends = (b.sentCount ?? b.phones?.length ?? 0) > 0;
+          if (!hasRealSends) return; // skip old test/failed broadcasts
           (b.phones || []).forEach((p: string) => sent.add(String(p).replace(/\D/g, '')));
+          history.push({ id: d.id, sentAt: b.sentAt, phones: b.phones || [], message: b.message || '', sentCount: b.sentCount || b.phones?.length || 0 });
         });
+        history.sort((a, b) => new Date(b.sentAt).getTime() - new Date(a.sentAt).getTime());
         setSentPhones(sent);
+        setBroadcastHistory(history);
 
         // Клиентская база — коллекция contacts, отсортирована по totalSpent
         const revMap = new Map<string, number>();
@@ -331,13 +339,16 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
         setSendLog(log);
         setSentPhones(prev => { const next = new Set(prev); log.filter((l: any) => l.status === 'sent').forEach((l: any) => next.add(String(l.phone).replace(/\D/g, ''))); return next; });
       }
-      await addDoc(collection(db, 'broadcasts'), {
-        phones,
-        message,
-        sentAt: new Date().toISOString(),
-        result: data,
-        count: phones.length
-      });
+      const sentList = (data.results || []).filter((r: any) => r.status === 'sent').map((r: any) => String(r.phone).replace(/\D/g, ''));
+      if (sentList.length > 0) {
+        await addDoc(collection(db, 'broadcasts'), {
+          phones: sentList,
+          message,
+          sentAt: new Date().toISOString(),
+          sentCount: sentList.length,
+          totalAttempted: phones.length,
+        });
+      }
     } catch (e: any) {
       setResult({ error: e.message });
     } finally {
@@ -345,9 +356,13 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
     }
   };
 
+  const activeSentSet = selectedBroadcast
+    ? new Set((broadcastHistory.find(b => b.id === selectedBroadcast)?.phones || []).map(p => String(p).replace(/\D/g, '')))
+    : sentPhones;
+
   const filteredClients = clients.filter(c => {
-    const phone = String(c.phone || '');
-    const wasSent = sentPhones.has(phone.replace(/\D/g, ''));
+    const phone = String(c.phone || '').replace(/\D/g, '');
+    const wasSent = activeSentSet.has(phone);
     if (clientFilter === 'unsent' && wasSent) return false;
     if (clientFilter === 'sent' && !wasSent) return false;
     if (!search) return true;
@@ -681,17 +696,47 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
 
               {/* Фильтр: не отправляли / отправляли */}
               <div className="flex gap-1 p-1 bg-zinc-100 rounded-xl w-fit">
-                <button onClick={() => { setClientFilter('unsent'); setSelected(new Set()); }}
+                <button onClick={() => { setClientFilter('unsent'); setSelectedBroadcast(null); setSelected(new Set()); }}
                   className={cn("px-3 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all",
                     clientFilter === 'unsent' ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-400 hover:text-zinc-700")}>
                   Не отправляли
                 </button>
-                <button onClick={() => { setClientFilter('sent'); setSelected(new Set()); }}
+                <button onClick={() => { setClientFilter('sent'); setSelectedBroadcast(null); setSelected(new Set()); }}
                   className={cn("px-3 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all",
                     clientFilter === 'sent' ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-400 hover:text-zinc-700")}>
-                  Отправляли
+                  Все отправляли
                 </button>
               </div>
+
+              {/* История рассылок — timeline */}
+              {clientFilter === 'sent' && broadcastHistory.length > 0 && (
+                <div className="space-y-1">
+                  <p className="text-[9px] font-black text-zinc-400 uppercase tracking-widest ml-1">История рассылок</p>
+                  <div className="flex flex-col gap-1">
+                    {broadcastHistory.map(b => {
+                      const daysAgo = Math.floor((Date.now() - new Date(b.sentAt).getTime()) / 86400000);
+                      const label = daysAgo === 0 ? 'Сегодня' : daysAgo === 1 ? '1 день назад' : `${daysAgo} дней назад`;
+                      const isActive = selectedBroadcast === b.id;
+                      return (
+                        <button key={b.id} onClick={() => setSelectedBroadcast(isActive ? null : b.id)}
+                          className={cn("flex items-center justify-between px-3 py-2 rounded-xl border text-left transition-all",
+                            isActive ? "bg-blue-50 border-blue-200" : "bg-zinc-50 border-zinc-100 hover:border-zinc-200")}>
+                          <div>
+                            <p className={cn("text-[11px] font-bold", isActive ? "text-blue-700" : "text-zinc-700")}>{label}</p>
+                            <p className="text-[9px] text-zinc-400 truncate max-w-xs">{b.message.slice(0, 50)}{b.message.length > 50 ? '…' : ''}</p>
+                          </div>
+                          <span className={cn("text-[10px] font-black shrink-0 ml-2", isActive ? "text-blue-500" : "text-zinc-400")}>
+                            {b.sentCount} чел.
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+              {clientFilter === 'sent' && broadcastHistory.length === 0 && (
+                <p className="text-[10px] text-zinc-400 ml-1">Рассылок ещё не было</p>
+              )}
 
               {/* Поиск */}
               <div className="relative">
@@ -724,7 +769,7 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
                     const key = String(phone).replace(/\D/g, '').slice(-10);
                     const rev = clientRevenue.get(key) || 0;
                     const ords = clientOrders.get(key) || 0;
-                    const wasSent = sentPhones.has(String(phone).replace(/\D/g, ''));
+                    const wasSent = activeSentSet.has(String(phone).replace(/\D/g, ''));
                     return (
                       <div
                         key={i}

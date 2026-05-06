@@ -1062,7 +1062,10 @@ app.post("/api/bot/broadcast", async (req, res) => {
 
 app.post("/api/bot/config", async (req, res) => {
   const { welcomeText } = req.body;
-  if (db && welcomeText) await setDoc(doc(db, "settings", "bot_config"), { welcomeText }, { merge: true });
+  if (welcomeText) {
+    botCfg.welcomeText = welcomeText; // update in-memory immediately
+    if (db) await setDoc(doc(db, "settings", "bot_config"), { welcomeText }, { merge: true });
+  }
   res.json({ success: true });
 });
 
@@ -1561,6 +1564,14 @@ function startTelegramBot() {
             ? "✨ *Онлайн примерка* _(тестовый режим)_\n\nВыбери модель для примерки 👇"
             : "👗 *Каталог YB Studio*\n\nВыбери модель чтобы посмотреть фото 👇",
           { parse_mode: "Markdown", ...Markup.inlineKeyboard(modelButtons) }
+        );
+      } else if (btn.id === "contact") {
+        await ctx.reply(
+          "📞 *Связаться с нами*\n\nНажми кнопку ниже — откроется чат с менеджером 👇",
+          {
+            parse_mode: "Markdown",
+            ...Markup.inlineKeyboard([[Markup.button.url("💬 Написать менеджеру", "https://t.me/yaasbae_ru")]])
+          }
         );
       } else if (btn.response) {
         await ctx.reply(btn.response, { parse_mode: "Markdown" });
