@@ -590,15 +590,17 @@ app.post("/api/broadcast/gramjs", async (req, res) => {
       const rawPhone = String(phones[i]);
       const phone = rawPhone.startsWith("+") ? rawPhone : `+${rawPhone}`;
       try {
-        // ImportContacts — non-fatal, some accounts may be restricted
-        try {
-          await client.invoke(new Api.contacts.ImportContacts({
-            contacts: [new Api.InputPhoneContact({ clientId: i + 1 as any, phone, firstName: "User", lastName: "" })]
-          }));
-        } catch (importErr: any) {
-          console.warn(`ImportContacts skipped for ${phone}: ${importErr.message}`);
+        // ImportContacts — get entity directly from result, no need for getEntity
+        const importResult = await client.invoke(new Api.contacts.ImportContacts({
+          contacts: [new Api.InputPhoneContact({ clientId: i + 1 as any, phone, firstName: "User", lastName: "" })]
+        })).catch(() => null) as any;
+
+        const importedUsers = importResult?.users || [];
+        if (importedUsers.length === 0) {
+          results.push({ phone: rawPhone, status: "no_telegram", error: "Нет Telegram" });
+          continue;
         }
-        const entity = await client.getEntity(phone);
+        const entity = importedUsers[0];
         if (imageBase64 && imageName) {
           const imgBuffer = Buffer.from(imageBase64, "base64");
           const { CustomFile } = await import("telegram/client/uploads");
