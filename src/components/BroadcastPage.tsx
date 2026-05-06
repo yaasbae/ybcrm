@@ -163,51 +163,50 @@ export const BroadcastPage: React.FC = () => {
   useEffect(() => {
     const loadData = async () => {
       try {
-        const [contactsSnap, ordersSnap, broadcastsSnap] = await Promise.all([
-          getDocs(collection(db, 'contacts')),
+        const [ordersSnap, broadcastsSnap] = await Promise.all([
           getDocs(collection(db, 'orders_new')),
           getDocs(collection(db, 'broadcasts')),
         ]);
-        // Build revenue + orders map
-        const revMap = new Map<string, number>();
-        const ordMap = new Map<string, number>();
+
+        // Build client list from orders_new — same as clients page
+        const clientMap = new Map<string, { fullName: string; phone: string; revenue: number; orders: number }>();
         ordersSnap.docs.forEach(d => {
           const o = d.data() as any;
-          const p = String(o.clientPhone || '').replace(/\D/g, '');
-          if (p.length >= 10) {
-            const key = p.slice(-10);
-            revMap.set(key, (revMap.get(key) || 0) + (o.revenue || 0));
-            ordMap.set(key, (ordMap.get(key) || 0) + 1);
+          let p = String(o.clientPhone || '').replace(/\D/g, '');
+          if (p.length === 10) p = '7' + p;
+          else if (p.length === 11 && p.startsWith('8')) p = '7' + p.substring(1);
+          if (!/^7\d{10}$/.test(p)) return;
+          const name = (o.clientName || '').trim();
+          if (!name || /\d/.test(name) || !/[а-яёА-ЯЁ]/i.test(name)) return;
+          const existing = clientMap.get(p);
+          if (existing) {
+            existing.revenue += o.revenue || 0;
+            existing.orders += 1;
+          } else {
+            clientMap.set(p, { fullName: name, phone: p, revenue: o.revenue || 0, orders: 1 });
           }
+        });
+
+        const revMap = new Map<string, number>();
+        const ordMap = new Map<string, number>();
+        clientMap.forEach((v, phone) => {
+          const key = phone.slice(-10);
+          revMap.set(key, v.revenue);
+          ordMap.set(key, v.orders);
         });
         setClientRevenue(revMap);
         setClientOrders(ordMap);
-        // Build sent phones from broadcasts history — normalize to strip +
+
+        // Build sent phones from broadcasts history
         const sent = new Set<string>();
         broadcastsSnap.docs.forEach(d => {
           const b = d.data() as any;
           (b.phones || []).forEach((p: string) => sent.add(String(p).replace(/\D/g, '')));
         });
         setSentPhones(sent);
-        const data = contactsSnap.docs
-          .map(d => {
-            const docData = d.data() as any;
-            const phone = docData.phone || d.id;
-            return { ...docData, id: d.id, phone } as any;
-          })
-          .filter(c => {
-            if (!/^7\d{10}$/.test(String(c.phone))) return false;
-            const name = c.fullName || c.name || '';
-            if (!name) return false;
-            const hasCyrillic = /[а-яёА-ЯЁ]/.test(name);
-            const hasDigits = /\d/.test(name);
-            return hasCyrillic && !hasDigits;
-          })
-          .sort((a, b) => {
-            const ra = revMap.get(String(a.phone).slice(-10)) || 0;
-            const rb = revMap.get(String(b.phone).slice(-10)) || 0;
-            return rb - ra;
-          });
+
+        const data = Array.from(clientMap.values())
+          .sort((a, b) => b.revenue - a.revenue);
         setClients(data);
       } finally {
         setIsLoadingClients(false);
