@@ -1267,7 +1267,7 @@ async function resizeToBase64(b64: string, maxPx = 768): Promise<string> {
 async function runGeminiTryOn(userPhotoBase64: string, costumeBase64: string, attempt = 1, allCostumeBase64s?: string[]): Promise<string | null> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error("GEMINI_API_KEY не задан");
-  const ai = new GoogleGenAI({ apiKey });
+  const ai = new GoogleGenAI({ apiKey, httpOptions: { timeout: 600000 } });
 
   // Use only first costume photo — multiple photos don't improve quality but slow Gemini significantly
   const costumePhoto = (allCostumeBase64s?.length ? allCostumeBase64s[0] : costumeBase64) || costumeBase64;
@@ -1290,12 +1290,12 @@ async function runGeminiTryOn(userPhotoBase64: string, costumeBase64: string, at
     config: { responseModalities: [Modality.IMAGE, Modality.TEXT] },
   });
   } catch (e: any) {
-    const isRetryable = e.message?.includes("502") || e.message?.includes("503") || e.message?.includes("500") || e.message?.includes("429");
+    const isRetryable = e.message?.includes("502") || e.message?.includes("503") || e.message?.includes("500") || e.message?.includes("429") || e.message?.includes("fetch failed");
     if (isRetryable && attempt < 3) {
-      const delay = attempt * 8000;
-      console.log(`Gemini ${e.message?.slice(0, 30)} — retry ${attempt}/3 через ${delay/1000}s`);
+      const delay = attempt * 10000;
+      console.log(`Gemini error "${e.message?.slice(0, 50)}" — retry ${attempt}/3 через ${delay/1000}s`);
       await new Promise(r => setTimeout(r, delay));
-      return runGeminiTryOn(userPhotoBase64, costumeBase64, attempt + 1);
+      return runGeminiTryOn(userPhotoBase64, costumeBase64, attempt + 1, allCostumeBase64s);
     }
     throw e;
   }
@@ -1423,14 +1423,10 @@ function startTelegramBot() {
     const fileLink = await ctx.telegram.getFileLink(fileId);
     const processing = await ctx.reply("⏳ Создаю примерку... Это занимает 3-7 минут. Не уходи! 🙏");
 
-    const downloadUrl = (url: string): Promise<string> => new Promise((resolve, reject) => {
-      https.get(url, (res) => {
-        const chunks: Buffer[] = [];
-        res.on("data", (c: Buffer) => chunks.push(c));
-        res.on("end", () => resolve(Buffer.concat(chunks).toString("base64")));
-        res.on("error", reject);
-      }).on("error", reject);
-    });
+    const downloadUrl = async (url: string): Promise<string> => {
+      const resp = await axios.get(url, { responseType: "arraybuffer", timeout: 30000 });
+      return Buffer.from(resp.data).toString("base64");
+    };
 
     // Run Gemini in background — don't await so Telegraf handler returns immediately
     (async () => {
@@ -1453,11 +1449,11 @@ function startTelegramBot() {
           }
         );
       } catch (e: any) {
-        console.error("tryon photo error:", e.message);
+        console.error("tryon photo error:", e.message, e.cause?.message || "");
         // Restore state so user can retry without reselecting costume
         await setTryOnState(userId, { costumeUrls, costumeName });
         await ctx.telegram.deleteMessage(ctx.chat.id, processing.message_id).catch(() => {});
-        const isOverload = e.message?.includes("502") || e.message?.includes("503") || e.message?.includes("429");
+        const isOverload = e.message?.includes("502") || e.message?.includes("503") || e.message?.includes("429") || e.message?.includes("fetch failed");
         await ctx.reply(
           isOverload
             ? `⚠️ AI сервис сейчас перегружен. Просто пришли фото ещё раз — попробуем снова 🔄`
