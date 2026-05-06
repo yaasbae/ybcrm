@@ -1273,7 +1273,7 @@ async function runGeminiTryOn(userPhotoBase64: string, costumeBase64: string, at
   const costumePhoto = (allCostumeBase64s?.length ? allCostumeBase64s[0] : costumeBase64) || costumeBase64;
   const [resizedUser, resizedCostume] = await Promise.all([
     resizeToBase64(userPhotoBase64, 1024),
-    resizeToBase64(costumePhoto, 768),
+    resizeToBase64(costumePhoto, 1024),
   ]);
   let response: any;
   try {
