@@ -429,7 +429,7 @@ export default function App() {
           )}
 
           {view === 'broadcast' && (
-            <BroadcastPage />
+            <BroadcastPage sheetId={activeSheetId} />
           )}
 
           {view === 'bot' && (

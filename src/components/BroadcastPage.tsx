@@ -20,7 +20,9 @@ interface TgStatus {
   accounts: TgAccount[];
 }
 
-export const BroadcastPage: React.FC = () => {
+interface Props { sheetId?: string; }
+
+export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
   const [clients, setClients] = useState<any[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [message, setMessage] = useState('');
@@ -163,27 +165,12 @@ export const BroadcastPage: React.FC = () => {
   useEffect(() => {
     const loadData = async () => {
       try {
-        const [contactsSnap, ordersSnap, broadcastsSnap] = await Promise.all([
-          getDocs(collection(db, 'contacts')),
+        const [ordersSnap, broadcastsSnap] = await Promise.all([
           getDocs(collection(db, 'orders_new')),
           getDocs(collection(db, 'broadcasts')),
         ]);
 
-        // Revenue from orders_new
-        const revMap = new Map<string, number>();
-        const ordMap = new Map<string, number>();
-        ordersSnap.docs.forEach(d => {
-          const o = d.data() as any;
-          const p = String(o.clientPhone || '').replace(/\D/g, '').slice(-10);
-          if (p.length === 10) {
-            revMap.set(p, (revMap.get(p) || 0) + (o.revenue || 0));
-            ordMap.set(p, (ordMap.get(p) || 0) + 1);
-          }
-        });
-        setClientRevenue(revMap);
-        setClientOrders(ordMap);
-
-        // Sent phones from broadcasts history
+        // Sent phones
         const sent = new Set<string>();
         broadcastsSnap.docs.forEach(d => {
           const b = d.data() as any;
@@ -191,21 +178,58 @@ export const BroadcastPage: React.FC = () => {
         });
         setSentPhones(sent);
 
-        // Client list from contacts — filter valid Russian mobile numbers with real names
-        const data = contactsSnap.docs
-          .map(d => ({ ...d.data() as any, id: d.id }))
-          .filter(c => {
-            const phone = String(c.phone || c.id || '').replace(/\D/g, '');
-            if (!/^7[9]\d{9}$/.test(phone) && !/^7[34678]\d{9}$/.test(phone)) return false;
-            const name = (c.fullName || c.name || '').trim();
-            return name.length > 1 && /[а-яёА-ЯЁa-zA-Z]/.test(name);
-          })
-          .map(c => ({ ...c, phone: String(c.phone || c.id).replace(/\D/g, '') }))
-          .sort((a, b) => {
-            const ra = revMap.get(String(a.phone).slice(-10)) || 0;
-            const rb = revMap.get(String(b.phone).slice(-10)) || 0;
-            return rb - ra;
-          });
+        // Build client map from Google Sheets (same source as clients page)
+        const clientMap = new Map<string, { fullName: string; phone: string; revenue: number; orders: number }>();
+
+        const normalizePhone = (raw: string) => {
+          let p = raw.replace(/\D/g, '');
+          if (p.length === 10) p = '7' + p;
+          else if (p.length === 11 && p.startsWith('8')) p = '7' + p.substring(1);
+          return /^7\d{10}$/.test(p) ? p : '';
+        };
+
+        const addClient = (name: string, phone: string, revenue: number) => {
+          const p = normalizePhone(phone);
+          if (!p || !name.trim()) return;
+          const ex = clientMap.get(p);
+          if (ex) { ex.revenue += revenue; ex.orders += 1; }
+          else clientMap.set(p, { fullName: name.trim(), phone: p, revenue, orders: 1 });
+        };
+
+        // Google Sheets
+        try {
+          const sid = sheetId && sheetId !== 'your_sheet_id_here' ? sheetId : '1xTDxiOMqJR-KBnLdbikKp2--ZBQBDkII-xMCoO2lSbM';
+          const csv = await fetch(`https://docs.google.com/spreadsheets/d/${sid}/export?format=csv&t=${Date.now()}`).then(r => r.text());
+          const rows = csv.split('\n').map(r => r.split(',').map(c => c.replace(/^"|"$/g, '').trim()));
+          let headers: string[] = [];
+          const gi = (row: string[], names: string[], fallback: number) => {
+            if (headers.length) { const i = names.map(n => headers.findIndex(h => h.toLowerCase().includes(n))).find(i => i >= 0); return row[i ?? fallback] || ''; }
+            return row[fallback] || '';
+          };
+          for (const row of rows) {
+            if (!headers.length && row.some(c => /фио|покупатель|клиент/i.test(c))) { headers = row.map(c => c.toLowerCase()); continue; }
+            if (!headers.length) continue;
+            const name = gi(row, ['фио заказчика', 'фио', 'покупатель', 'клиент'], 18);
+            const phone = gi(row, ['телефон заказчика', 'телефон'], 19);
+            const revStr = gi(row, ['сумма заказа', 'сумма'], 14).replace(/\s/g, '').replace(',', '.').replace('₽', '');
+            const revenue = Math.abs(parseFloat(revStr) || 0);
+            if (name && phone) addClient(name, phone, revenue);
+          }
+        } catch {}
+
+        // Firebase orders_new
+        ordersSnap.docs.forEach(d => {
+          const o = d.data() as any;
+          if (o.clientName && o.clientPhone) addClient(o.clientName, o.clientPhone, o.revenue || 0);
+        });
+
+        const revMap = new Map<string, number>();
+        const ordMap = new Map<string, number>();
+        clientMap.forEach((v, p) => { revMap.set(p.slice(-10), v.revenue); ordMap.set(p.slice(-10), v.orders); });
+        setClientRevenue(revMap);
+        setClientOrders(ordMap);
+
+        const data = Array.from(clientMap.values()).sort((a, b) => b.revenue - a.revenue);
         setClients(data);
       } finally {
         setIsLoadingClients(false);
