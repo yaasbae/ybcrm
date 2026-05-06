@@ -590,20 +590,24 @@ app.post("/api/broadcast/gramjs", async (req, res) => {
       const rawPhone = String(phones[i]);
       const phone = rawPhone.startsWith("+") ? rawPhone : `+${rawPhone}`;
       try {
-        // ImportContacts — get entity directly from result, no need for getEntity
-        const importResult = await client.invoke(new Api.contacts.ImportContacts({
-          contacts: [new Api.InputPhoneContact({ clientId: i + 1 as any, phone, firstName: "User", lastName: "" })]
-        })).catch(() => null) as any;
+        // ResolvePhone works even if contact was previously imported (no cache issues)
+        let entity: any = null;
+        const resolved = await client.invoke(new Api.contacts.ResolvePhone({ phone })).catch(() => null) as any;
+        entity = resolved?.users?.[0] ?? null;
 
-        const importedUsers = importResult?.users || [];
-        let entity: any = importedUsers[0];
-
-        // Fallback: user has Telegram but privacy hides them from users[] — use userId from importedContacts
+        // Fallback: ImportContacts (for first-time contacts)
         if (!entity) {
-          const imported = importResult?.importedContacts || [];
-          const userId = imported[0]?.userId;
-          if (userId && Number(userId) > 0) {
-            entity = await client.getEntity(userId).catch(() => null);
+          const importResult = await client.invoke(new Api.contacts.ImportContacts({
+            contacts: [new Api.InputPhoneContact({ clientId: i + 1 as any, phone, firstName: "User", lastName: "" })]
+          })).catch(() => null) as any;
+          entity = importResult?.users?.[0] ?? null;
+
+          // Last resort: importedContacts userId (privacy mode)
+          if (!entity) {
+            const userId = importResult?.importedContacts?.[0]?.userId;
+            if (userId && Number(userId) > 0) {
+              entity = await client.getEntity(userId).catch(() => null);
+            }
           }
         }
 
