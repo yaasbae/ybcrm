@@ -165,7 +165,7 @@ export const BroadcastPage: React.FC = () => {
       try {
         const [contactsSnap, ordersSnap, broadcastsSnap] = await Promise.all([
           getDocs(collection(db, 'contacts')),
-          getDocs(collection(db, 'orders')),
+          getDocs(collection(db, 'orders_new')),
           getDocs(collection(db, 'broadcasts')),
         ]);
         // Build revenue + orders map
@@ -182,11 +182,11 @@ export const BroadcastPage: React.FC = () => {
         });
         setClientRevenue(revMap);
         setClientOrders(ordMap);
-        // Build sent phones from broadcasts history
+        // Build sent phones from broadcasts history — normalize to strip +
         const sent = new Set<string>();
         broadcastsSnap.docs.forEach(d => {
           const b = d.data() as any;
-          (b.phones || []).forEach((p: string) => sent.add(String(p)));
+          (b.phones || []).forEach((p: string) => sent.add(String(p).replace(/\D/g, '')));
         });
         setSentPhones(sent);
         const data = contactsSnap.docs
@@ -339,7 +339,7 @@ export const BroadcastPage: React.FC = () => {
           return { phone: r.phone, name: client?.fullName || client?.name || r.phone, status: r.status, error: r.error };
         });
         setSendLog(log);
-        setSentPhones(prev => { const next = new Set(prev); log.filter((l: any) => l.status === 'sent').forEach((l: any) => next.add(l.phone.replace('+', ''))); return next; });
+        setSentPhones(prev => { const next = new Set(prev); log.filter((l: any) => l.status === 'sent').forEach((l: any) => next.add(String(l.phone).replace(/\D/g, ''))); return next; });
       }
       await addDoc(collection(db, 'broadcasts'), {
         phones,
@@ -680,19 +680,26 @@ export const BroadcastPage: React.FC = () => {
                 </div>
               ) : (
                 <div className="border border-zinc-100 rounded-xl overflow-hidden">
+                  {/* Заголовок колонок */}
+                  <div className="flex items-center gap-2 px-3 py-1.5 bg-zinc-50 border-b border-zinc-100">
+                    <div className="w-4 shrink-0" />
+                    <div className="flex-1 text-[8px] font-black text-zinc-400 uppercase tracking-widest">Клиент</div>
+                    <div className="w-20 text-right text-[8px] font-black text-zinc-400 uppercase tracking-widest">Сумма</div>
+                    <div className="w-16 text-right text-[8px] font-black text-zinc-400 uppercase tracking-widest">Отправляли</div>
+                  </div>
                   {visibleClients.map((client, i) => {
                     const phone = client.phone || client.userId;
                     const isSelected = selected.has(phone);
-                    const key = String(phone).slice(-10);
+                    const key = String(phone).replace(/\D/g, '').slice(-10);
                     const rev = clientRevenue.get(key) || 0;
                     const ords = clientOrders.get(key) || 0;
-                    const wasSent = sentPhones.has(String(phone));
+                    const wasSent = sentPhones.has(String(phone).replace(/\D/g, ''));
                     return (
                       <div
                         key={i}
                         onClick={() => handleToggle(phone)}
                         className={cn(
-                          "flex items-center gap-3 px-4 py-3 cursor-pointer transition-colors border-b border-zinc-100 last:border-b-0",
+                          "flex items-center gap-2 px-3 py-2.5 cursor-pointer transition-colors border-b border-zinc-100 last:border-b-0",
                           isSelected ? "bg-blue-50" : "hover:bg-zinc-50"
                         )}
                       >
@@ -706,16 +713,23 @@ export const BroadcastPage: React.FC = () => {
                           <p className="text-[12px] font-bold text-zinc-900 truncate">{client.fullName || client.name || 'Без имени'}</p>
                           <p className="text-[10px] text-zinc-400 font-mono mt-0.5">+{phone}</p>
                         </div>
-                        <div className="flex flex-col items-end gap-0.5 shrink-0">
+                        {/* Колонка: сумма */}
+                        <div className="flex flex-col items-end gap-0.5 shrink-0 w-20 text-right">
                           {rev > 0 ? (
                             <>
-                              <span className="text-[12px] font-black text-zinc-900">{rev.toLocaleString('ru')} ₽</span>
+                              <span className="text-[11px] font-black text-zinc-900">{rev.toLocaleString('ru')} ₽</span>
                               <span className="text-[9px] text-zinc-400">{ords} {ords === 1 ? 'заказ' : ords < 5 ? 'заказа' : 'заказов'}</span>
                             </>
                           ) : (
                             <span className="text-[10px] text-zinc-300">нет заказов</span>
                           )}
-                          {wasSent && <span className="text-[9px] font-black text-blue-400">✓ отправлено</span>}
+                        </div>
+                        {/* Колонка: уже отправляли */}
+                        <div className="shrink-0 w-16 flex justify-end">
+                          {wasSent
+                            ? <span className="text-[9px] font-black text-blue-500 bg-blue-50 px-1.5 py-0.5 rounded-md">✓ было</span>
+                            : <span className="text-[9px] text-zinc-200">—</span>
+                          }
                         </div>
                       </div>
                     );
