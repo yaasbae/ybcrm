@@ -1269,11 +1269,11 @@ async function runGeminiTryOn(userPhotoBase64: string, costumeBase64: string, at
   if (!apiKey) throw new Error("GEMINI_API_KEY не задан");
   const ai = new GoogleGenAI({ apiKey });
 
-  // Resize all inputs before sending — reduces Gemini processing time significantly
-  const costumes = allCostumeBase64s?.length ? allCostumeBase64s : [costumeBase64];
-  const [resizedUser, ...resizedCostumes] = await Promise.all([
-    resizeToBase64(userPhotoBase64, 1024),
-    ...costumes.map(b => resizeToBase64(b, 768)),
+  // Use only first costume photo — multiple photos don't improve quality but slow Gemini significantly
+  const costumePhoto = (allCostumeBase64s?.length ? allCostumeBase64s[0] : costumeBase64) || costumeBase64;
+  const [resizedUser, resizedCostume] = await Promise.all([
+    resizeToBase64(userPhotoBase64, 768),
+    resizeToBase64(costumePhoto, 512),
   ]);
   let response: any;
   try {
@@ -1282,8 +1282,8 @@ async function runGeminiTryOn(userPhotoBase64: string, costumeBase64: string, at
     contents: [{
       role: "user",
       parts: [
-        { text: `You are a virtual try-on AI. You receive ${(allCostumeBase64s?.length || 1) + 1} images. The FIRST ${allCostumeBase64s?.length || 1} image(s) show a garment from different angles — use ALL of them ONLY to understand the garment's design, cut, fabric, color, texture and details. The LAST image is the REFERENCE PHOTO of a person. TASK: generate a new photorealistic image of the person wearing the garment. STRICT RULES: 1) PERSON — copy EXACTLY: face, skin tone, hair, body shape, pose, expression, accessories from the LAST image only. 2) BACKGROUND & LIGHTING — copy EXACTLY from the LAST image only. Do NOT use backgrounds or people from garment photos. 3) GARMENT — reproduce every detail faithfully from the garment photos. It must fit naturally on the person's body. 4) OUTPUT — same framing and composition as the LAST image, photorealistic.` },
-        ...resizedCostumes.map(b64 => ({ inlineData: { mimeType: "image/jpeg", data: b64 } })),
+        { text: `Virtual try-on: FIRST image is the garment, SECOND image is the person. Generate a photorealistic image of the person wearing the garment. Copy face, hair, skin, pose, background EXACTLY from the SECOND image. Only change the clothing. Photorealistic, same framing.` },
+        { inlineData: { mimeType: "image/jpeg", data: resizedCostume } },
         { inlineData: { mimeType: "image/jpeg", data: resizedUser } },
       ] as any
     }],
