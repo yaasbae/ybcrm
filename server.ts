@@ -668,14 +668,16 @@ app.post("/api/broadcast/gramjs", async (req, res) => {
         }
         if (imageFiles.length > 0) {
           const { CustomFile } = await import("telegram/client/uploads");
-          const fileObjs = imageFiles.map(f => {
-            const buf = Buffer.from(f.base64, "base64");
-            return new CustomFile(f.name, buf.length, "", buf);
-          });
+          // Convert all images to JPEG (handles HEIC, PNG, etc — Telegram only accepts JPEG/PNG)
+          const fileObjs = await Promise.all(imageFiles.map(async f => {
+            const raw = Buffer.from(f.base64, "base64");
+            const jpg = await sharp(raw).jpeg({ quality: 90 }).toBuffer().catch(() => raw);
+            const name = f.name.replace(/\.[^.]+$/, '.jpg');
+            return new CustomFile(name, jpg.length, "", jpg);
+          }));
           if (fileObjs.length === 1) {
             await client.sendFile(entity as any, { file: fileObjs[0], caption: message, forceDocument: false });
           } else {
-            // Send as album — first file gets caption
             await client.sendFile(entity as any, { file: fileObjs as any, caption: message, forceDocument: false });
           }
         } else {
