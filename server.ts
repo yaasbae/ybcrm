@@ -1431,12 +1431,16 @@ function startTelegramBot() {
     // Run Gemini in background — don't await so Telegraf handler returns immediately
     (async () => {
       try {
+        const t0 = Date.now();
         const [userPhotoBase64, ...costumeBase64s] = await Promise.all([
           downloadUrl(fileLink.href),
           ...costumeUrls.map(downloadUrl),
         ]);
+        console.log(`[tryon] download: ${Date.now() - t0}ms`);
 
+        const t1 = Date.now();
         const resultBase64 = await runGeminiTryOn(userPhotoBase64, costumeBase64s[0] || "", 1, costumeBase64s);
+        console.log(`[tryon] gemini: ${Date.now() - t1}ms`);
         if (!resultBase64) throw new Error("Gemini не вернул изображение");
 
         await ctx.telegram.deleteMessage(ctx.chat.id, processing.message_id).catch(() => {});
