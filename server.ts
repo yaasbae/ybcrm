@@ -563,44 +563,93 @@ app.post("/api/tg/accounts/set-photo", async (req, res) => {
   }
 });
 
-// Проверка наличия Telegram без отправки сообщений
-app.post("/api/broadcast/check-tg", async (req, res) => {
-  const { phones } = req.body;
-  if (!phones?.length) return res.status(400).json({ error: "Нужны phones" });
-  if (!db) return res.status(500).json({ error: "База данных не подключена" });
+// Фоновая проверка наличия Telegram — запускается на сервере, не зависит от браузера
+let tgCheckJob: { status: 'idle' | 'running' | 'done' | 'error'; total: number; checked: number; noTgFound: number; startedAt: string; finishedAt?: string; error?: string } = {
+  status: 'idle', total: 0, checked: 0, noTgFound: 0, startedAt: ''
+};
+
+async function runTgCheckJob(phones: string[]) {
+  if (!db) return;
+  tgCheckJob = { status: 'running', total: phones.length, checked: 0, noTgFound: 0, startedAt: new Date().toISOString() };
+  await setDoc(doc(db, 'settings', 'tg_check_job'), { ...tgCheckJob }).catch(() => {});
   try {
     let accounts: any[] = [];
-    const snap = await getDoc(doc(db, "settings", "tg_accounts"));
+    const snap = await getDoc(doc(db, 'settings', 'tg_accounts'));
     if (snap.exists()) accounts = (snap.data().accounts || []).filter((a: any) => a.sessionString && a.active !== false);
-    if (accounts.length === 0) return res.status(400).json({ error: "Telegram не авторизован" });
+    if (!accounts.length) throw new Error('Нет активных аккаунтов');
 
-    const acc = accounts[0];
-    const client = new TelegramClient(new StringSession(acc.sessionString), TG_API_ID, TG_API_HASH, { connectionRetries: 3 });
+    const client = new TelegramClient(new StringSession(accounts[0].sessionString), TG_API_ID, TG_API_HASH, { connectionRetries: 3 });
     await client.connect();
 
-    const results: Array<{ phone: string; hasTg: boolean }> = [];
-    for (const rawPhone of phones) {
-      const phone = String(rawPhone).startsWith("+") ? String(rawPhone) : `+${rawPhone}`;
+    const noTgSnap = await getDoc(doc(db, 'settings', 'no_telegram')).catch(() => null);
+    const existingNoTg: Array<{ phone: string; addedAt: string }> = noTgSnap?.exists() ? (noTgSnap.data().phones || []) : [];
+    const existingSet = new Set(existingNoTg.map((p: any) => p.phone));
+    const newNoTg: Array<{ phone: string; addedAt: string }> = [];
+    const now = new Date().toISOString();
+
+    for (let i = 0; i < phones.length; i++) {
+      const rawPhone = phones[i];
+      const phone = String(rawPhone).startsWith('+') ? String(rawPhone) : `+${rawPhone}`;
+      const cleanPhone = String(rawPhone).replace(/\D/g, '');
       let hasTg = false;
       try {
         const resolved = await client.invoke(new Api.contacts.ResolvePhone({ phone })).catch(() => null) as any;
         hasTg = !!(resolved?.users?.[0]);
         if (!hasTg) {
           const imported = await client.invoke(new Api.contacts.ImportContacts({
-            contacts: [new Api.InputPhoneContact({ clientId: BigInt(Math.floor(Math.random() * 1e9)) as any, phone, firstName: "U", lastName: "" })]
+            contacts: [new Api.InputPhoneContact({ clientId: BigInt(i + 1) as any, phone, firstName: 'U', lastName: '' })]
           })).catch(() => null) as any;
           const userId = imported?.importedContacts?.[0]?.userId;
           hasTg = !!(imported?.users?.[0]) || (userId && Number(userId) > 0);
         }
       } catch {}
-      results.push({ phone: String(rawPhone).replace(/\D/g, ''), hasTg });
+
+      if (!hasTg && !existingSet.has(cleanPhone)) {
+        existingSet.add(cleanPhone);
+        newNoTg.push({ phone: cleanPhone, addedAt: now });
+        tgCheckJob.noTgFound++;
+      }
+      tgCheckJob.checked = i + 1;
+
+      // Сохраняем прогресс и накопленные номера каждые 50 проверок
+      if ((i + 1) % 50 === 0 || i === phones.length - 1) {
+        await setDoc(doc(db, 'settings', 'tg_check_job'), { ...tgCheckJob }).catch(() => {});
+        if (newNoTg.length > 0) {
+          await setDoc(doc(db, 'settings', 'no_telegram'), { phones: [...existingNoTg, ...newNoTg] }).catch(() => {});
+        }
+      }
       await new Promise(r => setTimeout(r, 300 + Math.random() * 200));
     }
     await client.disconnect().catch(() => {});
-    res.json({ success: true, results });
+    tgCheckJob.status = 'done';
+    tgCheckJob.finishedAt = new Date().toISOString();
+    await setDoc(doc(db, 'settings', 'tg_check_job'), { ...tgCheckJob }).catch(() => {});
   } catch (e: any) {
-    res.status(500).json({ error: e.message });
+    tgCheckJob.status = 'error';
+    tgCheckJob.error = e.message;
+    tgCheckJob.finishedAt = new Date().toISOString();
+    await setDoc(doc(db, 'settings', 'tg_check_job'), { ...tgCheckJob }).catch(() => {});
   }
+}
+
+app.post('/api/broadcast/check-tg-start', async (req, res) => {
+  const { phones } = req.body;
+  if (!phones?.length) return res.status(400).json({ error: 'Нужны phones' });
+  if (tgCheckJob.status === 'running') return res.status(400).json({ error: 'Проверка уже идёт' });
+  runTgCheckJob(phones); // не await — запускаем в фоне
+  res.json({ success: true, total: phones.length });
+});
+
+app.get('/api/broadcast/check-tg-status', async (_req, res) => {
+  // Если сервер перезапустился — читаем из Firestore
+  if (tgCheckJob.status === 'idle' && db) {
+    const snap = await getDoc(doc(db, 'settings', 'tg_check_job')).catch(() => null);
+    if (snap?.exists()) {
+      const d = snap.data() as any;
+      tgCheckJob = { status: d.status, total: d.total, checked: d.checked, noTgFound: d.noTgFound, startedAt: d.startedAt, finishedAt: d.finishedAt, error: d.error };
+    }
+  }
+  res.json(tgCheckJob);
 });
 
 app.post("/api/broadcast/gramjs", async (req, res) => {

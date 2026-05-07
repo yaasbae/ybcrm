@@ -382,46 +382,57 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
   const [isCheckingTg, setIsCheckingTg] = useState(false);
   const [checkTgProgress, setCheckTgProgress] = useState('');
 
+  // Polling статуса фоновой проверки
+  useEffect(() => {
+    let timer: ReturnType<typeof setInterval>;
+    const poll = async () => {
+      try {
+        const res = await fetch('/api/broadcast/check-tg-status');
+        const data = await res.json();
+        if (data.status === 'running') {
+          setIsCheckingTg(true);
+          setCheckTgProgress(`${data.checked} / ${data.total}`);
+        } else if (data.status === 'done') {
+          setIsCheckingTg(false);
+          setCheckTgProgress(`Готово — без TG: ${data.noTgFound}`);
+          clearInterval(timer);
+          // Перезагружаем список no_telegram из Firestore
+          const noTgSnap = await getDoc(doc(db, 'settings', 'no_telegram'));
+          if (noTgSnap.exists()) {
+            const map = new Map<string, string>();
+            (noTgSnap.data().phones || []).forEach((p: { phone: string; addedAt: string }) => map.set(p.phone, p.addedAt));
+            setNoTelegramPhones(map);
+          }
+        } else if (data.status === 'error') {
+          setIsCheckingTg(false);
+          setCheckTgProgress('Ошибка: ' + data.error);
+          clearInterval(timer);
+        }
+      } catch {}
+    };
+    poll(); // проверяем сразу при загрузке (вдруг шла проверка)
+    timer = setInterval(poll, 3000);
+    return () => clearInterval(timer);
+  }, []);
+
   const handleCheckTg = async () => {
     const phonesToCheck = clients
       .filter(c => !noTelegramPhones.has(String(c.phone).replace(/\D/g, '')))
       .map(c => c.phone);
     if (!phonesToCheck.length || !tgStatus.authorized) return;
     setIsCheckingTg(true);
-    setCheckTgProgress('Проверяем...');
+    setCheckTgProgress('Запускаем...');
     try {
-      const BATCH = 50;
-      const noTgFound: string[] = [];
-      for (let i = 0; i < phonesToCheck.length; i += BATCH) {
-        const batch = phonesToCheck.slice(i, i + BATCH);
-        setCheckTgProgress(`${Math.min(i + BATCH, phonesToCheck.length)} / ${phonesToCheck.length}`);
-        const res = await fetch('/api/broadcast/check-tg', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ phones: batch })
-        });
-        const data = await res.json();
-        if (data.results) {
-          data.results.filter((r: any) => !r.hasTg).forEach((r: any) => noTgFound.push(r.phone));
-        }
-      }
-      if (noTgFound.length > 0) {
-        const now = new Date().toISOString();
-        setNoTelegramPhones(prev => {
-          const next = new Map(prev);
-          noTgFound.forEach(p => { if (!next.has(p)) next.set(p, now); });
-          return next;
-        });
-        const noTgSnap = await getDoc(doc(db, 'settings', 'no_telegram'));
-        const existing: Array<{ phone: string; addedAt: string }> = noTgSnap.exists() ? (noTgSnap.data().phones || []) : [];
-        const existingSet = new Set(existing.map((p: any) => p.phone));
-        const updated = [...existing, ...noTgFound.filter(p => !existingSet.has(p)).map(p => ({ phone: p, addedAt: now }))];
-        await setDoc(doc(db, 'settings', 'no_telegram'), { phones: updated });
-      }
-      setCheckTgProgress(`Готово — найдено без TG: ${noTgFound.length}`);
+      const res = await fetch('/api/broadcast/check-tg-start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phones: phonesToCheck })
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      setCheckTgProgress(`0 / ${data.total}`);
     } catch (e: any) {
       setCheckTgProgress('Ошибка: ' + e.message);
-    } finally {
       setIsCheckingTg(false);
     }
   };
