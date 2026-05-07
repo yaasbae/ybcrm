@@ -318,12 +318,25 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
       const phones = Array.from(selected);
       const imageFiles: Array<{ base64: string; name: string }> = [];
       for (const img of images) {
-        const reader = new FileReader();
         const base64 = await new Promise<string>(res => {
-          reader.onload = () => res((reader.result as string).split(',')[1]);
-          reader.readAsDataURL(img);
+          const canvas = document.createElement('canvas');
+          const imgEl = new window.Image();
+          const url = URL.createObjectURL(img);
+          imgEl.onload = () => {
+            const MAX = 1280;
+            let w = imgEl.width, h = imgEl.height;
+            if (w > MAX || h > MAX) {
+              if (w > h) { h = Math.round(h * MAX / w); w = MAX; }
+              else { w = Math.round(w * MAX / h); h = MAX; }
+            }
+            canvas.width = w; canvas.height = h;
+            canvas.getContext('2d')!.drawImage(imgEl, 0, 0, w, h);
+            URL.revokeObjectURL(url);
+            res(canvas.toDataURL('image/jpeg', 0.85).split(',')[1]);
+          };
+          imgEl.src = url;
         });
-        imageFiles.push({ base64, name: img.name });
+        imageFiles.push({ base64, name: img.name.replace(/\.[^.]+$/, '.jpg') });
       }
       const response = await fetch('/api/broadcast/gramjs', {
         method: 'POST',
