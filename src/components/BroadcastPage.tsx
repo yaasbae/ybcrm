@@ -23,6 +23,24 @@ interface TgStatus {
 
 interface Props { sheetId?: string; }
 
+function friendlyError(err: string): string {
+  if (!err) return '';
+  if (err.includes('FROZEN_METHOD_INVALID') || err.includes('FROZEN')) return 'Метод заблокирован антиспамом';
+  if (err.includes('PEER_FLOOD')) return 'Лимит — слишком много сообщений';
+  if (err.includes('FLOOD_WAIT')) return 'Пауза — Telegram просит подождать';
+  if (err.includes('AUTH_KEY_UNREGISTERED')) return 'Сессия сброшена — нужно заново войти';
+  if (err.includes('USER_DEACTIVATED')) return 'Аккаунт заблокирован Telegram';
+  if (err.includes('SESSION_REVOKED')) return 'Сессия отозвана';
+  if (err.includes('PHONE_NUMBER_INVALID')) return 'Неверный номер телефона';
+  if (err.includes('USERNAME_NOT_OCCUPIED')) return 'Пользователь не найден';
+  if (err.includes('PRIVACY_KEY_INVALID') || err.includes('INPUT_USER_DEACTIVATED')) return 'Пользователь ограничил входящие';
+  if (err.includes('USER_IS_BLOCKED')) return 'Пользователь заблокировал нас';
+  if (err.includes('Нет Telegram')) return 'Нет Telegram';
+  if (err.includes('Все аккаунты заморожены')) return 'Все аккаунты заморожены';
+  if (err.includes('ALLOW_PAYMENT_REQUIRED')) return 'Требуется подписка Telegram Premium';
+  return err.slice(0, 40);
+}
+
 export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
   const [clients, setClients] = useState<any[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -995,7 +1013,7 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
                     </span>
                     <span className="text-[10px] font-bold text-zinc-700 truncate">{l.name}</span>
                   </div>
-                  {l.error && <p className="text-[9px] text-red-400 mt-0.5 ml-4 truncate">{l.error}</p>}
+                  {l.error && <p className="text-[9px] text-red-400 mt-0.5 ml-4 truncate">{friendlyError(l.error)}</p>}
                 </div>
               ))}
             </div>
