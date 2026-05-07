@@ -608,11 +608,12 @@ app.post("/api/broadcast/gramjs", async (req, res) => {
     let accIdx = 0;
     let msgCount = 0;
     const results: Array<{ phone: string; status: string; account?: string; error?: string }> = [];
-    const frozenAccounts = new Set<number>();
-    const importFrozenAccounts = new Set<number>(); // ImportContacts frozen but account still usable
+    const deadAccounts = new Set<number>();      // AUTH_KEY_UNREGISTERED / USER_DEACTIVATED — session invalid
+    const resolveFrozenAccounts = new Set<number>(); // ResolvePhone FROZEN_METHOD_INVALID — method blocked, account alive
+    const importFrozenAccounts = new Set<number>(); // ImportContacts FROZEN_METHOD_INVALID — method blocked, account alive
 
-    const markFrozen = async (idx: number) => {
-      frozenAccounts.add(idx);
+    const markDead = async (idx: number) => {
+      deadAccounts.add(idx);
       if (!db) return;
       const accSnap = await getDoc(doc(db, "settings", "tg_accounts")).catch(() => null);
       if (accSnap?.exists()) {
@@ -624,13 +625,13 @@ app.post("/api/broadcast/gramjs", async (req, res) => {
     };
 
     for (let i = 0; i < phones.length; i++) {
-      // Skip frozen accounts
+      // Skip dead accounts (truly invalid sessions)
       let skipTries = 0;
-      while (frozenAccounts.has(accIdx) && skipTries < clients.length) {
+      while (deadAccounts.has(accIdx) && skipTries < clients.length) {
         accIdx = (accIdx + 1) % clients.length;
         skipTries++;
       }
-      if (frozenAccounts.size >= clients.length) {
+      if (deadAccounts.size >= clients.length) {
         const rawPhone = String(phones[i]);
         results.push({ phone: rawPhone, status: "error", error: "Все аккаунты заморожены" });
         continue;
@@ -654,16 +655,22 @@ app.post("/api/broadcast/gramjs", async (req, res) => {
         const resolved = await client.invoke(new Api.contacts.ResolvePhone({ phone })).catch((e: any) => { resolveErr = e?.message || String(e); return null; }) as any;
         entity = resolved?.users?.[0] ?? null;
 
-        // ResolvePhone FROZEN → account is truly dead, rotate and retry
-        if (resolveErr.includes('FROZEN') || resolveErr.includes('AUTH_KEY_UNREGISTERED')) {
-          console.log(`[broadcast] account ${accounts[accIdx]?.phone} dead (${resolveErr}), rotating`);
-          await markFrozen(accIdx);
+        // AUTH_KEY_UNREGISTERED / USER_DEACTIVATED → session truly dead, rotate and retry
+        if (resolveErr.includes('AUTH_KEY_UNREGISTERED') || resolveErr.includes('USER_DEACTIVATED') || resolveErr.includes('SESSION_REVOKED')) {
+          console.log(`[broadcast] account ${accounts[accIdx]?.phone} dead session (${resolveErr}), rotating`);
+          await markDead(accIdx);
           accIdx = (accIdx + 1) % clients.length;
           msgCount = 0;
           i--;
           continue;
         }
-        if (resolveErr) console.log(`[broadcast] ResolvePhone ${phone}: ${resolveErr}`);
+        // FROZEN_METHOD_INVALID on ResolvePhone → method blocked but account alive
+        if (resolveErr.includes('FROZEN')) {
+          console.log(`[broadcast] ResolvePhone frozen for ${accounts[accIdx]?.phone}, trying ImportContacts`);
+          resolveFrozenAccounts.add(accIdx);
+        } else if (resolveErr) {
+          console.log(`[broadcast] ResolvePhone ${phone}: ${resolveErr}`);
+        }
 
         // Fallback: ImportContacts — only if not frozen for this account
         if (!entity && !importFrozenAccounts.has(accIdx)) {
@@ -685,6 +692,18 @@ app.post("/api/broadcast/gramjs", async (req, res) => {
                 entity = await client.getEntity(userId).catch((e: any) => { console.log(`[broadcast] getEntity ${userId}: ${e?.message}`); return null; });
               }
             }
+          }
+        }
+
+        // If both methods frozen for this account, try rotating to next account
+        if (!entity && resolveFrozenAccounts.has(accIdx) && importFrozenAccounts.has(accIdx)) {
+          const nextIdx = (accIdx + 1) % clients.length;
+          if (nextIdx !== accIdx && !deadAccounts.has(nextIdx)) {
+            console.log(`[broadcast] both methods frozen for ${accounts[accIdx]?.phone}, rotating to ${accounts[nextIdx]?.phone}`);
+            accIdx = nextIdx;
+            msgCount = 0;
+            i--;
+            continue;
           }
         }
 
@@ -720,13 +739,13 @@ app.post("/api/broadcast/gramjs", async (req, res) => {
         await new Promise(r => setTimeout(r, getMsgDelay()));
       } catch (e: any) {
         const errMsg = e.message || String(e);
-        const isFrozen = errMsg.includes("FROZEN") || errMsg.includes("AUTH_KEY_UNREGISTERED") || errMsg.includes("USER_DEACTIVATED");
+        const isDead = errMsg.includes("AUTH_KEY_UNREGISTERED") || errMsg.includes("USER_DEACTIVATED") || errMsg.includes("SESSION_REVOKED");
         const isFlood = errMsg.includes("PEER_FLOOD") || errMsg.includes("FLOOD_WAIT");
         results.push({ phone: rawPhone, status: "error", error: errMsg });
-        if (isFrozen) await markFrozen(accIdx);
+        if (isDead) await markDead(accIdx);
         // Always delay after error too, longer on flood
         await new Promise(r => setTimeout(r, isFlood ? 10000 : getMsgDelay()));
-        if (isFrozen || isFlood) {
+        if (isDead || isFlood) {
           accIdx = (accIdx + 1) % clients.length;
           msgCount = 0;
         }
