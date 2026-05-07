@@ -571,7 +571,7 @@ app.post("/api/broadcast/gramjs", async (req, res) => {
     : imageBase64 ? [{ base64: imageBase64, name: imageName || 'photo.jpg' }] : [];
   // mode: "burn" = расходный (быстро, до бана), "safe" = бережный (медленно)
   const MESSAGES_PER_ACCOUNT = mode === "burn" ? 9999 : 20;
-  const MSG_DELAY = mode === "burn" ? 200 : 1500 + Math.random() * 2000;
+  const getMsgDelay = () => mode === "burn" ? 200 + Math.random() * 300 : 3000 + Math.random() * 4000;
   if (!phones?.length || !message) {
     return res.status(400).json({ error: "Нужны phones и message" });
   }
@@ -717,13 +717,16 @@ app.post("/api/broadcast/gramjs", async (req, res) => {
         }
         results.push({ phone: rawPhone, status: "sent", account: accounts[accIdx].phone });
         msgCount++;
-        await new Promise(r => setTimeout(r, MSG_DELAY));
+        await new Promise(r => setTimeout(r, getMsgDelay()));
       } catch (e: any) {
         const errMsg = e.message || String(e);
         const isFrozen = errMsg.includes("FROZEN") || errMsg.includes("AUTH_KEY_UNREGISTERED") || errMsg.includes("USER_DEACTIVATED");
+        const isFlood = errMsg.includes("PEER_FLOOD") || errMsg.includes("FLOOD_WAIT");
         results.push({ phone: rawPhone, status: "error", error: errMsg });
         if (isFrozen) await markFrozen(accIdx);
-        if (clients.length > 1 || isFrozen) {
+        // Always delay after error too, longer on flood
+        await new Promise(r => setTimeout(r, isFlood ? 10000 : getMsgDelay()));
+        if (isFrozen || isFlood) {
           accIdx = (accIdx + 1) % clients.length;
           msgCount = 0;
         }
