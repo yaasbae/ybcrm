@@ -36,6 +36,7 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
   const [selectedBroadcast, setSelectedBroadcast] = useState<string | null>(null);
   const [sendLog, setSendLog] = useState<Array<{ phone: string; name: string; status: 'sent' | 'error'; error?: string }>>([]);
   const [result, setResult] = useState<any>(null);
+  const [noTelegramPhones, setNoTelegramPhones] = useState<Set<string>>(new Set());
   const [activeTab, setActiveTab] = useState<'compose' | 'settings'>('compose');
   const [isLoadingClients, setIsLoadingClients] = useState(true);
   const [showAllClients, setShowAllClients] = useState(false);
@@ -43,7 +44,7 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
   const [images, setImages] = useState<File[]>([]);
   const [imagePreviews, setImagePreviews] = useState<string[]>([]);
   const [contactButton, setContactButton] = useState(true);
-  const [clientFilter, setClientFilter] = useState<'unsent' | 'sent'>('unsent');
+  const [clientFilter, setClientFilter] = useState<'unsent' | 'sent' | 'no_tg'>('unsent');
 
   // Telegram auth state
   const [tgStatus, setTgStatus] = useState<TgStatus>({ authorized: false, accounts: [] });
@@ -391,6 +392,7 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
         });
         setSendLog(log);
         setSentPhones(prev => { const next = new Set(prev); log.filter((l: any) => l.status === 'sent').forEach((l: any) => next.add(String(l.phone).replace(/\D/g, ''))); return next; });
+        setNoTelegramPhones(prev => { const next = new Set(prev); log.filter((l: any) => l.error === 'Нет Telegram').forEach((l: any) => next.add(String(l.phone).replace(/\D/g, ''))); return next; });
       }
       const sentList = (data.results || []).filter((r: any) => r.status === 'sent').map((r: any) => String(r.phone).replace(/\D/g, ''));
       if (sentList.length > 0) {
@@ -416,8 +418,10 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
   const filteredClients = clients.filter(c => {
     const phone = String(c.phone || '').replace(/\D/g, '');
     const wasSent = activeSentSet.has(phone);
-    if (clientFilter === 'unsent' && wasSent) return false;
+    const noTg = noTelegramPhones.has(phone);
+    if (clientFilter === 'unsent' && (wasSent || noTg)) return false;
     if (clientFilter === 'sent' && !wasSent) return false;
+    if (clientFilter === 'no_tg' && !noTg) return false;
     if (!search) return true;
     const q = search.toLowerCase();
     const name = (c.fullName || c.name || '').toLowerCase();
@@ -427,9 +431,10 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
   const charCount = message.length;
 
   return (
-    <div className="max-w-4xl mx-auto px-4 py-4 space-y-4 font-sans text-zinc-900">
+    <div className="max-w-6xl mx-auto px-4 py-4 font-sans text-zinc-900">
+      <div className="flex gap-4 items-start">
       <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
-        className="tg-card bg-white border border-zinc-100 shadow-sm overflow-hidden"
+        className="tg-card bg-white border border-zinc-100 shadow-sm overflow-hidden flex-1 min-w-0"
       >
         <div className="p-4 border-b border-zinc-100 flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -785,8 +790,15 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
                 <button onClick={() => { setClientFilter('sent'); setSelectedBroadcast(null); setSelected(new Set()); }}
                   className={cn("px-3 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all",
                     clientFilter === 'sent' ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-400 hover:text-zinc-700")}>
-                  Все отправляли
+                  Отправляли
                 </button>
+                {noTelegramPhones.size > 0 && (
+                  <button onClick={() => { setClientFilter('no_tg'); setSelected(new Set()); }}
+                    className={cn("px-3 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all",
+                      clientFilter === 'no_tg' ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-400 hover:text-zinc-700")}>
+                    Нет TG ({noTelegramPhones.size})
+                  </button>
+                )}
               </div>
 
               {/* История рассылок — timeline */}
@@ -911,28 +923,6 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
               </div>
             )}
 
-            {/* Лог отправки */}
-            {sendLog.length > 0 && (
-              <div className="border border-zinc-100 rounded-xl overflow-hidden">
-                <div className="px-3 py-2 bg-zinc-50 border-b border-zinc-100 flex items-center justify-between">
-                  <span className="text-[9px] font-black text-zinc-500 uppercase tracking-widest">Лог отправки</span>
-                  <span className="text-[9px] font-black text-emerald-500">{sendLog.filter(l => l.status === 'sent').length} ✓ / {sendLog.filter(l => l.status !== 'sent').length} ✗</span>
-                </div>
-                <div className="max-h-48 overflow-y-auto divide-y divide-zinc-50">
-                  {sendLog.map((l, i) => (
-                    <div key={i} className={cn("flex items-center gap-2 px-3 py-1.5", l.status === 'sent' ? 'bg-white' : 'bg-red-50')}>
-                      <span className={cn("text-[10px] font-black shrink-0", l.status === 'sent' ? 'text-emerald-500' : 'text-red-500')}>
-                        {l.status === 'sent' ? '✓' : '✗'}
-                      </span>
-                      <span className="text-[10px] font-bold text-zinc-700 truncate flex-1">{l.name}</span>
-                      <span className="text-[9px] font-mono text-zinc-400 shrink-0">+{l.phone}</span>
-                      {l.error && <span className="text-[9px] text-red-400 truncate max-w-24">{l.error.slice(0, 30)}</span>}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
             <AnimatePresence>
               {result && (
                 <motion.div
@@ -977,6 +967,43 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
           </div>
         )}
       </motion.div>
+
+      {/* Боковой sticky лог */}
+      {(isSending || sendLog.length > 0) && (
+        <div className="w-72 shrink-0 sticky top-4 self-start">
+          <div className="bg-white border border-zinc-100 shadow-sm rounded-2xl overflow-hidden">
+            <div className="px-3 py-2.5 bg-zinc-50 border-b border-zinc-100 flex items-center justify-between">
+              <span className="text-[9px] font-black text-zinc-500 uppercase tracking-widest">Лог отправки</span>
+              {sendLog.length > 0 && (
+                <span className="text-[9px] font-black">
+                  <span className="text-emerald-500">{sendLog.filter(l => l.status === 'sent').length}✓</span>
+                  <span className="text-zinc-300 mx-1">/</span>
+                  <span className="text-red-400">{sendLog.filter(l => l.status !== 'sent').length}✗</span>
+                </span>
+              )}
+              {isSending && <Loader2 size={12} className="animate-spin text-blue-400" />}
+            </div>
+            <div className="max-h-[70vh] overflow-y-auto divide-y divide-zinc-50">
+              {sendLog.length === 0 && isSending && (
+                <div className="px-3 py-4 text-center text-[10px] text-zinc-400">Отправляем...</div>
+              )}
+              {sendLog.map((l, i) => (
+                <div key={i} className={cn("px-3 py-2", l.status === 'sent' ? 'bg-white' : 'bg-red-50/50')}>
+                  <div className="flex items-center gap-1.5">
+                    <span className={cn("text-[10px] font-black shrink-0", l.status === 'sent' ? 'text-emerald-500' : 'text-red-400')}>
+                      {l.status === 'sent' ? '✓' : '✗'}
+                    </span>
+                    <span className="text-[10px] font-bold text-zinc-700 truncate">{l.name}</span>
+                  </div>
+                  {l.error && <p className="text-[9px] text-red-400 mt-0.5 ml-4 truncate">{l.error}</p>}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      </div>{/* /flex */}
     </div>
   );
 };
