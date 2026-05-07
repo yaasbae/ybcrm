@@ -987,39 +987,62 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
       </motion.div>
 
       {/* Боковой sticky лог */}
-      {(isSending || sendLog.length > 0) && (
-        <div className="w-72 shrink-0 sticky top-4 self-start">
+      <div className="w-72 shrink-0 sticky top-4 self-start space-y-3">
+        {/* Лог отправки — всегда виден */}
+        <div className="bg-white border border-zinc-100 shadow-sm rounded-2xl overflow-hidden">
+          <div className="px-3 py-2.5 bg-zinc-50 border-b border-zinc-100 flex items-center justify-between">
+            <span className="text-[9px] font-black text-zinc-500 uppercase tracking-widest">Лог отправки</span>
+            {sendLog.length > 0 ? (
+              <span className="text-[9px] font-black">
+                <span className="text-emerald-500">{sendLog.filter(l => l.status === 'sent').length}✓</span>
+                <span className="text-zinc-300 mx-1">/</span>
+                <span className="text-red-400">{sendLog.filter(l => l.status !== 'sent').length}✗</span>
+              </span>
+            ) : isSending ? (
+              <Loader2 size={12} className="animate-spin text-blue-400" />
+            ) : (
+              <span className="text-[9px] text-zinc-300">пусто</span>
+            )}
+          </div>
+          <div className="max-h-[55vh] overflow-y-auto divide-y divide-zinc-50">
+            {sendLog.length === 0 && isSending && (
+              <div className="px-3 py-4 text-center text-[10px] text-zinc-400">Отправляем...</div>
+            )}
+            {sendLog.length === 0 && !isSending && (
+              <div className="px-3 py-6 text-center text-[10px] text-zinc-300">Здесь появятся результаты</div>
+            )}
+            {sendLog.map((l, i) => (
+              <div key={i} className={cn("px-3 py-2", l.status === 'sent' ? 'bg-white' : 'bg-red-50/50')}>
+                <div className="flex items-center gap-1.5">
+                  <span className={cn("text-[10px] font-black shrink-0", l.status === 'sent' ? 'text-emerald-500' : 'text-red-400')}>
+                    {l.status === 'sent' ? '✓' : '✗'}
+                  </span>
+                  <span className="text-[10px] font-bold text-zinc-700 truncate">{l.name}</span>
+                </div>
+                {l.error && <p className="text-[9px] text-red-400 mt-0.5 ml-4 truncate">{friendlyError(l.error)}</p>}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Контакты без Telegram */}
+        {noTelegramPhones.size > 0 && (
           <div className="bg-white border border-zinc-100 shadow-sm rounded-2xl overflow-hidden">
-            <div className="px-3 py-2.5 bg-zinc-50 border-b border-zinc-100 flex items-center justify-between">
-              <span className="text-[9px] font-black text-zinc-500 uppercase tracking-widest">Лог отправки</span>
-              {sendLog.length > 0 && (
-                <span className="text-[9px] font-black">
-                  <span className="text-emerald-500">{sendLog.filter(l => l.status === 'sent').length}✓</span>
-                  <span className="text-zinc-300 mx-1">/</span>
-                  <span className="text-red-400">{sendLog.filter(l => l.status !== 'sent').length}✗</span>
-                </span>
-              )}
-              {isSending && <Loader2 size={12} className="animate-spin text-blue-400" />}
+            <div className="px-3 py-2.5 bg-amber-50 border-b border-amber-100 flex items-center justify-between">
+              <span className="text-[9px] font-black text-amber-600 uppercase tracking-widest">Нет Telegram</span>
+              <span className="text-[9px] font-black text-amber-500">{noTelegramPhones.size}</span>
             </div>
-            <div className="max-h-[70vh] overflow-y-auto divide-y divide-zinc-50">
-              {sendLog.length === 0 && isSending && (
-                <div className="px-3 py-4 text-center text-[10px] text-zinc-400">Отправляем...</div>
-              )}
-              {sendLog.map((l, i) => (
-                <div key={i} className={cn("px-3 py-2", l.status === 'sent' ? 'bg-white' : 'bg-red-50/50')}>
-                  <div className="flex items-center gap-1.5">
-                    <span className={cn("text-[10px] font-black shrink-0", l.status === 'sent' ? 'text-emerald-500' : 'text-red-400')}>
-                      {l.status === 'sent' ? '✓' : '✗'}
-                    </span>
-                    <span className="text-[10px] font-bold text-zinc-700 truncate">{l.name}</span>
-                  </div>
-                  {l.error && <p className="text-[9px] text-red-400 mt-0.5 ml-4 truncate">{friendlyError(l.error)}</p>}
+            <div className="max-h-48 overflow-y-auto divide-y divide-zinc-50">
+              {clients.filter(c => noTelegramPhones.has(String(c.phone).replace(/\D/g, ''))).map((c, i) => (
+                <div key={i} className="px-3 py-2">
+                  <p className="text-[10px] font-bold text-zinc-600 truncate">{c.fullName || c.name}</p>
+                  <p className="text-[9px] text-zinc-400 font-mono">+{c.phone}</p>
                 </div>
               ))}
             </div>
           </div>
-        </div>
-      )}
+        )}
+      </div>
 
       </div>{/* /flex */}
     </div>

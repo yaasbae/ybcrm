@@ -624,14 +624,17 @@ app.post("/api/broadcast/gramjs", async (req, res) => {
       }
     };
 
+    const isAccountUseless = (idx: number) =>
+      deadAccounts.has(idx) || (resolveFrozenAccounts.has(idx) && importFrozenAccounts.has(idx));
+
     for (let i = 0; i < phones.length; i++) {
-      // Skip dead accounts (truly invalid sessions)
+      // Skip accounts that are dead or have both resolution methods frozen
       let skipTries = 0;
-      while (deadAccounts.has(accIdx) && skipTries < clients.length) {
+      while (isAccountUseless(accIdx) && skipTries < clients.length) {
         accIdx = (accIdx + 1) % clients.length;
         skipTries++;
       }
-      if (deadAccounts.size >= clients.length) {
+      if (Array.from({ length: clients.length }, (_, k) => k).every(isAccountUseless)) {
         const rawPhone = String(phones[i]);
         results.push({ phone: rawPhone, status: "error", error: "Все аккаунты заморожены" });
         continue;
@@ -692,18 +695,6 @@ app.post("/api/broadcast/gramjs", async (req, res) => {
                 entity = await client.getEntity(userId).catch((e: any) => { console.log(`[broadcast] getEntity ${userId}: ${e?.message}`); return null; });
               }
             }
-          }
-        }
-
-        // If both methods frozen for this account, try rotating to next account
-        if (!entity && resolveFrozenAccounts.has(accIdx) && importFrozenAccounts.has(accIdx)) {
-          const nextIdx = (accIdx + 1) % clients.length;
-          if (nextIdx !== accIdx && !deadAccounts.has(nextIdx)) {
-            console.log(`[broadcast] both methods frozen for ${accounts[accIdx]?.phone}, rotating to ${accounts[nextIdx]?.phone}`);
-            accIdx = nextIdx;
-            msgCount = 0;
-            i--;
-            continue;
           }
         }
 
