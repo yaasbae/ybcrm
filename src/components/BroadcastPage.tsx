@@ -8,7 +8,7 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '../lib/utils';
 import { db } from '../firebase';
-import { collection, getDocs, addDoc, query, orderBy } from 'firebase/firestore';
+import { collection, getDocs, addDoc, query, orderBy, setDoc, doc, getDoc } from 'firebase/firestore';
 
 interface TgAccount {
   phone: string;
@@ -54,7 +54,7 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
   const [selectedBroadcast, setSelectedBroadcast] = useState<string | null>(null);
   const [sendLog, setSendLog] = useState<Array<{ phone: string; name: string; status: 'sent' | 'error'; error?: string }>>([]);
   const [result, setResult] = useState<any>(null);
-  const [noTelegramPhones, setNoTelegramPhones] = useState<Set<string>>(new Set());
+  const [noTelegramPhones, setNoTelegramPhones] = useState<Map<string, string>>(new Map()); // phone → addedAt ISO
   const [activeTab, setActiveTab] = useState<'compose' | 'settings'>('compose');
   const [isLoadingClients, setIsLoadingClients] = useState(true);
   const [showAllClients, setShowAllClients] = useState(false);
@@ -228,24 +228,36 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
   useEffect(() => {
     const loadData = async () => {
       try {
-        const [contactsSnap, broadcastsSnap] = await Promise.all([
+        const [contactsSnap, broadcastsSnap, noTgSnap] = await Promise.all([
           getDocs(query(collection(db, 'contacts'), orderBy('totalSpent', 'desc'))),
           getDocs(collection(db, 'broadcasts')),
+          getDoc(doc(db, 'settings', 'no_telegram')),
         ]);
+
+        // Load saved no-telegram phones
+        if (noTgSnap.exists()) {
+          const map = new Map<string, string>();
+          (noTgSnap.data().phones || []).forEach((p: { phone: string; addedAt: string }) => map.set(p.phone, p.addedAt));
+          setNoTelegramPhones(map);
+        }
 
         // Only count broadcasts that actually sent messages (sentCount > 0 or phones saved from real sends)
         const sent = new Set<string>();
         const history: typeof broadcastHistory = [];
+        let latestLog: Array<{ phone: string; name: string; status: 'sent' | 'error'; error?: string }> = [];
+        let latestAt = '';
         broadcastsSnap.docs.forEach(d => {
           const b = d.data() as any;
-            if (b.sentCount === undefined) return; // old broadcast saved before fix — skip
-          if (b.sentCount === 0) return; // failed broadcast
+          if (b.sentCount === undefined) return;
+          if (b.sentCount === 0) return;
           (b.phones || []).forEach((p: string) => sent.add(String(p).replace(/\D/g, '')));
           history.push({ id: d.id, sentAt: b.sentAt, phones: b.phones || [], message: b.message || '', sentCount: b.sentCount || b.phones?.length || 0 });
+          if (b.sentAt > latestAt && b.log?.length) { latestAt = b.sentAt; latestLog = b.log; }
         });
         history.sort((a, b) => new Date(b.sentAt).getTime() - new Date(a.sentAt).getTime());
         setSentPhones(sent);
         setBroadcastHistory(history);
+        if (latestLog.length > 0) setSendLog(latestLog);
 
         // Клиентская база — коллекция contacts, отсортирована по totalSpent
         const revMap = new Map<string, number>();
@@ -410,9 +422,28 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
         });
         setSendLog(log);
         setSentPhones(prev => { const next = new Set(prev); log.filter((l: any) => l.status === 'sent').forEach((l: any) => next.add(String(l.phone).replace(/\D/g, ''))); return next; });
-        setNoTelegramPhones(prev => { const next = new Set(prev); log.filter((l: any) => l.error === 'Нет Telegram').forEach((l: any) => next.add(String(l.phone).replace(/\D/g, ''))); return next; });
+
+        // Сохраняем новые "нет Telegram" в Firestore (накапливаем)
+        const newNoTgPhones = log.filter((l: any) => l.error === 'Нет Telegram').map((l: any) => String(l.phone).replace(/\D/g, ''));
+        if (newNoTgPhones.length > 0) {
+          const now = new Date().toISOString();
+          setNoTelegramPhones(prev => {
+            const next = new Map(prev);
+            newNoTgPhones.forEach((p: string) => { if (!next.has(p)) next.set(p, now); });
+            return next;
+          });
+          const noTgSnap = await getDoc(doc(db, 'settings', 'no_telegram'));
+          const existing: Array<{ phone: string; addedAt: string }> = noTgSnap.exists() ? (noTgSnap.data().phones || []) : [];
+          const existingSet = new Set(existing.map((p: any) => p.phone));
+          const updated = [...existing, ...newNoTgPhones.filter((p: string) => !existingSet.has(p)).map((p: string) => ({ phone: p, addedAt: now }))];
+          await setDoc(doc(db, 'settings', 'no_telegram'), { phones: updated });
+        }
       }
       const sentList = (data.results || []).filter((r: any) => r.status === 'sent').map((r: any) => String(r.phone).replace(/\D/g, ''));
+      const logToSave = (data.results || []).map((r: any) => {
+        const client = clients.find((c: any) => String(c.phone) === String(r.phone).replace('+', ''));
+        return { phone: r.phone, name: client?.fullName || client?.name || r.phone, status: r.status, ...(r.error ? { error: r.error } : {}) };
+      });
       if (sentList.length > 0) {
         await addDoc(collection(db, 'broadcasts'), {
           phones: sentList,
@@ -420,6 +451,7 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
           sentAt: new Date().toISOString(),
           sentCount: sentList.length,
           totalAttempted: phones.length,
+          log: logToSave,
         });
       }
     } catch (e: any) {
@@ -1025,23 +1057,35 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
           </div>
         </div>
 
-        {/* Контакты без Telegram */}
-        {noTelegramPhones.size > 0 && (
-          <div className="bg-white border border-zinc-100 shadow-sm rounded-2xl overflow-hidden">
-            <div className="px-3 py-2.5 bg-amber-50 border-b border-amber-100 flex items-center justify-between">
-              <span className="text-[9px] font-black text-amber-600 uppercase tracking-widest">Нет Telegram</span>
-              <span className="text-[9px] font-black text-amber-500">{noTelegramPhones.size}</span>
-            </div>
-            <div className="max-h-48 overflow-y-auto divide-y divide-zinc-50">
-              {clients.filter(c => noTelegramPhones.has(String(c.phone).replace(/\D/g, ''))).map((c, i) => (
+        {/* Контакты без Telegram — всегда виден */}
+        <div className="bg-white border border-zinc-100 shadow-sm rounded-2xl overflow-hidden">
+          <div className="px-3 py-2.5 bg-amber-50 border-b border-amber-100 flex items-center justify-between">
+            <span className="text-[9px] font-black text-amber-600 uppercase tracking-widest">Нет Telegram</span>
+            {noTelegramPhones.size > 0
+              ? <span className="text-[9px] font-black text-amber-500">{noTelegramPhones.size}</span>
+              : <span className="text-[9px] text-amber-300">пусто</span>
+            }
+          </div>
+          <div className="max-h-48 overflow-y-auto divide-y divide-zinc-50">
+            {noTelegramPhones.size === 0 && (
+              <div className="px-3 py-5 text-center text-[10px] text-zinc-300">Здесь появятся контакты без TG</div>
+            )}
+            {clients.filter(c => noTelegramPhones.has(String(c.phone).replace(/\D/g, ''))).map((c, i) => {
+              const phone = String(c.phone).replace(/\D/g, '');
+              const addedAt = noTelegramPhones.get(phone);
+              const dateStr = addedAt ? new Date(addedAt).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: '2-digit' }) : '';
+              return (
                 <div key={i} className="px-3 py-2">
-                  <p className="text-[10px] font-bold text-zinc-600 truncate">{c.fullName || c.name}</p>
+                  <div className="flex items-center justify-between gap-1">
+                    <p className="text-[10px] font-bold text-zinc-600 truncate">{c.fullName || c.name}</p>
+                    {dateStr && <span className="text-[8px] text-zinc-300 shrink-0">{dateStr}</span>}
+                  </div>
                   <p className="text-[9px] text-zinc-400 font-mono">+{c.phone}</p>
                 </div>
-              ))}
-            </div>
+              );
+            })}
           </div>
-        )}
+        </div>
       </div>
 
       </div>{/* /flex */}
