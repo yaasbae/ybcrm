@@ -627,6 +627,8 @@ app.post("/api/broadcast/gramjs", async (req, res) => {
     const isAccountUseless = (idx: number) =>
       deadAccounts.has(idx) || (resolveFrozenAccounts.has(idx) && importFrozenAccounts.has(idx));
 
+    const phoneRotations = new Map<number, number>(); // сколько раз ротировали аккаунт для одного номера
+
     for (let i = 0; i < phones.length; i++) {
       // Skip accounts that are dead or have both resolution methods frozen
       let skipTries = 0;
@@ -695,6 +697,19 @@ app.post("/api/broadcast/gramjs", async (req, res) => {
                 entity = await client.getEntity(userId).catch((e: any) => { console.log(`[broadcast] getEntity ${userId}: ${e?.message}`); return null; });
               }
             }
+          }
+        }
+
+        // Оба метода заморожены для этого аккаунта — пробуем следующий (но не более clients.length раз)
+        if (!entity && isAccountUseless(accIdx)) {
+          const rotations = phoneRotations.get(i) || 0;
+          const nextIdx = (accIdx + 1) % clients.length;
+          if (rotations < clients.length && !isAccountUseless(nextIdx)) {
+            phoneRotations.set(i, rotations + 1);
+            accIdx = nextIdx;
+            msgCount = 0;
+            i--;
+            continue;
           }
         }
 
