@@ -379,6 +379,53 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
   };
 
 
+  const [isCheckingTg, setIsCheckingTg] = useState(false);
+  const [checkTgProgress, setCheckTgProgress] = useState('');
+
+  const handleCheckTg = async () => {
+    const phonesToCheck = clients
+      .filter(c => !noTelegramPhones.has(String(c.phone).replace(/\D/g, '')))
+      .map(c => c.phone);
+    if (!phonesToCheck.length || !tgStatus.authorized) return;
+    setIsCheckingTg(true);
+    setCheckTgProgress('Проверяем...');
+    try {
+      const BATCH = 50;
+      const noTgFound: string[] = [];
+      for (let i = 0; i < phonesToCheck.length; i += BATCH) {
+        const batch = phonesToCheck.slice(i, i + BATCH);
+        setCheckTgProgress(`${Math.min(i + BATCH, phonesToCheck.length)} / ${phonesToCheck.length}`);
+        const res = await fetch('/api/broadcast/check-tg', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ phones: batch })
+        });
+        const data = await res.json();
+        if (data.results) {
+          data.results.filter((r: any) => !r.hasTg).forEach((r: any) => noTgFound.push(r.phone));
+        }
+      }
+      if (noTgFound.length > 0) {
+        const now = new Date().toISOString();
+        setNoTelegramPhones(prev => {
+          const next = new Map(prev);
+          noTgFound.forEach(p => { if (!next.has(p)) next.set(p, now); });
+          return next;
+        });
+        const noTgSnap = await getDoc(doc(db, 'settings', 'no_telegram'));
+        const existing: Array<{ phone: string; addedAt: string }> = noTgSnap.exists() ? (noTgSnap.data().phones || []) : [];
+        const existingSet = new Set(existing.map((p: any) => p.phone));
+        const updated = [...existing, ...noTgFound.filter(p => !existingSet.has(p)).map(p => ({ phone: p, addedAt: now }))];
+        await setDoc(doc(db, 'settings', 'no_telegram'), { phones: updated });
+      }
+      setCheckTgProgress(`Готово — найдено без TG: ${noTgFound.length}`);
+    } catch (e: any) {
+      setCheckTgProgress('Ошибка: ' + e.message);
+    } finally {
+      setIsCheckingTg(false);
+    }
+  };
+
   const handleSend = async () => {
     if (!message.trim() || selected.size === 0 || !tgStatus?.authorized) return;
     setIsSending(true);
@@ -848,6 +895,20 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
                       clientFilter === 'no_tg' ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-400 hover:text-zinc-700")}>
                     Нет TG ({noTelegramPhones.size})
                   </button>
+                )}
+              </div>
+              {/* Кнопка проверки TG */}
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handleCheckTg}
+                  disabled={isCheckingTg || !tgStatus.authorized}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-zinc-100 hover:bg-zinc-200 text-zinc-600 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all disabled:opacity-40"
+                >
+                  {isCheckingTg ? <Loader2 size={10} className="animate-spin" /> : <Smartphone size={10} />}
+                  Проверить TG
+                </button>
+                {checkTgProgress && (
+                  <span className="text-[9px] text-zinc-400">{checkTgProgress}</span>
                 )}
               </div>
 

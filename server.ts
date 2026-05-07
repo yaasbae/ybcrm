@@ -563,6 +563,46 @@ app.post("/api/tg/accounts/set-photo", async (req, res) => {
   }
 });
 
+// Проверка наличия Telegram без отправки сообщений
+app.post("/api/broadcast/check-tg", async (req, res) => {
+  const { phones } = req.body;
+  if (!phones?.length) return res.status(400).json({ error: "Нужны phones" });
+  if (!db) return res.status(500).json({ error: "База данных не подключена" });
+  try {
+    let accounts: any[] = [];
+    const snap = await getDoc(doc(db, "settings", "tg_accounts"));
+    if (snap.exists()) accounts = (snap.data().accounts || []).filter((a: any) => a.sessionString && a.active !== false);
+    if (accounts.length === 0) return res.status(400).json({ error: "Telegram не авторизован" });
+
+    const acc = accounts[0];
+    const client = new TelegramClient(new StringSession(acc.sessionString), TG_API_ID, TG_API_HASH, { connectionRetries: 3 });
+    await client.connect();
+
+    const results: Array<{ phone: string; hasTg: boolean }> = [];
+    for (const rawPhone of phones) {
+      const phone = String(rawPhone).startsWith("+") ? String(rawPhone) : `+${rawPhone}`;
+      let hasTg = false;
+      try {
+        const resolved = await client.invoke(new Api.contacts.ResolvePhone({ phone })).catch(() => null) as any;
+        hasTg = !!(resolved?.users?.[0]);
+        if (!hasTg) {
+          const imported = await client.invoke(new Api.contacts.ImportContacts({
+            contacts: [new Api.InputPhoneContact({ clientId: BigInt(Math.floor(Math.random() * 1e9)) as any, phone, firstName: "U", lastName: "" })]
+          })).catch(() => null) as any;
+          const userId = imported?.importedContacts?.[0]?.userId;
+          hasTg = !!(imported?.users?.[0]) || (userId && Number(userId) > 0);
+        }
+      } catch {}
+      results.push({ phone: String(rawPhone).replace(/\D/g, ''), hasTg });
+      await new Promise(r => setTimeout(r, 300 + Math.random() * 200));
+    }
+    await client.disconnect().catch(() => {});
+    res.json({ success: true, results });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.post("/api/broadcast/gramjs", async (req, res) => {
   const { phones, message, images, imageBase64, imageName, displayName, mode, contactButton } = req.body;
   // images: Array<{base64: string, name: string}> (new multi-photo) or legacy imageBase64/imageName
