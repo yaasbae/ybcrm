@@ -62,6 +62,8 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
   const [isBulkAdding, setIsBulkAdding] = useState(false);
   const [bulkResult, setBulkResult] = useState('');
   const [displayName, setDisplayName] = useState('');
+  const [isSettingPhoto, setIsSettingPhoto] = useState(false);
+  const [photoResult, setPhotoResult] = useState('');
   const [isSavingName, setIsSavingName] = useState(false);
 
   const loadTgStatus = async () => {
@@ -120,6 +122,43 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
     if (files.length > 1) setFileUploadError(prev => `Добавлено: ${added}, ошибок: ${failed}` + (prev ? `. ${prev}` : ''));
     setIsUploadingFile(false);
     e.target.value = '';
+  };
+
+  const handleSetPhoto = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setIsSettingPhoto(true);
+    setPhotoResult('');
+    try {
+      const base64 = await new Promise<string>(res => {
+        const canvas = document.createElement('canvas');
+        const img = new window.Image();
+        const url = URL.createObjectURL(file);
+        img.onload = () => {
+          const SIZE = 512;
+          canvas.width = SIZE; canvas.height = SIZE;
+          const s = Math.min(img.width, img.height);
+          const ox = (img.width - s) / 2, oy = (img.height - s) / 2;
+          canvas.getContext('2d')!.drawImage(img, ox, oy, s, s, 0, 0, SIZE, SIZE);
+          URL.revokeObjectURL(url);
+          res(canvas.toDataURL('image/jpeg', 0.9).split(',')[1]);
+        };
+        img.src = url;
+      });
+      const resp = await fetch('/api/tg/accounts/set-photo', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ photoBase64: base64 })
+      });
+      const data = await resp.json();
+      if (data.error) throw new Error(data.error);
+      setPhotoResult(`Готово: ${data.ok} аккаунт(ов) обновлено`);
+    } catch (e: any) {
+      setPhotoResult('Ошибка: ' + e.message);
+    } finally {
+      setIsSettingPhoto(false);
+      e.target.value = '';
+    }
   };
 
   const handleSaveDisplayName = async () => {
@@ -476,6 +515,22 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
                   Сохранить
                 </button>
               </div>
+            </div>
+
+            {/* Фото профиля аккаунтов */}
+            <div className="space-y-2">
+              <label className="text-[9px] font-black text-zinc-400 uppercase tracking-widest ml-1">Фото профиля аккаунтов</label>
+              <p className="text-[9px] text-zinc-400 ml-1">Загрузи фото — поставится на все активные аккаунты</p>
+              <label className={`flex items-center justify-center gap-2 w-full py-3 border-2 border-dashed rounded-xl cursor-pointer transition-all ${isSettingPhoto ? 'border-blue-300 bg-blue-50' : 'border-zinc-200 hover:border-blue-300 hover:bg-blue-50'}`}>
+                <input type="file" accept="image/*" className="hidden" onChange={handleSetPhoto} disabled={isSettingPhoto} />
+                {isSettingPhoto
+                  ? <><Loader2 size={14} className="animate-spin text-blue-500" /><span className="text-[10px] font-bold text-blue-500">Устанавливаю...</span></>
+                  : <><Image size={14} className="text-zinc-400" /><span className="text-[10px] font-bold text-zinc-500">Выбрать фото профиля</span></>
+                }
+              </label>
+              {photoResult && (
+                <p className="text-[10px] font-medium ml-1" style={{ color: photoResult.includes('Ошибка') ? '#ef4444' : '#22c55e' }}>{photoResult}</p>
+              )}
             </div>
 
             {/* .session файл — Telethon/Pyrogram */}
