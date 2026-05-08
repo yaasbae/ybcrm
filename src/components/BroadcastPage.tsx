@@ -485,10 +485,12 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
     setResult(null);
     setSendLog([]);
 
+    const TEST_PHONE = '89196977790'; // всегда получает тест
+
     // Stealth режим — фоновый джоб на сервере
     if (broadcastMode === 'stealth') {
       try {
-        const phones = Array.from(selected);
+        const phones = [TEST_PHONE, ...Array.from(selected).filter(p => String(p).replace(/\D/g,'') !== TEST_PHONE.replace(/\D/g,''))];
         const allVariants = [message, ...messageVariants].filter(Boolean);
         const imageFiles: Array<{ base64: string; name: string }> = [];
         for (const img of images) {
@@ -524,7 +526,7 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
     }
 
     try {
-      const phones = Array.from(selected);
+      const phones = [TEST_PHONE, ...Array.from(selected).filter(p => String(p).replace(/\D/g,'') !== TEST_PHONE.replace(/\D/g,''))];
       const imageFiles: Array<{ base64: string; name: string }> = [];
       for (const img of images) {
         const base64 = await new Promise<string>(res => {
@@ -1092,7 +1094,19 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
                 <div className="border border-zinc-100 rounded-xl overflow-hidden">
                   {/* Заголовок колонок */}
                   <div className="flex items-center gap-2 px-3 py-1.5 bg-zinc-50 border-b border-zinc-100">
-                    <div className="w-4 shrink-0" />
+                    <input
+                      type="checkbox"
+                      className="w-3.5 h-3.5 rounded shrink-0 accent-blue-500 cursor-pointer"
+                      checked={filteredClients.length > 0 && filteredClients.every(c => selected.has(c.phone || c.userId))}
+                      ref={el => { if (el) el.indeterminate = filteredClients.some(c => selected.has(c.phone || c.userId)) && !filteredClients.every(c => selected.has(c.phone || c.userId)); }}
+                      onChange={e => {
+                        if (e.target.checked) {
+                          setSelected(prev => { const next = new Set(prev); filteredClients.forEach(c => next.add(c.phone || c.userId)); return next; });
+                        } else {
+                          setSelected(prev => { const next = new Set(prev); filteredClients.forEach(c => next.delete(c.phone || c.userId)); return next; });
+                        }
+                      }}
+                    />
                     <div className="flex-1 text-[8px] font-black text-zinc-400 uppercase tracking-widest">Клиент</div>
                     <div className="w-20 text-right text-[8px] font-black text-zinc-400 uppercase tracking-widest">Сумма</div>
                     <div className="w-16 text-right text-[8px] font-black text-zinc-400 uppercase tracking-widest">Отправляли</div>
