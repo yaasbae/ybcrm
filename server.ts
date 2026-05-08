@@ -657,93 +657,184 @@ app.post('/api/ai/generate-variants', async (req, res) => {
   }
 });
 
-// Фоновая рассылка со стелс-режимом (30 мин между сообщениями на каждый аккаунт)
-let stealthJob: { status: 'idle'|'running'|'done'|'error'; total: number; sent: number; failed: number; checked: number; startedAt: string; finishedAt?: string; error?: string; log: Array<{phone:string;name:string;status:string;error?:string}> } = {
-  status: 'idle', total: 0, sent: 0, failed: 0, checked: 0, startedAt: '', log: []
+// Умная фоновая рассылка: 30 мин между сообщениями, auto-resume, ожидание новых аккаунтов
+type StealthJobStatus = 'idle'|'running'|'waiting_accounts'|'done'|'error';
+let stealthJob: { status: StealthJobStatus; total: number; sent: number; failed: number; checked: number; currentIndex: number; startedAt: string; finishedAt?: string; error?: string; log: Array<{phone:string;name:string;status:string;error?:string}> } = {
+  status: 'idle', total: 0, sent: 0, failed: 0, checked: 0, currentIndex: 0, startedAt: '', log: []
 };
 
-async function runStealthBroadcast(phones: string[], messageVariants: string[], contactButton: boolean, imageFiles: Array<{base64:string;name:string}>) {
+const saveStealthProgress = async () => {
   if (!db) return;
-  stealthJob = { status: 'running', total: phones.length, sent: 0, failed: 0, checked: 0, startedAt: new Date().toISOString(), log: [] };
-  try {
-    let accounts: any[] = [];
-    const snap = await getDoc(doc(db, 'settings', 'tg_accounts'));
-    if (snap.exists()) accounts = (snap.data().accounts || []).filter((a: any) => a.sessionString && a.active !== false);
-    if (!accounts.length) throw new Error('Нет активных аккаунтов');
+  await setDoc(doc(db, 'settings', 'stealth_job'), { ...stealthJob, log: stealthJob.log.slice(-200) }).catch(() => {});
+};
 
-    const clients: TelegramClient[] = [];
-    for (const acc of accounts) {
+async function runStealthBroadcast(phones: string[], messageVariants: string[], contactButton: boolean, imageFiles: Array<{base64:string;name:string}>, startFrom = 0) {
+  if (!db) return;
+  const isResume = startFrom > 0;
+  if (!isResume) {
+    stealthJob = { status: 'running', total: phones.length, sent: 0, failed: 0, checked: startFrom, currentIndex: startFrom, startedAt: new Date().toISOString(), log: [] };
+    // Сохраняем телефоны и варианты для возможности resume
+    await setDoc(doc(db, 'settings', 'stealth_job_data'), { phones, messageVariants, contactButton, imageFiles: imageFiles.map(f => ({ base64: f.base64.slice(0, 100), name: f.name })) }).catch(() => {});
+  } else {
+    stealthJob.status = 'running';
+    stealthJob.currentIndex = startFrom;
+  }
+  await saveStealthProgress();
+
+  const DELAY_MS = 30 * 60 * 1000;
+
+  // Загрузка и подключение аккаунтов
+  const loadClients = async () => {
+    const snap = await getDoc(doc(db!, 'settings', 'tg_accounts'));
+    const accs = snap.exists() ? (snap.data().accounts || []).filter((a: any) => a.sessionString && a.active !== false) : [];
+    const cls: TelegramClient[] = [];
+    for (const acc of accs) {
       const c = new TelegramClient(new StringSession(acc.sessionString), TG_API_ID, TG_API_HASH, { connectionRetries: 3 });
-      await c.connect();
+      await c.connect().catch(() => {});
       if (acc.displayName) {
         const parts = acc.displayName.trim().split(' ');
         await c.invoke(new Api.account.UpdateProfile({ firstName: parts[0] || '', lastName: parts.slice(1).join(' ') || '' })).catch(() => {});
       }
-      clients.push(c);
+      cls.push(c);
+    }
+    return { accs, cls };
+  };
+
+  let { accs: accounts, cls: clients } = await loadClients();
+  if (!clients.length) {
+    stealthJob.status = 'waiting_accounts';
+    await saveStealthProgress();
+    return;
+  }
+
+  const deadIdxs = new Set<number>();
+  const accountLastSent = new Map<number, number>();
+
+  // Загружаем no_telegram для накопления
+  const noTgSnap = await getDoc(doc(db, 'settings', 'no_telegram')).catch(() => null);
+  const savedNoTg: Array<{phone:string;addedAt:string}> = noTgSnap?.exists() ? (noTgSnap.data().phones || []) : [];
+  const noTgSet = new Set(savedNoTg.map((p:any) => p.phone));
+  const newNoTg: Array<{phone:string;addedAt:string}> = [];
+
+  for (let i = startFrom; i < phones.length; i++) {
+    stealthJob.currentIndex = i;
+
+    // Все живые аккаунты
+    const liveIdxs = clients.map((_, j) => j).filter(j => !deadIdxs.has(j));
+
+    if (liveIdxs.length === 0) {
+      // Все аккаунты забанены — сохраняем и ждём новых
+      stealthJob.status = 'waiting_accounts';
+      stealthJob.currentIndex = i;
+      await saveStealthProgress();
+      if (newNoTg.length > 0) await setDoc(doc(db, 'settings', 'no_telegram'), { phones: [...savedNoTg, ...newNoTg] }).catch(() => {});
+      for (const c of clients) await c.disconnect().catch(() => {});
+      return;
     }
 
-    const DELAY_MS = 30 * 60 * 1000; // 30 минут
-    const accountLastSent = new Map<number, number>();
+    // Найти аккаунт готовый к отправке
+    let readyIdx = -1;
+    let minWait = Infinity;
+    for (const j of liveIdxs) {
+      const waitMs = (accountLastSent.get(j) || 0) + DELAY_MS - Date.now();
+      if (waitMs <= 0) { readyIdx = j; break; }
+      if (waitMs < minWait) minWait = waitMs;
+    }
+    if (readyIdx === -1) {
+      await new Promise(r => setTimeout(r, Math.min(minWait + 1000, 60000)));
+      i--;
+      continue;
+    }
 
-    for (let i = 0; i < phones.length; i++) {
-      // Найти аккаунт готовый к отправке (30 мин прошло)
-      let readyIdx = -1;
-      let minWait = Infinity;
-      for (let j = 0; j < clients.length; j++) {
-        const lastSent = accountLastSent.get(j) || 0;
-        const waitMs = (lastSent + DELAY_MS) - Date.now();
-        if (waitMs <= 0) { readyIdx = j; break; }
-        if (waitMs < minWait) minWait = waitMs;
+    const rawPhone = String(phones[i]);
+    const phone = rawPhone.startsWith('+') ? rawPhone : `+${rawPhone}`;
+    const client = clients[readyIdx];
+    const variant = messageVariants[Math.floor(Math.random() * messageVariants.length)];
+    const textMsg = contactButton ? `${variant}\n\nhttps://t.me/yaasbae_ru` : variant;
+
+    try {
+      // Resolve entity
+      let resolveErr = '';
+      const resolved = await client.invoke(new Api.contacts.ResolvePhone({ phone })).catch((e:any) => { resolveErr = e?.message||String(e); return null; }) as any;
+      let entity = resolved?.users?.[0] ?? null;
+
+      if (!entity && !resolveErr.includes('FROZEN')) {
+        const imported = await client.invoke(new Api.contacts.ImportContacts({
+          contacts: [new Api.InputPhoneContact({ clientId: BigInt(i+1) as any, phone, firstName: 'U', lastName: '' })]
+        })).catch(() => null) as any;
+        entity = imported?.users?.[0] ?? null;
+        const uid = imported?.importedContacts?.[0]?.userId;
+        if (!entity && uid && Number(uid) > 0) entity = await client.getEntity(uid).catch(() => null);
       }
-      if (readyIdx === -1) {
-        await new Promise(r => setTimeout(r, minWait + 1000));
-        i--;
+
+      // Аккаунт мёртв
+      if (resolveErr.includes('AUTH_KEY_UNREGISTERED') || resolveErr.includes('USER_DEACTIVATED') || resolveErr.includes('SESSION_REVOKED')) {
+        console.log(`[stealth] account ${accounts[readyIdx]?.phone} dead, removing`);
+        deadIdxs.add(readyIdx);
+        await client.disconnect().catch(() => {});
+        // Помечаем в Firestore
+        const aSnap = await getDoc(doc(db, 'settings', 'tg_accounts')).catch(() => null);
+        if (aSnap?.exists()) {
+          const allAccs = aSnap.data().accounts || [];
+          const bannedPhone = accounts[readyIdx]?.phone;
+          await setDoc(doc(db, 'settings', 'tg_accounts'), { accounts: allAccs.map((a:any) => a.phone === bannedPhone ? {...a, active: false, bannedAt: new Date().toISOString()} : a) }).catch(() => {});
+        }
+        i--; // повторить этот номер с другим аккаунтом
         continue;
       }
 
-      const rawPhone = String(phones[i]);
-      const phone = rawPhone.startsWith('+') ? rawPhone : `+${rawPhone}`;
-      const client = clients[readyIdx];
-      const variant = messageVariants[Math.floor(Math.random() * messageVariants.length)];
-      const textMsg = contactButton ? `${variant}\n\nhttps://t.me/yaasbae_ru` : variant;
-
-      try {
-        const resolved = await client.invoke(new Api.contacts.ResolvePhone({ phone })).catch(() => null) as any;
-        const entity = resolved?.users?.[0] ?? null;
-        if (!entity) {
-          stealthJob.log.push({ phone: rawPhone, name: rawPhone, status: 'error', error: 'Нет Telegram' });
-          stealthJob.failed++;
-        } else {
-          if (imageFiles.length > 0) {
-            const { CustomFile } = await import('telegram/client/uploads');
-            const fileObjs = await Promise.all(imageFiles.map(async f => {
-              const raw = Buffer.from(f.base64, 'base64');
-              const jpg = await sharp(raw).jpeg({ quality: 90 }).toBuffer().catch(() => raw);
-              return new CustomFile(f.name.replace(/\.[^.]+$/, '.jpg'), jpg.length, '', jpg);
-            }));
-            await client.sendFile(entity, { file: fileObjs.length === 1 ? fileObjs[0] : fileObjs as any, forceDocument: false });
-          }
-          await client.sendMessage(entity, { message: textMsg });
-          accountLastSent.set(readyIdx, Date.now());
-          stealthJob.log.push({ phone: rawPhone, name: rawPhone, status: 'sent' });
-          stealthJob.sent++;
+      if (!entity) {
+        // Нет Telegram — сохраняем
+        const cleanPhone = rawPhone.replace(/\D/g, '');
+        if (!noTgSet.has(cleanPhone)) {
+          noTgSet.add(cleanPhone);
+          newNoTg.push({ phone: cleanPhone, addedAt: new Date().toISOString() });
         }
-      } catch (e: any) {
-        stealthJob.log.push({ phone: rawPhone, name: rawPhone, status: 'error', error: e.message });
+        stealthJob.log.push({ phone: rawPhone, name: rawPhone, status: 'no_tg', error: 'Нет Telegram' });
         stealthJob.failed++;
+      } else {
+        // Отправляем
+        if (imageFiles.length > 0) {
+          const { CustomFile } = await import('telegram/client/uploads');
+          const fileObjs = await Promise.all(imageFiles.map(async f => {
+            const raw = Buffer.from(f.base64, 'base64');
+            const jpg = await sharp(raw).jpeg({ quality: 90 }).toBuffer().catch(() => raw);
+            return new CustomFile(f.name.replace(/\.[^.]+$/, '.jpg'), jpg.length, '', jpg);
+          }));
+          await client.sendFile(entity, { file: fileObjs.length === 1 ? fileObjs[0] : fileObjs as any, forceDocument: false });
+        }
+        await client.sendMessage(entity, { message: textMsg });
+        accountLastSent.set(readyIdx, Date.now());
+        stealthJob.log.push({ phone: rawPhone, name: rawPhone, status: 'sent' });
+        stealthJob.sent++;
       }
-      stealthJob.checked = i + 1;
-      if ((i + 1) % 10 === 0) await setDoc(doc(db, 'settings', 'stealth_job'), { ...stealthJob, log: [] }).catch(() => {});
+    } catch (e: any) {
+      const errMsg = e.message || String(e);
+      const isDead = errMsg.includes('AUTH_KEY_UNREGISTERED') || errMsg.includes('USER_DEACTIVATED');
+      if (isDead) {
+        deadIdxs.add(readyIdx);
+        await client.disconnect().catch(() => {});
+        i--;
+        continue;
+      }
+      stealthJob.log.push({ phone: rawPhone, name: rawPhone, status: 'error', error: errMsg });
+      stealthJob.failed++;
     }
-    for (const c of clients) await c.disconnect().catch(() => {});
-    stealthJob.status = 'done';
-    stealthJob.finishedAt = new Date().toISOString();
-    await setDoc(doc(db, 'settings', 'stealth_job'), { ...stealthJob, log: [] }).catch(() => {});
-  } catch (e: any) {
-    stealthJob.status = 'error';
-    stealthJob.error = e.message;
-    stealthJob.finishedAt = new Date().toISOString();
+
+    stealthJob.checked = i + 1;
+    // Сохраняем прогресс и no_telegram каждые 10 отправок
+    if ((i + 1) % 10 === 0) {
+      await saveStealthProgress();
+      if (newNoTg.length > 0) await setDoc(doc(db, 'settings', 'no_telegram'), { phones: [...savedNoTg, ...newNoTg] }).catch(() => {});
+    }
   }
+
+  // Готово
+  if (newNoTg.length > 0) await setDoc(doc(db, 'settings', 'no_telegram'), { phones: [...savedNoTg, ...newNoTg] }).catch(() => {});
+  for (const c of clients) await c.disconnect().catch(() => {});
+  stealthJob.status = 'done';
+  stealthJob.finishedAt = new Date().toISOString();
+  await saveStealthProgress();
 }
 
 app.post('/api/broadcast/stealth-start', async (req, res) => {
@@ -754,7 +845,29 @@ app.post('/api/broadcast/stealth-start', async (req, res) => {
   res.json({ success: true, total: phones.length });
 });
 
-app.get('/api/broadcast/stealth-status', (_req, res) => {
+// Продолжить после добавления аккаунтов
+app.post('/api/broadcast/stealth-resume', async (req, res) => {
+  if (stealthJob.status === 'running') return res.status(400).json({ error: 'Рассылка уже идёт' });
+  if (stealthJob.status !== 'waiting_accounts') return res.status(400).json({ error: 'Нет паузы для продолжения' });
+  if (!db) return res.status(500).json({ error: 'DB не подключена' });
+  const dataSnap = await getDoc(doc(db, 'settings', 'stealth_job_data')).catch(() => null);
+  if (!dataSnap?.exists()) return res.status(400).json({ error: 'Данные задания не найдены' });
+  const { phones, messageVariants, contactButton, imageFiles } = dataSnap.data() as any;
+  const resumeFrom = stealthJob.currentIndex;
+  runStealthBroadcast(phones, messageVariants, !!contactButton, imageFiles || [], resumeFrom);
+  res.json({ success: true, resumeFrom, total: phones.length });
+});
+
+app.get('/api/broadcast/stealth-status', async (_req, res) => {
+  if (stealthJob.status === 'idle' && db) {
+    const snap = await getDoc(doc(db, 'settings', 'stealth_job')).catch(() => null);
+    if (snap?.exists()) {
+      const d = snap.data() as any;
+      if (d.status === 'waiting_accounts') {
+        stealthJob = { status: d.status, total: d.total, sent: d.sent, failed: d.failed, checked: d.checked, currentIndex: d.currentIndex, startedAt: d.startedAt, finishedAt: d.finishedAt, log: d.log || [] };
+      }
+    }
+  }
   res.json({ ...stealthJob, logCount: stealthJob.log.length });
 });
 

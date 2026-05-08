@@ -50,7 +50,7 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
   const [messageVariants, setMessageVariants] = useState<string[]>([]);
   const [isGeneratingVariants, setIsGeneratingVariants] = useState(false);
   const [showVariants, setShowVariants] = useState(false);
-  const [stealthStatus, setStealthStatus] = useState<{status:string;sent:number;failed:number;checked:number;total:number} | null>(null);
+  const [stealthStatus, setStealthStatus] = useState<{status:string;sent:number;failed:number;checked:number;total:number;currentIndex?:number} | null>(null);
   const [clientRevenue, setClientRevenue] = useState<Map<string, number>>(new Map());
   const [clientOrders, setClientOrders] = useState<Map<string, number>>(new Map());
   const [sentPhones, setSentPhones] = useState<Set<string>>(new Set());
@@ -1217,25 +1217,44 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
           <div className="bg-white border border-violet-100 shadow-sm rounded-2xl overflow-hidden">
             <div className="px-3 py-2.5 bg-violet-50 border-b border-violet-100 flex items-center justify-between">
               <span className="text-[9px] font-black text-violet-600 uppercase tracking-widest">🕵️ Стелс рассылка</span>
-              {stealthStatus.status === 'running'
-                ? <Loader2 size={12} className="animate-spin text-violet-400" />
-                : <span className="text-[9px] font-black text-violet-500">Готово</span>
-              }
+              {stealthStatus.status === 'running' && <Loader2 size={12} className="animate-spin text-violet-400" />}
+              {stealthStatus.status === 'done' && <span className="text-[9px] font-black text-emerald-500">Готово</span>}
+              {stealthStatus.status === 'waiting_accounts' && <span className="text-[9px] font-black text-amber-500">Пауза</span>}
+              {stealthStatus.status === 'error' && <span className="text-[9px] font-black text-red-500">Ошибка</span>}
             </div>
             <div className="px-3 py-3 space-y-2">
               <div className="flex justify-between text-[10px]">
-                <span className="text-zinc-500">Проверено</span>
+                <span className="text-zinc-500">Отправлено</span>
                 <span className="font-black">{stealthStatus.checked} / {stealthStatus.total}</span>
               </div>
               <div className="w-full bg-zinc-100 rounded-full h-1.5">
                 <div className="bg-violet-500 h-1.5 rounded-full transition-all" style={{ width: `${stealthStatus.total ? (stealthStatus.checked / stealthStatus.total) * 100 : 0}%` }} />
               </div>
               <div className="flex justify-between text-[9px]">
-                <span className="text-emerald-500 font-black">{stealthStatus.sent}✓</span>
+                <span className="text-emerald-500 font-black">{stealthStatus.sent}✓ отправлено</span>
                 <span className="text-red-400 font-black">{stealthStatus.failed}✗</span>
               </div>
               {stealthStatus.status === 'running' && (
-                <p className="text-[8px] text-zinc-400 text-center">Пауза 30 мин между сообщениями</p>
+                <p className="text-[8px] text-zinc-400 text-center">30 мин между сообщениями на аккаунт</p>
+              )}
+              {stealthStatus.status === 'waiting_accounts' && (
+                <div className="space-y-2">
+                  <p className="text-[9px] text-amber-600 font-bold text-center">Все аккаунты забанены</p>
+                  <p className="text-[8px] text-zinc-400 text-center">Добавь новые аккаунты в Настройки</p>
+                  <button
+                    onClick={async () => {
+                      try {
+                        const r = await fetch('/api/broadcast/stealth-resume', { method: 'POST' });
+                        const d = await r.json();
+                        if (d.error) alert(d.error);
+                        else setStealthStatus(prev => prev ? { ...prev, status: 'running' } : prev);
+                      } catch {}
+                    }}
+                    className="w-full py-1.5 bg-violet-500 text-white rounded-lg text-[9px] font-black hover:bg-violet-600 transition-all"
+                  >
+                    Продолжить с позиции {stealthStatus.checked}
+                  </button>
+                </div>
               )}
             </div>
           </div>
