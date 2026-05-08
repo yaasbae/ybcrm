@@ -46,7 +46,11 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [message, setMessage] = useState('');
   const [isSending, setIsSending] = useState(false);
-  const [broadcastMode, setBroadcastMode] = useState<'burn' | 'safe'>('safe');
+  const [broadcastMode, setBroadcastMode] = useState<'burn' | 'safe' | 'stealth'>('safe');
+  const [messageVariants, setMessageVariants] = useState<string[]>([]);
+  const [isGeneratingVariants, setIsGeneratingVariants] = useState(false);
+  const [showVariants, setShowVariants] = useState(false);
+  const [stealthStatus, setStealthStatus] = useState<{status:string;sent:number;failed:number;checked:number;total:number} | null>(null);
   const [clientRevenue, setClientRevenue] = useState<Map<string, number>>(new Map());
   const [clientOrders, setClientOrders] = useState<Map<string, number>>(new Map());
   const [sentPhones, setSentPhones] = useState<Set<string>>(new Set());
@@ -415,6 +419,44 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
     return () => clearInterval(timer);
   }, []);
 
+  const handleGenerateVariants = async () => {
+    if (!message.trim()) return;
+    setIsGeneratingVariants(true);
+    try {
+      const res = await fetch('/api/ai/generate-variants', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message })
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      setMessageVariants(data.variants || []);
+      setShowVariants(true);
+    } catch (e: any) {
+      alert('Ошибка генерации: ' + e.message);
+    } finally {
+      setIsGeneratingVariants(false);
+    }
+  };
+
+  // Polling stealth статуса
+  useEffect(() => {
+    let timer: ReturnType<typeof setInterval>;
+    const poll = async () => {
+      try {
+        const res = await fetch('/api/broadcast/stealth-status');
+        const data = await res.json();
+        if (data.status === 'running' || data.status === 'done') {
+          setStealthStatus(data);
+          if (data.status === 'done') { setIsSending(false); clearInterval(timer); }
+        }
+      } catch {}
+    };
+    poll();
+    timer = setInterval(poll, 5000);
+    return () => clearInterval(timer);
+  }, []);
+
   const handleCheckTg = async () => {
     const phonesToCheck = clients
       .filter(c => !noTelegramPhones.has(String(c.phone).replace(/\D/g, '')))
@@ -442,6 +484,45 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
     setIsSending(true);
     setResult(null);
     setSendLog([]);
+
+    // Stealth режим — фоновый джоб на сервере
+    if (broadcastMode === 'stealth') {
+      try {
+        const phones = Array.from(selected);
+        const allVariants = [message, ...messageVariants].filter(Boolean);
+        const imageFiles: Array<{ base64: string; name: string }> = [];
+        for (const img of images) {
+          const base64 = await new Promise<string>(res => {
+            const canvas = document.createElement('canvas');
+            const imgEl = new window.Image();
+            const url = URL.createObjectURL(img);
+            imgEl.onload = () => {
+              const MAX = 1280; let w = imgEl.width, h = imgEl.height;
+              if (w > MAX || h > MAX) { if (w > h) { h = Math.round(h * MAX / w); w = MAX; } else { w = Math.round(w * MAX / h); h = MAX; } }
+              canvas.width = w; canvas.height = h;
+              canvas.getContext('2d')!.drawImage(imgEl, 0, 0, w, h);
+              URL.revokeObjectURL(url);
+              res(canvas.toDataURL('image/jpeg', 0.85).split(',')[1]);
+            };
+            imgEl.src = url;
+          });
+          imageFiles.push({ base64, name: img.name.replace(/\.[^.]+$/, '.jpg') });
+        }
+        const res = await fetch('/api/broadcast/stealth-start', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ phones, messageVariants: allVariants, contactButton, images: imageFiles })
+        });
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+        setStealthStatus({ status: 'running', sent: 0, failed: 0, checked: 0, total: data.total });
+      } catch (e: any) {
+        setResult({ error: e.message });
+        setIsSending(false);
+      }
+      return;
+    }
+
     try {
       const phones = Array.from(selected);
       const imageFiles: Array<{ base64: string; name: string }> = [];
@@ -469,7 +550,7 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
       const response = await fetch('/api/broadcast/gramjs', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ phones, message, images: imageFiles, displayName: displayName.trim() || null, mode: broadcastMode, contactButton })
+        body: JSON.stringify({ phones, message, messageVariants: messageVariants.length > 0 ? [message, ...messageVariants] : undefined, images: imageFiles, displayName: displayName.trim() || null, mode: broadcastMode, contactButton })
       });
       const data = await response.json();
       setResult(data);
@@ -810,13 +891,17 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
                 {isSending ? 'Отправляем...' : `Отправить${selected.size > 0 ? ` (${selected.size})` : ''}`}
               </button>
               <div className="flex gap-1">
-                <button onClick={() => setBroadcastMode('safe')}
+                <button onClick={() => setBroadcastMode('safe')} title="Безопасный — 3-7 сек между сообщениями"
                   className={`px-2.5 py-2 rounded-lg text-[8px] font-black uppercase transition-all border ${broadcastMode === 'safe' ? 'bg-emerald-500 text-white border-emerald-500' : 'bg-white text-zinc-400 border-zinc-200'}`}>
                   🐢
                 </button>
-                <button onClick={() => setBroadcastMode('burn')}
+                <button onClick={() => setBroadcastMode('burn')} title="Быстрый — до бана"
                   className={`px-2.5 py-2 rounded-lg text-[8px] font-black uppercase transition-all border ${broadcastMode === 'burn' ? 'bg-red-500 text-white border-red-500' : 'bg-white text-zinc-400 border-zinc-200'}`}>
                   🔥
+                </button>
+                <button onClick={() => setBroadcastMode('stealth')} title="Стелс — 30 мин между сообщениями, фоновый режим"
+                  className={`px-2.5 py-2 rounded-lg text-[8px] font-black uppercase transition-all border ${broadcastMode === 'stealth' ? 'bg-violet-500 text-white border-violet-500' : 'bg-white text-zinc-400 border-zinc-200'}`}>
+                  🕵️
                 </button>
               </div>
             </div>
@@ -837,6 +922,40 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
                 rows={4}
                 className="w-full bg-zinc-50 border border-zinc-200 rounded-xl px-4 py-3 text-[12px] font-medium focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 transition-all resize-none"
               />
+            </div>
+
+            {/* Генерация вариантов */}
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handleGenerateVariants}
+                  disabled={isGeneratingVariants || !message.trim()}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-violet-100 hover:bg-violet-200 text-violet-700 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all disabled:opacity-40"
+                >
+                  {isGeneratingVariants ? <Loader2 size={10} className="animate-spin" /> : '✨'}
+                  {isGeneratingVariants ? 'Генерируем...' : 'Сгенерировать 9 вариантов'}
+                </button>
+                {messageVariants.length > 0 && (
+                  <button onClick={() => setShowVariants(v => !v)} className="text-[9px] text-zinc-400 hover:text-zinc-600">
+                    {showVariants ? 'Скрыть' : `Показать варианты (${messageVariants.length})`}
+                  </button>
+                )}
+              </div>
+              {showVariants && messageVariants.length > 0 && (
+                <div className="space-y-1.5 max-h-48 overflow-y-auto">
+                  {messageVariants.map((v, i) => (
+                    <div key={i} className="flex gap-2 items-start">
+                      <span className="text-[8px] font-black text-violet-400 shrink-0 mt-1">{i + 1}</span>
+                      <textarea
+                        value={v}
+                        onChange={e => setMessageVariants(prev => prev.map((x, j) => j === i ? e.target.value : x))}
+                        rows={2}
+                        className="flex-1 bg-violet-50 border border-violet-100 rounded-lg px-2 py-1.5 text-[10px] resize-none focus:outline-none focus:ring-1 focus:ring-violet-300"
+                      />
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
 
             {/* Кнопка под сообщением */}
@@ -1092,6 +1211,36 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
 
       {/* Боковой sticky лог */}
       <div className="w-72 shrink-0 sticky top-4 self-start space-y-3">
+
+        {/* Stealth прогресс */}
+        {stealthStatus && stealthStatus.status !== 'idle' && (
+          <div className="bg-white border border-violet-100 shadow-sm rounded-2xl overflow-hidden">
+            <div className="px-3 py-2.5 bg-violet-50 border-b border-violet-100 flex items-center justify-between">
+              <span className="text-[9px] font-black text-violet-600 uppercase tracking-widest">🕵️ Стелс рассылка</span>
+              {stealthStatus.status === 'running'
+                ? <Loader2 size={12} className="animate-spin text-violet-400" />
+                : <span className="text-[9px] font-black text-violet-500">Готово</span>
+              }
+            </div>
+            <div className="px-3 py-3 space-y-2">
+              <div className="flex justify-between text-[10px]">
+                <span className="text-zinc-500">Проверено</span>
+                <span className="font-black">{stealthStatus.checked} / {stealthStatus.total}</span>
+              </div>
+              <div className="w-full bg-zinc-100 rounded-full h-1.5">
+                <div className="bg-violet-500 h-1.5 rounded-full transition-all" style={{ width: `${stealthStatus.total ? (stealthStatus.checked / stealthStatus.total) * 100 : 0}%` }} />
+              </div>
+              <div className="flex justify-between text-[9px]">
+                <span className="text-emerald-500 font-black">{stealthStatus.sent}✓</span>
+                <span className="text-red-400 font-black">{stealthStatus.failed}✗</span>
+              </div>
+              {stealthStatus.status === 'running' && (
+                <p className="text-[8px] text-zinc-400 text-center">Пауза 30 мин между сообщениями</p>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Лог отправки — всегда виден */}
         <div className="bg-white border border-zinc-100 shadow-sm rounded-2xl overflow-hidden">
           <div className="px-3 py-2.5 bg-zinc-50 border-b border-zinc-100 flex items-center justify-between">

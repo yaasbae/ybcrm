@@ -632,6 +632,132 @@ async function runTgCheckJob(phones: string[]) {
   }
 }
 
+// Генерация 9 вариантов сообщения через Claude
+app.post('/api/ai/generate-variants', async (req, res) => {
+  const { message } = req.body;
+  if (!message?.trim()) return res.status(400).json({ error: 'Нужен message' });
+  try {
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    if (!apiKey) throw new Error('ANTHROPIC_API_KEY не задан');
+    const anthropic = new Anthropic({ apiKey });
+    const result = await anthropic.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 3000,
+      messages: [{ role: 'user', content: `Перепиши это сообщение 9 разными способами для рассылки клиентам. Сохрани смысл, эмодзи и стиль, но измени структуру и формулировки чтобы каждый вариант был уникальным. Отвечай ТОЛЬКО пронумерованным списком 1-9, каждый вариант с новой строки, без пояснений:\n\n${message}` }]
+    });
+    const text = result.content[0].type === 'text' ? result.content[0].text : '';
+    const variants = text.split('\n')
+      .filter(l => /^\d+[.)]\s/.test(l.trim()))
+      .map(l => l.replace(/^\d+[.)]\s*/, '').trim())
+      .filter(Boolean)
+      .slice(0, 9);
+    res.json({ success: true, variants });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Фоновая рассылка со стелс-режимом (30 мин между сообщениями на каждый аккаунт)
+let stealthJob: { status: 'idle'|'running'|'done'|'error'; total: number; sent: number; failed: number; checked: number; startedAt: string; finishedAt?: string; error?: string; log: Array<{phone:string;name:string;status:string;error?:string}> } = {
+  status: 'idle', total: 0, sent: 0, failed: 0, checked: 0, startedAt: '', log: []
+};
+
+async function runStealthBroadcast(phones: string[], messageVariants: string[], contactButton: boolean, imageFiles: Array<{base64:string;name:string}>) {
+  if (!db) return;
+  stealthJob = { status: 'running', total: phones.length, sent: 0, failed: 0, checked: 0, startedAt: new Date().toISOString(), log: [] };
+  try {
+    let accounts: any[] = [];
+    const snap = await getDoc(doc(db, 'settings', 'tg_accounts'));
+    if (snap.exists()) accounts = (snap.data().accounts || []).filter((a: any) => a.sessionString && a.active !== false);
+    if (!accounts.length) throw new Error('Нет активных аккаунтов');
+
+    const clients: TelegramClient[] = [];
+    for (const acc of accounts) {
+      const c = new TelegramClient(new StringSession(acc.sessionString), TG_API_ID, TG_API_HASH, { connectionRetries: 3 });
+      await c.connect();
+      if (acc.displayName) {
+        const parts = acc.displayName.trim().split(' ');
+        await c.invoke(new Api.account.UpdateProfile({ firstName: parts[0] || '', lastName: parts.slice(1).join(' ') || '' })).catch(() => {});
+      }
+      clients.push(c);
+    }
+
+    const DELAY_MS = 30 * 60 * 1000; // 30 минут
+    const accountLastSent = new Map<number, number>();
+
+    for (let i = 0; i < phones.length; i++) {
+      // Найти аккаунт готовый к отправке (30 мин прошло)
+      let readyIdx = -1;
+      let minWait = Infinity;
+      for (let j = 0; j < clients.length; j++) {
+        const lastSent = accountLastSent.get(j) || 0;
+        const waitMs = (lastSent + DELAY_MS) - Date.now();
+        if (waitMs <= 0) { readyIdx = j; break; }
+        if (waitMs < minWait) minWait = waitMs;
+      }
+      if (readyIdx === -1) {
+        await new Promise(r => setTimeout(r, minWait + 1000));
+        i--;
+        continue;
+      }
+
+      const rawPhone = String(phones[i]);
+      const phone = rawPhone.startsWith('+') ? rawPhone : `+${rawPhone}`;
+      const client = clients[readyIdx];
+      const variant = messageVariants[Math.floor(Math.random() * messageVariants.length)];
+      const textMsg = contactButton ? `${variant}\n\nhttps://t.me/yaasbae_ru` : variant;
+
+      try {
+        const resolved = await client.invoke(new Api.contacts.ResolvePhone({ phone })).catch(() => null) as any;
+        const entity = resolved?.users?.[0] ?? null;
+        if (!entity) {
+          stealthJob.log.push({ phone: rawPhone, name: rawPhone, status: 'error', error: 'Нет Telegram' });
+          stealthJob.failed++;
+        } else {
+          if (imageFiles.length > 0) {
+            const { CustomFile } = await import('telegram/client/uploads');
+            const fileObjs = await Promise.all(imageFiles.map(async f => {
+              const raw = Buffer.from(f.base64, 'base64');
+              const jpg = await sharp(raw).jpeg({ quality: 90 }).toBuffer().catch(() => raw);
+              return new CustomFile(f.name.replace(/\.[^.]+$/, '.jpg'), jpg.length, '', jpg);
+            }));
+            await client.sendFile(entity, { file: fileObjs.length === 1 ? fileObjs[0] : fileObjs as any, forceDocument: false });
+          }
+          await client.sendMessage(entity, { message: textMsg });
+          accountLastSent.set(readyIdx, Date.now());
+          stealthJob.log.push({ phone: rawPhone, name: rawPhone, status: 'sent' });
+          stealthJob.sent++;
+        }
+      } catch (e: any) {
+        stealthJob.log.push({ phone: rawPhone, name: rawPhone, status: 'error', error: e.message });
+        stealthJob.failed++;
+      }
+      stealthJob.checked = i + 1;
+      if ((i + 1) % 10 === 0) await setDoc(doc(db, 'settings', 'stealth_job'), { ...stealthJob, log: [] }).catch(() => {});
+    }
+    for (const c of clients) await c.disconnect().catch(() => {});
+    stealthJob.status = 'done';
+    stealthJob.finishedAt = new Date().toISOString();
+    await setDoc(doc(db, 'settings', 'stealth_job'), { ...stealthJob, log: [] }).catch(() => {});
+  } catch (e: any) {
+    stealthJob.status = 'error';
+    stealthJob.error = e.message;
+    stealthJob.finishedAt = new Date().toISOString();
+  }
+}
+
+app.post('/api/broadcast/stealth-start', async (req, res) => {
+  const { phones, messageVariants, contactButton, images } = req.body;
+  if (!phones?.length || !messageVariants?.length) return res.status(400).json({ error: 'Нужны phones и messageVariants' });
+  if (stealthJob.status === 'running') return res.status(400).json({ error: 'Рассылка уже идёт' });
+  runStealthBroadcast(phones, messageVariants, !!contactButton, images || []);
+  res.json({ success: true, total: phones.length });
+});
+
+app.get('/api/broadcast/stealth-status', (_req, res) => {
+  res.json({ ...stealthJob, logCount: stealthJob.log.length });
+});
+
 app.post('/api/broadcast/check-tg-start', async (req, res) => {
   const { phones } = req.body;
   if (!phones?.length) return res.status(400).json({ error: 'Нужны phones' });
@@ -653,15 +779,18 @@ app.get('/api/broadcast/check-tg-status', async (_req, res) => {
 });
 
 app.post("/api/broadcast/gramjs", async (req, res) => {
-  const { phones, message, images, imageBase64, imageName, displayName, mode, contactButton } = req.body;
+  const { phones, message, messageVariants, images, imageBase64, imageName, displayName, mode, contactButton } = req.body;
   // images: Array<{base64: string, name: string}> (new multi-photo) or legacy imageBase64/imageName
   const imageFiles: Array<{ base64: string; name: string }> = images?.length
     ? images
     : imageBase64 ? [{ base64: imageBase64, name: imageName || 'photo.jpg' }] : [];
+  // Variants: if provided, pick random per recipient; fallback to single message
+  const variants: string[] = (messageVariants?.length > 0) ? messageVariants : (message ? [message] : []);
+  const getVariant = () => variants[Math.floor(Math.random() * variants.length)];
   // mode: "burn" = расходный (быстро, до бана), "safe" = бережный (медленно)
   const MESSAGES_PER_ACCOUNT = mode === "burn" ? 9999 : 20;
   const getMsgDelay = () => mode === "burn" ? 200 + Math.random() * 300 : 3000 + Math.random() * 4000;
-  if (!phones?.length || !message) {
+  if (!phones?.length || !variants.length) {
     return res.status(400).json({ error: "Нужны phones и message" });
   }
   if (!db) return res.status(500).json({ error: "База данных не подключена" });
@@ -822,11 +951,10 @@ app.post("/api/broadcast/gramjs", async (req, res) => {
           } else {
             await client.sendFile(entity as any, { file: fileObjs as any, forceDocument: false });
           }
-          // Send text + link as separate message (links are clickable in text messages)
-          const textMsg = contactButton ? `${message}\n\nhttps://t.me/yaasbae_ru` : message;
+          const textMsg = contactButton ? `${getVariant()}\n\nhttps://t.me/yaasbae_ru` : getVariant();
           await client.sendMessage(entity as any, { message: textMsg });
         } else {
-          const textMsg = contactButton ? `${message}\n\nhttps://t.me/yaasbae_ru` : message;
+          const textMsg = contactButton ? `${getVariant()}\n\nhttps://t.me/yaasbae_ru` : getVariant();
           await client.sendMessage(entity as any, { message: textMsg });
         }
         results.push({ phone: rawPhone, status: "sent", account: accounts[accIdx].phone });
