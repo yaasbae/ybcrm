@@ -95,6 +95,12 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
   const [tochkaSaveResult, setTochkaSaveResult] = useState('');
   const [tochkaConfigured, setTochkaConfigured] = useState(false);
 
+  // AI settings
+  const [geminiKey, setGeminiKey] = useState('');
+  const [isSavingGemini, setIsSavingGemini] = useState(false);
+  const [geminiSaveResult, setGeminiSaveResult] = useState('');
+  const [geminiConfigured, setGeminiConfigured] = useState(false);
+
   const loadTgStatus = async () => {
     try {
       const res = await fetch('/api/tg/auth/status');
@@ -299,6 +305,9 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
     loadTgStatus();
     loadConfig();
     fetch('/api/tochka/status').then(r => r.json()).then(d => setTochkaConfigured(!!d.configured)).catch(() => {});
+    getDoc(doc(db, 'settings', 'ai_config')).then(snap => {
+      if (snap.exists() && snap.data().geminiKey) setGeminiConfigured(true);
+    }).catch(() => {});
   }, []);
 
   const handleSelectFirst20 = () => {
@@ -881,6 +890,49 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
                   </div>
                 )}
               </div>
+            </div>
+
+            {/* Gemini API ключ */}
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <label className="text-[9px] font-black text-zinc-400 uppercase tracking-widest ml-1">Google Gemini · Генерация вариантов</label>
+                {geminiConfigured && <span className="text-[8px] font-black text-emerald-500 uppercase tracking-widest">✓ настроен</span>}
+              </div>
+              <p className="text-[9px] text-zinc-400 ml-1">API ключ из <span className="font-bold">aistudio.google.com</span> — бесплатно, используется для генерации 9 вариантов сообщений</p>
+              <div className="flex gap-2">
+                <input
+                  type="password"
+                  value={geminiKey}
+                  onChange={e => setGeminiKey(e.target.value)}
+                  placeholder="AIzaSy..."
+                  className="flex-1 bg-zinc-50 border border-zinc-200 rounded-xl px-3 py-2.5 text-[12px] font-mono focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 transition-all"
+                />
+                <button
+                  onClick={async () => {
+                    if (!geminiKey.trim()) return;
+                    setIsSavingGemini(true);
+                    setGeminiSaveResult('');
+                    try {
+                      await setDoc(doc(db, 'settings', 'ai_config'), { geminiKey: geminiKey.trim() }, { merge: true });
+                      setGeminiSaveResult('Сохранено!');
+                      setGeminiConfigured(true);
+                      setGeminiKey('');
+                    } catch (e: any) {
+                      setGeminiSaveResult('Ошибка: ' + e.message);
+                    } finally {
+                      setIsSavingGemini(false);
+                    }
+                  }}
+                  disabled={isSavingGemini || !geminiKey.trim()}
+                  className="px-4 py-2.5 bg-zinc-900 text-white rounded-xl text-[10px] font-black hover:bg-zinc-800 transition-all disabled:opacity-40 flex items-center gap-1.5"
+                >
+                  {isSavingGemini ? <Loader2 size={12} className="animate-spin" /> : null}
+                  Сохранить
+                </button>
+              </div>
+              {geminiSaveResult && (
+                <p className="text-[10px] font-medium ml-1" style={{ color: geminiSaveResult.includes('Ошибка') ? '#ef4444' : '#22c55e' }}>{geminiSaveResult}</p>
+              )}
             </div>
 
             {/* Точка Банк — JWT токен */}

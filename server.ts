@@ -5,6 +5,7 @@ import axios from "axios";
 import dotenv from "dotenv";
 import cors from "cors";
 import Anthropic from "@anthropic-ai/sdk";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 import { initializeApp } from "firebase/app";
 import { initializeFirestore, doc, getDoc, collection, getDocs, addDoc, setDoc, updateDoc, deleteDoc, serverTimestamp, query, where, orderBy } from "firebase/firestore";
 import { getStorage, ref as storageRef, uploadBytes as fbUploadBytes, getDownloadURL as fbGetDownloadURL } from "firebase/storage";
@@ -636,26 +637,47 @@ async function runTgCheckJob(phones: string[]) {
 app.post('/api/ai/generate-variants', async (req, res) => {
   const { message } = req.body;
   if (!message?.trim()) return res.status(400).json({ error: 'Нужен message' });
-  try {
-    let apiKey = process.env.ANTHROPIC_API_KEY;
-    if (db) {
-      const cfg = await getDoc(doc(db, 'settings', 'ai_config')).catch(() => null);
-      if (cfg?.exists() && cfg.data().claudeKey) apiKey = cfg.data().claudeKey;
+
+  const prompt = `Перепиши это сообщение 9 разными способами для рассылки клиентам. Сохрани смысл, эмодзи и стиль, но измени структуру и формулировки чтобы каждый вариант был уникальным. Отвечай ТОЛЬКО пронумерованным списком 1-9, каждый вариант с новой строки, без пояснений:\n\n${message}`;
+
+  let geminiKey: string | null = process.env.GEMINI_API_KEY || null;
+  let claudeKey: string | null = process.env.ANTHROPIC_API_KEY || null;
+  if (db) {
+    const cfg = await getDoc(doc(db, 'settings', 'ai_config')).catch(() => null);
+    if (cfg?.exists()) {
+      if (cfg.data().geminiKey) geminiKey = cfg.data().geminiKey;
+      if (cfg.data().claudeKey) claudeKey = cfg.data().claudeKey;
     }
-    if (!apiKey) throw new Error('ANTHROPIC_API_KEY не задан');
-    const anthropic = new Anthropic({ apiKey });
-    const result = await anthropic.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 3000,
-      messages: [{ role: 'user', content: `Перепиши это сообщение 9 разными способами для рассылки клиентам. Сохрани смысл, эмодзи и стиль, но измени структуру и формулировки чтобы каждый вариант был уникальным. Отвечай ТОЛЬКО пронумерованным списком 1-9, каждый вариант с новой строки, без пояснений:\n\n${message}` }]
-    });
-    const text = result.content[0].type === 'text' ? result.content[0].text : '';
-    const variants = text.split('\n')
+  }
+
+  const parseVariants = (text: string) =>
+    text.split('\n')
       .filter(l => /^\d+[.)]\s/.test(l.trim()))
       .map(l => l.replace(/^\d+[.)]\s*/, '').trim())
       .filter(Boolean)
       .slice(0, 9);
-    res.json({ success: true, variants });
+
+  try {
+    if (geminiKey) {
+      const genAI = new GoogleGenerativeAI(geminiKey);
+      const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+      const result = await model.generateContent(prompt);
+      const text = result.response.text();
+      const variants = parseVariants(text);
+      return res.json({ success: true, variants, engine: 'gemini' });
+    }
+    if (claudeKey) {
+      const anthropic = new Anthropic({ apiKey: claudeKey });
+      const result = await anthropic.messages.create({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 3000,
+        messages: [{ role: 'user', content: prompt }]
+      });
+      const text = result.content[0].type === 'text' ? result.content[0].text : '';
+      const variants = parseVariants(text);
+      return res.json({ success: true, variants, engine: 'claude' });
+    }
+    throw new Error('Нет API ключа — добавь Gemini или Claude ключ в Настройках рассылки');
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
