@@ -5,7 +5,6 @@ import axios from "axios";
 import dotenv from "dotenv";
 import cors from "cors";
 import Anthropic from "@anthropic-ai/sdk";
-import { GoogleGenerativeAI } from "@google/generative-ai";
 import { initializeApp } from "firebase/app";
 import { initializeFirestore, doc, getDoc, collection, getDocs, addDoc, setDoc, updateDoc, deleteDoc, serverTimestamp, query, where, orderBy } from "firebase/firestore";
 import { getStorage, ref as storageRef, uploadBytes as fbUploadBytes, getDownloadURL as fbGetDownloadURL } from "firebase/storage";
@@ -656,10 +655,12 @@ app.post('/api/ai/generate-variants', async (req, res) => {
 
   try {
     if (geminiKey) {
-      const genAI = new GoogleGenerativeAI(geminiKey);
-      const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
-      const result = await model.generateContent(prompt);
-      const text = result.response.text();
+      const ai = new GoogleGenAI({ apiKey: geminiKey });
+      const result = await ai.models.generateContent({
+        model: 'gemini-2.0-flash',
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      });
+      const text = result.candidates?.[0]?.content?.parts?.[0]?.text || '';
       const variants = parseVariants(text);
       return res.json({ success: true, variants, engine: 'gemini' });
     }
