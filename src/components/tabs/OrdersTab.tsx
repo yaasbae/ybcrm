@@ -6,8 +6,10 @@ import {
   TrendingUp, Users, ShoppingBag,
   Calendar, Award, AlertCircle, Search, Plus,
   X, MapPin, Star, RefreshCcw,
-  Tag, Trash2, Phone, UserCircle, ChevronRight, QrCode
+  Tag, Trash2, Phone, UserCircle, ChevronRight, QrCode as QrCodeIcon,
+  CheckCircle2, Copy, Send
 } from 'lucide-react';
+import { QRCodeSVG } from 'qrcode.react';
 import { formatCurrency, cn } from '../../lib/utils';
 import { motion, AnimatePresence } from 'motion/react';
 import { OrderData } from '../AnalyticsDashboard';
@@ -266,7 +268,7 @@ const OrderRow = React.memo(({
               className="mt-1 w-full flex items-center justify-center gap-0.5 py-1 rounded-md border border-violet-200 bg-violet-50 text-violet-500 hover:bg-violet-500 hover:text-white hover:border-violet-500 transition-all"
               title="Открыть страницу оплаты"
             >
-              <QrCode size={10} />
+              <QrCodeIcon size={10} />
             </a>
           )}
           {order.isFirebase && (
@@ -408,7 +410,7 @@ interface OrdersTabProps {
   deleteOrder: (id: string) => void;
   newOrder: Partial<OrderData>;
   setNewOrder: (o: Partial<OrderData>) => void;
-  handleCreateOrder: () => void;
+  handleCreateOrder: () => Promise<string | null>;
   handbookProducts: string[];
   handbookColors: string[];
   handbookSizes: string[];
@@ -470,6 +472,17 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
   const [showPhoneSuggestions, setShowPhoneSuggestions] = useState(false);
   const suggestionsRef = useRef<HTMLDivElement>(null);
   const phoneSuggestionsRef = useRef<HTMLDivElement>(null);
+
+  // QR / payment state after order creation
+  const [createdOrderId, setCreatedOrderId] = useState<string | null>(null);
+  const [createdPaymentUrl, setCreatedPaymentUrl] = useState<string | null>(null);
+  const [isCreatingQr, setIsCreatingQr] = useState(false);
+  const [qrCopied, setQrCopied] = useState(false);
+  const [tochkaConfigured, setTochkaConfigured] = useState(false);
+
+  useEffect(() => {
+    fetch('/api/tochka/status').then(r => r.json()).then(d => setTochkaConfigured(!!d.configured)).catch(() => {});
+  }, []);
 
   useEffect(() => {
     getDocs(query(collection(db, 'contacts'), orderBy('totalSpent', 'desc')))
@@ -967,7 +980,29 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
             </div>
 
             <button
-              onClick={handleCreateOrder}
+              onClick={async () => {
+                const orderId = await handleCreateOrder();
+                if (!orderId) return;
+                setCreatedOrderId(orderId);
+                setCreatedPaymentUrl(null);
+                if (tochkaConfigured) {
+                  setIsCreatingQr(true);
+                  try {
+                    const res = await fetch('/api/tochka/create-payment', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({
+                        orderId,
+                        amount: newOrder.revenue || 0,
+                        description: `Заказ #${newOrder.orderId} ${newOrder.item || ''}`,
+                      })
+                    });
+                    const data = await res.json();
+                    if (data.paymentUrl) setCreatedPaymentUrl(data.paymentUrl);
+                  } catch {}
+                  finally { setIsCreatingQr(false); }
+                }
+              }}
               className="w-full md:w-64 bg-zinc-900 text-white py-4 rounded-xl text-[10px] font-black uppercase tracking-[0.2em] hover:bg-black transition-all active:scale-[0.98] flex items-center justify-center gap-3 shadow-lg shadow-zinc-200"
             >
               <span>Создать заказ</span>
@@ -975,6 +1010,83 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
             </button>
           </div>
         </div>
+
+        {/* QR Panel — появляется после создания заказа */}
+        <AnimatePresence>
+          {createdOrderId && (
+            <motion.div
+              initial={{ opacity: 0, y: -8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0 }}
+              className="mt-4 p-4 bg-white border border-emerald-100 rounded-2xl space-y-4"
+            >
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2 text-emerald-600">
+                  <CheckCircle2 size={16} />
+                  <span className="text-[11px] font-black uppercase tracking-widest">Заказ создан!</span>
+                </div>
+                <button onClick={() => { setCreatedOrderId(null); setCreatedPaymentUrl(null); }} className="text-zinc-300 hover:text-zinc-500">
+                  <X size={14} />
+                </button>
+              </div>
+
+              {isCreatingQr && (
+                <div className="flex items-center gap-2 text-zinc-400 text-[11px]">
+                  <RefreshCcw size={12} className="animate-spin" />
+                  Создаём ссылку оплаты...
+                </div>
+              )}
+
+              {createdPaymentUrl && (
+                <div className="space-y-3">
+                  <div className="flex justify-center">
+                    <div className="p-3 bg-white border border-zinc-200 rounded-xl inline-block">
+                      <QRCodeSVG value={`${window.location.origin}/pay/${createdOrderId}`} size={160} />
+                    </div>
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => {
+                        const url = `${window.location.origin}/pay/${createdOrderId}`;
+                        navigator.clipboard.writeText(url);
+                        setQrCopied(true);
+                        setTimeout(() => setQrCopied(false), 2000);
+                      }}
+                      className="flex-1 py-2.5 rounded-xl border border-zinc-200 text-[10px] font-black text-zinc-700 hover:bg-zinc-50 flex items-center justify-center gap-1.5"
+                    >
+                      {qrCopied ? '✓ Скопировано!' : <><Copy size={11} /> Копировать ссылку</>}
+                    </button>
+                    <a
+                      href={`https://t.me/share/url?url=${encodeURIComponent(`${window.location.origin}/pay/${createdOrderId}`)}&text=${encodeURIComponent(`Счёт на оплату заказа #${createdOrderId}`)}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex-1 py-2.5 rounded-xl bg-blue-500 text-white text-[10px] font-black hover:bg-blue-600 flex items-center justify-center gap-1.5"
+                    >
+                      <Send size={11} /> Отправить клиенту
+                    </a>
+                  </div>
+                  <a
+                    href={`/pay/${createdOrderId}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="block text-center text-[9px] text-zinc-400 hover:text-violet-600 underline"
+                  >
+                    Открыть страницу оплаты
+                  </a>
+                </div>
+              )}
+
+              {!isCreatingQr && !createdPaymentUrl && !tochkaConfigured && (
+                <p className="text-[10px] text-zinc-400">
+                  Настрой Точка Банк в Рассылки → Настройки, чтобы автоматически создавать QR
+                </p>
+              )}
+              {!isCreatingQr && !createdPaymentUrl && tochkaConfigured && (
+                <p className="text-[10px] text-amber-600">Не удалось создать ссылку оплаты</p>
+              )}
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
 
       {/* Orders List Table */}

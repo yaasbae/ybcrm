@@ -211,10 +211,10 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
     }
   };
 
-  const handleCreateOrder = async () => {
+  const handleCreateOrder = async (): Promise<string | null> => {
     if (!newOrder.orderId || !newOrder.clientName) {
       alert('Укажите ID заказа и ФИО клиента');
-      return;
+      return null;
     }
 
     const orderToCreate: OrderData = {
@@ -253,6 +253,7 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
         date: orderToCreate.date.toISOString(),
         deadlineDate: orderToCreate.deadlineDate.toISOString()
       });
+      const createdId = orderToCreate.orderId;
       setNewOrder({
         date: new Date(),
         orderId: '',
@@ -270,9 +271,11 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
         blogger: '',
         rawRow: Array(30).fill('')
       });
+      return createdId;
     } catch (err) {
       console.error(err);
       alert('Ошибка: ' + (err as any).message);
+      return null;
     }
   };
 
