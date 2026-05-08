@@ -1,12 +1,14 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { 
-  ArrowLeft, Save, ShoppingCart, User, 
-  MapPin, CreditCard, Instagram, Plus, 
+import {
+  ArrowLeft, Save, ShoppingCart, User,
+  MapPin, CreditCard, Instagram, Plus,
   Trash2, CheckCircle2, AlertCircle, Loader2,
-  ChevronDown, ChevronUp, Image as ImageIcon, X
+  ChevronDown, ChevronUp, Image as ImageIcon, X,
+  QrCode, Copy, ExternalLink
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import Papa from 'papaparse';
+import { QRCodeSVG } from 'qrcode.react';
 import { cn, formatCurrency } from '../lib/utils';
 import { db, OperationType, handleFirestoreError, storage } from '../firebase';
 import { collection, onSnapshot, doc, setDoc, query, orderBy, getDoc, updateDoc } from 'firebase/firestore';
@@ -29,12 +31,26 @@ export const OrderForm: React.FC<OrderFormProps> = ({ onBack, sheetId, initialCl
   const [fetchingSuggestions, setFetchingSuggestions] = useState(false);
   const [success, setSuccess] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [savedOrderId, setSavedOrderId] = useState<string | null>(null);
+  const [tochkaEnabled, setTochkaEnabled] = useState(false);
+  const [qrUrl, setQrUrl] = useState<string | null>(null);
+  const [isCreatingQr, setIsCreatingQr] = useState(false);
+  const [qrError, setQrError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const [appProducts, setAppProducts] = useState<any[]>([]);
   const [contacts, setContacts] = useState<any[]>([]);
   const [clientSearchTerm, setClientSearchTerm] = useState('');
   const [showClientDropdown, setShowClientDropdown] = useState(false);
   const [showPhoneDropdown, setShowPhoneDropdown] = useState(false);
+
+  // Check if Tochka Bank is configured
+  useEffect(() => {
+    fetch('/api/tochka/status')
+      .then(r => r.json())
+      .then(d => setTochkaEnabled(!!d.configured))
+      .catch(() => {});
+  }, []);
 
   // Fetch contacts for search
   useEffect(() => {
@@ -307,14 +323,48 @@ export const OrderForm: React.FC<OrderFormProps> = ({ onBack, sheetId, initialCl
       }
 
       setSuccess(true);
-      setTimeout(() => {
-        onBack();
-      }, 2000);
+      setSavedOrderId(id);
+      if (!tochkaEnabled) {
+        setTimeout(() => onBack(), 2000);
+      }
     } catch (err: any) {
       handleFirestoreError(err, OperationType.WRITE, 'orders');
       setError('Ошибка при сохранении заказа в базу данных.');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleCreateQr = async () => {
+    if (!savedOrderId) return;
+    setIsCreatingQr(true);
+    setQrError(null);
+    try {
+      const res = await fetch('/api/tochka/create-payment', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          orderId: savedOrderId,
+          amount: parseFloat(price) || 0,
+          description: `Заказ #${orderNumber} ${products.map(p => p.name).join(', ')}`,
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Ошибка создания QR');
+      setQrUrl(data.paymentUrl);
+    } catch (e: any) {
+      setQrError(e.message);
+    } finally {
+      setIsCreatingQr(false);
+    }
+  };
+
+  const handleCopyLink = () => {
+    if (qrUrl) {
+      navigator.clipboard.writeText(qrUrl).then(() => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      });
     }
   };
 
@@ -844,7 +894,7 @@ export const OrderForm: React.FC<OrderFormProps> = ({ onBack, sheetId, initialCl
             
             <AnimatePresence>
               {error && (
-                <motion.div 
+                <motion.div
                   initial={{ opacity: 0, y: 10 }}
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0 }}
@@ -852,6 +902,92 @@ export const OrderForm: React.FC<OrderFormProps> = ({ onBack, sheetId, initialCl
                 >
                   <AlertCircle className="w-5 h-5" />
                   {error}
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            {/* Tochka Bank QR section — appears after order saved */}
+            <AnimatePresence>
+              {success && tochkaEnabled && (
+                <motion.div
+                  initial={{ opacity: 0, y: 12 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0 }}
+                  className="mt-4 p-5 bg-white border border-slate-100 rounded-2xl shadow-sm space-y-4"
+                >
+                  <div className="flex items-center gap-2 text-violet-600">
+                    <QrCode className="w-4 h-4" />
+                    <span className="text-[11px] font-semibold uppercase tracking-widest">Точка Банк · QR-оплата</span>
+                  </div>
+
+                  {!qrUrl ? (
+                    <div className="space-y-2">
+                      <p className="text-xs text-zinc-500">
+                        Сумма: <span className="font-bold text-zinc-900">{formatCurrency(parseFloat(price) || 0)}</span>
+                      </p>
+                      <button
+                        type="button"
+                        onClick={handleCreateQr}
+                        disabled={isCreatingQr}
+                        className="w-full py-3 rounded-xl bg-violet-600 text-white text-xs font-semibold uppercase tracking-widest hover:bg-violet-700 active:scale-[0.98] transition-all flex items-center justify-center gap-2"
+                      >
+                        {isCreatingQr ? (
+                          <><Loader2 className="w-4 h-4 animate-spin" /> Создание QR...</>
+                        ) : (
+                          <><QrCode className="w-4 h-4" /> Создать QR-ссылку</>
+                        )}
+                      </button>
+                      {qrError && (
+                        <p className="text-xs text-red-500 flex items-center gap-1">
+                          <AlertCircle className="w-3 h-3" />{qrError}
+                        </p>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="space-y-4">
+                      <div className="flex justify-center">
+                        <div className="p-3 bg-white border border-slate-200 rounded-xl inline-block">
+                          <QRCodeSVG value={qrUrl} size={180} />
+                        </div>
+                      </div>
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          onClick={handleCopyLink}
+                          className="flex-1 py-2.5 rounded-xl border border-slate-200 text-xs font-semibold text-zinc-700 hover:bg-slate-50 transition-colors flex items-center justify-center gap-2"
+                        >
+                          <Copy className="w-3.5 h-3.5" />
+                          {copied ? 'Скопировано!' : 'Копировать ссылку'}
+                        </button>
+                        <a
+                          href={qrUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="flex-1 py-2.5 rounded-xl border border-violet-200 bg-violet-50 text-xs font-semibold text-violet-700 hover:bg-violet-100 transition-colors flex items-center justify-center gap-2"
+                        >
+                          <ExternalLink className="w-3.5 h-3.5" />
+                          Открыть ссылку
+                        </a>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={onBack}
+                        className="w-full py-3 rounded-xl bg-slate-900 text-white text-xs font-semibold uppercase tracking-widest hover:bg-slate-800 transition-colors"
+                      >
+                        Готово · Вернуться к заказам
+                      </button>
+                    </div>
+                  )}
+
+                  {!qrUrl && (
+                    <button
+                      type="button"
+                      onClick={onBack}
+                      className="w-full py-2 rounded-xl text-xs font-medium text-zinc-400 hover:text-zinc-600 transition-colors"
+                    >
+                      Пропустить и вернуться
+                    </button>
+                  )}
                 </motion.div>
               )}
             </AnimatePresence>

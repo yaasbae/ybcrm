@@ -1669,6 +1669,104 @@ app.post("/api/content/instagram-settings", async (req, res) => {
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
+// ─── Точка Банк API ─────────────────────────────────────────────────────────
+
+const TOCHKA_API = 'https://enter.tochka.com';
+
+async function getTochkaToken(): Promise<string | null> {
+  if (!db) return null;
+  const snap = await getDoc(doc(db, 'settings', 'tochka_api')).catch(() => null);
+  return snap?.exists() ? snap.data().jwtToken : null;
+}
+
+// Сохранить JWT токен Точки
+app.post('/api/tochka/save-token', async (req, res) => {
+  const { jwtToken } = req.body;
+  if (!jwtToken?.trim()) return res.status(400).json({ error: 'Нужен jwtToken' });
+  if (!db) return res.status(503).json({ error: 'DB не подключена' });
+  // Декодируем customerCode из JWT
+  try {
+    const payload = JSON.parse(Buffer.from(jwtToken.split('.')[1], 'base64').toString());
+    const customerCode = payload.customer_code || '';
+    await setDoc(doc(db, 'settings', 'tochka_api'), { jwtToken, customerCode });
+    res.json({ success: true, customerCode });
+  } catch (e: any) {
+    res.status(400).json({ error: 'Невалидный JWT: ' + e.message });
+  }
+});
+
+// Создать ссылку/QR на оплату
+app.post('/api/tochka/create-payment', async (req, res) => {
+  const { orderId, amount, description } = req.body;
+  if (!amount || !orderId) return res.status(400).json({ error: 'Нужны orderId и amount' });
+  if (!db) return res.status(503).json({ error: 'DB не подключена' });
+  try {
+    const token = await getTochkaToken();
+    if (!token) return res.status(400).json({ error: 'Токен Точки не настроен' });
+    const snap = await getDoc(doc(db, 'settings', 'tochka_api'));
+    const customerCode = snap?.data()?.customerCode;
+    const webhookUrl = process.env.SERVER_URL ? `${process.env.SERVER_URL}/api/tochka/webhook` : null;
+
+    const response = await axios.post(
+      `${TOCHKA_API}/acquiring/v1.0/payments`,
+      {
+        customerCode,
+        amount: Math.round(parseFloat(amount) * 100) / 100,
+        purpose: description || `Оплата заказа ${orderId}`,
+        redirectUrl: process.env.SERVER_URL ? `${process.env.SERVER_URL}/pay/success` : undefined,
+        ttl: 72 * 60, // 72 часа
+      },
+      { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } }
+    );
+
+    const paymentData = response.data;
+    const paymentUrl = paymentData.paymentUrl || paymentData.data?.paymentUrl;
+
+    // Сохраняем ссылку оплаты в заказ
+    if (orderId && paymentUrl) {
+      await updateDoc(doc(db, 'orders', orderId), {
+        paymentUrl,
+        paymentId: paymentData.operationId || paymentData.data?.operationId,
+        paymentStatus: 'pending',
+        paymentCreatedAt: new Date().toISOString(),
+        paymentAmount: amount,
+      }).catch(() => {});
+    }
+
+    res.json({ success: true, paymentUrl, data: paymentData });
+  } catch (e: any) {
+    const errData = e.response?.data;
+    console.error('[tochka] create-payment error:', errData || e.message);
+    res.status(500).json({ error: e.message, details: errData });
+  }
+});
+
+// Webhook — уведомление об оплате от Точки
+app.post('/api/tochka/webhook', async (req, res) => {
+  try {
+    const body = req.body;
+    console.log('[tochka] webhook:', JSON.stringify(body).slice(0, 200));
+    // Найти заказ по operationId и обновить статус
+    if (db && body.operationId) {
+      const ordersSnap = await getDocs(query(collection(db, 'orders'), where('paymentId', '==', body.operationId)));
+      for (const d of ordersSnap.docs) {
+        const status = body.status === 'Paid' || body.status === 'paid' ? 'paid' : body.status;
+        await updateDoc(d.ref, { paymentStatus: status, paymentPaidAt: new Date().toISOString() });
+      }
+    }
+    res.json({ success: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Статус токена Точки
+app.get('/api/tochka/status', async (_req, res) => {
+  if (!db) return res.json({ configured: false });
+  const snap = await getDoc(doc(db, 'settings', 'tochka_api')).catch(() => null);
+  res.json({ configured: !!snap?.exists(), customerCode: snap?.data()?.customerCode });
+});
+
 // ─── Telegram Bot ───────────────────────────────────────────────────────────
 
 const BOT_TOKEN = process.env.TG_BOT_TOKEN;

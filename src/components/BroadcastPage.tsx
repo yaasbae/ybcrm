@@ -89,6 +89,12 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
   const [photoResult, setPhotoResult] = useState('');
   const [isSavingName, setIsSavingName] = useState(false);
 
+  // Tochka Bank settings
+  const [tochkaToken, setTochkaToken] = useState('');
+  const [isSavingTochka, setIsSavingTochka] = useState(false);
+  const [tochkaSaveResult, setTochkaSaveResult] = useState('');
+  const [tochkaConfigured, setTochkaConfigured] = useState(false);
+
   const loadTgStatus = async () => {
     try {
       const res = await fetch('/api/tg/auth/status');
@@ -292,6 +298,7 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
     loadData();
     loadTgStatus();
     loadConfig();
+    fetch('/api/tochka/status').then(r => r.json()).then(d => setTochkaConfigured(!!d.configured)).catch(() => {});
   }, []);
 
   const handleSelectFirst20 = () => {
@@ -874,6 +881,52 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
                   </div>
                 )}
               </div>
+            </div>
+
+            {/* Точка Банк — JWT токен */}
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <label className="text-[9px] font-black text-zinc-400 uppercase tracking-widest ml-1">Точка Банк · QR-оплата</label>
+                {tochkaConfigured && <span className="text-[8px] font-black text-emerald-500 uppercase tracking-widest">✓ настроен</span>}
+              </div>
+              <p className="text-[9px] text-zinc-400 ml-1">Вставь JWT токен из личного кабинета Точки для создания QR-ссылок при оформлении заказов</p>
+              <textarea
+                value={tochkaToken}
+                onChange={e => setTochkaToken(e.target.value)}
+                placeholder="eyJhbGciOiJSUzI1NiIsInR5cCI6..."
+                rows={3}
+                className="w-full bg-zinc-50 border border-zinc-200 rounded-xl px-3 py-2.5 text-[10px] font-mono focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-400 transition-all resize-none"
+              />
+              {tochkaSaveResult && (
+                <p className="text-[10px] font-medium ml-1" style={{ color: tochkaSaveResult.includes('Ошибка') ? '#ef4444' : '#22c55e' }}>{tochkaSaveResult}</p>
+              )}
+              <button
+                onClick={async () => {
+                  if (!tochkaToken.trim()) return;
+                  setIsSavingTochka(true);
+                  setTochkaSaveResult('');
+                  try {
+                    const res = await fetch('/api/tochka/save-token', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ jwtToken: tochkaToken.trim() })
+                    });
+                    const data = await res.json();
+                    if (!res.ok) throw new Error(data.error || 'Ошибка');
+                    setTochkaSaveResult(`Сохранено! Код клиента: ${data.customerCode}`);
+                    setTochkaConfigured(true);
+                    setTochkaToken('');
+                  } catch (e: any) {
+                    setTochkaSaveResult(`Ошибка: ${e.message}`);
+                  } finally {
+                    setIsSavingTochka(false);
+                  }
+                }}
+                disabled={isSavingTochka || !tochkaToken.trim()}
+                className="w-full py-2.5 bg-violet-600 text-white rounded-xl text-[10px] font-black hover:bg-violet-700 transition-all disabled:opacity-40 flex items-center justify-center gap-2"
+              >
+                {isSavingTochka ? <><span className="animate-spin">⟳</span> Сохраняем...</> : 'Сохранить токен'}
+              </button>
             </div>
           </div>
         )}
