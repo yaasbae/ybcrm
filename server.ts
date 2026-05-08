@@ -776,7 +776,9 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
     const phone = rawPhone.startsWith('+') ? rawPhone : `+${rawPhone}`;
     const client = clients[readyIdx];
     const variant = messageVariants[Math.floor(Math.random() * messageVariants.length)];
-    const textMsg = contactButton ? `${variant}\n\nhttps://t.me/YAASBAE_CLO_bot` : variant;
+    const msgMarkup = contactButton ? new Api.ReplyInlineMarkup({
+      rows: [new Api.KeyboardButtonRow({ buttons: [new Api.KeyboardButtonUrl({ text: 'Написать менеджеру', url: 'https://t.me/YAASBAE_CLO_bot' })] })]
+    }) : undefined;
 
     try {
       // Resolve entity
@@ -845,7 +847,7 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
           }));
           await client.sendFile(entity, { file: fileObjs.length === 1 ? fileObjs[0] : fileObjs as any, forceDocument: false });
         }
-        await client.sendMessage(entity, { message: textMsg });
+        await client.sendMessage(entity, { message: variant, buttons: msgMarkup as any });
         accountLastSent.set(readyIdx, Date.now());
         stealthJob.log.push({ phone: rawPhone, name: rawPhone, status: 'sent' });
         stealthJob.sent++;
@@ -1091,26 +1093,25 @@ app.post("/api/broadcast/gramjs", async (req, res) => {
           results.push({ phone: rawPhone, status: "no_telegram", error: "Нет Telegram" });
           continue;
         }
+        const msgMarkup = contactButton ? new Api.ReplyInlineMarkup({
+          rows: [new Api.KeyboardButtonRow({ buttons: [new Api.KeyboardButtonUrl({ text: 'Написать менеджеру', url: 'https://t.me/YAASBAE_CLO_bot' })] })]
+        }) : undefined;
         if (imageFiles.length > 0) {
           const { CustomFile } = await import("telegram/client/uploads");
-          // Convert all images to JPEG (handles HEIC, PNG, etc — Telegram only accepts JPEG/PNG)
           const fileObjs = await Promise.all(imageFiles.map(async f => {
             const raw = Buffer.from(f.base64, "base64");
             const jpg = await sharp(raw).jpeg({ quality: 90 }).toBuffer().catch(() => raw);
             const name = f.name.replace(/\.[^.]+$/, '.jpg');
             return new CustomFile(name, jpg.length, "", jpg);
           }));
-          // Send photo(s) without caption
           if (fileObjs.length === 1) {
             await client.sendFile(entity as any, { file: fileObjs[0], forceDocument: false });
           } else {
             await client.sendFile(entity as any, { file: fileObjs as any, forceDocument: false });
           }
-          const textMsg = contactButton ? `${getVariant()}\n\nhttps://t.me/YAASBAE_CLO_bot` : getVariant();
-          await client.sendMessage(entity as any, { message: textMsg });
+          await client.sendMessage(entity as any, { message: getVariant(), buttons: msgMarkup as any });
         } else {
-          const textMsg = contactButton ? `${getVariant()}\n\nhttps://t.me/YAASBAE_CLO_bot` : getVariant();
-          await client.sendMessage(entity as any, { message: textMsg });
+          await client.sendMessage(entity as any, { message: getVariant(), buttons: msgMarkup as any });
         }
         results.push({ phone: rawPhone, status: "sent", account: accounts[accIdx].phone });
         msgCount++;
