@@ -20,6 +20,88 @@ const STATUS_OPTIONS = ['Новый', 'В работе', 'Оплачен', 'От
 const DELIVERY_OPTIONS = ['СДЭК', 'Почта РФ', 'Боксберри', 'Самовывоз', 'Курьер', 'DBS'];
 const SOURCE_OPTIONS = ['Instagram', 'WhatsApp', 'ТГ', 'Блогер', 'Контент', 'Сарафан', 'Повторный'];
 
+const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string, field: string, value: any) => void }> = ({ order, updateOrderData }) => {
+  const [loading, setLoading] = useState(false);
+  const [paymentUrl, setPaymentUrl] = useState<string | null>(order.paymentUrl || null);
+  const [copied, setCopied] = useState(false);
+  const [showQr, setShowQr] = useState(false);
+
+  const pageUrl = `${window.location.origin}/pay/${order.orderId}`;
+
+  const handleCreate = async () => {
+    setLoading(true);
+    try {
+      const res = await fetch('/api/tochka/create-payment', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          orderId: order.orderId,
+          amount: order.revenue || 0,
+          description: `Заказ #${order.orderId} ${order.item || ''}`,
+        })
+      });
+      const data = await res.json();
+      if (data.paymentUrl) {
+        setPaymentUrl(data.paymentUrl);
+        updateOrderData(order.orderId, 'paymentUrl', data.paymentUrl);
+      }
+    } catch {}
+    finally { setLoading(false); }
+  };
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(pageUrl);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  if (!paymentUrl) {
+    return (
+      <button
+        onClick={handleCreate}
+        disabled={loading}
+        className="mt-1.5 w-full text-[8px] font-black py-1 rounded-md border border-violet-200 bg-violet-50 text-violet-600 hover:bg-violet-500 hover:text-white hover:border-violet-500 transition-all flex items-center justify-center gap-1 disabled:opacity-50"
+      >
+        {loading ? <RefreshCcw size={8} className="animate-spin" /> : <QrCodeIcon size={8} />}
+        {loading ? 'Создаём...' : 'Создать счёт'}
+      </button>
+    );
+  }
+
+  return (
+    <div className="mt-1.5 space-y-1">
+      <div className="flex gap-1">
+        <button
+          onClick={handleCopy}
+          className="flex-1 text-[8px] font-black py-1 rounded-md border border-zinc-200 bg-white text-zinc-600 hover:bg-zinc-50 transition-all flex items-center justify-center gap-1"
+        >
+          <Copy size={8} />
+          {copied ? 'Скопировано!' : 'Скопировать'}
+        </button>
+        <a
+          href={`https://t.me/share/url?url=${encodeURIComponent(pageUrl)}&text=${encodeURIComponent(`Счёт на оплату заказа #${order.orderId}`)}`}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="flex-1 text-[8px] font-black py-1 rounded-md border border-blue-200 bg-blue-50 text-blue-600 hover:bg-blue-500 hover:text-white hover:border-blue-500 transition-all flex items-center justify-center gap-1"
+        >
+          <Send size={8} /> Отправить
+        </a>
+      </div>
+      <button
+        onClick={() => setShowQr(v => !v)}
+        className="w-full text-[8px] font-black py-1 rounded-md border border-violet-200 bg-violet-50 text-violet-600 hover:bg-violet-100 transition-all flex items-center justify-center gap-1"
+      >
+        <QrCodeIcon size={8} /> {showQr ? 'Скрыть QR' : 'QR код'}
+      </button>
+      {showQr && (
+        <div className="flex justify-center p-2 bg-white border border-zinc-100 rounded-lg">
+          <QRCodeSVG value={pageUrl} size={100} />
+        </div>
+      )}
+    </div>
+  );
+};
+
 const OrderRow = React.memo(({
   order,
   updateOrderData,
@@ -187,6 +269,9 @@ const OrderRow = React.memo(({
             ★ Реком.
           </button>
         </div>
+
+        {/* QR / Отправить счёт */}
+        <PaymentRowBlock order={order} updateOrderData={updateOrderData} />
       </td>
 
       {/* Финансы */}
