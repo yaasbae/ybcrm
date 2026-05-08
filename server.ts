@@ -800,18 +800,11 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
         continue;
       }
 
-      // FROZEN — аккаунт жив, но метод заблокирован антиспамом → ротация
+      // FROZEN — метод временно заблокирован антиспамом, аккаунт жив → пропускаем только в этой сессии
       if (resolveErr.includes('FROZEN')) {
-        console.log(`[stealth] account ${accounts[readyIdx]?.phone} frozen, rotating`);
+        console.log(`[stealth] account ${accounts[readyIdx]?.phone} frozen (session only), rotating`);
         frozenIdxs.add(readyIdx);
-        // Помечаем неактивным в Firestore
-        const aSnap = await getDoc(doc(db, 'settings', 'tg_accounts')).catch(() => null);
-        if (aSnap?.exists()) {
-          const allAccs = aSnap.data().accounts || [];
-          const bannedPhone = accounts[readyIdx]?.phone;
-          await setDoc(doc(db, 'settings', 'tg_accounts'), { accounts: allAccs.map((a:any) => a.phone === bannedPhone ? {...a, active: false, bannedAt: new Date().toISOString()} : a) }).catch(() => {});
-        }
-        i--; // повторить с другим аккаунтом
+        i--;
         continue;
       }
 
@@ -821,14 +814,8 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
         })).catch((e:any) => { importErr = e?.message||String(e); return null; }) as any;
 
         if (importErr.includes('FROZEN')) {
-          console.log(`[stealth] ImportContacts frozen for ${accounts[readyIdx]?.phone}, rotating`);
+          console.log(`[stealth] ImportContacts frozen for ${accounts[readyIdx]?.phone} (session only), rotating`);
           frozenIdxs.add(readyIdx);
-          const aSnap = await getDoc(doc(db, 'settings', 'tg_accounts')).catch(() => null);
-          if (aSnap?.exists()) {
-            const allAccs = aSnap.data().accounts || [];
-            const bannedPhone = accounts[readyIdx]?.phone;
-            await setDoc(doc(db, 'settings', 'tg_accounts'), { accounts: allAccs.map((a:any) => a.phone === bannedPhone ? {...a, active: false, bannedAt: new Date().toISOString()} : a) }).catch(() => {});
-          }
           i--;
           continue;
         }
