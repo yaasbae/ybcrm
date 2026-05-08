@@ -660,7 +660,7 @@ app.post('/api/ai/generate-variants', async (req, res) => {
   try {
     if (geminiKey) {
       const genAI = new GoogleGenerativeAI(geminiKey);
-      const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+      const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
       const result = await model.generateContent(prompt);
       const text = result.response.text();
       const variants = parseVariants(text);
