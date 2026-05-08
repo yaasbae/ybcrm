@@ -1031,38 +1031,48 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
               />
             </div>
 
-            {/* Генерация вариантов */}
+            {/* 9 вариантов сообщений */}
             <div className="space-y-2">
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={handleGenerateVariants}
-                  disabled={isGeneratingVariants || !message.trim()}
-                  className="flex items-center gap-1.5 px-3 py-1.5 bg-violet-100 hover:bg-violet-200 text-violet-700 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all disabled:opacity-40"
-                >
-                  {isGeneratingVariants ? <Loader2 size={10} className="animate-spin" /> : '✨'}
-                  {isGeneratingVariants ? 'Генерируем...' : 'Сгенерировать 9 вариантов'}
-                </button>
-                {messageVariants.length > 0 && (
-                  <button onClick={() => setShowVariants(v => !v)} className="text-[9px] text-zinc-400 hover:text-zinc-600">
-                    {showVariants ? 'Скрыть' : `Показать варианты (${messageVariants.length})`}
+              <div className="flex items-center justify-between ml-1">
+                <label className="text-[9px] font-black text-zinc-400 uppercase tracking-widest">
+                  Варианты сообщений (1–9) — при рассылке каждому отправится случайный
+                </label>
+                <div className="flex gap-2">
+                  <button
+                    onClick={handleGenerateVariants}
+                    disabled={isGeneratingVariants || !message.trim()}
+                    className="flex items-center gap-1 px-2 py-1 bg-violet-100 hover:bg-violet-200 text-violet-700 rounded-lg text-[8px] font-black uppercase tracking-widest transition-all disabled:opacity-40"
+                  >
+                    {isGeneratingVariants ? <Loader2 size={9} className="animate-spin" /> : '✨'}
+                    {isGeneratingVariants ? 'Генерация...' : 'Авто AI'}
                   </button>
-                )}
-              </div>
-              {showVariants && messageVariants.length > 0 && (
-                <div className="space-y-1.5 max-h-48 overflow-y-auto">
-                  {messageVariants.map((v, i) => (
-                    <div key={i} className="flex gap-2 items-start">
-                      <span className="text-[8px] font-black text-violet-400 shrink-0 mt-1">{i + 1}</span>
-                      <textarea
-                        value={v}
-                        onChange={e => setMessageVariants(prev => prev.map((x, j) => j === i ? e.target.value : x))}
-                        rows={2}
-                        className="flex-1 bg-violet-50 border border-violet-100 rounded-lg px-2 py-1.5 text-[10px] resize-none focus:outline-none focus:ring-1 focus:ring-violet-300"
-                      />
-                    </div>
-                  ))}
+                  <button
+                    onClick={() => setMessageVariants(Array(9).fill(''))}
+                    className="px-2 py-1 bg-zinc-100 hover:bg-zinc-200 text-zinc-500 rounded-lg text-[8px] font-black uppercase tracking-widest transition-all"
+                  >
+                    Очистить
+                  </button>
                 </div>
-              )}
+              </div>
+              <div className="space-y-1.5">
+                {Array.from({ length: 9 }).map((_, i) => (
+                  <div key={i} className="flex gap-2 items-start">
+                    <span className="text-[8px] font-black text-violet-400 shrink-0 mt-2.5 w-3 text-right">{i + 1}</span>
+                    <textarea
+                      value={messageVariants[i] || ''}
+                      onChange={e => setMessageVariants(prev => {
+                        const next = [...prev];
+                        while (next.length <= i) next.push('');
+                        next[i] = e.target.value;
+                        return next;
+                      })}
+                      rows={2}
+                      placeholder={`Вариант ${i + 1}...`}
+                      className="flex-1 bg-violet-50 border border-violet-100 rounded-lg px-2 py-1.5 text-[10px] resize-none focus:outline-none focus:ring-1 focus:ring-violet-300 placeholder:text-zinc-300"
+                    />
+                  </div>
+                ))}
+              </div>
             </div>
 
             {/* Кнопка под сообщением */}
