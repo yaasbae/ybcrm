@@ -776,9 +776,7 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
     const phone = rawPhone.startsWith('+') ? rawPhone : `+${rawPhone}`;
     const client = clients[readyIdx];
     const variant = messageVariants[Math.floor(Math.random() * messageVariants.length)];
-    const msgMarkup = contactButton ? new Api.ReplyInlineMarkup({
-      rows: [new Api.KeyboardButtonRow({ buttons: [new Api.KeyboardButtonUrl({ text: 'Написать менеджеру', url: 'https://t.me/YAASBAE_CLO_bot' })] })]
-    }) : undefined;
+    const stealthTextMsg = contactButton ? `${variant}\n\nНаписать менеджеру: https://t.me/YAASBAE_CLO_bot` : variant;
 
     try {
       // Resolve entity
@@ -847,7 +845,7 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
           }));
           await client.sendFile(entity, { file: fileObjs.length === 1 ? fileObjs[0] : fileObjs as any, forceDocument: false });
         }
-        await client.sendMessage(entity, { message: variant, buttons: msgMarkup as any });
+        await client.sendMessage(entity, { message: stealthTextMsg });
         accountLastSent.set(readyIdx, Date.now());
         stealthJob.log.push({ phone: rawPhone, name: rawPhone, status: 'sent' });
         stealthJob.sent++;
@@ -1093,9 +1091,7 @@ app.post("/api/broadcast/gramjs", async (req, res) => {
           results.push({ phone: rawPhone, status: "no_telegram", error: "Нет Telegram" });
           continue;
         }
-        const msgMarkup = contactButton ? new Api.ReplyInlineMarkup({
-          rows: [new Api.KeyboardButtonRow({ buttons: [new Api.KeyboardButtonUrl({ text: 'Написать менеджеру', url: 'https://t.me/YAASBAE_CLO_bot' })] })]
-        }) : undefined;
+        const textMsg = contactButton ? `${getVariant()}\n\nНаписать менеджеру: https://t.me/YAASBAE_CLO_bot` : getVariant();
         if (imageFiles.length > 0) {
           const { CustomFile } = await import("telegram/client/uploads");
           const fileObjs = await Promise.all(imageFiles.map(async f => {
@@ -1109,9 +1105,9 @@ app.post("/api/broadcast/gramjs", async (req, res) => {
           } else {
             await client.sendFile(entity as any, { file: fileObjs as any, forceDocument: false });
           }
-          await client.sendMessage(entity as any, { message: getVariant(), buttons: msgMarkup as any });
+          await client.sendMessage(entity as any, { message: textMsg });
         } else {
-          await client.sendMessage(entity as any, { message: getVariant(), buttons: msgMarkup as any });
+          await client.sendMessage(entity as any, { message: textMsg });
         }
         results.push({ phone: rawPhone, status: "sent", account: accounts[accIdx].phone });
         msgCount++;
