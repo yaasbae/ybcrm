@@ -639,14 +639,11 @@ app.post('/api/ai/generate-variants', async (req, res) => {
 
   const prompt = `Перепиши это сообщение 9 разными способами для рассылки клиентам. Сохрани смысл, эмодзи и стиль, но измени структуру и формулировки чтобы каждый вариант был уникальным. Отвечай ТОЛЬКО пронумерованным списком 1-9, каждый вариант с новой строки, без пояснений:\n\n${message}`;
 
-  let geminiKey: string | null = process.env.GEMINI_API_KEY || null;
+  const geminiKey: string | null = process.env.GEMINI_API_KEY || null;
   let claudeKey: string | null = process.env.ANTHROPIC_API_KEY || null;
   if (db) {
     const cfg = await getDoc(doc(db, 'settings', 'ai_config')).catch(() => null);
-    if (cfg?.exists()) {
-      if (cfg.data().geminiKey) geminiKey = cfg.data().geminiKey;
-      if (cfg.data().claudeKey) claudeKey = cfg.data().claudeKey;
-    }
+    if (cfg?.exists() && cfg.data().claudeKey) claudeKey = cfg.data().claudeKey;
   }
 
   const parseVariants = (text: string) =>
@@ -660,7 +657,7 @@ app.post('/api/ai/generate-variants', async (req, res) => {
     if (geminiKey) {
       const ai = new GoogleGenAI({ apiKey: geminiKey });
       const result = await ai.models.generateContent({
-        model: 'gemini-1.5-flash',
+        model: 'gemini-2.0-flash',
         contents: [{ role: 'user', parts: [{ text: prompt }] }],
       });
       const text = result.candidates?.[0]?.content?.parts?.[0]?.text || '';
