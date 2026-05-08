@@ -637,7 +637,11 @@ app.post('/api/ai/generate-variants', async (req, res) => {
   const { message } = req.body;
   if (!message?.trim()) return res.status(400).json({ error: 'Нужен message' });
   try {
-    const apiKey = process.env.ANTHROPIC_API_KEY;
+    let apiKey = process.env.ANTHROPIC_API_KEY;
+    if (db) {
+      const cfg = await getDoc(doc(db, 'settings', 'ai_config')).catch(() => null);
+      if (cfg?.exists() && cfg.data().claudeKey) apiKey = cfg.data().claudeKey;
+    }
     if (!apiKey) throw new Error('ANTHROPIC_API_KEY не задан');
     const anthropic = new Anthropic({ apiKey });
     const result = await anthropic.messages.create({
