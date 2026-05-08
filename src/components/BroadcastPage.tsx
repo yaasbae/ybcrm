@@ -50,7 +50,7 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
   const [messageVariants, setMessageVariants] = useState<string[]>([]);
   const [isGeneratingVariants, setIsGeneratingVariants] = useState(false);
   const [showVariants, setShowVariants] = useState(false);
-  const [stealthStatus, setStealthStatus] = useState<{status:string;sent:number;failed:number;checked:number;total:number;currentIndex?:number} | null>(null);
+  const [stealthStatus, setStealthStatus] = useState<{status:string;sent:number;failed:number;checked:number;total:number;currentIndex?:number;log?:Array<{phone:string;name:string;status:string;error?:string}>} | null>(null);
   const [clientRevenue, setClientRevenue] = useState<Map<string, number>>(new Map());
   const [clientOrders, setClientOrders] = useState<Map<string, number>>(new Map());
   const [sentPhones, setSentPhones] = useState<Set<string>>(new Set());
@@ -462,7 +462,7 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
       try {
         const res = await fetch('/api/broadcast/stealth-status');
         const data = await res.json();
-        if (data.status === 'running' || data.status === 'done') {
+        if (data.status !== 'idle') {
           setStealthStatus(data);
           if (data.status === 'done') { setIsSending(false); clearInterval(timer); }
         }
@@ -1383,6 +1383,19 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
                   >
                     Продолжить с позиции {stealthStatus.checked}
                   </button>
+                </div>
+              )}
+              {stealthStatus.log && stealthStatus.log.length > 0 && (
+                <div className="border-t border-violet-50 pt-2 space-y-1 max-h-48 overflow-y-auto">
+                  {[...stealthStatus.log].reverse().map((l, idx) => (
+                    <div key={idx} className={cn("px-2 py-1 rounded-lg text-[9px]", l.status === 'sent' ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-600')}>
+                      <div className="flex items-center gap-1">
+                        <span className="font-black shrink-0">{l.status === 'sent' ? '✓' : '✗'}</span>
+                        <span className="truncate">{l.phone}</span>
+                      </div>
+                      {l.error && <div className="text-[8px] text-red-400 mt-0.5 truncate">{friendlyError(l.error)}</div>}
+                    </div>
+                  ))}
                 </div>
               )}
             </div>

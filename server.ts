@@ -732,6 +732,7 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
   }
 
   const deadIdxs = new Set<number>();
+  const frozenIdxs = new Set<number>(); // FROZEN_METHOD_INVALID — both resolve methods blocked
   const accountLastSent = new Map<number, number>();
 
   // Загружаем no_telegram для накопления
@@ -743,11 +744,12 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
   for (let i = startFrom; i < phones.length; i++) {
     stealthJob.currentIndex = i;
 
-    // Все живые аккаунты
-    const liveIdxs = clients.map((_, j) => j).filter(j => !deadIdxs.has(j));
+    // Все живые (не dead и не frozen) аккаунты
+    const isUseless = (j: number) => deadIdxs.has(j) || frozenIdxs.has(j);
+    const liveIdxs = clients.map((_, j) => j).filter(j => !isUseless(j));
 
     if (liveIdxs.length === 0) {
-      // Все аккаунты забанены — сохраняем и ждём новых
+      // Все аккаунты забанены/заморожены — ждём новых
       stealthJob.status = 'waiting_accounts';
       stealthJob.currentIndex = i;
       await saveStealthProgress();
@@ -779,32 +781,61 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
     try {
       // Resolve entity
       let resolveErr = '';
+      let importErr = '';
       const resolved = await client.invoke(new Api.contacts.ResolvePhone({ phone })).catch((e:any) => { resolveErr = e?.message||String(e); return null; }) as any;
       let entity = resolved?.users?.[0] ?? null;
 
-      if (!entity && !resolveErr.includes('FROZEN')) {
-        const imported = await client.invoke(new Api.contacts.ImportContacts({
-          contacts: [new Api.InputPhoneContact({ clientId: BigInt(i+1) as any, phone, firstName: 'U', lastName: '' })]
-        })).catch(() => null) as any;
-        entity = imported?.users?.[0] ?? null;
-        const uid = imported?.importedContacts?.[0]?.userId;
-        if (!entity && uid && Number(uid) > 0) entity = await client.getEntity(uid).catch(() => null);
-      }
-
-      // Аккаунт мёртв
+      // Мёртвый аккаунт (сессия недействительна)
       if (resolveErr.includes('AUTH_KEY_UNREGISTERED') || resolveErr.includes('USER_DEACTIVATED') || resolveErr.includes('SESSION_REVOKED')) {
-        console.log(`[stealth] account ${accounts[readyIdx]?.phone} dead, removing`);
+        console.log(`[stealth] account ${accounts[readyIdx]?.phone} dead (${resolveErr}), removing`);
         deadIdxs.add(readyIdx);
         await client.disconnect().catch(() => {});
-        // Помечаем в Firestore
         const aSnap = await getDoc(doc(db, 'settings', 'tg_accounts')).catch(() => null);
         if (aSnap?.exists()) {
           const allAccs = aSnap.data().accounts || [];
           const bannedPhone = accounts[readyIdx]?.phone;
           await setDoc(doc(db, 'settings', 'tg_accounts'), { accounts: allAccs.map((a:any) => a.phone === bannedPhone ? {...a, active: false, bannedAt: new Date().toISOString()} : a) }).catch(() => {});
         }
-        i--; // повторить этот номер с другим аккаунтом
+        i--;
         continue;
+      }
+
+      // FROZEN — аккаунт жив, но метод заблокирован антиспамом → ротация
+      if (resolveErr.includes('FROZEN')) {
+        console.log(`[stealth] account ${accounts[readyIdx]?.phone} frozen, rotating`);
+        frozenIdxs.add(readyIdx);
+        // Помечаем неактивным в Firestore
+        const aSnap = await getDoc(doc(db, 'settings', 'tg_accounts')).catch(() => null);
+        if (aSnap?.exists()) {
+          const allAccs = aSnap.data().accounts || [];
+          const bannedPhone = accounts[readyIdx]?.phone;
+          await setDoc(doc(db, 'settings', 'tg_accounts'), { accounts: allAccs.map((a:any) => a.phone === bannedPhone ? {...a, active: false, bannedAt: new Date().toISOString()} : a) }).catch(() => {});
+        }
+        i--; // повторить с другим аккаунтом
+        continue;
+      }
+
+      if (!entity) {
+        const imported = await client.invoke(new Api.contacts.ImportContacts({
+          contacts: [new Api.InputPhoneContact({ clientId: BigInt(i+1) as any, phone, firstName: 'U', lastName: '' })]
+        })).catch((e:any) => { importErr = e?.message||String(e); return null; }) as any;
+
+        if (importErr.includes('FROZEN')) {
+          console.log(`[stealth] ImportContacts frozen for ${accounts[readyIdx]?.phone}, rotating`);
+          frozenIdxs.add(readyIdx);
+          const aSnap = await getDoc(doc(db, 'settings', 'tg_accounts')).catch(() => null);
+          if (aSnap?.exists()) {
+            const allAccs = aSnap.data().accounts || [];
+            const bannedPhone = accounts[readyIdx]?.phone;
+            await setDoc(doc(db, 'settings', 'tg_accounts'), { accounts: allAccs.map((a:any) => a.phone === bannedPhone ? {...a, active: false, bannedAt: new Date().toISOString()} : a) }).catch(() => {});
+          }
+          i--;
+          continue;
+        }
+
+        entity = imported?.users?.[0] ?? null;
+        const uid = imported?.importedContacts?.[0]?.userId;
+        if (!entity && uid && Number(uid) > 0) entity = await client.getEntity(uid).catch(() => null);
       }
 
       if (!entity) {
