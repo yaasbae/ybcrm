@@ -14,6 +14,7 @@ const HandbookPage = lazy(() => import("./components/HandbookPage").then(m => ({
 const BroadcastPage = lazy(() => import("./components/BroadcastPage").then(m => ({ default: m.BroadcastPage })));
 const BotPage = lazy(() => import("./components/BotPage").then(m => ({ default: m.BotPage })));
 const ContentPage = lazy(() => import("./components/ContentPage").then(m => ({ default: m.ContentPage })));
+const PaymentPage = lazy(() => import("./components/PaymentPage").then(m => ({ default: m.PaymentPage })));
 import { auth, signInWithGoogle, signInWithEmail, logOut } from "./firebase";
 import { onAuthStateChanged, User as FirebaseUser } from "firebase/auth";
 import { cn } from "./lib/utils";
@@ -70,8 +71,9 @@ class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
 }
 
 export default function App() {
-  const [view, setView] = useState<'home' | 'calculator' | 'analytics' | 'orders' | 'clients' | 'marketing' | 'order-form' | 'products' | 'ai-agent' | 'public-product' | 'finance' | 'handbook' | 'broadcast' | 'bot' | 'content'>('home');
+  const [view, setView] = useState<'home' | 'calculator' | 'analytics' | 'orders' | 'clients' | 'marketing' | 'order-form' | 'products' | 'ai-agent' | 'public-product' | 'public-payment' | 'finance' | 'handbook' | 'broadcast' | 'bot' | 'content'>('home');
   const [publicProductId, setPublicProductId] = useState<string | null>(null);
+  const [publicPaymentOrderId, setPublicPaymentOrderId] = useState<string | null>(null);
   const [activeSheetId, setActiveSheetId] = useState<string>('1xTDxiOMqJR-KBnLdbikKp2--ZBQBDkII-xMCoO2lSbM');
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
@@ -95,6 +97,13 @@ export default function App() {
       if (id) {
         setPublicProductId(id);
         setView('public-product');
+      }
+    }
+    if (path.startsWith('/pay/')) {
+      const id = path.split('/pay/')[1];
+      if (id) {
+        setPublicPaymentOrderId(id);
+        setView('public-payment');
       }
     }
 
@@ -126,6 +135,17 @@ export default function App() {
         <main className="min-h-screen">
           <PublicProductView productId={publicProductId} />
         </main>
+      </ErrorBoundary>
+    );
+  }
+
+  // Bypass auth for public payment page
+  if (view === 'public-payment' && publicPaymentOrderId) {
+    return (
+      <ErrorBoundary>
+        <Suspense fallback={<div className="min-h-screen flex items-center justify-center"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-slate-900" /></div>}>
+          <PaymentPage orderId={publicPaymentOrderId} />
+        </Suspense>
       </ErrorBoundary>
     );
   }

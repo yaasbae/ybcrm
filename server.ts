@@ -1741,15 +1741,17 @@ app.post('/api/tochka/create-payment', async (req, res) => {
     const paymentData = response.data;
     const paymentUrl = paymentData.paymentUrl || paymentData.data?.paymentUrl;
 
-    // Сохраняем ссылку оплаты в заказ
+    // Сохраняем ссылку оплаты в заказ (обе коллекции)
     if (orderId && paymentUrl) {
-      await updateDoc(doc(db, 'orders', orderId), {
+      const paymentFields = {
         paymentUrl,
         paymentId: paymentData.operationId || paymentData.data?.operationId,
         paymentStatus: 'pending',
         paymentCreatedAt: new Date().toISOString(),
         paymentAmount: amount,
-      }).catch(() => {});
+      };
+      await updateDoc(doc(db, 'orders', orderId), paymentFields).catch(() => {});
+      await updateDoc(doc(db, 'orders_new', orderId), paymentFields).catch(() => {});
     }
 
     res.json({ success: true, paymentUrl, data: paymentData });

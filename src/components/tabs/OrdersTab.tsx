@@ -6,7 +6,7 @@ import {
   TrendingUp, Users, ShoppingBag,
   Calendar, Award, AlertCircle, Search, Plus,
   X, MapPin, Star, RefreshCcw,
-  Tag, Trash2, Phone, UserCircle, ChevronRight
+  Tag, Trash2, Phone, UserCircle, ChevronRight, QrCode
 } from 'lucide-react';
 import { formatCurrency, cn } from '../../lib/utils';
 import { motion, AnimatePresence } from 'motion/react';
@@ -257,6 +257,17 @@ const OrderRow = React.memo(({
           </span>
           {order.isOverdue && !order.isShipped && (
             <span className="text-[7px] font-black text-red-500 uppercase tracking-tight">просрочен</span>
+          )}
+          {order.paymentUrl && (
+            <a
+              href={`/pay/${order.orderId}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="mt-1 w-full flex items-center justify-center gap-0.5 py-1 rounded-md border border-violet-200 bg-violet-50 text-violet-500 hover:bg-violet-500 hover:text-white hover:border-violet-500 transition-all"
+              title="Открыть страницу оплаты"
+            >
+              <QrCode size={10} />
+            </a>
           )}
           {order.isFirebase && (
             <button

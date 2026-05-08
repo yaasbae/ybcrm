@@ -50,6 +50,8 @@ export interface OrderData {
   label?: string;
   manager?: string;
   blogger?: string;
+  paymentUrl?: string;
+  paymentStatus?: string;
 }
 
 export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = (props) => {

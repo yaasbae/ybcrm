@@ -284,7 +284,41 @@ export const OrderForm: React.FC<OrderFormProps> = ({ onBack, sheetId, initialCl
       };
 
       await setDoc(doc(db, 'orders', id), orderData);
-      
+
+      // Also write to orders_new so it appears in the order list
+      const orderNewData = {
+        orderId: id,
+        isFirebase: true,
+        date: new Date().toISOString(),
+        deadlineDate: shipmentDate ? new Date(shipmentDate).toISOString() : new Date().toISOString(),
+        revenue: currentPrice,
+        deliveryPrice: parseFloat(shippingCost) || 0,
+        paidAmount: currentPrepayment,
+        clientName,
+        clientPhone: phone,
+        clientInsta: socialLink,
+        clientCity: city,
+        status: 'Новый',
+        source: saleSource,
+        item: products.map(p => p.name).join(', '),
+        deliveryMethod: shipping,
+        year: new Date().getFullYear(),
+        month: new Date().getMonth(),
+        isBlogger: false,
+        isRecommended: false,
+        isShipped: false,
+        isLate: false,
+        isOverdue: false,
+        rawRow: [color, '', '', '', '', '', '', '', size, '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', ''],
+        height,
+        manager,
+        orderNumber,
+        productImage: finalImageUrl,
+        orderDate,
+        shipmentDate,
+      };
+      await setDoc(doc(db, 'orders_new', id), orderNewData);
+
       // Update CRM (contacts)
       if (phone || clientName) {
         const contactId = phone || clientName;
