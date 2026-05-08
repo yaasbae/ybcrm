@@ -776,7 +776,7 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
     const phone = rawPhone.startsWith('+') ? rawPhone : `+${rawPhone}`;
     const client = clients[readyIdx];
     const variant = messageVariants[Math.floor(Math.random() * messageVariants.length)];
-    const stealthTextMsg = contactButton ? `${variant}\n\nНаписать менеджеру: https://t.me/YAASBAE_CLO_bot` : variant;
+    const stealthTextMsg = contactButton ? `${variant}\n\nНаписать менеджеру: https://t.me/yaasbae_ru` : variant;
 
     try {
       // Resolve entity
@@ -1091,7 +1091,7 @@ app.post("/api/broadcast/gramjs", async (req, res) => {
           results.push({ phone: rawPhone, status: "no_telegram", error: "Нет Telegram" });
           continue;
         }
-        const textMsg = contactButton ? `${getVariant()}\n\nНаписать менеджеру: https://t.me/YAASBAE_CLO_bot` : getVariant();
+        const textMsg = contactButton ? `${getVariant()}\n\nНаписать менеджеру: https://t.me/yaasbae_ru` : getVariant();
         if (imageFiles.length > 0) {
           const { CustomFile } = await import("telegram/client/uploads");
           const fileObjs = await Promise.all(imageFiles.map(async f => {
