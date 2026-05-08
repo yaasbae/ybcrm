@@ -657,7 +657,7 @@ app.post('/api/ai/generate-variants', async (req, res) => {
     if (geminiKey) {
       const ai = new GoogleGenAI({ apiKey: geminiKey });
       const result = await ai.models.generateContent({
-        model: 'gemini-2.0-flash',
+        model: 'gemini-1.5-flash',
         contents: [{ role: 'user', parts: [{ text: prompt }] }],
       });
       const text = result.candidates?.[0]?.content?.parts?.[0]?.text || '';
