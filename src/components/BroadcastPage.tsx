@@ -1079,7 +1079,7 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
             <div className="flex items-center justify-between px-1">
               <div>
                 <p className="text-[10px] font-bold text-zinc-700">Кнопка "Написать менеджеру"</p>
-                <p className="text-[9px] text-zinc-400">Ссылка на @yaasbae_ru под каждым сообщением</p>
+                <p className="text-[9px] text-zinc-400">Ссылка на @YAASBAE_CLO_bot под каждым сообщением</p>
               </div>
               <button onClick={() => setContactButton(v => !v)}
                 className={cn("w-10 h-6 rounded-full transition-all relative shrink-0", contactButton ? "bg-blue-500" : "bg-zinc-200")}>

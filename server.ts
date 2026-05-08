@@ -774,7 +774,7 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
     const phone = rawPhone.startsWith('+') ? rawPhone : `+${rawPhone}`;
     const client = clients[readyIdx];
     const variant = messageVariants[Math.floor(Math.random() * messageVariants.length)];
-    const textMsg = contactButton ? `${variant}\n\nhttps://t.me/yaasbae_ru` : variant;
+    const textMsg = contactButton ? `${variant}\n\nhttps://t.me/YAASBAE_CLO_bot` : variant;
 
     try {
       // Resolve entity
@@ -1088,10 +1088,10 @@ app.post("/api/broadcast/gramjs", async (req, res) => {
           } else {
             await client.sendFile(entity as any, { file: fileObjs as any, forceDocument: false });
           }
-          const textMsg = contactButton ? `${getVariant()}\n\nhttps://t.me/yaasbae_ru` : getVariant();
+          const textMsg = contactButton ? `${getVariant()}\n\nhttps://t.me/YAASBAE_CLO_bot` : getVariant();
           await client.sendMessage(entity as any, { message: textMsg });
         } else {
-          const textMsg = contactButton ? `${getVariant()}\n\nhttps://t.me/yaasbae_ru` : getVariant();
+          const textMsg = contactButton ? `${getVariant()}\n\nhttps://t.me/YAASBAE_CLO_bot` : getVariant();
           await client.sendMessage(entity as any, { message: textMsg });
         }
         results.push({ phone: rawPhone, status: "sent", account: accounts[accIdx].phone });
@@ -2100,7 +2100,7 @@ function startTelegramBot() {
           "📞 *Связаться с нами*\n\nНажми кнопку ниже — откроется чат с менеджером 👇",
           {
             parse_mode: "Markdown",
-            ...Markup.inlineKeyboard([[Markup.button.url("💬 Написать менеджеру", "https://t.me/yaasbae_ru")]])
+            ...Markup.inlineKeyboard([[Markup.button.url("💬 Написать менеджеру", "https://t.me/YAASBAE_CLO_bot")]])
           }
         );
       } else if (btn.response) {
