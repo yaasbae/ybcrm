@@ -747,11 +747,15 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
   };
 
   let phoneIdx = startFrom;
+  const deadAccounts = new Set<string>(); // навсегда мёртвые (AUTH_KEY и тд)
+  let roundIdx = 0;
 
-  for (let accIdx = 0; accIdx < accounts.length; accIdx++) {
-    if (stealthJob.stopRequested || phoneIdx >= phones.length) break;
+  while (phoneIdx < phones.length && !stealthJob.stopRequested) {
+    const liveAccounts = accounts.filter(a => !deadAccounts.has(a.phone));
+    if (!liveAccounts.length) break; // все аккаунты мёртвые
 
-    const acc = accounts[accIdx];
+    const acc = liveAccounts[roundIdx % liveAccounts.length];
+    roundIdx++;
     stealthJob.currentAccount = acc.phone || '';
 
     // Подключаем аккаунт
@@ -789,6 +793,7 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
         if (isTrulyDead) {
           console.log(`[stealth] account ${acc.phone} dead: ${resolveErr}`);
           await markAccountDead(acc);
+          deadAccounts.add(acc.phone);
           accountBanned = true;
           break;
         }
@@ -806,6 +811,7 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
           if (importErr.includes('AUTH_KEY_UNREGISTERED') || importErr.includes('USER_DEACTIVATED')) {
             console.log(`[stealth] account ${acc.phone} dead at ImportContacts: ${importErr}`);
             await markAccountDead(acc);
+            deadAccounts.add(acc.phone);
             accountBanned = true;
             break;
           }
@@ -873,6 +879,7 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
         if (isTrulyDead) {
           console.log(`[stealth] account ${acc.phone} fatal: ${errMsg}`);
           await markAccountDead(acc);
+          deadAccounts.add(acc.phone);
           accountBanned = true;
           break;
         }
@@ -896,8 +903,8 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
 
   if (stealthJob.stopRequested) {
     stealthJob.status = 'stopped';
-  } else if (phoneIdx < phones.length) {
-    stealthJob.status = 'waiting_accounts';
+  } else if (!accounts.filter(a => !deadAccounts.has(a.phone)).length) {
+    stealthJob.status = 'waiting_accounts'; // все аккаунты мёртвые — нужно добавить новые
   } else {
     stealthJob.status = 'done';
   }
