@@ -682,208 +682,210 @@ app.post('/api/ai/generate-variants', async (req, res) => {
   }
 });
 
-// Умная фоновая рассылка: 30 мин между сообщениями, auto-resume, ожидание новых аккаунтов
-type StealthJobStatus = 'idle'|'running'|'waiting_accounts'|'done'|'error';
-let stealthJob: { status: StealthJobStatus; total: number; sent: number; failed: number; checked: number; currentIndex: number; startedAt: string; finishedAt?: string; error?: string; log: Array<{phone:string;name:string;status:string;error?:string}> } = {
-  status: 'idle', total: 0, sent: 0, failed: 0, checked: 0, currentIndex: 0, startedAt: '', log: []
+// Стелс рассылка: 1 аккаунт → до 20 номеров → 10 мин между отправками → следующий аккаунт
+type StealthJobStatus = 'idle'|'running'|'waiting_accounts'|'stopped'|'done'|'error';
+let stealthJob: {
+  status: StealthJobStatus;
+  total: number; sent: number; failed: number; checked: number; currentIndex: number;
+  currentAccount: string;
+  startedAt: string; finishedAt?: string; error?: string;
+  stopRequested: boolean;
+  log: Array<{phone:string;name:string;status:string;error?:string}>;
+} = {
+  status: 'idle', total: 0, sent: 0, failed: 0, checked: 0, currentIndex: 0,
+  currentAccount: '', startedAt: '', stopRequested: false, log: []
 };
 
 const saveStealthProgress = async () => {
   if (!db) return;
-  await setDoc(doc(db, 'settings', 'stealth_job'), { ...stealthJob, log: stealthJob.log.slice(-200) }).catch(() => {});
+  await setDoc(doc(db, 'settings', 'stealth_job'), { ...stealthJob, log: stealthJob.log.slice(-500) }).catch(() => {});
 };
 
 async function runStealthBroadcast(phones: string[], messageVariants: string[], contactButton: boolean, imageFiles: Array<{base64:string;name:string}>, startFrom = 0) {
   if (!db) return;
-  const isResume = startFrom > 0;
-  if (!isResume) {
-    stealthJob = { status: 'running', total: phones.length, sent: 0, failed: 0, checked: startFrom, currentIndex: startFrom, startedAt: new Date().toISOString(), log: [] };
-    // Сохраняем телефоны и варианты для возможности resume
+
+  const MESSAGES_PER_ACCOUNT = 20;
+  const DELAY_BETWEEN_SENDS = 10 * 60 * 1000; // 10 минут между сообщениями
+
+  if (startFrom === 0) {
+    stealthJob = { status: 'running', total: phones.length, sent: 0, failed: 0, checked: 0, currentIndex: 0, currentAccount: '', startedAt: new Date().toISOString(), stopRequested: false, log: [] };
     await setDoc(doc(db, 'settings', 'stealth_job_data'), { phones, messageVariants, contactButton, imageFiles: imageFiles.map(f => ({ base64: f.base64.slice(0, 100), name: f.name })) }).catch(() => {});
   } else {
     stealthJob.status = 'running';
+    stealthJob.stopRequested = false;
     stealthJob.currentIndex = startFrom;
   }
   await saveStealthProgress();
 
-  const DELAY_MS = 30 * 60 * 1000;
+  // Загрузка аккаунтов
+  const snap = await getDoc(doc(db, 'settings', 'tg_accounts'));
+  const accounts: any[] = snap.exists() ? (snap.data().accounts || []).filter((a: any) => a.sessionString && a.active !== false) : [];
+  if (!accounts.length) { stealthJob.status = 'waiting_accounts'; await saveStealthProgress(); return; }
 
-  // Загрузка и подключение аккаунтов
-  const loadClients = async () => {
-    const snap = await getDoc(doc(db!, 'settings', 'tg_accounts'));
-    const accs = snap.exists() ? (snap.data().accounts || []).filter((a: any) => a.sessionString && a.active !== false) : [];
-    const cls: TelegramClient[] = [];
-    for (const acc of accs) {
-      const c = new TelegramClient(new StringSession(acc.sessionString), TG_API_ID, TG_API_HASH, { connectionRetries: 3, autoReconnect: false });
-      await c.connect().catch(() => {});
-      if (acc.displayName) {
-        const parts = acc.displayName.trim().split(' ');
-        await c.invoke(new Api.account.UpdateProfile({ firstName: parts[0] || '', lastName: parts.slice(1).join(' ') || '' })).catch(() => {});
-      }
-      cls.push(c);
-    }
-    return { accs, cls };
-  };
-
-  let { accs: accounts, cls: clients } = await loadClients();
-  if (!clients.length) {
-    stealthJob.status = 'waiting_accounts';
-    await saveStealthProgress();
-    return;
-  }
-
-  const deadIdxs = new Set<number>();
-  const frozenIdxs = new Set<number>(); // FROZEN_METHOD_INVALID — both resolve methods blocked
-  const accountLastSent = new Map<number, number>();
-
-  // Загружаем no_telegram для накопления
+  // Загружаем no_telegram
   const noTgSnap = await getDoc(doc(db, 'settings', 'no_telegram')).catch(() => null);
   const savedNoTg: Array<{phone:string;addedAt:string}> = noTgSnap?.exists() ? (noTgSnap.data().phones || []) : [];
   const noTgSet = new Set(savedNoTg.map((p:any) => p.phone));
   const newNoTg: Array<{phone:string;addedAt:string}> = [];
 
-  for (let i = startFrom; i < phones.length; i++) {
-    stealthJob.currentIndex = i;
+  // Загружаем уже отправленные
+  const sentSnap = await getDoc(doc(db, 'settings', 'stealth_sent')).catch(() => null);
+  const sentSet = new Set<string>(sentSnap?.exists() ? (sentSnap.data().phones || []) : []);
+  const newSent: string[] = [];
 
-    // Все живые (не dead и не frozen) аккаунты
-    const isUseless = (j: number) => deadIdxs.has(j) || frozenIdxs.has(j);
-    const liveIdxs = clients.map((_, j) => j).filter(j => !isUseless(j));
+  const markAccountDead = async (acc: any) => {
+    const aSnap = await getDoc(doc(db!, 'settings', 'tg_accounts')).catch(() => null);
+    if (aSnap?.exists()) {
+      const allAccs = aSnap.data().accounts || [];
+      await setDoc(doc(db!, 'settings', 'tg_accounts'), { accounts: allAccs.map((a:any) => a.phone === acc.phone ? {...a, active: false, bannedAt: new Date().toISOString()} : a) }).catch(() => {});
+    }
+  };
 
-    if (liveIdxs.length === 0) {
-      // Все аккаунты забанены/заморожены — ждём новых
-      stealthJob.status = 'waiting_accounts';
-      stealthJob.currentIndex = i;
-      await saveStealthProgress();
-      if (newNoTg.length > 0) await setDoc(doc(db, 'settings', 'no_telegram'), { phones: [...savedNoTg, ...newNoTg] }).catch(() => {});
-      for (const c of clients) await c.disconnect().catch(() => {});
-      return;
+  const saveNoTgAndSent = async () => {
+    if (newNoTg.length > 0) await setDoc(doc(db!, 'settings', 'no_telegram'), { phones: [...savedNoTg, ...newNoTg] }).catch(() => {});
+    if (newSent.length > 0) await setDoc(doc(db!, 'settings', 'stealth_sent'), { phones: [...Array.from(sentSet)] }).catch(() => {});
+  };
+
+  let phoneIdx = startFrom;
+
+  for (let accIdx = 0; accIdx < accounts.length; accIdx++) {
+    if (stealthJob.stopRequested || phoneIdx >= phones.length) break;
+
+    const acc = accounts[accIdx];
+    stealthJob.currentAccount = acc.phone || '';
+
+    // Подключаем аккаунт
+    const client = new TelegramClient(new StringSession(acc.sessionString), TG_API_ID, TG_API_HASH, { connectionRetries: 3, autoReconnect: false });
+    await client.connect().catch(() => {});
+    if (acc.displayName) {
+      const parts = acc.displayName.trim().split(' ');
+      await client.invoke(new Api.account.UpdateProfile({ firstName: parts[0] || '', lastName: parts.slice(1).join(' ') || '' })).catch(() => {});
     }
 
-    // Найти аккаунт готовый к отправке
-    let readyIdx = -1;
-    let minWait = Infinity;
-    for (const j of liveIdxs) {
-      const waitMs = (accountLastSent.get(j) || 0) + DELAY_MS - Date.now();
-      if (waitMs <= 0) { readyIdx = j; break; }
-      if (waitMs < minWait) minWait = waitMs;
-    }
-    if (readyIdx === -1) {
-      await new Promise(r => setTimeout(r, Math.min(minWait + 1000, 60000)));
-      i--;
-      continue;
-    }
+    let sentByThisAccount = 0;
+    let accountBanned = false;
 
-    const rawPhone = String(phones[i]);
-    const rawDigits = rawPhone.replace(/\D/g, '');
-    const phone = rawDigits.length === 11 && rawDigits.startsWith('8') ? `+7${rawDigits.slice(1)}` : (rawPhone.startsWith('+') ? rawPhone : `+${rawDigits}`);
-    const client = clients[readyIdx];
-    const variant = messageVariants[Math.floor(Math.random() * messageVariants.length)];
-    const stealthTextMsg = contactButton ? `${variant}\n\nНаписать менеджеру: https://t.me/yaasbae_ru` : variant;
+    while (sentByThisAccount < MESSAGES_PER_ACCOUNT && phoneIdx < phones.length) {
+      if (stealthJob.stopRequested) break;
 
-    try {
-      // Resolve entity
-      let resolveErr = '';
-      let importErr = '';
-      const resolved = await client.invoke(new Api.contacts.ResolvePhone({ phone })).catch((e:any) => { resolveErr = e?.message||String(e); return null; }) as any;
-      let entity = resolved?.users?.[0] ?? null;
+      const rawPhone = String(phones[phoneIdx]);
+      const rawDigits = rawPhone.replace(/\D/g, '');
+      const phone = rawDigits.length === 11 && rawDigits.startsWith('8') ? `+7${rawDigits.slice(1)}` : (rawPhone.startsWith('+') ? rawPhone : `+${rawDigits}`);
+      const cleanPhone = rawDigits;
 
-      // Мёртвый аккаунт (сессия недействительна)
-      if (resolveErr.includes('AUTH_KEY_UNREGISTERED') || resolveErr.includes('USER_DEACTIVATED') || resolveErr.includes('SESSION_REVOKED')) {
-        console.log(`[stealth] account ${accounts[readyIdx]?.phone} dead (${resolveErr}), removing`);
-        deadIdxs.add(readyIdx);
-        await client.disconnect().catch(() => {});
-        const aSnap = await getDoc(doc(db, 'settings', 'tg_accounts')).catch(() => null);
-        if (aSnap?.exists()) {
-          const allAccs = aSnap.data().accounts || [];
-          const bannedPhone = accounts[readyIdx]?.phone;
-          await setDoc(doc(db, 'settings', 'tg_accounts'), { accounts: allAccs.map((a:any) => a.phone === bannedPhone ? {...a, active: false, bannedAt: new Date().toISOString()} : a) }).catch(() => {});
-        }
-        i--;
-        continue;
-      }
+      stealthJob.currentIndex = phoneIdx;
 
-      // FROZEN — метод временно заблокирован антиспамом, аккаунт жив → пропускаем только в этой сессии
-      if (resolveErr.includes('FROZEN')) {
-        console.log(`[stealth] account ${accounts[readyIdx]?.phone} frozen (session only), rotating`);
-        frozenIdxs.add(readyIdx);
-        i--;
-        continue;
-      }
+      // Пропускаем уже отправленные
+      if (sentSet.has(cleanPhone)) { phoneIdx++; stealthJob.checked++; continue; }
 
-      if (!entity) {
-        const imported = await client.invoke(new Api.contacts.ImportContacts({
-          contacts: [new Api.InputPhoneContact({ clientId: BigInt(i+1) as any, phone, firstName: 'U', lastName: '' })]
-        })).catch((e:any) => { importErr = e?.message||String(e); return null; }) as any;
+      try {
+        let resolveErr = '';
+        let importErr = '';
+        const resolved = await client.invoke(new Api.contacts.ResolvePhone({ phone })).catch((e:any) => { resolveErr = e?.message||String(e); return null; }) as any;
+        let entity = resolved?.users?.[0] ?? null;
 
-        if (importErr.includes('FROZEN')) {
-          console.log(`[stealth] ImportContacts frozen for ${accounts[readyIdx]?.phone} (session only), rotating`);
-          frozenIdxs.add(readyIdx);
-          i--;
-          continue;
+        // Мёртвый/заблокированный аккаунт
+        const isDead = resolveErr.includes('AUTH_KEY_UNREGISTERED') || resolveErr.includes('USER_DEACTIVATED') || resolveErr.includes('SESSION_REVOKED') || resolveErr.includes('PEER_FLOOD');
+        if (isDead) {
+          console.log(`[stealth] account ${acc.phone} banned/dead: ${resolveErr}`);
+          await markAccountDead(acc);
+          accountBanned = true;
+          break;
         }
 
-        entity = imported?.users?.[0] ?? null;
-        const uid = imported?.importedContacts?.[0]?.userId;
-        if (!entity && uid && Number(uid) > 0) entity = await client.getEntity(uid).catch(() => null);
-      }
-
-      if (!entity) {
-        // Нет Telegram — сохраняем
-        const cleanPhone = rawPhone.replace(/\D/g, '');
-        if (!noTgSet.has(cleanPhone)) {
-          noTgSet.add(cleanPhone);
-          newNoTg.push({ phone: cleanPhone, addedAt: new Date().toISOString() });
+        if (resolveErr.includes('FROZEN')) {
+          // ImportContacts тоже попробуем
         }
-        stealthJob.log.push({ phone: rawPhone, name: rawPhone, status: 'no_tg', error: 'Нет Telegram' });
+
+        if (!entity) {
+          const imported = await client.invoke(new Api.contacts.ImportContacts({
+            contacts: [new Api.InputPhoneContact({ clientId: BigInt(phoneIdx + 1) as any, phone, firstName: 'U', lastName: '' })]
+          })).catch((e:any) => { importErr = e?.message||String(e); return null; }) as any;
+
+          if (importErr.includes('PEER_FLOOD') || importErr.includes('AUTH_KEY_UNREGISTERED') || importErr.includes('USER_DEACTIVATED')) {
+            console.log(`[stealth] account ${acc.phone} banned at ImportContacts: ${importErr}`);
+            await markAccountDead(acc);
+            accountBanned = true;
+            break;
+          }
+
+          entity = imported?.users?.[0] ?? null;
+          const uid = imported?.importedContacts?.[0]?.userId;
+          if (!entity && uid && Number(uid) > 0) entity = await client.getEntity(uid).catch(() => null);
+        }
+
+        if (!entity) {
+          if (!noTgSet.has(cleanPhone)) {
+            noTgSet.add(cleanPhone);
+            newNoTg.push({ phone: cleanPhone, addedAt: new Date().toISOString() });
+          }
+          stealthJob.log.push({ phone: rawPhone, name: rawPhone, status: 'no_tg', error: 'Нет Telegram' });
+          stealthJob.failed++;
+          phoneIdx++;
+          stealthJob.checked++;
+        } else {
+          // Отправляем
+          const variant = messageVariants[Math.floor(Math.random() * messageVariants.length)];
+          const textMsg = contactButton ? `${variant}\n\nНаписать менеджеру: https://t.me/yaasbae_ru` : variant;
+
+          if (imageFiles.length > 0) {
+            const { CustomFile } = await import('telegram/client/uploads');
+            const fileObjs = await Promise.all(imageFiles.map(async f => {
+              const raw = Buffer.from(f.base64, 'base64');
+              const jpg = await sharp(raw).jpeg({ quality: 90 }).toBuffer().catch(() => raw);
+              return new CustomFile(f.name.replace(/\.[^.]+$/, '.jpg'), jpg.length, '', jpg);
+            }));
+            await client.sendFile(entity, { file: fileObjs.length === 1 ? fileObjs[0] : fileObjs as any, forceDocument: false });
+          }
+          await client.sendMessage(entity, { message: textMsg });
+
+          sentSet.add(cleanPhone);
+          newSent.push(cleanPhone);
+          stealthJob.log.push({ phone: rawPhone, name: rawPhone, status: 'sent' });
+          stealthJob.sent++;
+          sentByThisAccount++;
+          phoneIdx++;
+          stealthJob.checked++;
+          await saveStealthProgress();
+          await saveNoTgAndSent();
+
+          // Ждём 10 минут перед следующей отправкой (если не последнее)
+          if (sentByThisAccount < MESSAGES_PER_ACCOUNT && phoneIdx < phones.length && !stealthJob.stopRequested) {
+            console.log(`[stealth] ${acc.phone} sent ${sentByThisAccount}/${MESSAGES_PER_ACCOUNT}, waiting 10 min`);
+            for (let w = 0; w < 60 && !stealthJob.stopRequested; w++) {
+              await new Promise(r => setTimeout(r, 10000)); // ждём по 10 сек, проверяем стоп
+            }
+          }
+        }
+      } catch (e: any) {
+        const errMsg = e.message || String(e);
+        const isFatal = errMsg.includes('AUTH_KEY_UNREGISTERED') || errMsg.includes('USER_DEACTIVATED') || errMsg.includes('PEER_FLOOD');
+        if (isFatal) {
+          console.log(`[stealth] account ${acc.phone} fatal: ${errMsg}`);
+          await markAccountDead(acc);
+          accountBanned = true;
+          break;
+        }
+        stealthJob.log.push({ phone: rawPhone, name: rawPhone, status: 'error', error: errMsg });
         stealthJob.failed++;
-      } else {
-        // Отправляем
-        if (imageFiles.length > 0) {
-          const { CustomFile } = await import('telegram/client/uploads');
-          const fileObjs = await Promise.all(imageFiles.map(async f => {
-            const raw = Buffer.from(f.base64, 'base64');
-            const jpg = await sharp(raw).jpeg({ quality: 90 }).toBuffer().catch(() => raw);
-            return new CustomFile(f.name.replace(/\.[^.]+$/, '.jpg'), jpg.length, '', jpg);
-          }));
-          await client.sendFile(entity, { file: fileObjs.length === 1 ? fileObjs[0] : fileObjs as any, forceDocument: false });
-        }
-        await client.sendMessage(entity, { message: stealthTextMsg });
-        accountLastSent.set(readyIdx, Date.now());
-        stealthJob.log.push({ phone: rawPhone, name: rawPhone, status: 'sent' });
-        stealthJob.sent++;
+        phoneIdx++;
+        stealthJob.checked++;
       }
-    } catch (e: any) {
-      const errMsg = e.message || String(e);
-      const isDead = errMsg.includes('AUTH_KEY_UNREGISTERED') || errMsg.includes('USER_DEACTIVATED');
-      const isFlood = errMsg.includes('PEER_FLOOD') || errMsg.includes('FLOOD_WAIT');
-      if (isDead) {
-        deadIdxs.add(readyIdx);
-        await client.disconnect().catch(() => {});
-        i--;
-        continue;
-      }
-      if (isFlood) {
-        // Аккаунт получил лимит — уходит в кулдаун на 30 мин, повторяем номер с другим аккаунтом
-        accountLastSent.set(readyIdx, Date.now());
-        i--;
-        continue;
-      }
-      stealthJob.log.push({ phone: rawPhone, name: rawPhone, status: 'error', error: errMsg });
-      stealthJob.failed++;
     }
 
-    stealthJob.checked = i + 1;
-    // Сохраняем прогресс и no_telegram каждые 10 отправок
-    if ((i + 1) % 10 === 0) {
-      await saveStealthProgress();
-      if (newNoTg.length > 0) await setDoc(doc(db, 'settings', 'no_telegram'), { phones: [...savedNoTg, ...newNoTg] }).catch(() => {});
-    }
+    await client.disconnect().catch(() => {});
+    console.log(`[stealth] account ${acc.phone} done: sent ${sentByThisAccount}, banned: ${accountBanned}, phoneIdx: ${phoneIdx}`);
   }
 
-  // Готово
-  if (newNoTg.length > 0) await setDoc(doc(db, 'settings', 'no_telegram'), { phones: [...savedNoTg, ...newNoTg] }).catch(() => {});
-  for (const c of clients) await c.disconnect().catch(() => {});
-  stealthJob.status = 'done';
+  await saveNoTgAndSent();
+
+  if (stealthJob.stopRequested) {
+    stealthJob.status = 'stopped';
+  } else if (phoneIdx < phones.length) {
+    stealthJob.status = 'waiting_accounts';
+  } else {
+    stealthJob.status = 'done';
+  }
   stealthJob.finishedAt = new Date().toISOString();
   await saveStealthProgress();
 }
@@ -909,13 +911,19 @@ app.post('/api/broadcast/stealth-resume', async (req, res) => {
   res.json({ success: true, resumeFrom, total: phones.length });
 });
 
+app.post('/api/broadcast/stealth-stop', (_req, res) => {
+  if (stealthJob.status !== 'running') return res.status(400).json({ error: 'Рассылка не запущена' });
+  stealthJob.stopRequested = true;
+  res.json({ success: true });
+});
+
 app.get('/api/broadcast/stealth-status', async (_req, res) => {
   if (stealthJob.status === 'idle' && db) {
     const snap = await getDoc(doc(db, 'settings', 'stealth_job')).catch(() => null);
     if (snap?.exists()) {
       const d = snap.data() as any;
-      if (d.status === 'waiting_accounts') {
-        stealthJob = { status: d.status, total: d.total, sent: d.sent, failed: d.failed, checked: d.checked, currentIndex: d.currentIndex, startedAt: d.startedAt, finishedAt: d.finishedAt, log: d.log || [] };
+      if (d.status === 'waiting_accounts' || d.status === 'stopped') {
+        stealthJob = { status: d.status, total: d.total, sent: d.sent, failed: d.failed, checked: d.checked, currentIndex: d.currentIndex, currentAccount: d.currentAccount || '', startedAt: d.startedAt, finishedAt: d.finishedAt, stopRequested: false, log: d.log || [] };
       }
     }
   }

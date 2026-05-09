@@ -50,7 +50,7 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
   const [messageVariants, setMessageVariants] = useState<string[]>([]);
   const [isGeneratingVariants, setIsGeneratingVariants] = useState(false);
   const [showVariants, setShowVariants] = useState(false);
-  const [stealthStatus, setStealthStatus] = useState<{status:string;sent:number;failed:number;checked:number;total:number;currentIndex?:number;log?:Array<{phone:string;name:string;status:string;error?:string}>} | null>(null);
+  const [stealthStatus, setStealthStatus] = useState<{status:string;sent:number;failed:number;checked:number;total:number;currentIndex?:number;currentAccount?:string;log?:Array<{phone:string;name:string;status:string;error?:string}>} | null>(null);
   const [clientRevenue, setClientRevenue] = useState<Map<string, number>>(new Map());
   const [clientOrders, setClientOrders] = useState<Map<string, number>>(new Map());
   const [sentPhones, setSentPhones] = useState<Set<string>>(new Set());
@@ -308,7 +308,23 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
     getDoc(doc(db, 'settings', 'ai_config')).then(snap => {
       if (snap.exists() && snap.data().geminiKey) setGeminiConfigured(true);
     }).catch(() => {});
+    // Загружаем сохранённые варианты и настройки
+    getDoc(doc(db, 'settings', 'broadcast_config')).then(snap => {
+      if (!snap.exists()) return;
+      const d = snap.data();
+      if (d.messageVariants?.length) setMessageVariants(d.messageVariants);
+      if (d.message) setMessage(d.message);
+      if (typeof d.contactButton === 'boolean') setContactButton(d.contactButton);
+    }).catch(() => {});
   }, []);
+
+  // Авто-сохранение настроек рассылки в Firestore (дебаунс 1.5 сек)
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDoc(doc(db, 'settings', 'broadcast_config'), { message, messageVariants, contactButton }).catch(() => {});
+    }, 1500);
+    return () => clearTimeout(timer);
+  }, [message, messageVariants, contactButton]);
 
   const handleSelectFirst20 = () => {
     const first20 = clients.slice(0, 20).map(c => c.phone || c.userId);
@@ -1354,14 +1370,25 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
           <div className="bg-white border border-violet-100 shadow-sm rounded-2xl overflow-hidden">
             <div className="px-3 py-2.5 bg-violet-50 border-b border-violet-100 flex items-center justify-between">
               <span className="text-[9px] font-black text-violet-600 uppercase tracking-widest">🕵️ Стелс рассылка</span>
-              {stealthStatus.status === 'running' && <Loader2 size={12} className="animate-spin text-violet-400" />}
-              {stealthStatus.status === 'done' && <span className="text-[9px] font-black text-emerald-500">Готово</span>}
-              {stealthStatus.status === 'waiting_accounts' && <span className="text-[9px] font-black text-amber-500">Пауза</span>}
-              {stealthStatus.status === 'error' && <span className="text-[9px] font-black text-red-500">Ошибка</span>}
+              <div className="flex items-center gap-2">
+                {stealthStatus.status === 'running' && <Loader2 size={12} className="animate-spin text-violet-400" />}
+                {stealthStatus.status === 'done' && <span className="text-[9px] font-black text-emerald-500">Готово</span>}
+                {stealthStatus.status === 'stopped' && <span className="text-[9px] font-black text-zinc-500">Остановлено</span>}
+                {stealthStatus.status === 'waiting_accounts' && <span className="text-[9px] font-black text-amber-500">Пауза</span>}
+                {stealthStatus.status === 'error' && <span className="text-[9px] font-black text-red-500">Ошибка</span>}
+                {stealthStatus.status === 'running' && (
+                  <button onClick={async () => {
+                    await fetch('/api/broadcast/stealth-stop', { method: 'POST' }).catch(() => {});
+                    setStealthStatus(prev => prev ? { ...prev, status: 'stopped' } : prev);
+                  }} className="px-2 py-0.5 bg-red-500 text-white rounded text-[8px] font-black hover:bg-red-600">
+                    Стоп
+                  </button>
+                )}
+              </div>
             </div>
             <div className="px-3 py-3 space-y-2">
               <div className="flex justify-between text-[10px]">
-                <span className="text-zinc-500">Отправлено</span>
+                <span className="text-zinc-500">Обработано</span>
                 <span className="font-black">{stealthStatus.checked} / {stealthStatus.total}</span>
               </div>
               <div className="w-full bg-zinc-100 rounded-full h-1.5">
@@ -1371,8 +1398,8 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
                 <span className="text-emerald-500 font-black">{stealthStatus.sent}✓ отправлено</span>
                 <span className="text-red-400 font-black">{stealthStatus.failed}✗</span>
               </div>
-              {stealthStatus.status === 'running' && (
-                <p className="text-[8px] text-zinc-400 text-center">30 мин между сообщениями на аккаунт</p>
+              {stealthStatus.status === 'running' && stealthStatus.currentAccount && (
+                <p className="text-[8px] text-zinc-400 text-center">Аккаунт: {stealthStatus.currentAccount} · 10 мин между отправками</p>
               )}
               {stealthStatus.status === 'waiting_accounts' && (
                 <div className="space-y-2">
