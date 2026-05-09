@@ -549,7 +549,7 @@ app.post("/api/tg/accounts/set-photo", async (req, res) => {
     let ok = 0, failed = 0;
     for (const acc of accounts) {
       try {
-        const c = new TelegramClient(new StringSession(acc.sessionString), TG_API_ID, TG_API_HASH, { connectionRetries: 3, receiveUpdates: false });
+        const c = new TelegramClient(new StringSession(acc.sessionString), TG_API_ID, TG_API_HASH, { connectionRetries: 3, receiveUpdates: false } as any);
         await c.connect();
         const uploaded = await c.uploadFile({ file: new CustomFile("photo.jpg", buf.length, "", buf), workers: 1 });
         await c.invoke(new Api.photos.UploadProfilePhoto({ file: uploaded }));
@@ -714,7 +714,7 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
     const accs = snap.exists() ? (snap.data().accounts || []).filter((a: any) => a.sessionString && a.active !== false) : [];
     const cls: TelegramClient[] = [];
     for (const acc of accs) {
-      const c = new TelegramClient(new StringSession(acc.sessionString), TG_API_ID, TG_API_HASH, { connectionRetries: 3, receiveUpdates: false });
+      const c = new TelegramClient(new StringSession(acc.sessionString), TG_API_ID, TG_API_HASH, { connectionRetries: 3, receiveUpdates: false } as any);
       await c.connect().catch(() => {});
       if (acc.displayName) {
         const parts = acc.displayName.trim().split(' ');
@@ -976,7 +976,7 @@ app.post("/api/broadcast/gramjs", async (req, res) => {
     // Connect all clients and optionally set display name
     const clients: TelegramClient[] = [];
     for (const acc of accounts) {
-      const c = new TelegramClient(new StringSession(acc.sessionString), TG_API_ID, TG_API_HASH, { connectionRetries: 3, receiveUpdates: false });
+      const c = new TelegramClient(new StringSession(acc.sessionString), TG_API_ID, TG_API_HASH, { connectionRetries: 3, receiveUpdates: false } as any);
       await c.connect();
       if (displayName) {
         const parts = displayName.trim().split(' ');
