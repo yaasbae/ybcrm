@@ -281,6 +281,11 @@ app.post("/api/tg/auth/send-code", async (req, res) => {
     await client.connect();
     const result = await client.sendCode({ apiId: TG_API_ID, apiHash: TG_API_HASH }, phone);
     pendingTgClients.set(phone, { client, phoneCodeHash: result.phoneCodeHash });
+    // Авто-отключение через 5 минут если авторизация не завершена
+    setTimeout(() => {
+      const p = pendingTgClients.get(phone);
+      if (p) { p.client.disconnect().catch(() => {}); pendingTgClients.delete(phone); }
+    }, 5 * 60 * 1000);
     res.json({ success: true });
   } catch (e: any) {
     console.error("TG send-code error:", e);
@@ -572,13 +577,14 @@ async function runTgCheckJob(phones: string[]) {
   if (!db) return;
   tgCheckJob = { status: 'running', total: phones.length, checked: 0, noTgFound: 0, startedAt: new Date().toISOString() };
   await setDoc(doc(db, 'settings', 'tg_check_job'), { ...tgCheckJob }).catch(() => {});
+  let client: TelegramClient | null = null;
   try {
     let accounts: any[] = [];
     const snap = await getDoc(doc(db, 'settings', 'tg_accounts'));
     if (snap.exists()) accounts = (snap.data().accounts || []).filter((a: any) => a.sessionString && a.active !== false);
     if (!accounts.length) throw new Error('Нет активных аккаунтов');
 
-    const client = new TelegramClient(new StringSession(accounts[0].sessionString), TG_API_ID, TG_API_HASH, { connectionRetries: 3 });
+    client = new TelegramClient(new StringSession(accounts[0].sessionString), TG_API_ID, TG_API_HASH, { connectionRetries: 3 });
     await client.connect();
 
     const noTgSnap = await getDoc(doc(db, 'settings', 'no_telegram')).catch(() => null);
@@ -626,6 +632,7 @@ async function runTgCheckJob(phones: string[]) {
     tgCheckJob.finishedAt = new Date().toISOString();
     await setDoc(doc(db, 'settings', 'tg_check_job'), { ...tgCheckJob }).catch(() => {});
   } catch (e: any) {
+    await client?.disconnect().catch(() => {});
     tgCheckJob.status = 'error';
     tgCheckJob.error = e.message;
     tgCheckJob.finishedAt = new Date().toISOString();
