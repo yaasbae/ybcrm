@@ -1163,14 +1163,16 @@ app.post("/api/broadcast/gramjs", async (req, res) => {
         const errMsg = e.message || String(e);
         const isDead = errMsg.includes("AUTH_KEY_UNREGISTERED") || errMsg.includes("USER_DEACTIVATED") || errMsg.includes("SESSION_REVOKED");
         const isFlood = errMsg.includes("PEER_FLOOD") || errMsg.includes("FLOOD_WAIT");
-        results.push({ phone: rawPhone, status: "error", error: errMsg });
+        console.log(`[broadcast] CATCH ${phone} (acc ${accounts[accIdx]?.phone}): ${errMsg}`);
         if (isDead) await markDead(accIdx);
-        // Always delay after error too, longer on flood
         await new Promise(r => setTimeout(r, isFlood ? 10000 : getMsgDelay()));
         if (isDead || isFlood) {
           accIdx = (accIdx + 1) % clients.length;
           msgCount = 0;
+          i--; // retry same phone with next account
+          continue;
         }
+        results.push({ phone: rawPhone, status: "error", error: errMsg });
       }
     }
 
