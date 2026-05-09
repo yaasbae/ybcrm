@@ -853,9 +853,16 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
     } catch (e: any) {
       const errMsg = e.message || String(e);
       const isDead = errMsg.includes('AUTH_KEY_UNREGISTERED') || errMsg.includes('USER_DEACTIVATED');
+      const isFlood = errMsg.includes('PEER_FLOOD') || errMsg.includes('FLOOD_WAIT');
       if (isDead) {
         deadIdxs.add(readyIdx);
         await client.disconnect().catch(() => {});
+        i--;
+        continue;
+      }
+      if (isFlood) {
+        // Аккаунт получил лимит — уходит в кулдаун на 30 мин, повторяем номер с другим аккаунтом
+        accountLastSent.set(readyIdx, Date.now());
         i--;
         continue;
       }
