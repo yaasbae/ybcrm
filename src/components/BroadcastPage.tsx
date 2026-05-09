@@ -520,11 +520,13 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
     setSendLog([]);
 
     const TEST_PHONE = '89196977790'; // всегда получает тест
+    const normPhone = (p: string) => { const d = String(p).replace(/\D/g,''); return d.length === 11 && d.startsWith('8') ? '7'+d.slice(1) : d; };
+    const TEST_NORM = normPhone(TEST_PHONE);
 
     // Stealth режим — фоновый джоб на сервере
     if (broadcastMode === 'stealth') {
       try {
-        const phones = [TEST_PHONE, ...Array.from(selected).filter(p => String(p).replace(/\D/g,'') !== TEST_PHONE.replace(/\D/g,''))];
+        const phones = [TEST_PHONE, ...Array.from(selected).filter(p => normPhone(p) !== TEST_NORM)];
         const allVariants = [message, ...messageVariants].filter(Boolean);
         const imageFiles: Array<{ base64: string; name: string }> = [];
         for (const img of images) {
@@ -560,7 +562,7 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
     }
 
     try {
-      const phones = [TEST_PHONE, ...Array.from(selected).filter(p => String(p).replace(/\D/g,'') !== TEST_PHONE.replace(/\D/g,''))];
+      const phones = [TEST_PHONE, ...Array.from(selected).filter(p => normPhone(p) !== TEST_NORM)];
       const imageFiles: Array<{ base64: string; name: string }> = [];
       for (const img of images) {
         const base64 = await new Promise<string>(res => {

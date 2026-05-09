@@ -756,6 +756,7 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
   let phoneIdx = startFrom;
   const deadAccounts = new Set<string>(); // навсегда мёртвые (AUTH_KEY и тд)
   let roundIdx = 0;
+  const phoneFloodTries = new Map<number, number>(); // phoneIdx → кол-во PEER_FLOOD попыток
 
   while (phoneIdx < phones.length && !stealthJob.stopRequested) {
     const liveAccounts = accounts.filter(a => !deadAccounts.has(a.phone));
@@ -806,6 +807,15 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
         }
         if (resolveErr.includes('PEER_FLOOD')) {
           console.log(`[stealth] account ${acc.phone} PEER_FLOOD on resolve, switching account`);
+          const tries = (phoneFloodTries.get(phoneIdx) || 0) + 1;
+          phoneFloodTries.set(phoneIdx, tries);
+          if (tries >= liveAccounts.length) {
+            // Все аккаунты дали PEER_FLOOD на этот номер — пропускаем, подождём следующего круга
+            console.log(`[stealth] all accounts PEER_FLOOD for ${phone}, skipping for now`);
+            phoneFloodTries.delete(phoneIdx);
+            stealthJob.log.push({ phone: rawPhone, name: rawPhone, status: 'error', error: 'PEER_FLOOD — все аккаунты' });
+            stealthJob.failed++; phoneIdx++; stealthJob.checked++;
+          }
           accountBanned = true;
           break;
         }
@@ -824,6 +834,14 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
           }
           if (importErr.includes('PEER_FLOOD')) {
             console.log(`[stealth] account ${acc.phone} PEER_FLOOD at ImportContacts, switching`);
+            const tries = (phoneFloodTries.get(phoneIdx) || 0) + 1;
+            phoneFloodTries.set(phoneIdx, tries);
+            if (tries >= liveAccounts.length) {
+              console.log(`[stealth] all accounts PEER_FLOOD for ${phone}, skipping`);
+              phoneFloodTries.delete(phoneIdx);
+              stealthJob.log.push({ phone: rawPhone, name: rawPhone, status: 'error', error: 'PEER_FLOOD — все аккаунты' });
+              stealthJob.failed++; phoneIdx++; stealthJob.checked++;
+            }
             accountBanned = true;
             break;
           }
