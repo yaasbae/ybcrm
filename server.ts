@@ -784,17 +784,18 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
         const resolved = await client.invoke(new Api.contacts.ResolvePhone({ phone })).catch((e:any) => { resolveErr = e?.message||String(e); return null; }) as any;
         let entity = resolved?.users?.[0] ?? null;
 
-        // Мёртвый/заблокированный аккаунт
-        const isDead = resolveErr.includes('AUTH_KEY_UNREGISTERED') || resolveErr.includes('USER_DEACTIVATED') || resolveErr.includes('SESSION_REVOKED') || resolveErr.includes('PEER_FLOOD');
-        if (isDead) {
-          console.log(`[stealth] account ${acc.phone} banned/dead: ${resolveErr}`);
+        // Мёртвый/заблокированный аккаунт (PEER_FLOOD = рейт-лимит, не бан — просто пробуем следующий аккаунт)
+        const isTrulyDead = resolveErr.includes('AUTH_KEY_UNREGISTERED') || resolveErr.includes('USER_DEACTIVATED') || resolveErr.includes('SESSION_REVOKED');
+        if (isTrulyDead) {
+          console.log(`[stealth] account ${acc.phone} dead: ${resolveErr}`);
           await markAccountDead(acc);
           accountBanned = true;
           break;
         }
-
-        if (resolveErr.includes('FROZEN')) {
-          // ImportContacts тоже попробуем
+        if (resolveErr.includes('PEER_FLOOD')) {
+          console.log(`[stealth] account ${acc.phone} PEER_FLOOD on resolve, switching account`);
+          accountBanned = true;
+          break;
         }
 
         if (!entity) {
@@ -802,9 +803,14 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
             contacts: [new Api.InputPhoneContact({ clientId: BigInt(phoneIdx + 1) as any, phone, firstName: 'U', lastName: '' })]
           })).catch((e:any) => { importErr = e?.message||String(e); return null; }) as any;
 
-          if (importErr.includes('PEER_FLOOD') || importErr.includes('AUTH_KEY_UNREGISTERED') || importErr.includes('USER_DEACTIVATED')) {
-            console.log(`[stealth] account ${acc.phone} banned at ImportContacts: ${importErr}`);
+          if (importErr.includes('AUTH_KEY_UNREGISTERED') || importErr.includes('USER_DEACTIVATED')) {
+            console.log(`[stealth] account ${acc.phone} dead at ImportContacts: ${importErr}`);
             await markAccountDead(acc);
+            accountBanned = true;
+            break;
+          }
+          if (importErr.includes('PEER_FLOOD')) {
+            console.log(`[stealth] account ${acc.phone} PEER_FLOOD at ImportContacts, switching`);
             accountBanned = true;
             break;
           }
@@ -852,17 +858,26 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
           // Ждём 10 минут перед следующей отправкой (если не последнее)
           if (sentByThisAccount < MESSAGES_PER_ACCOUNT && phoneIdx < phones.length && !stealthJob.stopRequested) {
             console.log(`[stealth] ${acc.phone} sent ${sentByThisAccount}/${MESSAGES_PER_ACCOUNT}, waiting 10 min`);
+            await client.disconnect().catch(() => {}); // отключаемся — соединение не падает само за 10 мин
             for (let w = 0; w < 60 && !stealthJob.stopRequested; w++) {
-              await new Promise(r => setTimeout(r, 10000)); // ждём по 10 сек, проверяем стоп
+              await new Promise(r => setTimeout(r, 10000));
+            }
+            if (!stealthJob.stopRequested) {
+              await client.connect().catch(() => {}); // переподключаемся перед следующей отправкой
             }
           }
         }
       } catch (e: any) {
         const errMsg = e.message || String(e);
-        const isFatal = errMsg.includes('AUTH_KEY_UNREGISTERED') || errMsg.includes('USER_DEACTIVATED') || errMsg.includes('PEER_FLOOD');
-        if (isFatal) {
+        const isTrulyDead = errMsg.includes('AUTH_KEY_UNREGISTERED') || errMsg.includes('USER_DEACTIVATED') || errMsg.includes('SESSION_REVOKED');
+        if (isTrulyDead) {
           console.log(`[stealth] account ${acc.phone} fatal: ${errMsg}`);
           await markAccountDead(acc);
+          accountBanned = true;
+          break;
+        }
+        if (errMsg.includes('PEER_FLOOD')) {
+          console.log(`[stealth] account ${acc.phone} PEER_FLOOD on send, switching account`);
           accountBanned = true;
           break;
         }
