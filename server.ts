@@ -589,8 +589,9 @@ async function runTgCheckJob(phones: string[]) {
 
     for (let i = 0; i < phones.length; i++) {
       const rawPhone = phones[i];
-      const phone = String(rawPhone).startsWith('+') ? String(rawPhone) : `+${rawPhone}`;
-      const cleanPhone = String(rawPhone).replace(/\D/g, '');
+      const digits = String(rawPhone).replace(/\D/g, '');
+      const phone = digits.length === 11 && digits.startsWith('8') ? `+7${digits.slice(1)}` : (String(rawPhone).startsWith('+') ? String(rawPhone) : `+${digits}`);
+      const cleanPhone = digits;
       let hasTg = false;
       try {
         const resolved = await client.invoke(new Api.contacts.ResolvePhone({ phone })).catch(() => null) as any;
@@ -773,7 +774,8 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
     }
 
     const rawPhone = String(phones[i]);
-    const phone = rawPhone.startsWith('+') ? rawPhone : `+${rawPhone}`;
+    const rawDigits = rawPhone.replace(/\D/g, '');
+    const phone = rawDigits.length === 11 && rawDigits.startsWith('8') ? `+7${rawDigits.slice(1)}` : (rawPhone.startsWith('+') ? rawPhone : `+${rawDigits}`);
     const client = clients[readyIdx];
     const variant = messageVariants[Math.floor(Math.random() * messageVariants.length)];
     const stealthTextMsg = contactButton ? `${variant}\n\nНаписать менеджеру: https://t.me/yaasbae_ru` : variant;
@@ -1031,7 +1033,8 @@ app.post("/api/broadcast/gramjs", async (req, res) => {
 
       const client = clients[accIdx];
       const rawPhone = String(phones[i]);
-      const phone = rawPhone.startsWith("+") ? rawPhone : `+${rawPhone}`;
+      const rawDigits2 = rawPhone.replace(/\D/g, '');
+      const phone = rawDigits2.length === 11 && rawDigits2.startsWith('8') ? `+7${rawDigits2.slice(1)}` : (rawPhone.startsWith('+') ? rawPhone : `+${rawDigits2}`);
       try {
         let entity: any = null;
         let resolveErr = '';
