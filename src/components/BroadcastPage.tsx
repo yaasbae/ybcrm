@@ -66,7 +66,7 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
   const [images, setImages] = useState<File[]>([]);
   const [imagePreviews, setImagePreviews] = useState<string[]>([]);
   const [contactButton, setContactButton] = useState(true);
-  const [clientFilter, setClientFilter] = useState<'unsent' | 'sent' | 'no_tg'>('unsent');
+  const [clientFilter, setClientFilter] = useState<'all' | 'unsent' | 'sent' | 'no_tg'>('unsent');
 
   // Telegram auth state
   const [tgStatus, setTgStatus] = useState<TgStatus>({ authorized: false, accounts: [] });
@@ -316,8 +316,10 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
   };
 
   const handleSelectAll = () => {
-    if (selected.size === clients.length) setSelected(new Set());
-    else setSelected(new Set(clients.map(c => c.phone || c.userId)));
+    const allFiltered = filteredClients.map(c => c.phone || c.userId);
+    const allSelected = allFiltered.every(p => selected.has(p));
+    if (allSelected) setSelected(new Set());
+    else setSelected(new Set(allFiltered));
   };
 
   const handleToggle = (phone: string) => {
@@ -629,6 +631,7 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
     if (clientFilter === 'unsent' && (wasSent || noTg)) return false;
     if (clientFilter === 'sent' && !wasSent) return false;
     if (clientFilter === 'no_tg' && !noTg) return false;
+    // 'all' — без фильтрации
     if (!search) return true;
     const q = search.toLowerCase();
     const name = (c.fullName || c.name || '').toLowerCase();
@@ -1118,14 +1121,19 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
                     Первые 20
                   </button>
                   <span className="text-zinc-200">|</span>
-                  <button onClick={handleSelectAll} className="text-[9px] font-black text-zinc-400 hover:text-zinc-700 uppercase tracking-widest">
-                    {selected.size === clients.length ? 'Снять всё' : 'Все'}
+                  <button onClick={handleSelectAll} className="text-[9px] font-black text-blue-500 hover:text-blue-700 uppercase tracking-widest">
+                    {filteredClients.every(c => selected.has(c.phone || c.userId)) && filteredClients.length > 0 ? 'Снять всё' : `Все (${filteredClients.length})`}
                   </button>
                 </div>
               </div>
 
               {/* Фильтр: не отправляли / отправляли */}
               <div className="flex gap-1 p-1 bg-zinc-100 rounded-xl w-fit">
+                <button onClick={() => { setClientFilter('all'); setSelectedBroadcast(null); setSelected(new Set()); }}
+                  className={cn("px-3 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all",
+                    clientFilter === 'all' ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-400 hover:text-zinc-700")}>
+                  Все ({clients.length})
+                </button>
                 <button onClick={() => { setClientFilter('unsent'); setSelectedBroadcast(null); setSelected(new Set()); }}
                   className={cn("px-3 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all",
                     clientFilter === 'unsent' ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-400 hover:text-zinc-700")}>
