@@ -784,6 +784,7 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
   const deadAccounts = new Set<string>(); // навсегда мёртвые (AUTH_KEY и тд)
   let roundIdx = 0;
   const phoneFloodTries = new Map<number, number>(); // phoneIdx → кол-во PEER_FLOOD попыток
+  const lastSentAtByAccount = new Map<string, number>();
 
   while (phoneIdx < phones.length && !stealthJob.stopRequested) {
     const liveAccounts = accounts.filter(a => !deadAccounts.has(a.phone));
@@ -807,12 +808,16 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
     while (sentByThisAccount < MESSAGES_PER_ACCOUNT && phoneIdx < phones.length) {
       if (stealthJob.stopRequested) break;
 
-      // 10 минут перед каждой отправкой (кроме самой первой за всю рассылку)
-      if (stealthJob.sent > 0 && !stealthJob.stopRequested) {
-        console.log(`[stealth] ${acc.phone} waiting 10 min before next send`);
+      // 10 минут только между отправками одного и того же аккаунта.
+      const accountKey = acc.phone || String(roundIdx);
+      const lastSentAt = lastSentAtByAccount.get(accountKey) || 0;
+      const waitMs = Math.max(0, DELAY_BETWEEN_SENDS - (Date.now() - lastSentAt));
+      if (waitMs > 0 && !stealthJob.stopRequested) {
+        console.log(`[stealth] ${acc.phone} waiting ${Math.ceil(waitMs / 60000)} min before next send from same account`);
         await client.disconnect().catch(() => {});
-        for (let w = 0; w < 60 && !stealthJob.stopRequested; w++) {
-          await new Promise(r => setTimeout(r, 10000));
+        const waitSteps = Math.ceil(waitMs / 10000);
+        for (let w = 0; w < waitSteps && !stealthJob.stopRequested; w++) {
+          await new Promise(r => setTimeout(r, Math.min(10000, waitMs - w * 10000)));
         }
         if (!stealthJob.stopRequested) await client.connect().catch(() => {});
       }
@@ -941,6 +946,7 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
           sentDateMap.set(cleanPhone, new Date().toISOString());
           newSent.push(cleanPhone);
           stealthJob.log.push({ phone: rawPhone, name: rawPhone, status: 'sent' });
+          lastSentAtByAccount.set(accountKey, Date.now());
           stealthJob.sent++;
           sentByThisAccount++;
           phoneIdx++;
