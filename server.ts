@@ -742,8 +742,10 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
   const sentSet = new Set<string>();
   const sentDateMap = new Map<string, string>();
   savedSentArr.forEach((p: any) => {
-    const ph = typeof p === 'string' ? p : p?.phone;
-    if (ph && !ALWAYS_TESTABLE.has(ph)) {
+    const raw = typeof p === 'string' ? p : p?.phone;
+    if (!raw) return;
+    const ph = raw.length === 11 && raw.startsWith('8') ? '7' + raw.slice(1) : raw;
+    if (!ALWAYS_TESTABLE.has(ph)) {
       sentSet.add(ph);
       if (typeof p === 'object' && p.sentAt) sentDateMap.set(ph, p.sentAt);
     }
@@ -807,7 +809,7 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
       const rawPhone = String(phones[phoneIdx]);
       const rawDigits = rawPhone.replace(/\D/g, '');
       const phone = rawDigits.length === 11 && rawDigits.startsWith('8') ? `+7${rawDigits.slice(1)}` : (rawPhone.startsWith('+') ? rawPhone : `+${rawDigits}`);
-      const cleanPhone = rawDigits;
+      const cleanPhone = rawDigits.length === 11 && rawDigits.startsWith('8') ? '7' + rawDigits.slice(1) : rawDigits;
 
       stealthJob.currentIndex = phoneIdx;
 
