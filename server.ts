@@ -938,6 +938,13 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
         }
         if (errMsg.includes('PEER_FLOOD')) {
           console.log(`[stealth] account ${acc.phone} PEER_FLOOD on send, switching account`);
+          const tries = (phoneFloodTries.get(phoneIdx) || 0) + 1;
+          phoneFloodTries.set(phoneIdx, tries);
+          if (tries >= liveAccounts.length) {
+            phoneFloodTries.delete(phoneIdx);
+            stealthJob.log.push({ phone: rawPhone, name: rawPhone, status: 'error', error: 'PEER_FLOOD на отправке — все аккаунты' });
+            stealthJob.failed++; phoneIdx++; stealthJob.checked++;
+          }
           accountBanned = true;
           break;
         }
