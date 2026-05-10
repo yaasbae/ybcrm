@@ -934,7 +934,7 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
       }
     }
 
-    await client.disconnect().catch(() => {});
+    await client.destroy().catch(() => {});
     console.log(`[stealth] account ${acc.phone} done: sent ${sentByThisAccount}, banned: ${accountBanned}, phoneIdx: ${phoneIdx}`);
   }
 
