@@ -737,7 +737,17 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
 
   // Загружаем уже отправленные
   const sentSnap = await getDoc(doc(db, 'settings', 'stealth_sent')).catch(() => null);
-  const sentSet = new Set<string>(sentSnap?.exists() ? (sentSnap.data().phones || []) : []);
+  const ALWAYS_TESTABLE = new Set(['79196977790', '79991640290']);
+  const savedSentArr: Array<any> = sentSnap?.exists() ? (sentSnap.data().phones || []) : [];
+  const sentSet = new Set<string>();
+  const sentDateMap = new Map<string, string>();
+  savedSentArr.forEach((p: any) => {
+    const ph = typeof p === 'string' ? p : p?.phone;
+    if (ph && !ALWAYS_TESTABLE.has(ph)) {
+      sentSet.add(ph);
+      if (typeof p === 'object' && p.sentAt) sentDateMap.set(ph, p.sentAt);
+    }
+  });
   const newSent: string[] = [];
 
   const markAccountDead = async (acc: any) => {
@@ -750,7 +760,10 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
 
   const saveNoTgAndSent = async () => {
     if (newNoTg.length > 0) await setDoc(doc(db!, 'settings', 'no_telegram'), { phones: [...savedNoTg, ...newNoTg] }).catch(() => {});
-    if (newSent.length > 0) await setDoc(doc(db!, 'settings', 'stealth_sent'), { phones: [...Array.from(sentSet)] }).catch(() => {});
+    if (newSent.length > 0) {
+      const sentArr = Array.from(sentSet).map(p => ({ phone: p, sentAt: sentDateMap.get(p) || new Date().toISOString() }));
+      await setDoc(doc(db!, 'settings', 'stealth_sent'), { phones: sentArr }).catch(() => {});
+    }
   };
 
   let phoneIdx = startFrom;
@@ -888,6 +901,7 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
           await client.sendMessage(entity, { message: textMsg });
 
           sentSet.add(cleanPhone);
+          sentDateMap.set(cleanPhone, new Date().toISOString());
           newSent.push(cleanPhone);
           stealthJob.log.push({ phone: rawPhone, name: rawPhone, status: 'sent' });
           stealthJob.sent++;

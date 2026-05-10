@@ -54,6 +54,7 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
   const [clientRevenue, setClientRevenue] = useState<Map<string, number>>(new Map());
   const [clientOrders, setClientOrders] = useState<Map<string, number>>(new Map());
   const [sentPhones, setSentPhones] = useState<Set<string>>(new Set());
+  const [sentDates, setSentDates] = useState<Map<string, string>>(new Map());
   const [broadcastHistory, setBroadcastHistory] = useState<Array<{ id: string; sentAt: string; phones: string[]; message: string; sentCount: number }>>([]);
   const [selectedBroadcast, setSelectedBroadcast] = useState<string | null>(null);
   const [sendLog, setSendLog] = useState<Array<{ phone: string; name: string; status: 'sent' | 'error'; error?: string }>>([]);
@@ -244,10 +245,11 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
   useEffect(() => {
     const loadData = async () => {
       try {
-        const [contactsSnap, broadcastsSnap, noTgSnap] = await Promise.all([
+        const [contactsSnap, broadcastsSnap, noTgSnap, stealthSentSnap] = await Promise.all([
           getDocs(query(collection(db, 'contacts'), orderBy('totalSpent', 'desc'))),
           getDocs(collection(db, 'broadcasts')),
           getDoc(doc(db, 'settings', 'no_telegram')),
+          getDoc(doc(db, 'settings', 'stealth_sent')),
         ]);
 
         // Load saved no-telegram phones
@@ -274,6 +276,16 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
         setSentPhones(sent);
         setBroadcastHistory(history);
         if (latestLog.length > 0) setSendLog(latestLog);
+
+        // Загружаем даты отправки из stealth_sent
+        if (stealthSentSnap.exists()) {
+          const datesMap = new Map<string, string>();
+          (stealthSentSnap.data().phones || []).forEach((p: any) => {
+            const ph = typeof p === 'string' ? p : p?.phone;
+            if (ph && p?.sentAt) datesMap.set(ph, p.sentAt);
+          });
+          setSentDates(datesMap);
+        }
 
         // Клиентская база — коллекция contacts, отсортирована по totalSpent
         const revMap = new Map<string, number>();
@@ -1291,8 +1303,12 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
                         </div>
                         {/* Колонка: уже отправляли */}
                         <div className="shrink-0 w-16 flex justify-end">
-                          {wasSent
-                            ? <span className="text-[9px] font-black text-blue-500 bg-blue-50 px-1.5 py-0.5 rounded-md">✓ было</span>
+                          {wasSent ? (() => {
+                            const sentAt = sentDates.get(String(phone).replace(/\D/g, ''));
+                            const daysAgo = sentAt ? Math.floor((Date.now() - new Date(sentAt).getTime()) / 86400000) : null;
+                            const label = daysAgo === null ? '✓ было' : daysAgo === 0 ? 'сегодня' : `${daysAgo} д.`;
+                            return <span className="text-[9px] font-black text-blue-500 bg-blue-50 px-1.5 py-0.5 rounded-md">{label}</span>;
+                          })()
                             : <span className="text-[9px] text-zinc-200">—</span>
                           }
                         </div>
