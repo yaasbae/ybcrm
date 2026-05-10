@@ -814,12 +814,10 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
       const waitMs = Math.max(0, DELAY_BETWEEN_SENDS - (Date.now() - lastSentAt));
       if (waitMs > 0 && !stealthJob.stopRequested) {
         console.log(`[stealth] ${acc.phone} waiting ${Math.ceil(waitMs / 60000)} min before next send from same account`);
-        await client.disconnect().catch(() => {});
         const waitSteps = Math.ceil(waitMs / 10000);
         for (let w = 0; w < waitSteps && !stealthJob.stopRequested; w++) {
           await new Promise(r => setTimeout(r, Math.min(10000, waitMs - w * 10000)));
         }
-        if (!stealthJob.stopRequested) await client.connect().catch(() => {});
       }
       if (stealthJob.stopRequested) break;
 
