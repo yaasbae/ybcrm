@@ -722,7 +722,7 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
   if (!db) return;
 
   const MESSAGES_PER_ACCOUNT = 20;
-  const DELAY_BETWEEN_SENDS = 10 * 60 * 1000; // 10 минут между сообщениями
+  const DELAY_BETWEEN_SENDS = 2 * 60 * 1000; // 2 минуты между сообщениями
 
   if (startFrom === 0) {
     stealthJob = { status: 'running', total: phones.length, sent: 0, failed: 0, checked: 0, currentIndex: 0, currentAccount: '', startedAt: new Date().toISOString(), stopRequested: false, log: [] };
