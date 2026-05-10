@@ -780,6 +780,17 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
     while (sentByThisAccount < MESSAGES_PER_ACCOUNT && phoneIdx < phones.length) {
       if (stealthJob.stopRequested) break;
 
+      // 10 минут перед каждой отправкой (кроме самой первой за всю рассылку)
+      if (stealthJob.sent > 0 && !stealthJob.stopRequested) {
+        console.log(`[stealth] ${acc.phone} waiting 10 min before next send`);
+        await client.disconnect().catch(() => {});
+        for (let w = 0; w < 60 && !stealthJob.stopRequested; w++) {
+          await new Promise(r => setTimeout(r, 10000));
+        }
+        if (!stealthJob.stopRequested) await client.connect().catch(() => {});
+      }
+      if (stealthJob.stopRequested) break;
+
       const rawPhone = String(phones[phoneIdx]);
       const rawDigits = rawPhone.replace(/\D/g, '');
       const phone = rawDigits.length === 11 && rawDigits.startsWith('8') ? `+7${rawDigits.slice(1)}` : (rawPhone.startsWith('+') ? rawPhone : `+${rawDigits}`);
@@ -886,17 +897,6 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
           await saveStealthProgress();
           await saveNoTgAndSent();
 
-          // Ждём 10 минут перед следующей отправкой (если не последнее)
-          if (sentByThisAccount < MESSAGES_PER_ACCOUNT && phoneIdx < phones.length && !stealthJob.stopRequested) {
-            console.log(`[stealth] ${acc.phone} sent ${sentByThisAccount}/${MESSAGES_PER_ACCOUNT}, waiting 10 min`);
-            await client.disconnect().catch(() => {}); // отключаемся — соединение не падает само за 10 мин
-            for (let w = 0; w < 60 && !stealthJob.stopRequested; w++) {
-              await new Promise(r => setTimeout(r, 10000));
-            }
-            if (!stealthJob.stopRequested) {
-              await client.connect().catch(() => {}); // переподключаемся перед следующей отправкой
-            }
-          }
         }
       } catch (e: any) {
         const errMsg = e.message || String(e);
@@ -1065,6 +1065,7 @@ app.post("/api/broadcast/gramjs", async (req, res) => {
       deadAccounts.has(idx) || (resolveFrozenAccounts.has(idx) && importFrozenAccounts.has(idx));
 
     const phoneRotations = new Map<number, number>(); // сколько раз ротировали аккаунт для одного номера
+    const phoneCatchRetries = new Map<number, number>(); // retry в catch (PEER_FLOOD при отправке)
 
     for (let i = 0; i < phones.length; i++) {
       // Skip accounts that are dead or have both resolution methods frozen
@@ -1187,7 +1188,14 @@ app.post("/api/broadcast/gramjs", async (req, res) => {
         if (isDead || isFlood) {
           accIdx = (accIdx + 1) % clients.length;
           msgCount = 0;
-          i--; // retry same phone with next account
+          const retries = (phoneCatchRetries.get(i) || 0) + 1;
+          phoneCatchRetries.set(i, retries);
+          if (retries < clients.length) {
+            i--; // retry с другим аккаунтом
+          } else {
+            phoneCatchRetries.delete(i);
+            results.push({ phone: rawPhone, status: "error", error: errMsg });
+          }
           continue;
         }
         results.push({ phone: rawPhone, status: "error", error: errMsg });
