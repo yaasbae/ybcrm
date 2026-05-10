@@ -197,6 +197,16 @@ function checkRateLimit(uid: string): boolean {
   return true;
 }
 
+function normalizeBroadcastPhone(value: string): string {
+  const digits = String(value || "").replace(/\D/g, "");
+  return digits.length === 11 && digits.startsWith("8") ? `7${digits.slice(1)}` : digits;
+}
+
+function toTelegramPhone(value: string): string {
+  const normalized = normalizeBroadcastPhone(value);
+  return normalized ? `+${normalized}` : "";
+}
+
 // API для получения списка товаров (для внешних проектов)
 app.get("/api/products", async (req, res) => {
   try {
@@ -716,7 +726,9 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
 
   if (startFrom === 0) {
     stealthJob = { status: 'running', total: phones.length, sent: 0, failed: 0, checked: 0, currentIndex: 0, currentAccount: '', startedAt: new Date().toISOString(), stopRequested: false, log: [] };
-    await setDoc(doc(db, 'settings', 'stealth_job_data'), { phones, messageVariants, contactButton, imageFiles: imageFiles.map(f => ({ base64: f.base64.slice(0, 100), name: f.name })) }).catch(() => {});
+    await setDoc(doc(db, 'settings', 'stealth_job_data'), { phones, messageVariants, contactButton, imageFiles }).catch((e) => {
+      console.warn('[stealth] could not persist job data:', e?.message || e);
+    });
   } else {
     stealthJob.status = 'running';
     stealthJob.stopRequested = false;
@@ -732,7 +744,7 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
   // Загружаем no_telegram
   const noTgSnap = await getDoc(doc(db, 'settings', 'no_telegram')).catch(() => null);
   const savedNoTg: Array<{phone:string;addedAt:string}> = noTgSnap?.exists() ? (noTgSnap.data().phones || []) : [];
-  const noTgSet = new Set(savedNoTg.map((p:any) => p.phone));
+  const noTgSet = new Set(savedNoTg.map((p:any) => normalizeBroadcastPhone(p.phone)));
   const newNoTg: Array<{phone:string;addedAt:string}> = [];
 
   // Загружаем уже отправленные
@@ -744,7 +756,7 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
   savedSentArr.forEach((p: any) => {
     const raw = typeof p === 'string' ? p : p?.phone;
     if (!raw) return;
-    const ph = raw.length === 11 && raw.startsWith('8') ? '7' + raw.slice(1) : raw;
+    const ph = normalizeBroadcastPhone(raw);
     if (!ALWAYS_TESTABLE.has(ph)) {
       sentSet.add(ph);
       if (typeof p === 'object' && p.sentAt) sentDateMap.set(ph, p.sentAt);
@@ -807,14 +819,19 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
       if (stealthJob.stopRequested) break;
 
       const rawPhone = String(phones[phoneIdx]);
-      const rawDigits = rawPhone.replace(/\D/g, '');
-      const phone = rawDigits.length === 11 && rawDigits.startsWith('8') ? `+7${rawDigits.slice(1)}` : (rawPhone.startsWith('+') ? rawPhone : `+${rawDigits}`);
-      const cleanPhone = rawDigits.length === 11 && rawDigits.startsWith('8') ? '7' + rawDigits.slice(1) : rawDigits;
+      const cleanPhone = normalizeBroadcastPhone(rawPhone);
+      const phone = toTelegramPhone(rawPhone);
 
       stealthJob.currentIndex = phoneIdx;
 
       // Пропускаем уже отправленные
-      if (sentSet.has(cleanPhone)) { phoneIdx++; stealthJob.checked++; continue; }
+      if (sentSet.has(cleanPhone)) {
+        phoneIdx++;
+        stealthJob.checked++;
+        stealthJob.currentIndex = phoneIdx;
+        await saveStealthProgress();
+        continue;
+      }
 
       try {
         let resolveErr = '';
@@ -840,7 +857,8 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
             console.log(`[stealth] all accounts PEER_FLOOD for ${phone}, skipping for now`);
             phoneFloodTries.delete(phoneIdx);
             stealthJob.log.push({ phone: rawPhone, name: rawPhone, status: 'error', error: 'PEER_FLOOD — все аккаунты' });
-            stealthJob.failed++; phoneIdx++; stealthJob.checked++;
+            stealthJob.failed++; phoneIdx++; stealthJob.checked++; stealthJob.currentIndex = phoneIdx;
+            await saveStealthProgress();
           }
           accountBanned = true;
           break;
@@ -866,7 +884,8 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
               console.log(`[stealth] all accounts PEER_FLOOD for ${phone}, skipping`);
               phoneFloodTries.delete(phoneIdx);
               stealthJob.log.push({ phone: rawPhone, name: rawPhone, status: 'error', error: 'PEER_FLOOD — все аккаунты' });
-              stealthJob.failed++; phoneIdx++; stealthJob.checked++;
+              stealthJob.failed++; phoneIdx++; stealthJob.checked++; stealthJob.currentIndex = phoneIdx;
+              await saveStealthProgress();
             }
             accountBanned = true;
             break;
@@ -885,7 +904,8 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
             if (tries >= liveAccounts.length) {
               phoneFloodTries.delete(phoneIdx);
               stealthJob.log.push({ phone: rawPhone, name: rawPhone, status: 'error', error: 'не найден ни одним аккаунтом' });
-              stealthJob.failed++; phoneIdx++; stealthJob.checked++;
+              stealthJob.failed++; phoneIdx++; stealthJob.checked++; stealthJob.currentIndex = phoneIdx;
+              await saveStealthProgress();
             }
             accountBanned = true;
             break;
@@ -898,6 +918,9 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
           stealthJob.failed++;
           phoneIdx++;
           stealthJob.checked++;
+          stealthJob.currentIndex = phoneIdx;
+          await saveStealthProgress();
+          await saveNoTgAndSent();
         } else {
           // Отправляем
           const variant = messageVariants[Math.floor(Math.random() * messageVariants.length)];
@@ -922,6 +945,7 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
           sentByThisAccount++;
           phoneIdx++;
           stealthJob.checked++;
+          stealthJob.currentIndex = phoneIdx;
           await saveStealthProgress();
           await saveNoTgAndSent();
 
@@ -943,7 +967,8 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
           if (tries >= liveAccounts.length) {
             phoneFloodTries.delete(phoneIdx);
             stealthJob.log.push({ phone: rawPhone, name: rawPhone, status: 'error', error: 'PEER_FLOOD на отправке — все аккаунты' });
-            stealthJob.failed++; phoneIdx++; stealthJob.checked++;
+            stealthJob.failed++; phoneIdx++; stealthJob.checked++; stealthJob.currentIndex = phoneIdx;
+            await saveStealthProgress();
           }
           accountBanned = true;
           break;
@@ -952,6 +977,8 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
         stealthJob.failed++;
         phoneIdx++;
         stealthJob.checked++;
+        stealthJob.currentIndex = phoneIdx;
+        await saveStealthProgress();
       }
     }
 

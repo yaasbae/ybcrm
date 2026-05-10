@@ -41,6 +41,11 @@ function friendlyError(err: string): string {
   return err.slice(0, 40);
 }
 
+function normalizeBroadcastPhone(value: string): string {
+  const digits = String(value || '').replace(/\D/g, '');
+  return digits.length === 11 && digits.startsWith('8') ? `7${digits.slice(1)}` : digits;
+}
+
 export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
   const [clients, setClients] = useState<any[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -255,7 +260,7 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
         // Load saved no-telegram phones
         if (noTgSnap.exists()) {
           const map = new Map<string, string>();
-          (noTgSnap.data().phones || []).forEach((p: { phone: string; addedAt: string }) => map.set(p.phone, p.addedAt));
+          (noTgSnap.data().phones || []).forEach((p: { phone: string; addedAt: string }) => map.set(normalizeBroadcastPhone(p.phone), p.addedAt));
           setNoTelegramPhones(map);
         }
 
@@ -268,12 +273,11 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
           const b = d.data() as any;
           if (b.sentCount === undefined) return;
           if (b.sentCount === 0) return;
-          (b.phones || []).forEach((p: string) => sent.add(String(p).replace(/\D/g, '')));
+          (b.phones || []).forEach((p: string) => sent.add(normalizeBroadcastPhone(p)));
           history.push({ id: d.id, sentAt: b.sentAt, phones: b.phones || [], message: b.message || '', sentCount: b.sentCount || b.phones?.length || 0 });
           if (b.sentAt > latestAt && b.log?.length) { latestAt = b.sentAt; latestLog = b.log; }
         });
         history.sort((a, b) => new Date(b.sentAt).getTime() - new Date(a.sentAt).getTime());
-        setSentPhones(sent);
         setBroadcastHistory(history);
         if (latestLog.length > 0) setSendLog(latestLog);
 
@@ -282,17 +286,22 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
           const datesMap = new Map<string, string>();
           (stealthSentSnap.data().phones || []).forEach((p: any) => {
             const ph = typeof p === 'string' ? p : p?.phone;
-            if (ph && p?.sentAt) datesMap.set(ph, p.sentAt);
+            if (ph) {
+              const normalized = normalizeBroadcastPhone(ph);
+              sent.add(normalized);
+              if (p?.sentAt) datesMap.set(normalized, p.sentAt);
+            }
           });
           setSentDates(datesMap);
         }
+        setSentPhones(sent);
 
         // Клиентская база — коллекция contacts, отсортирована по totalSpent
         const revMap = new Map<string, number>();
         const ordMap = new Map<string, number>();
         const data = contactsSnap.docs.map(d => {
           const c = d.data() as any;
-          const phone = String(c.phone || d.id || '').replace(/\D/g, '');
+          const phone = normalizeBroadcastPhone(c.phone || d.id || '');
           const rev = c.totalSpent || 0;
           const ords = c.ordersCount || 0;
           revMap.set(phone.slice(-10), rev);
@@ -450,7 +459,7 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
           const noTgSnap = await getDoc(doc(db, 'settings', 'no_telegram'));
           if (noTgSnap.exists()) {
             const map = new Map<string, string>();
-            (noTgSnap.data().phones || []).forEach((p: { phone: string; addedAt: string }) => map.set(p.phone, p.addedAt));
+            (noTgSnap.data().phones || []).forEach((p: { phone: string; addedAt: string }) => map.set(normalizeBroadcastPhone(p.phone), p.addedAt));
             setNoTelegramPhones(map);
           }
         } else if (data.status === 'error') {
@@ -494,7 +503,25 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
         const data = await res.json();
         if (data.status !== 'idle') {
           setStealthStatus(data);
-          if (data.status === 'done') { setIsSending(false); clearInterval(timer); }
+          if (data.log?.length) {
+            setSentPhones(prev => {
+              const next = new Set(prev);
+              data.log.filter((l: any) => l.status === 'sent').forEach((l: any) => next.add(normalizeBroadcastPhone(l.phone)));
+              return next;
+            });
+            setNoTelegramPhones(prev => {
+              const next = new Map(prev);
+              data.log.filter((l: any) => l.status === 'no_tg').forEach((l: any) => {
+                const phone = normalizeBroadcastPhone(l.phone);
+                if (phone && !next.has(phone)) next.set(phone, new Date().toISOString());
+              });
+              return next;
+            });
+          }
+          if (['done', 'stopped', 'waiting_accounts', 'error'].includes(data.status)) {
+            setIsSending(false);
+            if (data.status === 'done') clearInterval(timer);
+          }
         }
       } catch {}
     };
@@ -505,7 +532,7 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
 
   const handleCheckTg = async () => {
     const phonesToCheck = clients
-      .filter(c => !noTelegramPhones.has(String(c.phone).replace(/\D/g, '')))
+      .filter(c => !noTelegramPhones.has(normalizeBroadcastPhone(c.phone)))
       .map(c => c.phone);
     if (!phonesToCheck.length || !tgStatus.authorized) return;
     setIsCheckingTg(true);
@@ -532,13 +559,12 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
     setSendLog([]);
 
     const TEST_PHONE = '89196977790'; // всегда получает тест
-    const normPhone = (p: string) => { const d = String(p).replace(/\D/g,''); return d.length === 11 && d.startsWith('8') ? '7'+d.slice(1) : d; };
-    const TEST_NORM = normPhone(TEST_PHONE);
+    const TEST_NORM = normalizeBroadcastPhone(TEST_PHONE);
 
     // Stealth режим — фоновый джоб на сервере
     if (broadcastMode === 'stealth') {
       try {
-        const phones = [TEST_PHONE, ...Array.from(selected).filter(p => normPhone(p) !== TEST_NORM)];
+        const phones = [TEST_PHONE, ...Array.from(selected).filter(p => normalizeBroadcastPhone(p) !== TEST_NORM)];
         const allVariants = [message, ...messageVariants].filter(Boolean);
         const imageFiles: Array<{ base64: string; name: string }> = [];
         for (const img of images) {
@@ -574,7 +600,7 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
     }
 
     try {
-      const phones = [TEST_PHONE, ...Array.from(selected).filter(p => normPhone(p) !== TEST_NORM)];
+      const phones = [TEST_PHONE, ...Array.from(selected).filter(p => normalizeBroadcastPhone(p) !== TEST_NORM)];
       const imageFiles: Array<{ base64: string; name: string }> = [];
       for (const img of images) {
         const base64 = await new Promise<string>(res => {
@@ -606,14 +632,14 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
       setResult(data);
       if (data.results) {
         const log = data.results.map((r: any) => {
-          const client = clients.find(c => String(c.phone) === String(r.phone).replace('+', ''));
+          const client = clients.find(c => normalizeBroadcastPhone(c.phone) === normalizeBroadcastPhone(r.phone));
           return { phone: r.phone, name: client?.fullName || client?.name || r.phone, status: r.status, error: r.error };
         });
         setSendLog(log);
-        setSentPhones(prev => { const next = new Set(prev); log.filter((l: any) => l.status === 'sent').forEach((l: any) => next.add(String(l.phone).replace(/\D/g, ''))); return next; });
+        setSentPhones(prev => { const next = new Set(prev); log.filter((l: any) => l.status === 'sent').forEach((l: any) => next.add(normalizeBroadcastPhone(l.phone))); return next; });
 
         // Сохраняем новые "нет Telegram" в Firestore (накапливаем)
-        const newNoTgPhones = log.filter((l: any) => l.error === 'Нет Telegram').map((l: any) => String(l.phone).replace(/\D/g, ''));
+        const newNoTgPhones = log.filter((l: any) => l.error === 'Нет Telegram').map((l: any) => normalizeBroadcastPhone(l.phone));
         if (newNoTgPhones.length > 0) {
           const now = new Date().toISOString();
           setNoTelegramPhones(prev => {
@@ -628,9 +654,9 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
           await setDoc(doc(db, 'settings', 'no_telegram'), { phones: updated });
         }
       }
-      const sentList = (data.results || []).filter((r: any) => r.status === 'sent').map((r: any) => String(r.phone).replace(/\D/g, ''));
+      const sentList = (data.results || []).filter((r: any) => r.status === 'sent').map((r: any) => normalizeBroadcastPhone(r.phone));
       const logToSave = (data.results || []).map((r: any) => {
-        const client = clients.find((c: any) => String(c.phone) === String(r.phone).replace('+', ''));
+        const client = clients.find((c: any) => normalizeBroadcastPhone(c.phone) === normalizeBroadcastPhone(r.phone));
         return { phone: r.phone, name: client?.fullName || client?.name || r.phone, status: r.status, ...(r.error ? { error: r.error } : {}) };
       });
       if (sentList.length > 0) {
@@ -651,11 +677,11 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
   };
 
   const activeSentSet = selectedBroadcast
-    ? new Set((broadcastHistory.find(b => b.id === selectedBroadcast)?.phones || []).map(p => String(p).replace(/\D/g, '')))
+    ? new Set((broadcastHistory.find(b => b.id === selectedBroadcast)?.phones || []).map(p => normalizeBroadcastPhone(p)))
     : sentPhones;
 
   const filteredClients = clients.filter(c => {
-    const phone = String(c.phone || '').replace(/\D/g, '');
+    const phone = normalizeBroadcastPhone(c.phone || '');
     const wasSent = activeSentSet.has(phone);
     const noTg = noTelegramPhones.has(phone);
     if (clientFilter === 'unsent' && (wasSent || noTg)) return false;
@@ -1267,10 +1293,10 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
                   {visibleClients.map((client, i) => {
                     const phone = client.phone || client.userId;
                     const isSelected = selected.has(phone);
-                    const key = String(phone).replace(/\D/g, '').slice(-10);
+                    const key = normalizeBroadcastPhone(phone).slice(-10);
                     const rev = clientRevenue.get(key) || 0;
                     const ords = clientOrders.get(key) || 0;
-                    const wasSent = activeSentSet.has(String(phone).replace(/\D/g, ''));
+                    const wasSent = activeSentSet.has(normalizeBroadcastPhone(phone));
                     return (
                       <div
                         key={i}
@@ -1304,7 +1330,7 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
                         {/* Колонка: уже отправляли */}
                         <div className="shrink-0 w-16 flex justify-end">
                           {wasSent ? (() => {
-                            const sentAt = sentDates.get(String(phone).replace(/\D/g, ''));
+                            const sentAt = sentDates.get(normalizeBroadcastPhone(phone));
                             const daysAgo = sentAt ? Math.floor((Date.now() - new Date(sentAt).getTime()) / 86400000) : null;
                             const label = daysAgo === null ? '✓ было' : daysAgo === 0 ? 'сегодня' : `${daysAgo} д.`;
                             return <span className="text-[9px] font-black text-blue-500 bg-blue-50 px-1.5 py-0.5 rounded-md">{label}</span>;
@@ -1505,8 +1531,8 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
             {noTelegramPhones.size === 0 && (
               <div className="px-3 py-5 text-center text-[10px] text-zinc-300">Здесь появятся контакты без TG</div>
             )}
-            {clients.filter(c => noTelegramPhones.has(String(c.phone).replace(/\D/g, ''))).map((c, i) => {
-              const phone = String(c.phone).replace(/\D/g, '');
+            {clients.filter(c => noTelegramPhones.has(normalizeBroadcastPhone(c.phone))).map((c, i) => {
+              const phone = normalizeBroadcastPhone(c.phone);
               const addedAt = noTelegramPhones.get(phone);
               const dateStr = addedAt ? new Date(addedAt).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: '2-digit' }) : '';
               return (
