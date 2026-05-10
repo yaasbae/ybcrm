@@ -14,6 +14,7 @@ interface TgAccount {
   phone: string;
   addedAt: string;
   active: boolean;
+  proxy?: { ip: string; port: number; username?: string; password?: string; };
 }
 
 interface TgStatus {
@@ -94,6 +95,8 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
   const [isSettingPhoto, setIsSettingPhoto] = useState(false);
   const [photoResult, setPhotoResult] = useState('');
   const [isSavingName, setIsSavingName] = useState(false);
+  const [proxyInputs, setProxyInputs] = useState<Record<string, string>>({});
+  const [savingProxy, setSavingProxy] = useState<string | null>(null);
 
   // Tochka Bank settings
   const [tochkaToken, setTochkaToken] = useState('');
@@ -111,7 +114,18 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
     try {
       const res = await fetch('/api/tg/auth/status');
       const data = await res.json();
-      setTgStatus({ authorized: data.authorized, accounts: data.accounts || [] });
+      const accs: TgAccount[] = data.accounts || [];
+      setTgStatus({ authorized: data.authorized, accounts: accs });
+      setProxyInputs(prev => {
+        const next = { ...prev };
+        accs.forEach(a => {
+          if (!(a.phone in next) && a.proxy) {
+            const p = a.proxy;
+            next[a.phone] = [p.ip, p.port, p.username || '', p.password || ''].filter((v, i) => i < 2 || v).join(':');
+          }
+        });
+        return next;
+      });
     } catch {}
   };
 
@@ -244,6 +258,24 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ phone })
     });
+    await loadTgStatus();
+  };
+
+  const handleSaveProxy = async (phone: string) => {
+    const raw = (proxyInputs[phone] || '').trim();
+    let proxy: { ip: string; port: number; username?: string; password?: string; } | null = null;
+    if (raw) {
+      const parts = raw.split(':');
+      if (parts.length < 2) return alert('Формат: ip:port или ip:port:user:pass');
+      proxy = { ip: parts[0], port: Number(parts[1]), username: parts[2] || undefined, password: parts[3] || undefined };
+    }
+    setSavingProxy(phone);
+    await fetch('/api/tg/accounts/set-proxy', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone, proxy })
+    });
+    setSavingProxy(null);
     await loadTgStatus();
   };
 
@@ -747,19 +779,37 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
               ) : (
                 <div className="border border-zinc-100 rounded-xl overflow-hidden">
                   {tgStatus.accounts.map((acc, i) => (
-                    <div key={acc.phone} className="flex items-center gap-3 px-3 py-2.5 border-b border-zinc-50 last:border-b-0">
-                      <div className="w-6 h-6 bg-blue-100 rounded-full flex items-center justify-center shrink-0">
-                        <span className="text-[9px] font-black text-blue-600">{i + 1}</span>
+                    <div key={acc.phone} className="border-b border-zinc-50 last:border-b-0">
+                      <div className="flex items-center gap-3 px-3 py-2.5">
+                        <div className="w-6 h-6 bg-blue-100 rounded-full flex items-center justify-center shrink-0">
+                          <span className="text-[9px] font-black text-blue-600">{i + 1}</span>
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-[11px] font-bold text-zinc-900 font-mono">{acc.phone}</p>
+                          <p className="text-[9px] text-zinc-400">{new Date(acc.addedAt).toLocaleDateString('ru')}</p>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-[8px] font-black text-emerald-500 uppercase">активен</span>
+                          <button onClick={() => handleRemoveAccount(acc.phone)}
+                            className="text-red-400 hover:text-red-600 transition-colors">
+                            <XCircle size={14} />
+                          </button>
+                        </div>
                       </div>
-                      <div className="flex-1 min-w-0">
-                        <p className="text-[11px] font-bold text-zinc-900 font-mono">{acc.phone}</p>
-                        <p className="text-[9px] text-zinc-400">{new Date(acc.addedAt).toLocaleDateString('ru')}</p>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-[8px] font-black text-emerald-500 uppercase">активен</span>
-                        <button onClick={() => handleRemoveAccount(acc.phone)}
-                          className="text-red-400 hover:text-red-600 transition-colors">
-                          <XCircle size={14} />
+                      <div className="flex items-center gap-2 px-3 pb-2.5">
+                        <input
+                          type="text"
+                          placeholder="прокси: ip:port:user:pass"
+                          value={proxyInputs[acc.phone] || ''}
+                          onChange={e => setProxyInputs(prev => ({ ...prev, [acc.phone]: e.target.value }))}
+                          className={`flex-1 bg-zinc-50 border rounded-lg px-2 py-1 text-[10px] font-mono focus:outline-none focus:ring-1 focus:ring-blue-500/30 ${acc.proxy ? 'border-emerald-300' : 'border-zinc-200'}`}
+                        />
+                        <button
+                          onClick={() => handleSaveProxy(acc.phone)}
+                          disabled={savingProxy === acc.phone}
+                          className="px-2 py-1 bg-zinc-800 text-white rounded-lg text-[9px] font-black hover:bg-zinc-700 transition-all disabled:opacity-40 shrink-0"
+                        >
+                          {savingProxy === acc.phone ? '...' : 'OK'}
                         </button>
                       </div>
                     </div>

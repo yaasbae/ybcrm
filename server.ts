@@ -281,6 +281,11 @@ app.get("/api/broadcast/status", async (req, res) => {
   }
 });
 
+function buildProxyOpts(acc: any) {
+  if (!acc?.proxy?.ip) return {};
+  return { proxy: { ip: acc.proxy.ip, port: Number(acc.proxy.port), username: acc.proxy.username || undefined, password: acc.proxy.password || undefined, socksType: 5 as const } };
+}
+
 app.post("/api/tg/auth/send-code", async (req, res) => {
   const { phone } = req.body;
   if (!phone) return res.status(400).json({ error: "Нужен номер телефона" });
@@ -354,7 +359,7 @@ app.get("/api/tg/auth/status", async (req, res) => {
         accounts.push({ phone: old.data().phone, addedAt: old.data().savedAt, active: true });
       }
     }
-    const pub = accounts.map((a: any) => ({ phone: a.phone, addedAt: a.addedAt, active: a.active !== false }));
+    const pub = accounts.map((a: any) => ({ phone: a.phone, addedAt: a.addedAt, active: a.active !== false, proxy: a.proxy || null }));
     res.json({ authorized: accounts.length > 0, accounts: pub });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -551,6 +556,20 @@ app.post("/api/tg/accounts/remove", async (req, res) => {
   }
 });
 
+app.post("/api/tg/accounts/set-proxy", async (req, res) => {
+  const { phone, proxy } = req.body;
+  try {
+    if (!db) return res.status(500).json({ error: "DB not connected" });
+    const snap = await getDoc(doc(db, "settings", "tg_accounts"));
+    const accounts = snap.exists() ? snap.data().accounts || [] : [];
+    const updated = accounts.map((a: any) => a.phone === phone ? { ...a, proxy: proxy || null } : a);
+    await setDoc(doc(db, "settings", "tg_accounts"), { accounts: updated });
+    res.json({ success: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.post("/api/tg/accounts/set-photo", async (req, res) => {
   const { photoBase64 } = req.body;
   if (!photoBase64) return res.status(400).json({ error: "Нужен photoBase64" });
@@ -564,7 +583,7 @@ app.post("/api/tg/accounts/set-photo", async (req, res) => {
     let ok = 0, failed = 0;
     for (const acc of accounts) {
       try {
-        const c = new TelegramClient(new StringSession(acc.sessionString), TG_API_ID, TG_API_HASH, { connectionRetries: 3, autoReconnect: false });
+        const c = new TelegramClient(new StringSession(acc.sessionString), TG_API_ID, TG_API_HASH, { connectionRetries: 3, autoReconnect: false, ...buildProxyOpts(acc) });
         await c.connect();
         const uploaded = await c.uploadFile({ file: new CustomFile("photo.jpg", buf.length, "", buf), workers: 1 });
         await c.invoke(new Api.photos.UploadProfilePhoto({ file: uploaded }));
@@ -594,7 +613,7 @@ async function runTgCheckJob(phones: string[]) {
     if (snap.exists()) accounts = (snap.data().accounts || []).filter((a: any) => a.sessionString && a.active !== false);
     if (!accounts.length) throw new Error('Нет активных аккаунтов');
 
-    client = new TelegramClient(new StringSession(accounts[0].sessionString), TG_API_ID, TG_API_HASH, { connectionRetries: 3 });
+    client = new TelegramClient(new StringSession(accounts[0].sessionString), TG_API_ID, TG_API_HASH, { connectionRetries: 3, ...buildProxyOpts(accounts[0]) });
     await client.connect();
 
     const noTgSnap = await getDoc(doc(db, 'settings', 'no_telegram')).catch(() => null);
@@ -795,7 +814,7 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
     stealthJob.currentAccount = acc.phone || '';
 
     // Подключаем аккаунт
-    const client = new TelegramClient(new StringSession(acc.sessionString), TG_API_ID, TG_API_HASH, { connectionRetries: 3, autoReconnect: false });
+    const client = new TelegramClient(new StringSession(acc.sessionString), TG_API_ID, TG_API_HASH, { connectionRetries: 3, autoReconnect: false, ...buildProxyOpts(acc) });
     await client.connect().catch(() => {});
     if (acc.displayName) {
       const parts = acc.displayName.trim().split(' ');
@@ -1097,7 +1116,7 @@ app.post("/api/broadcast/gramjs", async (req, res) => {
     // Connect all clients and optionally set display name
     const clients: TelegramClient[] = [];
     for (const acc of accounts) {
-      const c = new TelegramClient(new StringSession(acc.sessionString), TG_API_ID, TG_API_HASH, { connectionRetries: 3, autoReconnect: false });
+      const c = new TelegramClient(new StringSession(acc.sessionString), TG_API_ID, TG_API_HASH, { connectionRetries: 3, autoReconnect: false, ...buildProxyOpts(acc) });
       await c.connect();
       if (displayName) {
         const parts = displayName.trim().split(' ');
