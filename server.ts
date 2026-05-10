@@ -876,6 +876,18 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
         }
 
         if (!entity) {
+          if (ALWAYS_TESTABLE.has(cleanPhone)) {
+            const tries = (phoneFloodTries.get(phoneIdx) || 0) + 1;
+            phoneFloodTries.set(phoneIdx, tries);
+            console.log(`[stealth] ALWAYS_TESTABLE ${phone} not found by ${acc.phone}, try ${tries}/${liveAccounts.length}`);
+            if (tries >= liveAccounts.length) {
+              phoneFloodTries.delete(phoneIdx);
+              stealthJob.log.push({ phone: rawPhone, name: rawPhone, status: 'error', error: 'не найден ни одним аккаунтом' });
+              stealthJob.failed++; phoneIdx++; stealthJob.checked++;
+            }
+            accountBanned = true;
+            break;
+          }
           if (!noTgSet.has(cleanPhone)) {
             noTgSet.add(cleanPhone);
             newNoTg.push({ phone: cleanPhone, addedAt: new Date().toISOString() });
