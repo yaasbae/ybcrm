@@ -2502,7 +2502,13 @@ function startContentBot() {
     return sendMenu(ctx);
   });
 
-  bot.launch();
+  bot.launch().catch((e: any) => {
+    if (e.message?.includes('409')) {
+      console.log('[content-bot] 409 Conflict — другой инстанс уже опрашивает Telegram, polling пропущен');
+    } else {
+      console.error('[content-bot] launch error:', e.message);
+    }
+  });
   process.once("SIGINT", () => bot.stop("SIGINT"));
   process.once("SIGTERM", () => bot.stop("SIGTERM"));
   console.log("[content-bot] запущен");
