@@ -2376,9 +2376,9 @@ async function falGenerateVideo(prompt: string, imageUrl?: string): Promise<stri
 async function geminiGenerateImage(prompt: string): Promise<Buffer> {
   const ai = new GoogleGenAI({ apiKey: CONTENT_GEMINI_KEY });
   const imgRes = await ai.models.generateContent({
-    model: "gemini-3.1-flash-image-preview",
-    contents: [{ role: "user", parts: [{ text: prompt }] as any }],
-    config: { responseModalities: [Modality.IMAGE, Modality.TEXT] },
+    model: "gemini-2.0-flash-exp",
+    contents: prompt,
+    config: { responseModalities: ["Text", "Image"] as any },
   });
   for (const part of (imgRes as any).candidates?.[0]?.content?.parts || []) {
     if (part.inlineData?.data) return Buffer.from(part.inlineData.data, "base64");
@@ -2391,7 +2391,7 @@ async function geminiWritePrompt(userText: string, mode: 'image' | 'video'): Pro
   const instruction = mode === 'image'
     ? `Write a detailed photorealistic image generation prompt in English for: "${userText}". Only the prompt, max 80 words.`
     : `Write a short cinematic video prompt in English for: "${userText}". Only the prompt, max 50 words.`;
-  const res = await ai.models.generateContent({ model: "gemini-2.0-flash", contents: instruction });
+  const res = await ai.models.generateContent({ model: "gemini-2.0-flash-exp", contents: instruction });
   return (res as any).candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? userText;
 }
 
