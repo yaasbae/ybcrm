@@ -11,15 +11,17 @@ export const ContentStudioPage: React.FC = () => {
   // ── Image tab ──
   const [imgText, setImgText] = useState('');
   const [imgPrompt, setImgPrompt] = useState('');
+  const [imgSourceImage, setImgSourceImage] = useState<{ file: File; base64: string } | null>(null);
   const [imgLoading, setImgLoading] = useState<'prompt' | 'image' | null>(null);
-  const [imgResult, setImgResult] = useState<string | null>(null); // object URL
+  const [imgResult, setImgResult] = useState<string | null>(null);
+  const imgFileRef = useRef<HTMLInputElement>(null);
 
   // ── Video tab ──
   const [vidText, setVidText] = useState('');
   const [vidPrompt, setVidPrompt] = useState('');
   const [vidImage, setVidImage] = useState<{ file: File; base64: string } | null>(null);
   const [vidLoading, setVidLoading] = useState<'prompt' | 'video' | null>(null);
-  const [vidResult, setVidResult] = useState<string | null>(null); // video URL
+  const [vidResult, setVidResult] = useState<string | null>(null);
   const vidFileRef = useRef<HTMLInputElement>(null);
 
   // ── Prompt tab ──
@@ -28,7 +30,29 @@ export const ContentStudioPage: React.FC = () => {
   const [prmImageResult, setPrmImageResult] = useState('');
   const [prmVideoResult, setPrmVideoResult] = useState('');
 
-  // ── Helpers ──
+  function readFileAsBase64(file: File): Promise<string> {
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = (ev) => resolve((ev.target?.result as string).split(',')[1]);
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function handleImgFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const base64 = await readFileAsBase64(file);
+    setImgSourceImage({ file, base64 });
+    setImgResult(null);
+  }
+
+  async function handleVidFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const base64 = await readFileAsBase64(file);
+    setVidImage({ file, base64 });
+  }
+
   async function improvePrompt(text: string, mode: 'image' | 'video', setPrompt: (s: string) => void, setLoading: (v: any) => void) {
     if (!text.trim()) return;
     setLoading('prompt');
@@ -53,7 +77,7 @@ export const ContentStudioPage: React.FC = () => {
       const r = await fetch('/api/content-studio/image', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt }),
+        body: JSON.stringify({ prompt, imageBase64: imgSourceImage?.base64 }),
       });
       if (!r.ok) throw new Error(await r.text());
       const blob = await r.blob();
@@ -100,18 +124,6 @@ export const ContentStudioPage: React.FC = () => {
     setPrmLoading(false);
   }
 
-  function handleVidFileChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      const dataUrl = ev.target?.result as string;
-      const base64 = dataUrl.split(',')[1];
-      setVidImage({ file, base64 });
-    };
-    reader.readAsDataURL(file);
-  }
-
   const tabs: { id: Tab; label: string; icon: React.ReactNode }[] = [
     { id: 'image', label: 'Картинка', icon: <Image size={14} /> },
     { id: 'video', label: 'Видео', icon: <Video size={14} /> },
@@ -147,14 +159,44 @@ export const ContentStudioPage: React.FC = () => {
       {tab === 'image' && (
         <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="space-y-4">
           <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-5 space-y-4">
+
+            {/* Исходное фото (опционально) */}
             <div className="space-y-2">
-              <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Тема или промпт</label>
+              <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Исходное фото (для редактирования)</label>
+              {imgSourceImage ? (
+                <div className="relative w-fit">
+                  <img src={URL.createObjectURL(imgSourceImage.file)} alt="source" className="h-36 rounded-xl object-cover" />
+                  <button
+                    onClick={() => { setImgSourceImage(null); if (imgFileRef.current) imgFileRef.current.value = ''; }}
+                    className="absolute -top-2 -right-2 bg-white border border-slate-200 rounded-full p-0.5 shadow hover:bg-red-50 transition-colors"
+                  >
+                    <X size={12} className="text-slate-500" />
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={() => imgFileRef.current?.click()}
+                  className="flex items-center gap-2 border border-dashed border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-400 hover:border-purple-400 hover:text-purple-500 transition-colors w-full justify-center"
+                >
+                  <Upload size={14} /> Загрузить фото для редактирования
+                </button>
+              )}
+              <input ref={imgFileRef} type="file" accept="image/*" className="hidden" onChange={handleImgFileChange} />
+            </div>
+
+            {/* Промпт */}
+            <div className="space-y-2">
+              <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide">
+                {imgSourceImage ? 'Что сделать с фото' : 'Тема или промпт'}
+              </label>
               <textarea
                 value={imgText}
                 onChange={e => { setImgText(e.target.value); setImgPrompt(''); }}
                 rows={2}
                 className="w-full border border-slate-200 rounded-xl px-3 py-2 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-purple-300"
-                placeholder="Например: красивый закат над горами"
+                placeholder={imgSourceImage
+                  ? 'Например: поменяй фон на пустыню, розовый на чёрный'
+                  : 'Например: красивый закат над горами'}
               />
             </div>
 
@@ -179,7 +221,9 @@ export const ContentStudioPage: React.FC = () => {
               disabled={!!imgLoading || (!imgText.trim() && !imgPrompt.trim())}
               className="w-full bg-purple-600 text-white rounded-xl py-2.5 text-sm font-semibold flex items-center justify-center gap-2 hover:bg-purple-700 disabled:opacity-40 transition-colors"
             >
-              {imgLoading === 'image' ? <><Loader2 size={14} className="animate-spin" /> Генерирую...</> : <><Image size={14} /> Сгенерировать картинку</>}
+              {imgLoading === 'image'
+                ? <><Loader2 size={14} className="animate-spin" /> Генерирую...</>
+                : <><Image size={14} /> {imgSourceImage ? 'Редактировать фото' : 'Сгенерировать картинку'}</>}
             </button>
           </div>
 
@@ -200,7 +244,6 @@ export const ContentStudioPage: React.FC = () => {
       {tab === 'video' && (
         <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="space-y-4">
           <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-5 space-y-4">
-            {/* Image upload */}
             <div className="space-y-2">
               <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Картинка (опционально)</label>
               {vidImage ? (
@@ -211,7 +254,7 @@ export const ContentStudioPage: React.FC = () => {
                   </button>
                 </div>
               ) : (
-                <button onClick={() => vidFileRef.current?.click()} className="flex items-center gap-2 border border-dashed border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-400 hover:border-purple-400 hover:text-purple-500 transition-colors">
+                <button onClick={() => vidFileRef.current?.click()} className="flex items-center gap-2 border border-dashed border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-400 hover:border-purple-400 hover:text-purple-500 transition-colors w-full justify-center">
                   <Upload size={14} /> Загрузить картинку
                 </button>
               )}
@@ -250,7 +293,9 @@ export const ContentStudioPage: React.FC = () => {
               disabled={!!vidLoading || (!vidText.trim() && !vidPrompt.trim())}
               className="w-full bg-purple-600 text-white rounded-xl py-2.5 text-sm font-semibold flex items-center justify-center gap-2 hover:bg-purple-700 disabled:opacity-40 transition-colors"
             >
-              {vidLoading === 'video' ? <><Loader2 size={14} className="animate-spin" /> Генерирую видео (~2 мин)...</> : <><Video size={14} /> Сгенерировать видео</>}
+              {vidLoading === 'video'
+                ? <><Loader2 size={14} className="animate-spin" /> Генерирую видео (~2 мин)...</>
+                : <><Video size={14} /> Сгенерировать видео</>}
             </button>
           </div>
 

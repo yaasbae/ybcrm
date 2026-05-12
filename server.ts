@@ -2373,11 +2373,15 @@ async function falGenerateVideo(prompt: string, imageUrl?: string): Promise<stri
   throw new Error("Seedance: timeout 5 мин");
 }
 
-async function geminiGenerateImage(prompt: string): Promise<Buffer> {
+async function geminiGenerateImage(prompt: string, imageBase64?: string): Promise<Buffer> {
   const ai = new GoogleGenAI({ apiKey: CONTENT_GEMINI_KEY });
+  const parts: any[] = [{ text: prompt }];
+  if (imageBase64) {
+    parts.push({ inlineData: { mimeType: "image/jpeg", data: imageBase64 } });
+  }
   const imgRes = await ai.models.generateContent({
     model: "gemini-3.1-flash-image-preview",
-    contents: [{ role: "user", parts: [{ text: prompt }] as any }],
+    contents: [{ role: "user", parts }],
     config: { responseModalities: [Modality.IMAGE, Modality.TEXT] },
   });
   for (const part of (imgRes as any).candidates?.[0]?.content?.parts || []) {
@@ -2521,9 +2525,9 @@ app.post("/api/content-studio/prompt", async (req, res) => {
 
 app.post("/api/content-studio/image", async (req, res) => {
   try {
-    const { prompt } = req.body as { prompt: string };
+    const { prompt, imageBase64 } = req.body as { prompt: string; imageBase64?: string };
     if (!prompt) return res.status(400).json({ error: "prompt required" });
-    const buf = await geminiGenerateImage(prompt);
+    const buf = await geminiGenerateImage(prompt, imageBase64);
     res.set("Content-Type", "image/jpeg").send(buf);
   } catch (e: any) {
     res.status(500).json({ error: e.message });
