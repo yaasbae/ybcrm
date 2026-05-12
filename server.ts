@@ -2331,6 +2331,109 @@ function startTelegramBot() {
 
 loadBotCfg().then(() => startTelegramBot());
 
+// ─── КОНТЕНТ-БОТ ──────────────────────────────────────────────────────────────
+const CONTENT_BOT_TOKEN = process.env.CONTENT_BOT_TOKEN;
+const FAL_API_KEY = process.env.FAL_API_KEY;
+const contentSessions = new Map<number, string>(); // userId → тема
+
+async function falGenerateVideo(prompt: string): Promise<string> {
+  if (!FAL_API_KEY) throw new Error("FAL_API_KEY не задан");
+  // Submit
+  const sub = await fetch("https://queue.fal.run/fal-ai/seedance-1-5", {
+    method: "POST",
+    headers: { "Authorization": `Key ${FAL_API_KEY}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt, duration: 5 })
+  });
+  const { request_id } = await sub.json() as any;
+  if (!request_id) throw new Error("fal.ai не вернул request_id");
+  // Poll
+  for (let i = 0; i < 80; i++) {
+    await new Promise(r => setTimeout(r, 4000));
+    const poll = await fetch(`https://queue.fal.run/fal-ai/seedance-1-5/requests/${request_id}`, {
+      headers: { "Authorization": `Key ${FAL_API_KEY}` }
+    });
+    const data = await poll.json() as any;
+    if (data.status === "COMPLETED") return data.output?.video?.url ?? data.output?.url ?? "";
+    if (data.status === "FAILED") throw new Error("Seedance: генерация провалилась");
+  }
+  throw new Error("Seedance: timeout 5 мин");
+}
+
+function startContentBot() {
+  if (!CONTENT_BOT_TOKEN) { console.warn("[content-bot] CONTENT_BOT_TOKEN не задан — не запущен"); return; }
+  if (process.env.BOT_DISABLED === "true") return;
+
+  const bot = new Telegraf(CONTENT_BOT_TOKEN, { handlerTimeout: 600_000 });
+
+  bot.start(async (ctx) => {
+    await ctx.reply("Привет! 👋 Отправь мне тему — выберешь Gemini Flash или Seedance 2.0 🎨");
+  });
+
+  bot.on("text", async (ctx) => {
+    const topic = ctx.message.text.trim();
+    contentSessions.set(ctx.from.id, topic);
+    await ctx.reply(`Тема: *${topic}*\n\nВыбери модель:`, {
+      parse_mode: "Markdown",
+      reply_markup: {
+        inline_keyboard: [[
+          { text: "✨ Gemini Flash", callback_data: "cnt_gemini" },
+          { text: "🎬 Seedance 2.0", callback_data: "cnt_seedance" }
+        ]]
+      }
+    });
+  });
+
+  bot.action("cnt_gemini", async (ctx) => {
+    await ctx.answerCbQuery();
+    const topic = contentSessions.get(ctx.from!.id);
+    if (!topic) return ctx.reply("Сначала отправь тему");
+    const msg = await ctx.reply("⏳ Генерирую текст...");
+    try {
+      const apiKey = process.env.GEMINI_API_KEY;
+      if (!apiKey) throw new Error("GEMINI_API_KEY не задан");
+      const ai = new GoogleGenAI({ apiKey });
+      const res = await ai.models.generateContent({
+        model: "gemini-2.0-flash",
+        contents: `Создай креативный пост для социальных сетей на тему: "${topic}". Добавь эмодзи, сделай текст вовлекающим и продающим. Не более 300 слов.`
+      });
+      await ctx.telegram.editMessageText(ctx.chat!.id, msg.message_id, undefined, res.text ?? "Пусто");
+    } catch (e: any) {
+      await ctx.telegram.editMessageText(ctx.chat!.id, msg.message_id, undefined, `❌ Ошибка: ${e.message}`);
+    }
+  });
+
+  bot.action("cnt_seedance", async (ctx) => {
+    await ctx.answerCbQuery();
+    const topic = contentSessions.get(ctx.from!.id);
+    if (!topic) return ctx.reply("Сначала отправь тему");
+    const msg = await ctx.reply("⏳ Генерирую промпт через Gemini...");
+    try {
+      const apiKey = process.env.GEMINI_API_KEY;
+      if (!apiKey) throw new Error("GEMINI_API_KEY не задан");
+      const ai = new GoogleGenAI({ apiKey });
+      const promptRes = await ai.models.generateContent({
+        model: "gemini-2.0-flash",
+        contents: `Write a short cinematic video generation prompt in English for the topic: "${topic}". Only the prompt, no explanations, max 50 words.`
+      });
+      const videoPrompt = promptRes.text?.trim() ?? topic;
+      await ctx.telegram.editMessageText(ctx.chat!.id, msg.message_id, undefined,
+        `📝 Промпт: ${videoPrompt}\n\n⏳ Генерирую видео (~2 мин)...`);
+      const videoUrl = await falGenerateVideo(videoPrompt);
+      await ctx.telegram.deleteMessage(ctx.chat!.id, msg.message_id).catch(() => {});
+      await ctx.replyWithVideo({ url: videoUrl }, { caption: `🎬 ${topic}` });
+    } catch (e: any) {
+      await ctx.telegram.editMessageText(ctx.chat!.id, msg.message_id, undefined, `❌ Ошибка: ${e.message}`).catch(() => {});
+    }
+  });
+
+  bot.launch();
+  process.once("SIGINT", () => bot.stop("SIGINT"));
+  process.once("SIGTERM", () => bot.stop("SIGTERM"));
+  console.log("[content-bot] запущен");
+}
+
+startContentBot();
+
 // ────────────────────────────────────────────────────────────────────────────
 
 async function startServer() {
