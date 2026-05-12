@@ -760,6 +760,9 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
   const accounts: any[] = snap.exists() ? (snap.data().accounts || []).filter((a: any) => a.sessionString && a.active !== false) : [];
   if (!accounts.length) { stealthJob.status = 'waiting_accounts'; await saveStealthProgress(); return; }
 
+  const configSnap = await getDoc(doc(db, 'settings', 'broadcast_config')).catch(() => null);
+  const broadcastDisplayName: string = configSnap?.exists() ? (configSnap.data()?.displayName || '') : '';
+
   // Загружаем no_telegram
   const noTgSnap = await getDoc(doc(db, 'settings', 'no_telegram')).catch(() => null);
   const savedNoTg: Array<{phone:string;addedAt:string}> = noTgSnap?.exists() ? (noTgSnap.data().phones || []) : [];
@@ -816,8 +819,8 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
     // Подключаем аккаунт
     const client = new TelegramClient(new StringSession(acc.sessionString), TG_API_ID, TG_API_HASH, { connectionRetries: 3, autoReconnect: false, ...buildProxyOpts(acc) });
     await client.connect().catch(() => {});
-    if (acc.displayName) {
-      const parts = acc.displayName.trim().split(' ');
+    if (broadcastDisplayName) {
+      const parts = broadcastDisplayName.trim().split(' ');
       await client.invoke(new Api.account.UpdateProfile({ firstName: parts[0] || '', lastName: parts.slice(1).join(' ') || '' })).catch(() => {});
     }
 
