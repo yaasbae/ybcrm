@@ -2332,8 +2332,8 @@ function startTelegramBot() {
 loadBotCfg().then(() => startTelegramBot());
 
 // ─── КОНТЕНТ-БОТ ──────────────────────────────────────────────────────────────
-const CONTENT_BOT_TOKEN = process.env.CONTENT_BOT_TOKEN;
-const FAL_API_KEY = process.env.FAL_API_KEY;
+const CONTENT_BOT_TOKEN = process.env.CONTENT_BOT_TOKEN || "8816890139:AAF8myE9ELFLr2r1AhxQXz4l7Qoj7dALGZ0";
+const FAL_API_KEY = process.env.FAL_API_KEY || "ff76d40a-2474-47f3-a000-f0bc4c6c7195:508f6cb74c782f7c18d4f3d2ee852f7a";
 const contentSessions = new Map<number, string>(); // userId → тема
 
 async function falGenerateVideo(prompt: string): Promise<string> {
