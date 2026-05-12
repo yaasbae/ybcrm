@@ -2506,6 +2506,42 @@ function startContentBot() {
 
 startContentBot();
 
+// ── Content Studio API ────────────────────────────────────────────────────────
+
+app.post("/api/content-studio/prompt", async (req, res) => {
+  try {
+    const { text, mode } = req.body as { text: string; mode: 'image' | 'video' };
+    if (!text || !mode) return res.status(400).json({ error: "text and mode required" });
+    const prompt = await geminiWritePrompt(text, mode);
+    res.json({ prompt });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/content-studio/image", async (req, res) => {
+  try {
+    const { prompt } = req.body as { prompt: string };
+    if (!prompt) return res.status(400).json({ error: "prompt required" });
+    const buf = await geminiGenerateImage(prompt);
+    res.set("Content-Type", "image/jpeg").send(buf);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/content-studio/video", async (req, res) => {
+  try {
+    const { prompt, imageBase64 } = req.body as { prompt: string; imageBase64?: string };
+    if (!prompt) return res.status(400).json({ error: "prompt required" });
+    const imageUrl = imageBase64 ? `data:image/jpeg;base64,${imageBase64}` : undefined;
+    const videoUrl = await falGenerateVideo(prompt, imageUrl);
+    res.json({ videoUrl });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ────────────────────────────────────────────────────────────────────────────
 
 async function startServer() {

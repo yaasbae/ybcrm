@@ -14,6 +14,7 @@ const HandbookPage = lazy(() => import("./components/HandbookPage").then(m => ({
 const BroadcastPage = lazy(() => import("./components/BroadcastPage").then(m => ({ default: m.BroadcastPage })));
 const BotPage = lazy(() => import("./components/BotPage").then(m => ({ default: m.BotPage })));
 const ContentPage = lazy(() => import("./components/ContentPage").then(m => ({ default: m.ContentPage })));
+const ContentStudioPage = lazy(() => import("./components/ContentStudioPage").then(m => ({ default: m.ContentStudioPage })));
 const PaymentPage = lazy(() => import("./components/PaymentPage").then(m => ({ default: m.PaymentPage })));
 import { auth, signInWithGoogle, signInWithEmail, logOut } from "./firebase";
 import { onAuthStateChanged, User as FirebaseUser } from "firebase/auth";
@@ -21,7 +22,7 @@ import { cn } from "./lib/utils";
 import {
   LogIn, LogOut, User as UserIcon, AlertCircle,
   DollarSign, Calculator, LayoutDashboard, Package, Bot, ShoppingBag,
-  UserCircle, Star, Calendar as CalendarIcon, BookOpen, Send, Sparkles
+  UserCircle, Star, Calendar as CalendarIcon, BookOpen, Send, Sparkles, Wand2
 } from "lucide-react";
 import { motion } from "motion/react";
 
@@ -71,7 +72,7 @@ class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
 }
 
 export default function App() {
-  const [view, setView] = useState<'home' | 'calculator' | 'analytics' | 'orders' | 'clients' | 'marketing' | 'order-form' | 'products' | 'ai-agent' | 'public-product' | 'public-payment' | 'finance' | 'handbook' | 'broadcast' | 'bot' | 'content'>('home');
+  const [view, setView] = useState<'home' | 'calculator' | 'analytics' | 'orders' | 'clients' | 'marketing' | 'order-form' | 'products' | 'ai-agent' | 'public-product' | 'public-payment' | 'finance' | 'handbook' | 'broadcast' | 'bot' | 'content' | 'studio'>('home');
   const [publicProductId, setPublicProductId] = useState<string | null>(null);
   const [publicPaymentOrderId, setPublicPaymentOrderId] = useState<string | null>(null);
   const [activeSheetId, setActiveSheetId] = useState<string>('1xTDxiOMqJR-KBnLdbikKp2--ZBQBDkII-xMCoO2lSbM');
@@ -338,6 +339,7 @@ export default function App() {
                 { id: 'broadcast', label: 'Рассыл.',  icon: Send },
                 { id: 'bot',       label: 'Бот',       icon: Bot },
                 { id: 'content',   label: 'Контент',   icon: Sparkles },
+                { id: 'studio',    label: 'Студия',    icon: Wand2 },
                 { id: 'ai-agent',  label: 'ИИ',       icon: Bot, special: true },
               ].map((item, idx) => {
                 const isActive = item.id === view;
@@ -458,6 +460,10 @@ export default function App() {
 
           {view === 'content' && (
             <ContentPage />
+          )}
+
+          {view === 'studio' && (
+            <ContentStudioPage />
           )}
 
           {view === 'public-product' && publicProductId && (
