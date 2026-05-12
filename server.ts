@@ -2334,19 +2334,33 @@ loadBotCfg().then(() => startTelegramBot());
 // ─── КОНТЕНТ-БОТ ──────────────────────────────────────────────────────────────
 const CONTENT_BOT_TOKEN = process.env.CONTENT_BOT_TOKEN || "8816890139:AAF8myE9ELFLr2r1AhxQXz4l7Qoj7dALGZ0";
 const FAL_API_KEY = process.env.FAL_API_KEY || "ff76d40a-2474-47f3-a000-f0bc4c6c7195:508f6cb74c782f7c18d4f3d2ee852f7a";
-const contentSessions = new Map<number, string>(); // userId → тема
+const CONTENT_GEMINI_KEY = process.env.GEMINI_API_KEY || "AIzaSyBKHPdYjVUlN9lKo9vpqhvLidazgs6Ysms";
 
-async function falGenerateVideo(prompt: string): Promise<string> {
-  if (!FAL_API_KEY) throw new Error("FAL_API_KEY не задан");
-  // Submit
+type CntState =
+  | { type: 'idle' }
+  | { type: 'waiting_img_prompt' }
+  | { type: 'waiting_vid_image' }
+  | { type: 'waiting_vid_prompt'; imageBase64: string }
+  | { type: 'waiting_custom_prompt' };
+
+const cntStates = new Map<number, CntState>();
+
+const CONTENT_MENU = Markup.keyboard([
+  ['🖼 Сгенерировать картинку', '🎬 Видео из картинки'],
+  ['✏️ Написать промпт'],
+]).resize();
+
+async function falGenerateVideo(prompt: string, imageUrl?: string): Promise<string> {
+  const body: any = { prompt, duration: 5 };
+  if (imageUrl) body.image_url = imageUrl;
   const sub = await fetch("https://queue.fal.run/fal-ai/seedance-1-5", {
     method: "POST",
     headers: { "Authorization": `Key ${FAL_API_KEY}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ prompt, duration: 5 })
+    body: JSON.stringify(body)
   });
-  const { request_id } = await sub.json() as any;
-  if (!request_id) throw new Error("fal.ai не вернул request_id");
-  // Poll
+  const subData = await sub.json() as any;
+  const request_id = subData.request_id;
+  if (!request_id) throw new Error(`fal.ai: ${JSON.stringify(subData)}`);
   for (let i = 0; i < 80; i++) {
     await new Promise(r => setTimeout(r, 4000));
     const poll = await fetch(`https://queue.fal.run/fal-ai/seedance-1-5/requests/${request_id}`, {
@@ -2359,87 +2373,129 @@ async function falGenerateVideo(prompt: string): Promise<string> {
   throw new Error("Seedance: timeout 5 мин");
 }
 
+async function geminiGenerateImage(prompt: string): Promise<Buffer> {
+  const ai = new GoogleGenAI({ apiKey: CONTENT_GEMINI_KEY });
+  const imgRes = await ai.models.generateContent({
+    model: "gemini-3.1-flash-image-preview",
+    contents: [{ role: "user", parts: [{ text: prompt }] as any }],
+    config: { responseModalities: [Modality.IMAGE, Modality.TEXT] },
+  });
+  for (const part of (imgRes as any).candidates?.[0]?.content?.parts || []) {
+    if (part.inlineData?.data) return Buffer.from(part.inlineData.data, "base64");
+  }
+  throw new Error("Gemini не вернул картинку");
+}
+
+async function geminiWritePrompt(userText: string, mode: 'image' | 'video'): Promise<string> {
+  const ai = new GoogleGenAI({ apiKey: CONTENT_GEMINI_KEY });
+  const instruction = mode === 'image'
+    ? `Write a detailed photorealistic image generation prompt in English for: "${userText}". Only the prompt, max 80 words.`
+    : `Write a short cinematic video prompt in English for: "${userText}". Only the prompt, max 50 words.`;
+  const res = await ai.models.generateContent({ model: "gemini-2.0-flash", contents: instruction });
+  return (res as any).candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? userText;
+}
+
 function startContentBot() {
-  if (!CONTENT_BOT_TOKEN) { console.warn("[content-bot] CONTENT_BOT_TOKEN не задан — не запущен"); return; }
   if (process.env.BOT_DISABLED === "true") return;
 
   const bot = new Telegraf(CONTENT_BOT_TOKEN, { handlerTimeout: 600_000 });
 
+  const sendMenu = (ctx: any) => ctx.reply("Выбери действие:", CONTENT_MENU);
+
   bot.start(async (ctx) => {
-    await ctx.reply("Привет! 👋 Отправь мне тему — выберешь модель для генерации контента 🎨");
+    cntStates.set(ctx.from.id, { type: 'idle' });
+    await ctx.reply("Привет! 👋 Я генерирую контент через Gemini Flash 3.1 и Seedance 2.0", CONTENT_MENU);
   });
 
-  bot.on("text", async (ctx) => {
-    const topic = ctx.message.text.trim();
-    contentSessions.set(ctx.from.id, topic);
-    await ctx.reply(`Тема: *${topic}*\n\nВыбери модель:`, {
-      parse_mode: "Markdown",
-      reply_markup: {
-        inline_keyboard: [[
-          { text: "🖼 Gemini Flash 3.1 (картинка)", callback_data: "cnt_gemini" },
-          { text: "🎬 Seedance 2.0 (видео)", callback_data: "cnt_seedance" }
-        ]]
+  // ── Кнопки меню ──
+  bot.hears('🖼 Сгенерировать картинку', async (ctx) => {
+    cntStates.set(ctx.from.id, { type: 'waiting_img_prompt' });
+    await ctx.reply("Введи промпт для картинки (или просто тему — сам улучшу):");
+  });
+
+  bot.hears('🎬 Видео из картинки', async (ctx) => {
+    cntStates.set(ctx.from.id, { type: 'waiting_vid_image' });
+    await ctx.reply("Отправь картинку:");
+  });
+
+  bot.hears('✏️ Написать промпт', async (ctx) => {
+    cntStates.set(ctx.from.id, { type: 'waiting_custom_prompt' });
+    await ctx.reply("Введи тему — сгенерирую промпт для картинки и видео:");
+  });
+
+  // ── Фото ──
+  bot.on('photo', async (ctx) => {
+    const state = cntStates.get(ctx.from.id) ?? { type: 'idle' };
+    if (state.type !== 'waiting_vid_image') return sendMenu(ctx);
+
+    const fileId = ctx.message.photo[ctx.message.photo.length - 1].file_id;
+    const fileUrl = await ctx.telegram.getFileLink(fileId);
+    const imgRes = await fetch(fileUrl.toString());
+    const imgBuf = Buffer.from(await imgRes.arrayBuffer());
+    const imageBase64 = imgBuf.toString("base64");
+
+    cntStates.set(ctx.from.id, { type: 'waiting_vid_prompt', imageBase64 });
+    await ctx.reply("Картинка получена! Теперь введи промпт для видео (или тему):");
+  });
+
+  // ── Текст ──
+  bot.on('text', async (ctx) => {
+    const state = cntStates.get(ctx.from.id) ?? { type: 'idle' };
+    const text = ctx.message.text.trim();
+    if (text.startsWith('/')) return;
+
+    // Картинка
+    if (state.type === 'waiting_img_prompt') {
+      cntStates.set(ctx.from.id, { type: 'idle' });
+      const msg = await ctx.reply("⏳ Генерирую промпт...");
+      try {
+        const prompt = await geminiWritePrompt(text, 'image');
+        await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, undefined, `📝 Промпт:\n${prompt}\n\n⏳ Генерирую картинку...`);
+        const imgBuf = await geminiGenerateImage(prompt);
+        await ctx.telegram.deleteMessage(ctx.chat.id, msg.message_id).catch(() => {});
+        await ctx.replyWithPhoto({ source: imgBuf }, { caption: `📝 ${prompt}`, ...CONTENT_MENU });
+      } catch (e: any) {
+        await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, undefined, `❌ ${e.message}`).catch(() => {});
       }
-    });
-  });
+      return;
+    }
 
-  bot.action("cnt_gemini", async (ctx) => {
-    await ctx.answerCbQuery();
-    const topic = contentSessions.get(ctx.from!.id);
-    if (!topic) return ctx.reply("Сначала отправь тему");
-    const msg = await ctx.reply("⏳ Генерирую промпт для картинки...");
-    try {
-      const apiKey = process.env.GEMINI_API_KEY;
-      if (!apiKey) throw new Error("GEMINI_API_KEY не задан");
-      const ai = new GoogleGenAI({ apiKey });
-      // Генерируем промпт через обычный Gemini
-      const promptRes = await ai.models.generateContent({
-        model: "gemini-2.0-flash",
-        contents: `Write a detailed image generation prompt in English for the topic: "${topic}". Photorealistic, high quality. Only the prompt, no explanations, max 80 words.`
-      });
-      const imagePrompt = promptRes.text?.trim() ?? topic;
-      await ctx.telegram.editMessageText(ctx.chat!.id, msg.message_id, undefined,
-        `📝 Промпт: ${imagePrompt}\n\n⏳ Генерирую картинку...`);
-      // Генерируем картинку через Gemini Flash 3.1
-      const imgRes = await ai.models.generateContent({
-        model: "gemini-3.1-flash-image-preview",
-        contents: [{ role: "user", parts: [{ text: imagePrompt }] as any }],
-        config: { responseModalities: [Modality.IMAGE, Modality.TEXT] },
-      });
-      let imageBase64: string | null = null;
-      for (const part of (imgRes as any).candidates?.[0]?.content?.parts || []) {
-        if (part.inlineData?.data) { imageBase64 = part.inlineData.data; break; }
+    // Видео промпт
+    if (state.type === 'waiting_vid_prompt') {
+      cntStates.set(ctx.from.id, { type: 'idle' });
+      const msg = await ctx.reply("⏳ Генерирую промпт для видео...");
+      try {
+        const prompt = await geminiWritePrompt(text, 'video');
+        await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, undefined, `📝 Промпт:\n${prompt}\n\n⏳ Генерирую видео (~2 мин)...`);
+        // Загружаем картинку на fal.ai через data URI
+        const imageDataUrl = `data:image/jpeg;base64,${state.imageBase64}`;
+        const videoUrl = await falGenerateVideo(prompt, imageDataUrl);
+        await ctx.telegram.deleteMessage(ctx.chat.id, msg.message_id).catch(() => {});
+        await ctx.replyWithVideo({ url: videoUrl }, { caption: `📝 ${prompt}`, ...CONTENT_MENU });
+      } catch (e: any) {
+        await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, undefined, `❌ ${e.message}`).catch(() => {});
       }
-      if (!imageBase64) throw new Error("Gemini не вернул картинку");
-      await ctx.telegram.deleteMessage(ctx.chat!.id, msg.message_id).catch(() => {});
-      await ctx.replyWithPhoto({ source: Buffer.from(imageBase64, "base64") }, { caption: `🖼 ${topic}` });
-    } catch (e: any) {
-      await ctx.telegram.editMessageText(ctx.chat!.id, msg.message_id, undefined, `❌ Ошибка: ${e.message}`).catch(() => {});
+      return;
     }
-  });
 
-  bot.action("cnt_seedance", async (ctx) => {
-    await ctx.answerCbQuery();
-    const topic = contentSessions.get(ctx.from!.id);
-    if (!topic) return ctx.reply("Сначала отправь тему");
-    const msg = await ctx.reply("⏳ Генерирую промпт через Gemini...");
-    try {
-      const apiKey = process.env.GEMINI_API_KEY;
-      if (!apiKey) throw new Error("GEMINI_API_KEY не задан");
-      const ai = new GoogleGenAI({ apiKey });
-      const promptRes = await ai.models.generateContent({
-        model: "gemini-2.0-flash",
-        contents: `Write a short cinematic video generation prompt in English for the topic: "${topic}". Only the prompt, no explanations, max 50 words.`
-      });
-      const videoPrompt = promptRes.text?.trim() ?? topic;
-      await ctx.telegram.editMessageText(ctx.chat!.id, msg.message_id, undefined,
-        `📝 Промпт: ${videoPrompt}\n\n⏳ Генерирую видео (~2 мин)...`);
-      const videoUrl = await falGenerateVideo(videoPrompt);
-      await ctx.telegram.deleteMessage(ctx.chat!.id, msg.message_id).catch(() => {});
-      await ctx.replyWithVideo({ url: videoUrl }, { caption: `🎬 ${topic}` });
-    } catch (e: any) {
-      await ctx.telegram.editMessageText(ctx.chat!.id, msg.message_id, undefined, `❌ Ошибка: ${e.message}`).catch(() => {});
+    // Написать промпт
+    if (state.type === 'waiting_custom_prompt') {
+      cntStates.set(ctx.from.id, { type: 'idle' });
+      const msg = await ctx.reply("⏳ Генерирую промпты...");
+      try {
+        const [imgPrompt, vidPrompt] = await Promise.all([
+          geminiWritePrompt(text, 'image'),
+          geminiWritePrompt(text, 'video'),
+        ]);
+        await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, undefined,
+          `🖼 Промпт для картинки:\n${imgPrompt}\n\n🎬 Промпт для видео:\n${vidPrompt}`);
+      } catch (e: any) {
+        await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, undefined, `❌ ${e.message}`).catch(() => {});
+      }
+      return;
     }
+
+    return sendMenu(ctx);
   });
 
   bot.launch();
