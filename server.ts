@@ -2366,7 +2366,7 @@ function startContentBot() {
   const bot = new Telegraf(CONTENT_BOT_TOKEN, { handlerTimeout: 600_000 });
 
   bot.start(async (ctx) => {
-    await ctx.reply("Привет! 👋 Отправь мне тему — выберешь Gemini Flash или Seedance 2.0 🎨");
+    await ctx.reply("Привет! 👋 Отправь мне тему — выберешь модель для генерации контента 🎨");
   });
 
   bot.on("text", async (ctx) => {
@@ -2376,8 +2376,8 @@ function startContentBot() {
       parse_mode: "Markdown",
       reply_markup: {
         inline_keyboard: [[
-          { text: "✨ Gemini Flash", callback_data: "cnt_gemini" },
-          { text: "🎬 Seedance 2.0", callback_data: "cnt_seedance" }
+          { text: "🖼 Gemini Flash 3.1 (картинка)", callback_data: "cnt_gemini" },
+          { text: "🎬 Seedance 2.0 (видео)", callback_data: "cnt_seedance" }
         ]]
       }
     });
@@ -2387,18 +2387,34 @@ function startContentBot() {
     await ctx.answerCbQuery();
     const topic = contentSessions.get(ctx.from!.id);
     if (!topic) return ctx.reply("Сначала отправь тему");
-    const msg = await ctx.reply("⏳ Генерирую текст...");
+    const msg = await ctx.reply("⏳ Генерирую промпт для картинки...");
     try {
       const apiKey = process.env.GEMINI_API_KEY;
       if (!apiKey) throw new Error("GEMINI_API_KEY не задан");
       const ai = new GoogleGenAI({ apiKey });
-      const res = await ai.models.generateContent({
+      // Генерируем промпт через обычный Gemini
+      const promptRes = await ai.models.generateContent({
         model: "gemini-2.0-flash",
-        contents: `Создай креативный пост для социальных сетей на тему: "${topic}". Добавь эмодзи, сделай текст вовлекающим и продающим. Не более 300 слов.`
+        contents: `Write a detailed image generation prompt in English for the topic: "${topic}". Photorealistic, high quality. Only the prompt, no explanations, max 80 words.`
       });
-      await ctx.telegram.editMessageText(ctx.chat!.id, msg.message_id, undefined, res.text ?? "Пусто");
+      const imagePrompt = promptRes.text?.trim() ?? topic;
+      await ctx.telegram.editMessageText(ctx.chat!.id, msg.message_id, undefined,
+        `📝 Промпт: ${imagePrompt}\n\n⏳ Генерирую картинку...`);
+      // Генерируем картинку через Gemini Flash 3.1
+      const imgRes = await ai.models.generateContent({
+        model: "gemini-3.1-flash-image-preview",
+        contents: [{ role: "user", parts: [{ text: imagePrompt }] as any }],
+        config: { responseModalities: [Modality.IMAGE, Modality.TEXT] },
+      });
+      let imageBase64: string | null = null;
+      for (const part of (imgRes as any).candidates?.[0]?.content?.parts || []) {
+        if (part.inlineData?.data) { imageBase64 = part.inlineData.data; break; }
+      }
+      if (!imageBase64) throw new Error("Gemini не вернул картинку");
+      await ctx.telegram.deleteMessage(ctx.chat!.id, msg.message_id).catch(() => {});
+      await ctx.replyWithPhoto({ source: Buffer.from(imageBase64, "base64") }, { caption: `🖼 ${topic}` });
     } catch (e: any) {
-      await ctx.telegram.editMessageText(ctx.chat!.id, msg.message_id, undefined, `❌ Ошибка: ${e.message}`);
+      await ctx.telegram.editMessageText(ctx.chat!.id, msg.message_id, undefined, `❌ Ошибка: ${e.message}`).catch(() => {});
     }
   });
 
