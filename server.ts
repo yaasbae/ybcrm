@@ -2408,11 +2408,16 @@ async function geminiGenerateImage(prompt: string, imageBase64?: string, mimeTyp
 }
 
 async function geminiWritePrompt(userText: string, mode: 'image' | 'video'): Promise<string> {
-  const ai = new GoogleGenAI({ apiKey: CONTENT_GEMINI_KEY });
+  const ai = new GoogleGenAI({ apiKey: CONTENT_GEMINI_KEY, httpOptions: { timeout: 25000 } });
   const instruction = mode === 'image'
     ? `Write a detailed photorealistic image generation prompt in English for: "${userText}". Only the prompt, max 80 words.`
     : `Write a short cinematic video prompt in English for: "${userText}". Only the prompt, max 50 words.`;
-  const res = await ai.models.generateContent({ model: "gemini-3.1-flash-image-preview", contents: instruction });
+  const timeout = new Promise<never>((_, reject) =>
+    setTimeout(() => reject(new Error('Gemini timeout — попробуй ещё раз')), 25000));
+  const res = await Promise.race([
+    ai.models.generateContent({ model: "gemini-3.1-flash-image-preview", contents: instruction }),
+    timeout,
+  ]);
   return (res as any).candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? userText;
 }
 

@@ -64,17 +64,23 @@ export const ContentStudioPage: React.FC = () => {
   async function improvePrompt(text: string, mode: 'image' | 'video', setPrompt: (s: string) => void, setLoading: (v: any) => void) {
     if (!text.trim()) return;
     setLoading('prompt');
+    const controller = new AbortController();
+    const tid = setTimeout(() => controller.abort(), 28000);
     try {
       const r = await fetch('/api/content-studio/prompt', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text, mode }),
+        signal: controller.signal,
       });
       if (!r.ok) throw new Error(await r.text());
       const d = await r.json();
       if (d.prompt) setPrompt(d.prompt);
     } catch (e: any) {
-      alert('Не удалось улучшить промпт: ' + e.message);
+      const msg = e.name === 'AbortError' ? 'Gemini не ответил за 28 сек, попробуй ещё раз' : e.message;
+      alert('Не удалось улучшить промпт: ' + msg);
+    } finally {
+      clearTimeout(tid);
     }
     setLoading(null);
   }
