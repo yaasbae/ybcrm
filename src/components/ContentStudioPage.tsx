@@ -184,7 +184,7 @@ export const ContentStudioPage: React.FC = () => {
       <div className="flex items-center gap-2">
         <Wand2 size={20} className="text-purple-500" />
         <h1 className="text-xl font-semibold">Студия</h1>
-        <span className="text-xs text-slate-400 ml-1">Gemini Flash 3.1 + Kling v1.6 Pro</span>
+        <span className="text-xs text-slate-400 ml-1">Gemini Flash 3.1 + Seedance 2.0</span>
       </div>
 
       {/* Tabs */}

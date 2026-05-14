@@ -2357,9 +2357,9 @@ async function falGenerateVideo(
   duration: "5" | "10" = "5",
   aspectRatio: "16:9" | "9:16" | "1:1" = "16:9"
 ): Promise<string> {
-  const body: any = { prompt, duration, aspect_ratio: aspectRatio };
+  const body: any = { prompt, duration: parseInt(duration), aspect_ratio: aspectRatio };
   if (imageUrl) body.image_url = imageUrl;
-  const sub = await fetch("https://queue.fal.run/fal-ai/kling-video/v1.6/pro/image-to-video", {
+  const sub = await fetch("https://queue.fal.run/bytedance/seedance-2.0/image-to-video", {
     method: "POST",
     headers: { "Authorization": `Key ${FAL_API_KEY}`, "Content-Type": "application/json" },
     body: JSON.stringify(body)
@@ -2368,23 +2368,23 @@ async function falGenerateVideo(
   const request_id = subData.request_id;
   const status_url = subData.status_url;
   const response_url = subData.response_url;
-  if (!request_id) throw new Error(`fal.ai Kling: ${JSON.stringify(subData)}`);
-  const statusUrl = status_url || `https://queue.fal.run/fal-ai/kling-video/v1.6/pro/requests/${request_id}/status`;
-  const resultUrl = response_url || `https://queue.fal.run/fal-ai/kling-video/v1.6/pro/requests/${request_id}`;
+  if (!request_id) throw new Error(`fal.ai Seedance: ${JSON.stringify(subData)}`);
+  const statusUrl = status_url || `https://queue.fal.run/bytedance/seedance-2.0/requests/${request_id}/status`;
+  const resultUrl = response_url || `https://queue.fal.run/bytedance/seedance-2.0/requests/${request_id}`;
   for (let i = 0; i < 90; i++) {
     await new Promise(r => setTimeout(r, 4000));
     const statusRes = await fetch(statusUrl, { headers: { "Authorization": `Key ${FAL_API_KEY}` } });
     const statusData = await statusRes.json() as any;
-    if (statusData.status === "FAILED") throw new Error("Kling: генерация провалилась");
+    if (statusData.status === "FAILED") throw new Error("Seedance: генерация провалилась");
     if (statusData.status === "COMPLETED") {
       const resultRes = await fetch(resultUrl, { headers: { "Authorization": `Key ${FAL_API_KEY}` } });
       const result = await resultRes.json() as any;
       const videoUrl = result.video?.url ?? result.output?.video?.url ?? result.output?.url ?? "";
-      if (!videoUrl) throw new Error(`Kling: нет URL видео. Ответ: ${JSON.stringify(result).slice(0, 200)}`);
+      if (!videoUrl) throw new Error(`Seedance: нет URL видео. Ответ: ${JSON.stringify(result).slice(0, 200)}`);
       return videoUrl;
     }
   }
-  throw new Error("Kling: timeout 6 мин");
+  throw new Error("Seedance: timeout 6 мин");
 }
 
 async function geminiGenerateImage(prompt: string, imageBase64?: string, mimeType?: string): Promise<Buffer> {
@@ -2442,7 +2442,7 @@ function startContentBot() {
 
   bot.start(async (ctx) => {
     cntStates.set(ctx.from.id, { type: 'idle' });
-    await ctx.reply("Привет! 👋 Я генерирую контент через Gemini Flash 3.1 и Kling v1.6 Pro", CONTENT_MENU);
+    await ctx.reply("Привет! 👋 Я генерирую контент через Gemini Flash 3.1 и Seedance 2.0", CONTENT_MENU);
   });
 
   // ── Кнопки меню ──
