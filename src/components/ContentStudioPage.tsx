@@ -15,6 +15,7 @@ export const ContentStudioPage: React.FC = () => {
   const [imgPreviewUrl, setImgPreviewUrl] = useState<string | null>(null);
   const [imgLoading, setImgLoading] = useState<'prompt' | 'image' | null>(null);
   const [imgResult, setImgResult] = useState<string | null>(null);
+  const [imgAspectRatio, setImgAspectRatio] = useState<'1:1' | '4:5' | '9:16' | '16:9'>('1:1');
   const imgFileRef = useRef<HTMLInputElement>(null);
 
   // ── Video tab ──
@@ -106,8 +107,10 @@ export const ContentStudioPage: React.FC = () => {
   }
 
   async function handleGenerateImage() {
-    const prompt = imgPrompt || imgText;
-    if (!prompt.trim()) return;
+    const basePrompt = imgPrompt || imgText;
+    if (!basePrompt.trim()) return;
+    const ratioHint: Record<string, string> = { '1:1': 'square 1:1 format', '4:5': 'portrait 4:5 format', '9:16': 'vertical 9:16 portrait format', '16:9': 'horizontal 16:9 landscape format' };
+    const prompt = `${basePrompt}. Generate in ${ratioHint[imgAspectRatio]}.`;
     setImgLoading('image');
     setImgResult(null);
     try {
@@ -261,6 +264,19 @@ export const ContentStudioPage: React.FC = () => {
                 {imgPrompt}
               </div>
             )}
+
+            <div className="space-y-1.5">
+              <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Формат</label>
+              <div className="flex gap-2">
+                {(['1:1', '4:5', '9:16', '16:9'] as const).map(r => (
+                  <button key={r} onClick={() => setImgAspectRatio(r)}
+                    className={cn('flex-1 py-1.5 rounded-lg text-xs font-semibold border transition-colors',
+                      imgAspectRatio === r ? 'bg-purple-600 text-white border-purple-600' : 'border-slate-200 text-slate-600 hover:border-purple-300')}>
+                    {r}
+                  </button>
+                ))}
+              </div>
+            </div>
 
             <button
               onClick={handleGenerateImage}
