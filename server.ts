@@ -2353,7 +2353,7 @@ const CONTENT_MENU = Markup.keyboard([
 async function falGenerateVideo(prompt: string, imageUrl?: string): Promise<string> {
   const body: any = { prompt, duration: 5 };
   if (imageUrl) body.image_url = imageUrl;
-  const sub = await fetch("https://queue.fal.run/fal-ai/seedance-1-5", {
+  const sub = await fetch("https://queue.fal.run/bytedance/seedance-2.0/image-to-video", {
     method: "POST",
     headers: { "Authorization": `Key ${FAL_API_KEY}`, "Content-Type": "application/json" },
     body: JSON.stringify(body)
@@ -2363,7 +2363,7 @@ async function falGenerateVideo(prompt: string, imageUrl?: string): Promise<stri
   if (!request_id) throw new Error(`fal.ai: ${JSON.stringify(subData)}`);
   for (let i = 0; i < 80; i++) {
     await new Promise(r => setTimeout(r, 4000));
-    const poll = await fetch(`https://queue.fal.run/fal-ai/seedance-1-5/requests/${request_id}`, {
+    const poll = await fetch(`https://queue.fal.run/bytedance/seedance-2.0/image-to-video/requests/${request_id}`, {
       headers: { "Authorization": `Key ${FAL_API_KEY}` }
     });
     const data = await poll.json() as any;
@@ -2373,11 +2373,11 @@ async function falGenerateVideo(prompt: string, imageUrl?: string): Promise<stri
   throw new Error("Seedance: timeout 5 мин");
 }
 
-async function geminiGenerateImage(prompt: string, imageBase64?: string): Promise<Buffer> {
-  const ai = new GoogleGenAI({ apiKey: CONTENT_GEMINI_KEY });
+async function geminiGenerateImage(prompt: string, imageBase64?: string, mimeType?: string): Promise<Buffer> {
+  const ai = new GoogleGenAI({ apiKey: CONTENT_GEMINI_KEY, httpOptions: { timeout: 600000 } });
   const parts: any[] = [{ text: prompt }];
   if (imageBase64) {
-    parts.push({ inlineData: { mimeType: "image/jpeg", data: imageBase64 } });
+    parts.push({ inlineData: { mimeType: mimeType || "image/jpeg", data: imageBase64 } });
   }
   const imgRes = await ai.models.generateContent({
     model: "gemini-3.1-flash-image-preview",
@@ -2531,9 +2531,9 @@ app.post("/api/content-studio/prompt", async (req, res) => {
 
 app.post("/api/content-studio/image", async (req, res) => {
   try {
-    const { prompt, imageBase64 } = req.body as { prompt: string; imageBase64?: string };
+    const { prompt, imageBase64, imageMimeType } = req.body as { prompt: string; imageBase64?: string; imageMimeType?: string };
     if (!prompt) return res.status(400).json({ error: "prompt required" });
-    const buf = await geminiGenerateImage(prompt, imageBase64);
+    const buf = await geminiGenerateImage(prompt, imageBase64, imageMimeType);
     res.set("Content-Type", "image/jpeg").send(buf);
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -2542,9 +2542,9 @@ app.post("/api/content-studio/image", async (req, res) => {
 
 app.post("/api/content-studio/video", async (req, res) => {
   try {
-    const { prompt, imageBase64 } = req.body as { prompt: string; imageBase64?: string };
+    const { prompt, imageBase64, imageMimeType } = req.body as { prompt: string; imageBase64?: string; imageMimeType?: string };
     if (!prompt) return res.status(400).json({ error: "prompt required" });
-    const imageUrl = imageBase64 ? `data:image/jpeg;base64,${imageBase64}` : undefined;
+    const imageUrl = imageBase64 ? `data:${imageMimeType || "image/jpeg"};base64,${imageBase64}` : undefined;
     const videoUrl = await falGenerateVideo(prompt, imageUrl);
     res.json({ videoUrl });
   } catch (e: any) {

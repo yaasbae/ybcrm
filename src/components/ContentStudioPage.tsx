@@ -11,7 +11,8 @@ export const ContentStudioPage: React.FC = () => {
   // ── Image tab ──
   const [imgText, setImgText] = useState('');
   const [imgPrompt, setImgPrompt] = useState('');
-  const [imgSourceImage, setImgSourceImage] = useState<{ file: File; base64: string } | null>(null);
+  const [imgSourceImage, setImgSourceImage] = useState<{ file: File; base64: string; mimeType: string } | null>(null);
+  const [imgPreviewUrl, setImgPreviewUrl] = useState<string | null>(null);
   const [imgLoading, setImgLoading] = useState<'prompt' | 'image' | null>(null);
   const [imgResult, setImgResult] = useState<string | null>(null);
   const imgFileRef = useRef<HTMLInputElement>(null);
@@ -19,7 +20,8 @@ export const ContentStudioPage: React.FC = () => {
   // ── Video tab ──
   const [vidText, setVidText] = useState('');
   const [vidPrompt, setVidPrompt] = useState('');
-  const [vidImage, setVidImage] = useState<{ file: File; base64: string } | null>(null);
+  const [vidImage, setVidImage] = useState<{ file: File; base64: string; mimeType: string } | null>(null);
+  const [vidPreviewUrl, setVidPreviewUrl] = useState<string | null>(null);
   const [vidLoading, setVidLoading] = useState<'prompt' | 'video' | null>(null);
   const [vidResult, setVidResult] = useState<string | null>(null);
   const vidFileRef = useRef<HTMLInputElement>(null);
@@ -42,7 +44,10 @@ export const ContentStudioPage: React.FC = () => {
     const file = e.target.files?.[0];
     if (!file) return;
     const base64 = await readFileAsBase64(file);
-    setImgSourceImage({ file, base64 });
+    if (imgPreviewUrl) URL.revokeObjectURL(imgPreviewUrl);
+    const url = URL.createObjectURL(file);
+    setImgPreviewUrl(url);
+    setImgSourceImage({ file, base64, mimeType: file.type || 'image/jpeg' });
     setImgResult(null);
   }
 
@@ -50,7 +55,10 @@ export const ContentStudioPage: React.FC = () => {
     const file = e.target.files?.[0];
     if (!file) return;
     const base64 = await readFileAsBase64(file);
-    setVidImage({ file, base64 });
+    if (vidPreviewUrl) URL.revokeObjectURL(vidPreviewUrl);
+    const url = URL.createObjectURL(file);
+    setVidPreviewUrl(url);
+    setVidImage({ file, base64, mimeType: file.type || 'image/jpeg' });
   }
 
   async function improvePrompt(text: string, mode: 'image' | 'video', setPrompt: (s: string) => void, setLoading: (v: any) => void) {
@@ -62,9 +70,12 @@ export const ContentStudioPage: React.FC = () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text, mode }),
       });
+      if (!r.ok) throw new Error(await r.text());
       const d = await r.json();
       if (d.prompt) setPrompt(d.prompt);
-    } catch { /* ignore */ }
+    } catch (e: any) {
+      alert('Не удалось улучшить промпт: ' + e.message);
+    }
     setLoading(null);
   }
 
@@ -77,7 +88,7 @@ export const ContentStudioPage: React.FC = () => {
       const r = await fetch('/api/content-studio/image', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt, imageBase64: imgSourceImage?.base64 }),
+        body: JSON.stringify({ prompt, imageBase64: imgSourceImage?.base64, imageMimeType: imgSourceImage?.mimeType }),
       });
       if (!r.ok) throw new Error(await r.text());
       const blob = await r.blob();
@@ -97,7 +108,7 @@ export const ContentStudioPage: React.FC = () => {
       const r = await fetch('/api/content-studio/video', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt, imageBase64: vidImage?.base64 }),
+        body: JSON.stringify({ prompt, imageBase64: vidImage?.base64, imageMimeType: vidImage?.mimeType }),
       });
       const d = await r.json();
       if (!d.videoUrl) throw new Error(d.error || 'Нет ссылки на видео');
@@ -163,11 +174,11 @@ export const ContentStudioPage: React.FC = () => {
             {/* Исходное фото (опционально) */}
             <div className="space-y-2">
               <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Исходное фото (для редактирования)</label>
-              {imgSourceImage ? (
+              {imgSourceImage && imgPreviewUrl ? (
                 <div className="relative w-fit">
-                  <img src={URL.createObjectURL(imgSourceImage.file)} alt="source" className="h-36 rounded-xl object-cover" />
+                  <img src={imgPreviewUrl} alt="source" className="h-36 rounded-xl object-cover" />
                   <button
-                    onClick={() => { setImgSourceImage(null); if (imgFileRef.current) imgFileRef.current.value = ''; }}
+                    onClick={() => { URL.revokeObjectURL(imgPreviewUrl); setImgPreviewUrl(null); setImgSourceImage(null); if (imgFileRef.current) imgFileRef.current.value = ''; }}
                     className="absolute -top-2 -right-2 bg-white border border-slate-200 rounded-full p-0.5 shadow hover:bg-red-50 transition-colors"
                   >
                     <X size={12} className="text-slate-500" />
@@ -181,7 +192,7 @@ export const ContentStudioPage: React.FC = () => {
                   <Upload size={14} /> Загрузить фото для редактирования
                 </button>
               )}
-              <input ref={imgFileRef} type="file" accept="image/*" className="hidden" onChange={handleImgFileChange} />
+              <input ref={imgFileRef} type="file" accept="image/*,image/heic,image/heif" className="hidden" onChange={handleImgFileChange} />
             </div>
 
             {/* Промпт */}
@@ -245,20 +256,20 @@ export const ContentStudioPage: React.FC = () => {
         <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="space-y-4">
           <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-5 space-y-4">
             <div className="space-y-2">
-              <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Картинка (опционально)</label>
-              {vidImage ? (
+              <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Картинка <span className="text-red-400">*</span></label>
+              {vidImage && vidPreviewUrl ? (
                 <div className="relative w-fit">
-                  <img src={URL.createObjectURL(vidImage.file)} alt="uploaded" className="h-28 rounded-xl object-cover" />
-                  <button onClick={() => setVidImage(null)} className="absolute -top-2 -right-2 bg-white border border-slate-200 rounded-full p-0.5 shadow hover:bg-red-50 transition-colors">
+                  <img src={vidPreviewUrl} alt="uploaded" className="h-28 rounded-xl object-cover" />
+                  <button onClick={() => { URL.revokeObjectURL(vidPreviewUrl); setVidPreviewUrl(null); setVidImage(null); if (vidFileRef.current) vidFileRef.current.value = ''; }} className="absolute -top-2 -right-2 bg-white border border-slate-200 rounded-full p-0.5 shadow hover:bg-red-50 transition-colors">
                     <X size={12} className="text-slate-500" />
                   </button>
                 </div>
               ) : (
-                <button onClick={() => vidFileRef.current?.click()} className="flex items-center gap-2 border border-dashed border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-400 hover:border-purple-400 hover:text-purple-500 transition-colors w-full justify-center">
-                  <Upload size={14} /> Загрузить картинку
+                <button onClick={() => vidFileRef.current?.click()} className="flex items-center gap-2 border border-dashed border-purple-300 rounded-xl px-4 py-3 text-sm text-purple-400 hover:border-purple-500 hover:text-purple-600 transition-colors w-full justify-center">
+                  <Upload size={14} /> Загрузить картинку для видео
                 </button>
               )}
-              <input ref={vidFileRef} type="file" accept="image/*" className="hidden" onChange={handleVidFileChange} />
+              <input ref={vidFileRef} type="file" accept="image/*,image/heic,image/heif" className="hidden" onChange={handleVidFileChange} />
             </div>
 
             <div className="space-y-2">
@@ -290,7 +301,7 @@ export const ContentStudioPage: React.FC = () => {
 
             <button
               onClick={handleGenerateVideo}
-              disabled={!!vidLoading || (!vidText.trim() && !vidPrompt.trim())}
+              disabled={!!vidLoading || !vidImage || (!vidText.trim() && !vidPrompt.trim())}
               className="w-full bg-purple-600 text-white rounded-xl py-2.5 text-sm font-semibold flex items-center justify-center gap-2 hover:bg-purple-700 disabled:opacity-40 transition-colors"
             >
               {vidLoading === 'video'
