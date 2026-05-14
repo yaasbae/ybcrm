@@ -34,33 +34,51 @@ export const ContentStudioPage: React.FC = () => {
   const [prmImageResult, setPrmImageResult] = useState('');
   const [prmVideoResult, setPrmVideoResult] = useState('');
 
-  function readFileAsBase64(file: File): Promise<string> {
-    return new Promise((resolve) => {
-      const reader = new FileReader();
-      reader.onload = (ev) => resolve((ev.target?.result as string).split(',')[1]);
-      reader.readAsDataURL(file);
+  function compressImage(file: File, maxPx = 1920): Promise<{ base64: string; mimeType: string; objectUrl: string }> {
+    return new Promise((resolve, reject) => {
+      const objectUrl = URL.createObjectURL(file);
+      const img = new window.Image();
+      img.onload = () => {
+        const { naturalWidth: w, naturalHeight: h } = img;
+        const scale = Math.min(1, maxPx / Math.max(w, h));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.round(w * scale);
+        canvas.height = Math.round(h * scale);
+        const ctx = canvas.getContext('2d')!;
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+        resolve({ base64: dataUrl.split(',')[1], mimeType: 'image/jpeg', objectUrl });
+      };
+      img.onerror = () => reject(new Error('Не удалось прочитать изображение'));
+      img.src = objectUrl;
     });
   }
 
   async function handleImgFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
-    const base64 = await readFileAsBase64(file);
-    if (imgPreviewUrl) URL.revokeObjectURL(imgPreviewUrl);
-    const url = URL.createObjectURL(file);
-    setImgPreviewUrl(url);
-    setImgSourceImage({ file, base64, mimeType: file.type || 'image/jpeg' });
-    setImgResult(null);
+    try {
+      const { base64, mimeType, objectUrl } = await compressImage(file);
+      if (imgPreviewUrl) URL.revokeObjectURL(imgPreviewUrl);
+      setImgPreviewUrl(objectUrl);
+      setImgSourceImage({ file, base64, mimeType });
+      setImgResult(null);
+    } catch (e: any) {
+      alert('Ошибка загрузки фото: ' + e.message);
+    }
   }
 
   async function handleVidFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
-    const base64 = await readFileAsBase64(file);
-    if (vidPreviewUrl) URL.revokeObjectURL(vidPreviewUrl);
-    const url = URL.createObjectURL(file);
-    setVidPreviewUrl(url);
-    setVidImage({ file, base64, mimeType: file.type || 'image/jpeg' });
+    try {
+      const { base64, mimeType, objectUrl } = await compressImage(file);
+      if (vidPreviewUrl) URL.revokeObjectURL(vidPreviewUrl);
+      setVidPreviewUrl(objectUrl);
+      setVidImage({ file, base64, mimeType });
+    } catch (e: any) {
+      alert('Ошибка загрузки фото: ' + e.message);
+    }
   }
 
   async function improvePrompt(text: string, mode: 'image' | 'video', setPrompt: (s: string) => void, setLoading: (v: any) => void) {
@@ -163,7 +181,7 @@ export const ContentStudioPage: React.FC = () => {
       <div className="flex items-center gap-2">
         <Wand2 size={20} className="text-purple-500" />
         <h1 className="text-xl font-semibold">Студия</h1>
-        <span className="text-xs text-slate-400 ml-1">Gemini Flash 3.1 + Seedance 2.0</span>
+        <span className="text-xs text-slate-400 ml-1">Gemini Flash 3.1 + Kling v1.6 Pro</span>
       </div>
 
       {/* Tabs */}
