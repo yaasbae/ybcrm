@@ -90,7 +90,14 @@ export const ContentStudioPage: React.FC = () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prompt, imageBase64: imgSourceImage?.base64, imageMimeType: imgSourceImage?.mimeType }),
       });
-      if (!r.ok) throw new Error(await r.text());
+      if (!r.ok) {
+        const text = await r.text();
+        let msg = text;
+        try { const j = JSON.parse(text); msg = j.error || text; } catch {}
+        if (msg.includes('high demand') || msg.includes('UNAVAILABLE') || msg.includes('503'))
+          msg = 'Gemini перегружен, попробуй через минуту';
+        throw new Error(msg);
+      }
       const blob = await r.blob();
       setImgResult(URL.createObjectURL(blob));
     } catch (e: any) {

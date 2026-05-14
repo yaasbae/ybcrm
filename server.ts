@@ -2379,15 +2379,30 @@ async function geminiGenerateImage(prompt: string, imageBase64?: string, mimeTyp
   if (imageBase64) {
     parts.push({ inlineData: { mimeType: mimeType || "image/jpeg", data: imageBase64 } });
   }
-  const imgRes = await ai.models.generateContent({
-    model: "gemini-3.1-flash-image-preview",
-    contents: [{ role: "user", parts }],
-    config: { responseModalities: [Modality.IMAGE, Modality.TEXT] },
-  });
-  for (const part of (imgRes as any).candidates?.[0]?.content?.parts || []) {
-    if (part.inlineData?.data) return Buffer.from(part.inlineData.data, "base64");
+  let lastError: Error = new Error("Gemini не вернул картинку");
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const imgRes = await ai.models.generateContent({
+        model: "gemini-3.1-flash-image-preview",
+        contents: [{ role: "user", parts }],
+        config: { responseModalities: [Modality.IMAGE, Modality.TEXT] },
+      });
+      for (const part of (imgRes as any).candidates?.[0]?.content?.parts || []) {
+        if (part.inlineData?.data) return Buffer.from(part.inlineData.data, "base64");
+      }
+      throw new Error("Gemini не вернул картинку");
+    } catch (e: any) {
+      lastError = e;
+      const msg = e?.message || '';
+      const isOverload = msg.includes('503') || msg.includes('UNAVAILABLE') || msg.includes('high demand');
+      if (isOverload && attempt < 3) {
+        await new Promise(r => setTimeout(r, 4000 * attempt));
+        continue;
+      }
+      throw e;
+    }
   }
-  throw new Error("Gemini не вернул картинку");
+  throw lastError;
 }
 
 async function geminiWritePrompt(userText: string, mode: 'image' | 'video'): Promise<string> {
