@@ -2395,7 +2395,7 @@ async function geminiWritePrompt(userText: string, mode: 'image' | 'video'): Pro
   const instruction = mode === 'image'
     ? `Write a detailed photorealistic image generation prompt in English for: "${userText}". Only the prompt, max 80 words.`
     : `Write a short cinematic video prompt in English for: "${userText}". Only the prompt, max 50 words.`;
-  const res = await ai.models.generateContent({ model: "gemini-2.0-flash", contents: instruction });
+  const res = await ai.models.generateContent({ model: "gemini-3.1-flash-image-preview", contents: instruction });
   return (res as any).candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? userText;
 }
 

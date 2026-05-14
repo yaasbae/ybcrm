@@ -110,7 +110,9 @@ export const ContentStudioPage: React.FC = () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prompt, imageBase64: vidImage?.base64, imageMimeType: vidImage?.mimeType }),
       });
-      const d = await r.json();
+      let d: any;
+      try { d = await r.json(); } catch { throw new Error('Сервер не ответил — вероятно таймаут. Попробуй ещё раз.'); }
+      if (!r.ok) throw new Error(d?.error || `Ошибка сервера ${r.status}`);
       if (!d.videoUrl) throw new Error(d.error || 'Нет ссылки на видео');
       setVidResult(d.videoUrl);
     } catch (e: any) {
