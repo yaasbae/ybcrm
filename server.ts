@@ -2361,16 +2361,22 @@ async function falGenerateVideo(prompt: string, imageUrl?: string): Promise<stri
   const subData = await sub.json() as any;
   const request_id = subData.request_id;
   const status_url = subData.status_url;
+  const response_url = subData.response_url;
   if (!request_id) throw new Error(`fal.ai: ${JSON.stringify(subData)}`);
-  const pollUrl = status_url || `https://queue.fal.run/bytedance/seedance-2.0/requests/${request_id}`;
+  const statusUrl = status_url || `https://queue.fal.run/bytedance/seedance-2.0/requests/${request_id}/status`;
+  const resultUrl = response_url || `https://queue.fal.run/bytedance/seedance-2.0/requests/${request_id}`;
   for (let i = 0; i < 80; i++) {
     await new Promise(r => setTimeout(r, 4000));
-    const poll = await fetch(pollUrl, {
-      headers: { "Authorization": `Key ${FAL_API_KEY}` }
-    });
-    const data = await poll.json() as any;
-    if (data.status === "COMPLETED") return data.output?.video?.url ?? data.output?.url ?? "";
-    if (data.status === "FAILED") throw new Error("Seedance: генерация провалилась");
+    const statusRes = await fetch(statusUrl, { headers: { "Authorization": `Key ${FAL_API_KEY}` } });
+    const statusData = await statusRes.json() as any;
+    if (statusData.status === "FAILED") throw new Error("Seedance: генерация провалилась");
+    if (statusData.status === "COMPLETED") {
+      const resultRes = await fetch(resultUrl, { headers: { "Authorization": `Key ${FAL_API_KEY}` } });
+      const result = await resultRes.json() as any;
+      const videoUrl = result.video?.url ?? result.output?.video?.url ?? result.output?.url ?? "";
+      if (!videoUrl) throw new Error(`Seedance: нет URL видео. Ответ: ${JSON.stringify(result).slice(0, 200)}`);
+      return videoUrl;
+    }
   }
   throw new Error("Seedance: timeout 5 мин");
 }
