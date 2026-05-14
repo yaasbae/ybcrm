@@ -2382,7 +2382,7 @@ async function falGenerateVideo(prompt: string, imageUrl?: string): Promise<stri
 }
 
 async function geminiGenerateImage(prompt: string, imageBase64?: string, mimeType?: string): Promise<Buffer> {
-  const ai = new GoogleGenAI({ apiKey: CONTENT_GEMINI_KEY, httpOptions: { timeout: 120000 } });
+  const ai = new GoogleGenAI({ apiKey: CONTENT_GEMINI_KEY });
   const parts: any[] = [{ text: prompt }];
   if (imageBase64) {
     parts.push({ inlineData: { mimeType: mimeType || "image/jpeg", data: imageBase64 } });
@@ -2390,16 +2390,11 @@ async function geminiGenerateImage(prompt: string, imageBase64?: string, mimeTyp
   let lastError: Error = new Error("Gemini не вернул картинку");
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-      const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('Gemini перегружен, попробуй ещё раз')), 110000));
-      const imgRes = await Promise.race([
-        ai.models.generateContent({
-          model: "gemini-3.1-flash-image-preview",
-          contents: [{ role: "user", parts }],
-          config: { responseModalities: [Modality.IMAGE, Modality.TEXT] },
-        }),
-        timeoutPromise,
-      ]);
+      const imgRes = await ai.models.generateContent({
+        model: "gemini-3.1-flash-image-preview",
+        contents: [{ role: "user", parts }],
+        config: { responseModalities: [Modality.IMAGE, Modality.TEXT] },
+      });
       for (const part of (imgRes as any).candidates?.[0]?.content?.parts || []) {
         if (part.inlineData?.data) return Buffer.from(part.inlineData.data, "base64");
       }
@@ -2407,7 +2402,7 @@ async function geminiGenerateImage(prompt: string, imageBase64?: string, mimeTyp
     } catch (e: any) {
       lastError = e;
       const msg = e?.message || '';
-      const isOverload = msg.includes('503') || msg.includes('UNAVAILABLE') || msg.includes('high demand') || msg.includes('перегружен');
+      const isOverload = msg.includes('503') || msg.includes('UNAVAILABLE') || msg.includes('high demand');
       if (isOverload && attempt < 3) {
         await new Promise(r => setTimeout(r, 5000 * attempt));
         continue;
