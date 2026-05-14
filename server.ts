@@ -2332,8 +2332,8 @@ function startTelegramBot() {
 loadBotCfg().then(() => startTelegramBot());
 
 // ─── КОНТЕНТ-БОТ ──────────────────────────────────────────────────────────────
-const CONTENT_BOT_TOKEN = process.env.CONTENT_BOT_TOKEN || "8816890139:AAF8myE9ELFLr2r1AhxQXz4l7Qoj7dALGZ0";
-const FAL_API_KEY = process.env.FAL_API_KEY || "ff76d40a-2474-47f3-a000-f0bc4c6c7195:508f6cb74c782f7c18d4f3d2ee852f7a";
+const CONTENT_BOT_TOKEN = process.env.CONTENT_BOT_TOKEN || "";
+const FAL_API_KEY = process.env.FAL_API_KEY || "";
 const CONTENT_GEMINI_KEY = process.env.GEMINI_API_KEY || "";
 
 type CntState =
@@ -2395,7 +2395,7 @@ async function geminiWritePrompt(userText: string, mode: 'image' | 'video'): Pro
   const instruction = mode === 'image'
     ? `Write a detailed photorealistic image generation prompt in English for: "${userText}". Only the prompt, max 80 words.`
     : `Write a short cinematic video prompt in English for: "${userText}". Only the prompt, max 50 words.`;
-  const res = await ai.models.generateContent({ model: "gemini-2.0-flash-exp", contents: instruction });
+  const res = await ai.models.generateContent({ model: "gemini-2.0-flash", contents: instruction });
   return (res as any).candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? userText;
 }
 
