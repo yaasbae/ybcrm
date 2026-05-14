@@ -2360,10 +2360,12 @@ async function falGenerateVideo(prompt: string, imageUrl?: string): Promise<stri
   });
   const subData = await sub.json() as any;
   const request_id = subData.request_id;
+  const status_url = subData.status_url;
   if (!request_id) throw new Error(`fal.ai: ${JSON.stringify(subData)}`);
+  const pollUrl = status_url || `https://queue.fal.run/bytedance/seedance-2.0/requests/${request_id}`;
   for (let i = 0; i < 80; i++) {
     await new Promise(r => setTimeout(r, 4000));
-    const poll = await fetch(`https://queue.fal.run/bytedance/seedance-2.0/image-to-video/requests/${request_id}`, {
+    const poll = await fetch(pollUrl, {
       headers: { "Authorization": `Key ${FAL_API_KEY}` }
     });
     const data = await poll.json() as any;
