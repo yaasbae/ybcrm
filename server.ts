@@ -2438,8 +2438,9 @@ async function geminiGenerateImage(prompt: string, images?: Array<{base64: strin
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       console.log(`[gemini-image] attempt ${attempt}, prompt length=${prompt.length}, images=${images?.length ?? 0}`);
+      // gemini-2.0-flash-preview-image-generation supports both text-to-image and image editing (image input)
       const imgRes = await ai.models.generateContent({
-        model: "gemini-3.1-flash-image-preview",
+        model: "gemini-2.0-flash-preview-image-generation",
         contents: [{ role: "user", parts }],
         config: { responseModalities: [Modality.IMAGE, Modality.TEXT] },
       });
@@ -2476,7 +2477,7 @@ async function geminiWritePrompt(userText: string, mode: 'image' | 'video'): Pro
   const timeout = new Promise<never>((_, reject) =>
     setTimeout(() => reject(new Error('Gemini timeout — попробуй ещё раз')), 25000));
   const res = await Promise.race([
-    ai.models.generateContent({ model: "gemini-3.1-flash-image-preview", contents: instruction }),
+    ai.models.generateContent({ model: "gemini-2.0-flash-lite", contents: instruction }),
     timeout,
   ]);
   return (res as any).candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? userText;
