@@ -2389,50 +2389,14 @@ async function falGenerateVideo(
   throw new Error("Seedance: timeout 6 мин");
 }
 
-async function falUpscaleImage(imageBuffer: Buffer, scale: 2 | 4): Promise<Buffer> {
-  // Upload to FAL storage
-  const formData = new FormData();
-  formData.append('file', new Blob([new Uint8Array(imageBuffer)], { type: 'image/jpeg' }), 'image.jpg');
-  const uploadRes = await fetch('https://storage.fal.run/upload', {
-    method: 'POST',
-    headers: { 'Authorization': `Key ${FAL_API_KEY}` },
-    body: formData,
-  });
-  const uploadData = await uploadRes.json() as any;
-  if (!uploadData.url) throw new Error(`FAL storage: ${JSON.stringify(uploadData)}`);
 
-  // Submit upscale job
-  const sub = await fetch('https://queue.fal.run/fal-ai/aura-sr', {
-    method: 'POST',
-    headers: { 'Authorization': `Key ${FAL_API_KEY}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ image_url: uploadData.url, upscaling_factor: scale }),
-  });
-  const subData = await sub.json() as any;
-  if (!subData.request_id) throw new Error(`FAL upscale submit: ${JSON.stringify(subData)}`);
-  const statusUrl = subData.status_url || `https://queue.fal.run/fal-ai/aura-sr/requests/${subData.request_id}/status`;
-  const resultUrl = subData.response_url || `https://queue.fal.run/fal-ai/aura-sr/requests/${subData.request_id}`;
-
-  // Poll
-  for (let i = 0; i < 40; i++) {
-    await new Promise(r => setTimeout(r, 3000));
-    const st = await (await fetch(statusUrl, { headers: { 'Authorization': `Key ${FAL_API_KEY}` } })).json() as any;
-    if (st.status === 'FAILED') throw new Error('FAL upscale: провалился');
-    if (st.status === 'COMPLETED') {
-      const result = await (await fetch(resultUrl, { headers: { 'Authorization': `Key ${FAL_API_KEY}` } })).json() as any;
-      const url = result.image?.url ?? result.output?.image?.url ?? '';
-      if (!url) throw new Error(`FAL upscale: нет URL. Ответ: ${JSON.stringify(result).slice(0, 200)}`);
-      const imgRes = await fetch(url);
-      return Buffer.from(await imgRes.arrayBuffer());
-    }
-  }
-  throw new Error('FAL upscale: timeout 2 мин');
-}
-
-async function geminiGenerateImage(prompt: string, images?: Array<{base64: string; mimeType: string}>): Promise<Buffer> {
-  // timeout 240s — Gemini image gen takes 60-180s, 90s was causing premature "This operation was aborted"
+async function geminiGenerateImage(
+  prompt: string,
+  images?: Array<{base64: string; mimeType: string}>,
+  imageSize: '1K' | '2K' | '4K' = '1K',
+): Promise<Buffer> {
   const ai = new GoogleGenAI({ apiKey: CONTENT_GEMINI_KEY, httpOptions: { timeout: 240000 } });
 
-  // Resize input images to max 768px to reduce upload size and speed up Gemini processing
   const parts: any[] = [{ text: prompt }];
   for (const img of images ?? []) {
     const buf = Buffer.from(img.base64, 'base64');
@@ -2443,18 +2407,21 @@ async function geminiGenerateImage(prompt: string, images?: Array<{base64: strin
   let lastError: Error = new Error("Gemini не вернул картинку");
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-      console.log(`[gemini-image] attempt ${attempt}, images=${images?.length ?? 0}`);
+      console.log(`[gemini-image] attempt ${attempt}, images=${images?.length ?? 0}, size=${imageSize}`);
       const imgRes = await ai.models.generateContent({
         model: "gemini-3.1-flash-image-preview",
         contents: [{ role: "user", parts }],
-        config: { responseModalities: [Modality.IMAGE, Modality.TEXT] },
+        config: {
+          responseModalities: [Modality.IMAGE, Modality.TEXT],
+          imageConfig: { imageSize },
+        } as any,
       });
-      console.log(`[gemini-image] response ok, candidates=${(imgRes as any).candidates?.length}`);
+      console.log(`[gemini-image] response ok`);
       for (const part of (imgRes as any).candidates?.[0]?.content?.parts || []) {
         if (part.inlineData?.data) return Buffer.from(part.inlineData.data, "base64");
       }
       const txt = (imgRes as any).candidates?.[0]?.content?.parts?.filter((p: any) => p.text)?.map((p: any) => p.text).join(' ');
-      console.warn(`[gemini-image] no image. text="${txt?.slice(0,200)}"`);
+      console.warn(`[gemini-image] no image. text="${txt?.slice(0, 200)}"`);
       throw new Error("Gemini не вернул картинку");
     } catch (e: any) {
       lastError = e;
@@ -2572,10 +2539,10 @@ function startContentBot() {
       const qualityLabel = quality === '4k' ? '4K (~3 мин)' : quality === '2k' ? '2K (~2 мин)' : '1K (~1 мин)';
       const msg = await ctx.reply(`⏳ Генерирую картинку ${qualityLabel}...`, CONTENT_MENU);
       try {
-        const imgBuf = await geminiGenerateImage(state.prompt, state.photos.length > 0 ? state.photos : undefined);
-        const finalBuf = quality !== '1k' ? await falUpscaleImage(imgBuf, quality === '4k' ? 4 : 2) : imgBuf;
+        const imageSize = quality === '4k' ? '4K' : quality === '2k' ? '2K' : '1K';
+        const imgBuf = await geminiGenerateImage(state.prompt, state.photos.length > 0 ? state.photos : undefined, imageSize);
         await ctx.telegram.deleteMessage(ctx.chat.id, msg.message_id).catch(() => {});
-        await ctx.replyWithPhoto({ source: finalBuf }, { caption: `📝 ${state.prompt} (${quality.toUpperCase()})`, ...CONTENT_MENU });
+        await ctx.replyWithPhoto({ source: imgBuf }, { caption: `📝 ${state.prompt} (${imageSize})`, ...CONTENT_MENU });
       } catch (e: any) {
         await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, undefined, `❌ ${(e as Error).message}`).catch(() => {});
       }
@@ -2663,25 +2630,16 @@ app.post("/api/content-studio/prompt", async (req, res) => {
 
 app.post("/api/content-studio/image", async (req, res) => {
   try {
-    const { prompt, imageBase64, imageMimeType, images } = req.body as {
+    const { prompt, imageBase64, imageMimeType, images, quality } = req.body as {
       prompt: string;
       imageBase64?: string; imageMimeType?: string;
       images?: Array<{base64: string; mimeType: string}>;
+      quality?: '1k' | '2k' | '4k';
     };
     if (!prompt) return res.status(400).json({ error: "prompt required" });
     const imgArray = images ?? (imageBase64 ? [{ base64: imageBase64, mimeType: imageMimeType || 'image/jpeg' }] : undefined);
-    const buf = await geminiGenerateImage(prompt, imgArray);
-    res.set("Content-Type", "image/jpeg").send(buf);
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-app.post("/api/content-studio/upscale", async (req, res) => {
-  try {
-    const { imageBase64, scale } = req.body as { imageBase64: string; scale: 2 | 4 };
-    if (!imageBase64 || !scale) return res.status(400).json({ error: "imageBase64 and scale required" });
-    const buf = await falUpscaleImage(Buffer.from(imageBase64, 'base64'), scale);
+    const imageSize = quality === '4k' ? '4K' : quality === '2k' ? '2K' : '1K';
+    const buf = await geminiGenerateImage(prompt, imgArray, imageSize);
     res.set("Content-Type", "image/jpeg").send(buf);
   } catch (e: any) {
     res.status(500).json({ error: e.message });

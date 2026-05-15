@@ -120,68 +120,30 @@ export const ContentStudioPage: React.FC = () => {
     const prompt = `${basePrompt}. Generate in ${ratioHint[imgAspectRatio]}.`;
     setImgLoading('image');
     setImgResult(null);
+    const controller = new AbortController();
+    const tid = setTimeout(() => controller.abort(), 240000);
     try {
-      // Step 1: generate 1K image (separate request to stay within Cloud Run 300s timeout)
-      const ctrl1 = new AbortController();
-      const t1 = setTimeout(() => ctrl1.abort(), 240000);
-      let imageBlob: Blob;
-      try {
-        const r = await fetch('/api/content-studio/image', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prompt, images: imgSourceImages.map(i => ({ base64: i.base64, mimeType: i.mimeType })) }),
-          signal: ctrl1.signal,
-        });
-        if (!r.ok) {
-          const text = await r.text();
-          let msg = text;
-          try { const j = JSON.parse(text); msg = j.error || text; } catch {}
-          if (msg.includes('high demand') || msg.includes('UNAVAILABLE') || msg.includes('503'))
-            msg = 'Gemini перегружен, попробуй через минуту';
-          throw new Error(msg);
-        }
-        imageBlob = await r.blob();
-      } finally {
-        clearTimeout(t1);
+      const r = await fetch('/api/content-studio/image', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt, images: imgSourceImages.map(i => ({ base64: i.base64, mimeType: i.mimeType })), quality: imgQuality }),
+        signal: controller.signal,
+      });
+      if (!r.ok) {
+        const text = await r.text();
+        let msg = text;
+        try { const j = JSON.parse(text); msg = j.error || text; } catch {}
+        if (msg.includes('high demand') || msg.includes('UNAVAILABLE') || msg.includes('503'))
+          msg = 'Gemini перегружен, попробуй через минуту';
+        throw new Error(msg);
       }
-
-      // Show 1K result immediately
-      setImgResult(URL.createObjectURL(imageBlob));
-
-      // Step 2: upscale if 2K/4K (separate request)
-      if (imgQuality === '2k' || imgQuality === '4k') {
-        setImgLoading('image');
-        const scale = imgQuality === '4k' ? 4 : 2;
-        const base64 = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => resolve((reader.result as string).split(',')[1]);
-          reader.onerror = reject;
-          reader.readAsDataURL(imageBlob);
-        });
-        const ctrl2 = new AbortController();
-        const t2 = setTimeout(() => ctrl2.abort(), 180000);
-        try {
-          const r2 = await fetch('/api/content-studio/upscale', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ imageBase64: base64, scale }),
-            signal: ctrl2.signal,
-          });
-          if (!r2.ok) {
-            const text = await r2.text();
-            let msg = text;
-            try { const j = JSON.parse(text); msg = j.error || text; } catch {}
-            throw new Error('Апскейл: ' + msg);
-          }
-          const upscaled = await r2.blob();
-          setImgResult(URL.createObjectURL(upscaled));
-        } finally {
-          clearTimeout(t2);
-        }
-      }
+      const blob = await r.blob();
+      setImgResult(URL.createObjectURL(blob));
     } catch (e: any) {
       const msg = (e as any).name === 'AbortError' ? 'Timeout: слишком долго, попробуй ещё раз' : e.message;
       alert('Ошибка: ' + msg);
+    } finally {
+      clearTimeout(tid);
     }
     setImgLoading(null);
   }
