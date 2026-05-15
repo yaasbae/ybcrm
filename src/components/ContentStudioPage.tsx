@@ -11,11 +11,11 @@ export const ContentStudioPage: React.FC = () => {
   // ── Image tab ──
   const [imgText, setImgText] = useState('');
   const [imgPrompt, setImgPrompt] = useState('');
-  const [imgSourceImage, setImgSourceImage] = useState<{ file: File; base64: string; mimeType: string } | null>(null);
-  const [imgPreviewUrl, setImgPreviewUrl] = useState<string | null>(null);
+  const [imgSourceImages, setImgSourceImages] = useState<Array<{ base64: string; mimeType: string; objectUrl: string }>>([]);
   const [imgLoading, setImgLoading] = useState<'prompt' | 'image' | null>(null);
   const [imgResult, setImgResult] = useState<string | null>(null);
   const [imgAspectRatio, setImgAspectRatio] = useState<'1:1' | '4:5' | '9:16' | '16:9'>('1:1');
+  const [imgQuality, setImgQuality] = useState<'1k' | '2k' | '4k'>('1k');
   const imgFileRef = useRef<HTMLInputElement>(null);
 
   // ── Video tab ──
@@ -58,15 +58,22 @@ export const ContentStudioPage: React.FC = () => {
   async function handleImgFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
+    if (imgSourceImages.length >= 3) return;
     try {
-      const { base64, mimeType, objectUrl } = await compressImage(file);
-      if (imgPreviewUrl) URL.revokeObjectURL(imgPreviewUrl);
-      setImgPreviewUrl(objectUrl);
-      setImgSourceImage({ file, base64, mimeType });
+      const compressed = await compressImage(file);
+      setImgSourceImages(prev => [...prev, compressed]);
       setImgResult(null);
-    } catch (e: any) {
-      alert('Ошибка загрузки фото: ' + e.message);
+    } catch (err: any) {
+      alert('Ошибка загрузки фото: ' + err.message);
     }
+    e.target.value = '';
+  }
+
+  function removeImgPhoto(idx: number) {
+    setImgSourceImages(prev => {
+      URL.revokeObjectURL(prev[idx].objectUrl);
+      return prev.filter((_, i) => i !== idx);
+    });
   }
 
   async function handleVidFileChange(e: React.ChangeEvent<HTMLInputElement>) {
@@ -117,7 +124,7 @@ export const ContentStudioPage: React.FC = () => {
       const r = await fetch('/api/content-studio/image', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt, imageBase64: imgSourceImage?.base64, imageMimeType: imgSourceImage?.mimeType }),
+        body: JSON.stringify({ prompt, images: imgSourceImages.map(i => ({ base64: i.base64, mimeType: i.mimeType })), quality: imgQuality }),
       });
       if (!r.ok) {
         const text = await r.text();
@@ -209,42 +216,44 @@ export const ContentStudioPage: React.FC = () => {
         <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="space-y-4">
           <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-5 space-y-4">
 
-            {/* Исходное фото (опционально) */}
+            {/* Исходные фото (до 3, опционально) */}
             <div className="space-y-2">
-              <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Исходное фото (для редактирования)</label>
-              {imgSourceImage && imgPreviewUrl ? (
-                <div className="relative w-fit">
-                  <img src={imgPreviewUrl} alt="source" className="h-36 rounded-xl object-cover" />
-                  <button
-                    onClick={() => { URL.revokeObjectURL(imgPreviewUrl); setImgPreviewUrl(null); setImgSourceImage(null); if (imgFileRef.current) imgFileRef.current.value = ''; }}
-                    className="absolute -top-2 -right-2 bg-white border border-slate-200 rounded-full p-0.5 shadow hover:bg-red-50 transition-colors"
-                  >
-                    <X size={12} className="text-slate-500" />
+              <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide">
+                Фото для редактирования <span className="text-slate-400 font-normal normal-case">(до 3 шт.)</span>
+              </label>
+              <div className="flex flex-wrap gap-2">
+                {imgSourceImages.map((img, idx) => (
+                  <div key={idx} className="relative">
+                    <img src={img.objectUrl} alt={`фото ${idx + 1}`} className="h-24 w-24 rounded-xl object-cover" />
+                    <button onClick={() => removeImgPhoto(idx)}
+                      className="absolute -top-2 -right-2 bg-white border border-slate-200 rounded-full p-0.5 shadow hover:bg-red-50 transition-colors">
+                      <X size={12} className="text-slate-500" />
+                    </button>
+                  </div>
+                ))}
+                {imgSourceImages.length < 3 && (
+                  <button onClick={() => imgFileRef.current?.click()}
+                    className="h-24 w-24 flex flex-col items-center justify-center gap-1 border border-dashed border-slate-300 rounded-xl text-slate-400 hover:border-purple-400 hover:text-purple-500 transition-colors text-xs">
+                    <Upload size={16} /> Добавить
                   </button>
-                </div>
-              ) : (
-                <button
-                  onClick={() => imgFileRef.current?.click()}
-                  className="flex items-center gap-2 border border-dashed border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-400 hover:border-purple-400 hover:text-purple-500 transition-colors w-full justify-center"
-                >
-                  <Upload size={14} /> Загрузить фото для редактирования
-                </button>
-              )}
+                )}
+              </div>
               <input ref={imgFileRef} type="file" accept="image/*,image/heic,image/heif" className="hidden" onChange={handleImgFileChange} />
             </div>
 
             {/* Промпт */}
             <div className="space-y-2">
               <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide">
-                {imgSourceImage ? 'Что сделать с фото' : 'Тема или промпт'}
+                {imgSourceImages.length > 0 ? 'Что сделать с фото' : 'Тема или промпт'}
               </label>
               <textarea
                 value={imgText}
                 onChange={e => { setImgText(e.target.value); setImgPrompt(''); }}
                 rows={2}
+                inputMode="text"
                 className="w-full border border-slate-200 rounded-xl px-3 py-2 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-purple-300"
-                placeholder={imgSourceImage
-                  ? 'Например: поменяй фон на пустыню, розовый на чёрный'
+                placeholder={imgSourceImages.length > 0
+                  ? 'Например: поменяй фон на пустыню, объедини в один образ'
                   : 'Например: красивый закат над горами'}
               />
             </div>
@@ -278,6 +287,34 @@ export const ContentStudioPage: React.FC = () => {
               </div>
             </div>
 
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Качество</label>
+                <div className="flex gap-1.5">
+                  {(['1k', '2k', '4k'] as const).map(q => (
+                    <button key={q} onClick={() => setImgQuality(q)}
+                      className={cn('flex-1 py-1.5 rounded-lg text-xs font-semibold border transition-colors',
+                        imgQuality === q ? 'bg-purple-600 text-white border-purple-600' : 'border-slate-200 text-slate-600 hover:border-purple-300')}>
+                      {q.toUpperCase()}
+                    </button>
+                  ))}
+                </div>
+                {imgQuality !== '1k' && <p className="text-xs text-slate-400">+30 сек на апскейл</p>}
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Формат</label>
+                <div className="grid grid-cols-2 gap-1">
+                  {(['1:1', '4:5', '9:16', '16:9'] as const).map(r => (
+                    <button key={r} onClick={() => setImgAspectRatio(r)}
+                      className={cn('py-1.5 rounded-lg text-xs font-semibold border transition-colors',
+                        imgAspectRatio === r ? 'bg-purple-600 text-white border-purple-600' : 'border-slate-200 text-slate-600 hover:border-purple-300')}>
+                      {r}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
             <button
               onClick={handleGenerateImage}
               disabled={!!imgLoading || (!imgText.trim() && !imgPrompt.trim())}
@@ -285,7 +322,7 @@ export const ContentStudioPage: React.FC = () => {
             >
               {imgLoading === 'image'
                 ? <><Loader2 size={14} className="animate-spin" /> Генерирую...</>
-                : <><Image size={14} /> {imgSourceImage ? 'Редактировать фото' : 'Сгенерировать картинку'}</>}
+                : <><Image size={14} /> {imgSourceImages.length > 0 ? 'Редактировать фото' : 'Сгенерировать картинку'}</>}
             </button>
           </div>
 

@@ -2338,7 +2338,8 @@ const CONTENT_GEMINI_KEY = process.env.GEMINI_API_KEY || "";
 
 type CntState =
   | { type: 'idle' }
-  | { type: 'waiting_img_prompt' }
+  | { type: 'waiting_img_input'; photos: Array<{base64: string; mimeType: string}> }
+  | { type: 'waiting_img_quality'; photos: Array<{base64: string; mimeType: string}>; prompt: string }
   | { type: 'waiting_vid_image' }
   | { type: 'waiting_vid_prompt'; imageBase64: string }
   | { type: 'waiting_vid_duration'; imageBase64: string; prompt: string }
@@ -2387,11 +2388,50 @@ async function falGenerateVideo(
   throw new Error("Seedance: timeout 6 мин");
 }
 
-async function geminiGenerateImage(prompt: string, imageBase64?: string, mimeType?: string): Promise<Buffer> {
+async function falUpscaleImage(imageBuffer: Buffer, scale: 2 | 4): Promise<Buffer> {
+  // Upload to FAL storage
+  const formData = new FormData();
+  formData.append('file', new Blob([new Uint8Array(imageBuffer)], { type: 'image/jpeg' }), 'image.jpg');
+  const uploadRes = await fetch('https://storage.fal.run/upload', {
+    method: 'POST',
+    headers: { 'Authorization': `Key ${FAL_API_KEY}` },
+    body: formData,
+  });
+  const uploadData = await uploadRes.json() as any;
+  if (!uploadData.url) throw new Error(`FAL storage: ${JSON.stringify(uploadData)}`);
+
+  // Submit upscale job
+  const sub = await fetch('https://queue.fal.run/fal-ai/aura-sr', {
+    method: 'POST',
+    headers: { 'Authorization': `Key ${FAL_API_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ image_url: uploadData.url, upscaling_factor: scale }),
+  });
+  const subData = await sub.json() as any;
+  if (!subData.request_id) throw new Error(`FAL upscale submit: ${JSON.stringify(subData)}`);
+  const statusUrl = subData.status_url || `https://queue.fal.run/fal-ai/aura-sr/requests/${subData.request_id}/status`;
+  const resultUrl = subData.response_url || `https://queue.fal.run/fal-ai/aura-sr/requests/${subData.request_id}`;
+
+  // Poll
+  for (let i = 0; i < 40; i++) {
+    await new Promise(r => setTimeout(r, 3000));
+    const st = await (await fetch(statusUrl, { headers: { 'Authorization': `Key ${FAL_API_KEY}` } })).json() as any;
+    if (st.status === 'FAILED') throw new Error('FAL upscale: провалился');
+    if (st.status === 'COMPLETED') {
+      const result = await (await fetch(resultUrl, { headers: { 'Authorization': `Key ${FAL_API_KEY}` } })).json() as any;
+      const url = result.image?.url ?? result.output?.image?.url ?? '';
+      if (!url) throw new Error(`FAL upscale: нет URL. Ответ: ${JSON.stringify(result).slice(0, 200)}`);
+      const imgRes = await fetch(url);
+      return Buffer.from(await imgRes.arrayBuffer());
+    }
+  }
+  throw new Error('FAL upscale: timeout 2 мин');
+}
+
+async function geminiGenerateImage(prompt: string, images?: Array<{base64: string; mimeType: string}>): Promise<Buffer> {
   const ai = new GoogleGenAI({ apiKey: CONTENT_GEMINI_KEY });
   const parts: any[] = [{ text: prompt }];
-  if (imageBase64) {
-    parts.push({ inlineData: { mimeType: mimeType || "image/jpeg", data: imageBase64 } });
+  for (const img of images ?? []) {
+    parts.push({ inlineData: { mimeType: img.mimeType, data: img.base64 } });
   }
   let lastError: Error = new Error("Gemini не вернул картинку");
   for (let attempt = 1; attempt <= 3; attempt++) {
@@ -2447,8 +2487,8 @@ function startContentBot() {
 
   // ── Кнопки меню ──
   bot.hears('🖼 Сгенерировать картинку', async (ctx) => {
-    cntStates.set(ctx.from.id, { type: 'waiting_img_prompt' });
-    await ctx.reply("Введи промпт для картинки (или просто тему — сам улучшу):");
+    cntStates.set(ctx.from.id, { type: 'waiting_img_input', photos: [] });
+    await ctx.reply("Отправь 1-3 фото (для редактирования/объединения) или сразу напиши тему:");
   });
 
   bot.hears('🎬 Видео из картинки', async (ctx) => {
@@ -2464,16 +2504,30 @@ function startContentBot() {
   // ── Фото ──
   bot.on('photo', async (ctx) => {
     const state = cntStates.get(ctx.from.id) ?? { type: 'idle' };
-    if (state.type !== 'waiting_vid_image') return sendMenu(ctx);
-
     const fileId = ctx.message.photo[ctx.message.photo.length - 1].file_id;
     const fileUrl = await ctx.telegram.getFileLink(fileId);
-    const imgRes = await fetch(fileUrl.toString());
-    const imgBuf = Buffer.from(await imgRes.arrayBuffer());
-    const imageBase64 = imgBuf.toString("base64");
+    const imgBuf = Buffer.from(await (await fetch(fileUrl.toString())).arrayBuffer());
+    const base64 = imgBuf.toString("base64");
 
-    cntStates.set(ctx.from.id, { type: 'waiting_vid_prompt', imageBase64 });
-    await ctx.reply("Картинка получена! Теперь введи тему или промпт для видео:");
+    if (state.type === 'waiting_img_input') {
+      const photos = [...state.photos, { base64, mimeType: 'image/jpeg' }];
+      if (photos.length >= 3) {
+        cntStates.set(ctx.from.id, { type: 'waiting_img_input', photos });
+        await ctx.reply(`📸 Фото ${photos.length}/3 получено. Максимум достигнут — напиши промпт:`);
+      } else {
+        cntStates.set(ctx.from.id, { type: 'waiting_img_input', photos });
+        await ctx.reply(`📸 Фото ${photos.length}/3 получено. Ещё фото или напиши промпт:`);
+      }
+      return;
+    }
+
+    if (state.type === 'waiting_vid_image') {
+      cntStates.set(ctx.from.id, { type: 'waiting_vid_prompt', imageBase64: base64 });
+      await ctx.reply("Картинка получена! Теперь введи тему или промпт для видео:");
+      return;
+    }
+
+    return sendMenu(ctx);
   });
 
   // ── Текст ──
@@ -2482,18 +2536,36 @@ function startContentBot() {
     const text = ctx.message.text.trim();
     if (text.startsWith('/')) return;
 
-    // Картинка
-    if (state.type === 'waiting_img_prompt') {
-      cntStates.set(ctx.from.id, { type: 'idle' });
-      const msg = await ctx.reply("⏳ Генерирую промпт...");
+    // Картинка — получили промпт, спрашиваем качество
+    if (state.type === 'waiting_img_input') {
+      const msg = await ctx.reply("⏳ Улучшаю промпт...");
       try {
         const prompt = await geminiWritePrompt(text, 'image');
-        await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, undefined, `📝 Промпт:\n${prompt}\n\n⏳ Генерирую картинку...`);
-        const imgBuf = await geminiGenerateImage(prompt);
+        cntStates.set(ctx.from.id, { type: 'waiting_img_quality', photos: state.photos, prompt });
         await ctx.telegram.deleteMessage(ctx.chat.id, msg.message_id).catch(() => {});
-        await ctx.replyWithPhoto({ source: imgBuf }, { caption: `📝 ${prompt}`, ...CONTENT_MENU });
+        const photoNote = state.photos.length > 0 ? ` (${state.photos.length} фото)` : '';
+        await ctx.reply(`📝 Промпт${photoNote}:\n${prompt}\n\nВыбери качество (2K и 4K: +30 сек):`,
+          Markup.keyboard([['🖼 1K (быстро)', '🖼 2K', '🖼 4K']]).resize());
       } catch (e: any) {
-        await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, undefined, `❌ ${e.message}`).catch(() => {});
+        cntStates.set(ctx.from.id, { type: 'idle' });
+        await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, undefined, `❌ ${(e as Error).message}`).catch(() => {});
+      }
+      return;
+    }
+
+    // Выбор качества → генерация картинки
+    if (state.type === 'waiting_img_quality') {
+      const quality: '1k' | '2k' | '4k' = text.includes('4K') ? '4k' : text.includes('2K') ? '2k' : '1k';
+      cntStates.set(ctx.from.id, { type: 'idle' });
+      const qualityLabel = quality === '4k' ? '4K (~3 мин)' : quality === '2k' ? '2K (~2 мин)' : '1K (~1 мин)';
+      const msg = await ctx.reply(`⏳ Генерирую картинку ${qualityLabel}...`, CONTENT_MENU);
+      try {
+        const imgBuf = await geminiGenerateImage(state.prompt, state.photos.length > 0 ? state.photos : undefined);
+        const finalBuf = quality !== '1k' ? await falUpscaleImage(imgBuf, quality === '4k' ? 4 : 2) : imgBuf;
+        await ctx.telegram.deleteMessage(ctx.chat.id, msg.message_id).catch(() => {});
+        await ctx.replyWithPhoto({ source: finalBuf }, { caption: `📝 ${state.prompt} (${quality.toUpperCase()})`, ...CONTENT_MENU });
+      } catch (e: any) {
+        await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, undefined, `❌ ${(e as Error).message}`).catch(() => {});
       }
       return;
     }
@@ -2579,9 +2651,18 @@ app.post("/api/content-studio/prompt", async (req, res) => {
 
 app.post("/api/content-studio/image", async (req, res) => {
   try {
-    const { prompt, imageBase64, imageMimeType } = req.body as { prompt: string; imageBase64?: string; imageMimeType?: string };
+    const { prompt, imageBase64, imageMimeType, images, quality } = req.body as {
+      prompt: string;
+      imageBase64?: string; imageMimeType?: string;
+      images?: Array<{base64: string; mimeType: string}>;
+      quality?: '1k' | '2k' | '4k';
+    };
     if (!prompt) return res.status(400).json({ error: "prompt required" });
-    const buf = await geminiGenerateImage(prompt, imageBase64, imageMimeType);
+    // Support both legacy single-image and new multi-image format
+    const imgArray = images ?? (imageBase64 ? [{ base64: imageBase64, mimeType: imageMimeType || 'image/jpeg' }] : undefined);
+    let buf = await geminiGenerateImage(prompt, imgArray);
+    if (quality === '2k') buf = await falUpscaleImage(buf, 2);
+    else if (quality === '4k') buf = await falUpscaleImage(buf, 4);
     res.set("Content-Type", "image/jpeg").send(buf);
   } catch (e: any) {
     res.status(500).json({ error: e.message });
