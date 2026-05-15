@@ -2343,6 +2343,7 @@ type CntState =
   | { type: 'waiting_vid_image' }
   | { type: 'waiting_vid_prompt'; imageBase64: string }
   | { type: 'waiting_vid_duration'; imageBase64: string; prompt: string }
+  | { type: 'waiting_vid_speed'; imageBase64: string; prompt: string; duration: "5" | "10" }
   | { type: 'waiting_custom_prompt' };
 
 const cntStates = new Map<number, CntState>();
@@ -2356,11 +2357,15 @@ async function falGenerateVideo(
   prompt: string,
   imageUrl?: string,
   duration: "5" | "10" = "5",
-  aspectRatio: "16:9" | "9:16" | "1:1" = "16:9"
+  aspectRatio: "16:9" | "9:16" | "1:1" = "16:9",
+  speed: "standard" | "fast" = "fast"
 ): Promise<string> {
+  const endpoint = speed === "fast"
+    ? "https://queue.fal.run/bytedance/seedance-2.0/image-to-video-fast"
+    : "https://queue.fal.run/bytedance/seedance-2.0/image-to-video";
   const body: any = { prompt, duration: parseInt(duration), aspect_ratio: aspectRatio };
   if (imageUrl) body.image_url = imageUrl;
-  const sub = await fetch("https://queue.fal.run/bytedance/seedance-2.0/image-to-video", {
+  const sub = await fetch(endpoint, {
     method: "POST",
     headers: { "Authorization": `Key ${FAL_API_KEY}`, "Content-Type": "application/json" },
     body: JSON.stringify(body)
@@ -2370,8 +2375,11 @@ async function falGenerateVideo(
   const status_url = subData.status_url;
   const response_url = subData.response_url;
   if (!request_id) throw new Error(`fal.ai Seedance: ${JSON.stringify(subData)}`);
-  const statusUrl = status_url || `https://queue.fal.run/bytedance/seedance-2.0/requests/${request_id}/status`;
-  const resultUrl = response_url || `https://queue.fal.run/bytedance/seedance-2.0/requests/${request_id}`;
+  const baseQueue = speed === "fast"
+    ? "https://queue.fal.run/bytedance/seedance-2.0/image-to-video-fast"
+    : "https://queue.fal.run/bytedance/seedance-2.0/image-to-video";
+  const statusUrl = status_url || `${baseQueue}/requests/${request_id}/status`;
+  const resultUrl = response_url || `${baseQueue}/requests/${request_id}`;
   for (let i = 0; i < 90; i++) {
     await new Promise(r => setTimeout(r, 4000));
     const statusRes = await fetch(statusUrl, { headers: { "Authorization": `Key ${FAL_API_KEY}` } });
@@ -2586,14 +2594,24 @@ function startContentBot() {
       return;
     }
 
-    // Выбор длительности → генерация видео
+    // Выбор длительности → спрашиваем скорость
     if (state.type === 'waiting_vid_duration') {
       const duration: "5" | "10" = text.includes('10') ? "10" : "5";
+      cntStates.set(ctx.from.id, { type: 'waiting_vid_speed', imageBase64: state.imageBase64, prompt: state.prompt, duration });
+      await ctx.reply(`Выбери режим генерации:`,
+        Markup.keyboard([['⚡ Fast (~1 мин)', '🎬 Standard (~3 мин)']]).resize());
+      return;
+    }
+
+    // Выбор скорости → генерация видео
+    if (state.type === 'waiting_vid_speed') {
+      const speed: "standard" | "fast" = text.includes('Standard') ? "standard" : "fast";
       cntStates.set(ctx.from.id, { type: 'idle' });
-      const msg = await ctx.reply(`⏳ Генерирую видео ${duration} сек (~3 мин)...`, CONTENT_MENU);
+      const timeLabel = speed === 'fast' ? '~1 мин' : '~3 мин';
+      const msg = await ctx.reply(`⏳ Генерирую видео ${state.duration} сек (${timeLabel})...`, CONTENT_MENU);
       try {
         const imageDataUrl = `data:image/jpeg;base64,${state.imageBase64}`;
-        const videoUrl = await falGenerateVideo(state.prompt, imageDataUrl, duration, "9:16");
+        const videoUrl = await falGenerateVideo(state.prompt, imageDataUrl, state.duration, "9:16", speed);
         await ctx.telegram.deleteMessage(ctx.chat.id, msg.message_id).catch(() => {});
         await ctx.replyWithVideo({ url: videoUrl }, { caption: `📝 ${state.prompt}`, ...CONTENT_MENU });
       } catch (e: any) {
@@ -2671,13 +2689,13 @@ app.post("/api/content-studio/image", async (req, res) => {
 
 app.post("/api/content-studio/video", async (req, res) => {
   try {
-    const { prompt, imageBase64, imageMimeType, duration, aspectRatio } = req.body as {
+    const { prompt, imageBase64, imageMimeType, duration, aspectRatio, speed } = req.body as {
       prompt: string; imageBase64?: string; imageMimeType?: string;
-      duration?: "5" | "10"; aspectRatio?: "16:9" | "9:16" | "1:1";
+      duration?: "5" | "10"; aspectRatio?: "16:9" | "9:16" | "1:1"; speed?: "standard" | "fast";
     };
     if (!prompt) return res.status(400).json({ error: "prompt required" });
     const imageUrl = imageBase64 ? `data:${imageMimeType || "image/jpeg"};base64,${imageBase64}` : undefined;
-    const videoUrl = await falGenerateVideo(prompt, imageUrl, duration || "5", aspectRatio || "16:9");
+    const videoUrl = await falGenerateVideo(prompt, imageUrl, duration || "5", aspectRatio || "16:9", speed || "fast");
     res.json({ videoUrl });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
