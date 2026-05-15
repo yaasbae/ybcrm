@@ -27,7 +27,6 @@ export const ContentStudioPage: React.FC = () => {
   const [vidResult, setVidResult] = useState<string | null>(null);
   const [vidDuration, setVidDuration] = useState<'5' | '10'>('5');
   const [vidAspectRatio, setVidAspectRatio] = useState<'16:9' | '9:16' | '1:1'>('16:9');
-  const [vidSpeed, setVidSpeed] = useState<'standard' | 'fast'>('fast');
   const vidFileRef = useRef<HTMLInputElement>(null);
 
   // ── Prompt tab ──
@@ -152,7 +151,7 @@ export const ContentStudioPage: React.FC = () => {
       const r = await fetch('/api/content-studio/video', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt, imageBase64: vidImage?.base64, imageMimeType: vidImage?.mimeType, duration: vidDuration, aspectRatio: vidAspectRatio, speed: vidSpeed }),
+        body: JSON.stringify({ prompt, imageBase64: vidImage?.base64, imageMimeType: vidImage?.mimeType, duration: vidDuration, aspectRatio: vidAspectRatio }),
       });
       let d: any;
       try { d = await r.json(); } catch { throw new Error('Сервер не ответил — вероятно таймаут. Попробуй ещё раз.'); }
@@ -375,31 +374,16 @@ export const ContentStudioPage: React.FC = () => {
               </div>
             )}
 
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Скорость</label>
-                <div className="flex gap-2">
-                  {([['fast', '⚡ Fast'], ['standard', '🎬 Standard']] as const).map(([val, label]) => (
-                    <button key={val} onClick={() => setVidSpeed(val)}
-                      className={cn('flex-1 py-1.5 rounded-lg text-xs font-semibold border transition-colors',
-                        vidSpeed === val ? 'bg-purple-600 text-white border-purple-600' : 'border-slate-200 text-slate-600 hover:border-purple-300')}>
-                      {label}
-                    </button>
-                  ))}
-                </div>
-                <p className="text-xs text-slate-400">{vidSpeed === 'fast' ? '~30-60 сек' : '~2-3 мин, качество выше'}</p>
-              </div>
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Длительность</label>
-                <div className="flex gap-2">
-                  {(['5', '10'] as const).map(d => (
-                    <button key={d} onClick={() => setVidDuration(d)}
-                      className={cn('flex-1 py-1.5 rounded-lg text-xs font-semibold border transition-colors',
-                        vidDuration === d ? 'bg-purple-600 text-white border-purple-600' : 'border-slate-200 text-slate-600 hover:border-purple-300')}>
-                      {d} сек
-                    </button>
-                  ))}
-                </div>
+            <div className="space-y-1.5">
+              <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Длительность</label>
+              <div className="flex gap-2">
+                {(['5', '10'] as const).map(d => (
+                  <button key={d} onClick={() => setVidDuration(d)}
+                    className={cn('flex-1 py-1.5 rounded-lg text-xs font-semibold border transition-colors',
+                      vidDuration === d ? 'bg-purple-600 text-white border-purple-600' : 'border-slate-200 text-slate-600 hover:border-purple-300')}>
+                    {d} сек
+                  </button>
+                ))}
               </div>
             </div>
 
@@ -422,7 +406,7 @@ export const ContentStudioPage: React.FC = () => {
               className="w-full bg-purple-600 text-white rounded-xl py-2.5 text-sm font-semibold flex items-center justify-center gap-2 hover:bg-purple-700 disabled:opacity-40 transition-colors"
             >
               {vidLoading === 'video'
-                ? <><Loader2 size={14} className="animate-spin" /> Генерирую видео ({vidSpeed === 'fast' ? '~1 мин' : '~3 мин'})...</>
+                ? <><Loader2 size={14} className="animate-spin" /> Генерирую видео (~2 мин)...</>
                 : <><Video size={14} /> Сгенерировать видео</>}
             </button>
           </div>
