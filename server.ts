@@ -2663,18 +2663,25 @@ app.post("/api/content-studio/prompt", async (req, res) => {
 
 app.post("/api/content-studio/image", async (req, res) => {
   try {
-    const { prompt, imageBase64, imageMimeType, images, quality } = req.body as {
+    const { prompt, imageBase64, imageMimeType, images } = req.body as {
       prompt: string;
       imageBase64?: string; imageMimeType?: string;
       images?: Array<{base64: string; mimeType: string}>;
-      quality?: '1k' | '2k' | '4k';
     };
     if (!prompt) return res.status(400).json({ error: "prompt required" });
-    // Support both legacy single-image and new multi-image format
     const imgArray = images ?? (imageBase64 ? [{ base64: imageBase64, mimeType: imageMimeType || 'image/jpeg' }] : undefined);
-    let buf = await geminiGenerateImage(prompt, imgArray);
-    if (quality === '2k') buf = await falUpscaleImage(buf, 2);
-    else if (quality === '4k') buf = await falUpscaleImage(buf, 4);
+    const buf = await geminiGenerateImage(prompt, imgArray);
+    res.set("Content-Type", "image/jpeg").send(buf);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/content-studio/upscale", async (req, res) => {
+  try {
+    const { imageBase64, scale } = req.body as { imageBase64: string; scale: 2 | 4 };
+    if (!imageBase64 || !scale) return res.status(400).json({ error: "imageBase64 and scale required" });
+    const buf = await falUpscaleImage(Buffer.from(imageBase64, 'base64'), scale);
     res.set("Content-Type", "image/jpeg").send(buf);
   } catch (e: any) {
     res.status(500).json({ error: e.message });
