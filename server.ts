@@ -2429,30 +2429,32 @@ async function falUpscaleImage(imageBuffer: Buffer, scale: 2 | 4): Promise<Buffe
 }
 
 async function geminiGenerateImage(prompt: string, images?: Array<{base64: string; mimeType: string}>): Promise<Buffer> {
-  const ai = new GoogleGenAI({ apiKey: CONTENT_GEMINI_KEY, httpOptions: { timeout: 90000 } });
+  // timeout 240s — Gemini image gen takes 60-180s, 90s was causing premature "This operation was aborted"
+  const ai = new GoogleGenAI({ apiKey: CONTENT_GEMINI_KEY, httpOptions: { timeout: 240000 } });
+
+  // Resize input images to max 768px to reduce upload size and speed up Gemini processing
   const parts: any[] = [{ text: prompt }];
   for (const img of images ?? []) {
-    parts.push({ inlineData: { mimeType: img.mimeType, data: img.base64 } });
+    const buf = Buffer.from(img.base64, 'base64');
+    const resized = await sharp(buf).resize(768, 768, { fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 80 }).toBuffer();
+    parts.push({ inlineData: { mimeType: 'image/jpeg', data: resized.toString('base64') } });
   }
+
   let lastError: Error = new Error("Gemini не вернул картинку");
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-      console.log(`[gemini-image] attempt ${attempt}, prompt length=${prompt.length}, images=${images?.length ?? 0}`);
-      // gemini-2.0-flash-preview-image-generation supports both text-to-image and image editing (image input)
+      console.log(`[gemini-image] attempt ${attempt}, images=${images?.length ?? 0}`);
       const imgRes = await ai.models.generateContent({
-        model: "gemini-2.0-flash-preview-image-generation",
+        model: "gemini-3.1-flash-image-preview",
         contents: [{ role: "user", parts }],
         config: { responseModalities: [Modality.IMAGE, Modality.TEXT] },
       });
-      console.log(`[gemini-image] response received, candidates=${(imgRes as any).candidates?.length}`);
+      console.log(`[gemini-image] response ok, candidates=${(imgRes as any).candidates?.length}`);
       for (const part of (imgRes as any).candidates?.[0]?.content?.parts || []) {
-        if (part.inlineData?.data) {
-          console.log(`[gemini-image] got image data, size=${part.inlineData.data.length}`);
-          return Buffer.from(part.inlineData.data, "base64");
-        }
+        if (part.inlineData?.data) return Buffer.from(part.inlineData.data, "base64");
       }
-      const textParts = (imgRes as any).candidates?.[0]?.content?.parts?.filter((p: any) => p.text)?.map((p: any) => p.text).join(' ');
-      console.warn(`[gemini-image] no image in response. text="${textParts?.slice(0,200)}"`);
+      const txt = (imgRes as any).candidates?.[0]?.content?.parts?.filter((p: any) => p.text)?.map((p: any) => p.text).join(' ');
+      console.warn(`[gemini-image] no image. text="${txt?.slice(0,200)}"`);
       throw new Error("Gemini не вернул картинку");
     } catch (e: any) {
       lastError = e;
@@ -2477,7 +2479,7 @@ async function geminiWritePrompt(userText: string, mode: 'image' | 'video'): Pro
   const timeout = new Promise<never>((_, reject) =>
     setTimeout(() => reject(new Error('Gemini timeout — попробуй ещё раз')), 25000));
   const res = await Promise.race([
-    ai.models.generateContent({ model: "gemini-2.0-flash-lite", contents: instruction }),
+    ai.models.generateContent({ model: "gemini-3.1-flash-image-preview", contents: instruction }),
     timeout,
   ]);
   return (res as any).candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? userText;
