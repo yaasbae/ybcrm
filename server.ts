@@ -2429,7 +2429,7 @@ async function falUpscaleImage(imageBuffer: Buffer, scale: 2 | 4): Promise<Buffe
 }
 
 async function geminiGenerateImage(prompt: string, images?: Array<{base64: string; mimeType: string}>): Promise<Buffer> {
-  const ai = new GoogleGenAI({ apiKey: CONTENT_GEMINI_KEY });
+  const ai = new GoogleGenAI({ apiKey: CONTENT_GEMINI_KEY, httpOptions: { timeout: 90000 } });
   const parts: any[] = [{ text: prompt }];
   for (const img of images ?? []) {
     parts.push({ inlineData: { mimeType: img.mimeType, data: img.base64 } });
@@ -2437,18 +2437,26 @@ async function geminiGenerateImage(prompt: string, images?: Array<{base64: strin
   let lastError: Error = new Error("Gemini не вернул картинку");
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
+      console.log(`[gemini-image] attempt ${attempt}, prompt length=${prompt.length}, images=${images?.length ?? 0}`);
       const imgRes = await ai.models.generateContent({
         model: "gemini-3.1-flash-image-preview",
         contents: [{ role: "user", parts }],
         config: { responseModalities: [Modality.IMAGE, Modality.TEXT] },
       });
+      console.log(`[gemini-image] response received, candidates=${(imgRes as any).candidates?.length}`);
       for (const part of (imgRes as any).candidates?.[0]?.content?.parts || []) {
-        if (part.inlineData?.data) return Buffer.from(part.inlineData.data, "base64");
+        if (part.inlineData?.data) {
+          console.log(`[gemini-image] got image data, size=${part.inlineData.data.length}`);
+          return Buffer.from(part.inlineData.data, "base64");
+        }
       }
+      const textParts = (imgRes as any).candidates?.[0]?.content?.parts?.filter((p: any) => p.text)?.map((p: any) => p.text).join(' ');
+      console.warn(`[gemini-image] no image in response. text="${textParts?.slice(0,200)}"`);
       throw new Error("Gemini не вернул картинку");
     } catch (e: any) {
       lastError = e;
       const msg = e?.message || '';
+      console.error(`[gemini-image] attempt ${attempt} error: ${msg.slice(0, 200)}`);
       const isOverload = msg.includes('503') || msg.includes('UNAVAILABLE') || msg.includes('high demand');
       if (isOverload && attempt < 3) {
         await new Promise(r => setTimeout(r, 5000 * attempt));

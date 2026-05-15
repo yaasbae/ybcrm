@@ -120,11 +120,15 @@ export const ContentStudioPage: React.FC = () => {
     const prompt = `${basePrompt}. Generate in ${ratioHint[imgAspectRatio]}.`;
     setImgLoading('image');
     setImgResult(null);
+    const controller = new AbortController();
+    const timeoutMs = imgQuality === '1k' ? 150000 : 300000;
+    const tid = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const r = await fetch('/api/content-studio/image', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prompt, images: imgSourceImages.map(i => ({ base64: i.base64, mimeType: i.mimeType })), quality: imgQuality }),
+        signal: controller.signal,
       });
       if (!r.ok) {
         const text = await r.text();
@@ -137,7 +141,10 @@ export const ContentStudioPage: React.FC = () => {
       const blob = await r.blob();
       setImgResult(URL.createObjectURL(blob));
     } catch (e: any) {
-      alert('Ошибка: ' + e.message);
+      const msg = (e as any).name === 'AbortError' ? 'Timeout: генерация заняла слишком долго, попробуй ещё раз' : e.message;
+      alert('Ошибка: ' + msg);
+    } finally {
+      clearTimeout(tid);
     }
     setImgLoading(null);
   }
