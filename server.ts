@@ -2397,7 +2397,9 @@ async function geminiGenerateImage(
 ): Promise<Buffer> {
   const ai = new GoogleGenAI({ apiKey: CONTENT_GEMINI_KEY, httpOptions: { timeout: 240000 } });
 
-  const parts: any[] = [{ text: prompt }];
+  // imageSize добавляем в промпт — надёжнее чем imageConfig который может не поддерживаться
+  const sizeHint = imageSize === '4K' ? ', ultra-high resolution 4K' : imageSize === '2K' ? ', high resolution 2K' : '';
+  const parts: any[] = [{ text: prompt + sizeHint }];
   for (const img of images ?? []) {
     const buf = Buffer.from(img.base64, 'base64');
     const resized = await sharp(buf).resize(768, 768, { fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 80 }).toBuffer();
@@ -2411,10 +2413,7 @@ async function geminiGenerateImage(
       const imgRes = await ai.models.generateContent({
         model: "gemini-3.1-flash-image-preview",
         contents: [{ role: "user", parts }],
-        config: {
-          responseModalities: [Modality.IMAGE, Modality.TEXT],
-          imageConfig: { imageSize },
-        } as any,
+        config: { responseModalities: [Modality.IMAGE, Modality.TEXT] },
       });
       console.log(`[gemini-image] response ok`);
       for (const part of (imgRes as any).candidates?.[0]?.content?.parts || []) {
@@ -2527,7 +2526,8 @@ function startContentBot() {
           Markup.keyboard([['🖼 1K (быстро)', '🖼 2K', '🖼 4K']]).resize());
       } catch (e: any) {
         cntStates.set(ctx.from.id, { type: 'idle' });
-        await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, undefined, `❌ ${(e as Error).message}`).catch(() => {});
+        await ctx.telegram.deleteMessage(ctx.chat.id, msg.message_id).catch(() => {});
+        await ctx.reply(`❌ Ошибка: ${(e as Error).message}`, CONTENT_MENU);
       }
       return;
     }
@@ -2544,7 +2544,8 @@ function startContentBot() {
         await ctx.telegram.deleteMessage(ctx.chat.id, msg.message_id).catch(() => {});
         await ctx.replyWithPhoto({ source: imgBuf }, { caption: `📝 ${state.prompt} (${imageSize})`, ...CONTENT_MENU });
       } catch (e: any) {
-        await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, undefined, `❌ ${(e as Error).message}`).catch(() => {});
+        await ctx.telegram.deleteMessage(ctx.chat.id, msg.message_id).catch(() => {});
+        await ctx.reply(`❌ Ошибка генерации: ${(e as Error).message}`, CONTENT_MENU);
       }
       return;
     }
