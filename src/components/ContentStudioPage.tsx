@@ -117,8 +117,7 @@ export const ContentStudioPage: React.FC = () => {
   async function handleGenerateImage() {
     const basePrompt = imgPrompt || imgText;
     if (!basePrompt.trim()) return;
-    const ratioHint: Record<string, string> = { '1:1': 'square 1:1 format', '4:5': 'portrait 4:5 format', '9:16': 'vertical 9:16 portrait format', '16:9': 'horizontal 16:9 landscape format' };
-    const prompt = `${basePrompt}. Generate in ${ratioHint[imgAspectRatio]}.`;
+    const prompt = basePrompt;
     setImgLoading('image');
     setImgResult(null);
     const controller = new AbortController();
@@ -127,7 +126,7 @@ export const ContentStudioPage: React.FC = () => {
       const r = await fetch('/api/content-studio/image', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt, images: imgSourceImages.map(i => ({ base64: i.base64, mimeType: i.mimeType })), quality: imgQuality }),
+        body: JSON.stringify({ prompt, images: imgSourceImages.map(i => ({ base64: i.base64, mimeType: i.mimeType })), quality: imgQuality, aspectRatio: imgAspectRatio }),
         signal: controller.signal,
       });
       if (!r.ok) {
@@ -293,7 +292,7 @@ export const ContentStudioPage: React.FC = () => {
                     </button>
                   ))}
                 </div>
-                {imgQuality !== '1k' && <p className="text-xs text-slate-400">+30 сек на апскейл</p>}
+                {imgQuality !== '1k' && <p className="text-xs text-slate-400">Нативное качество Gemini</p>}
               </div>
               <div className="space-y-1.5">
                 <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Формат</label>

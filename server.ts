@@ -2393,6 +2393,7 @@ async function geminiGenerateImage(
   prompt: string,
   images?: Array<{base64: string; mimeType: string}>,
   imageSize: '1K' | '2K' | '4K' = '1K',
+  aspectRatio: '1:1' | '3:4' | '4:3' | '9:16' | '16:9' = '1:1',
 ): Promise<Buffer> {
   const ai = new GoogleGenAI({ apiKey: CONTENT_GEMINI_KEY, httpOptions: { timeout: 240000 } });
 
@@ -2406,11 +2407,11 @@ async function geminiGenerateImage(
   let lastError: Error = new Error("Gemini не вернул картинку");
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-      console.log(`[gemini-image] attempt ${attempt}, images=${images?.length ?? 0}, size=${imageSize}`);
+      console.log(`[gemini-image] attempt ${attempt}, images=${images?.length ?? 0}, size=${imageSize}, ratio=${aspectRatio}`);
       const imgRes = await ai.models.generateContent({
         model: "gemini-3.1-flash-image-preview",
         contents: [{ role: "user", parts }],
-        config: { responseModalities: [Modality.IMAGE, Modality.TEXT], imageConfig: { imageSize } },
+        config: { responseModalities: [Modality.IMAGE, Modality.TEXT], imageConfig: { imageSize, aspectRatio } },
       });
       console.log(`[gemini-image] response ok`);
       for (const part of (imgRes as any).candidates?.[0]?.content?.parts || []) {
@@ -2647,16 +2648,19 @@ app.post("/api/content-studio/prompt", async (req, res) => {
 
 app.post("/api/content-studio/image", async (req, res) => {
   try {
-    const { prompt, imageBase64, imageMimeType, images, quality } = req.body as {
+    const { prompt, imageBase64, imageMimeType, images, quality, aspectRatio } = req.body as {
       prompt: string;
       imageBase64?: string; imageMimeType?: string;
       images?: Array<{base64: string; mimeType: string}>;
       quality?: '1k' | '2k' | '4k';
+      aspectRatio?: string;
     };
     if (!prompt) return res.status(400).json({ error: "prompt required" });
     const imgArray = images ?? (imageBase64 ? [{ base64: imageBase64, mimeType: imageMimeType || 'image/jpeg' }] : undefined);
     const imageSize = quality === '4k' ? '4K' : quality === '2k' ? '2K' : '1K';
-    const buf = await geminiGenerateImage(prompt, imgArray, imageSize);
+    // Gemini поддерживает: 1:1, 3:4, 4:3, 9:16, 16:9 — 4:5 маппим на 3:4
+    const geminiRatio = (aspectRatio === '4:5' ? '3:4' : aspectRatio || '1:1') as '1:1' | '3:4' | '4:3' | '9:16' | '16:9';
+    const buf = await geminiGenerateImage(prompt, imgArray, imageSize, geminiRatio);
     res.set("Content-Type", "image/jpeg").send(buf);
   } catch (e: any) {
     res.status(500).json({ error: e.message });
