@@ -2398,15 +2398,7 @@ async function geminiGenerateImage(
 ): Promise<Buffer> {
   const ai = new GoogleGenAI({ apiKey: CONTENT_GEMINI_KEY, httpOptions: { timeout: 240000 } });
 
-  const ratioHint: Record<string, string> = {
-    '1:1': 'square 1:1 aspect ratio',
-    '3:4': 'portrait 3:4 aspect ratio',
-    '4:5': 'portrait 4:5 aspect ratio',
-    '9:16': 'vertical 9:16 portrait aspect ratio',
-    '16:9': 'horizontal 16:9 landscape aspect ratio',
-  };
-  const promptWithRatio = aspectRatio === '1:1' ? prompt : `${prompt}. ${ratioHint[aspectRatio] ?? ''}`;
-  const parts: any[] = [{ text: promptWithRatio }];
+  const parts: any[] = [{ text: prompt }];
   for (const img of images ?? []) {
     const buf = Buffer.from(img.base64, 'base64');
     const resized = await sharp(buf).resize(768, 768, { fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 80 }).toBuffer();
@@ -2420,7 +2412,7 @@ async function geminiGenerateImage(
       const imgRes = await ai.models.generateContent({
         model: "gemini-3.1-flash-image-preview",
         contents: [{ role: "user", parts }],
-        config: { responseModalities: [Modality.IMAGE, Modality.TEXT], imageConfig: { imageSize } },
+        config: { responseModalities: [Modality.IMAGE, Modality.TEXT], imageConfig: { imageSize, aspectRatio } },
       });
       console.log(`[gemini-image] response ok`);
       for (const part of (imgRes as any).candidates?.[0]?.content?.parts || []) {
