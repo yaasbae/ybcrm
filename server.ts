@@ -2396,7 +2396,10 @@ async function geminiGenerateImage(
   imageSize: '1K' | '2K' | '4K' = '1K',
   aspectRatio: string = '1:1',
 ): Promise<Buffer> {
-  const ai = new GoogleGenAI({ apiKey: CONTENT_GEMINI_KEY, httpOptions: { timeout: 240000 } });
+  const hasReferenceImages = (images?.length ?? 0) > 0;
+  // img2img: короткий таймаут — если Gemini не берёт запрос, он висит до таймаута, потом retry
+  const timeoutMs = hasReferenceImages ? 90000 : 240000;
+  const ai = new GoogleGenAI({ apiKey: CONTENT_GEMINI_KEY, httpOptions: { timeout: timeoutMs } });
 
   const parts: any[] = [{ text: prompt }];
   for (const img of images ?? []) {
@@ -2405,13 +2408,13 @@ async function geminiGenerateImage(
     parts.push({ inlineData: { mimeType: 'image/jpeg', data: resized.toString('base64') } });
   }
 
+  // aspectRatio не поддерживается Gemini в img2img режиме (с референс-фото)
+  const imgConfig = hasReferenceImages ? { imageSize } : { imageSize, aspectRatio };
+
   let lastError: Error = new Error("Gemini не вернул картинку");
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-      const hasReferenceImages = (images?.length ?? 0) > 0;
-      // aspectRatio не поддерживается Gemini в img2img режиме (с референс-фото) — вызывает таймаут
-      const imgConfig = hasReferenceImages ? { imageSize } : { imageSize, aspectRatio };
-      console.log(`[gemini-image] attempt ${attempt}, images=${images?.length ?? 0}, size=${imageSize}, ratio=${hasReferenceImages ? 'n/a(img2img)' : aspectRatio}`);
+      console.log(`[gemini-image] attempt ${attempt}, images=${images?.length ?? 0}, size=${imageSize}, ratio=${hasReferenceImages ? 'n/a(img2img)' : aspectRatio}, timeout=${timeoutMs / 1000}s`);
       const imgRes = await ai.models.generateContent({
         model: "gemini-3.1-flash-image-preview",
         contents: [{ role: "user", parts }],
@@ -2428,8 +2431,9 @@ async function geminiGenerateImage(
       lastError = e;
       const msg = e?.message || '';
       console.error(`[gemini-image] attempt ${attempt} error: ${msg.slice(0, 200)}`);
-      const isOverload = msg.includes('503') || msg.includes('UNAVAILABLE') || msg.includes('high demand');
-      if (isOverload && attempt < 3) {
+      // "aborted" — API нестабилен, retry обычно помогает (подтверждено логами)
+      const isRetriable = msg.includes('503') || msg.includes('UNAVAILABLE') || msg.includes('high demand') || msg.includes('aborted');
+      if (isRetriable && attempt < 3) {
         await new Promise(r => setTimeout(r, 5000 * attempt));
         continue;
       }
