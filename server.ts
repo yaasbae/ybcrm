@@ -2396,9 +2396,7 @@ async function geminiGenerateImage(
 ): Promise<Buffer> {
   const ai = new GoogleGenAI({ apiKey: CONTENT_GEMINI_KEY, httpOptions: { timeout: 240000 } });
 
-  // imageSize добавляем в промпт — надёжнее чем imageConfig который может не поддерживаться
-  const sizeHint = imageSize === '4K' ? ', ultra-high resolution 4K' : imageSize === '2K' ? ', high resolution 2K' : '';
-  const parts: any[] = [{ text: prompt + sizeHint }];
+  const parts: any[] = [{ text: prompt }];
   for (const img of images ?? []) {
     const buf = Buffer.from(img.base64, 'base64');
     const resized = await sharp(buf).resize(768, 768, { fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 80 }).toBuffer();
@@ -2412,7 +2410,7 @@ async function geminiGenerateImage(
       const imgRes = await ai.models.generateContent({
         model: "gemini-3.1-flash-image-preview",
         contents: [{ role: "user", parts }],
-        config: { responseModalities: [Modality.IMAGE, Modality.TEXT] },
+        config: { responseModalities: [Modality.IMAGE, Modality.TEXT], imageConfig: { imageSize } },
       });
       console.log(`[gemini-image] response ok`);
       for (const part of (imgRes as any).candidates?.[0]?.content?.parts || []) {
