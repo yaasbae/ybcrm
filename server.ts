@@ -2516,19 +2516,10 @@ function startContentBot() {
 
     // Картинка — получили промпт, спрашиваем качество
     if (state.type === 'waiting_img_input') {
-      const msg = await ctx.reply("⏳ Улучшаю промпт...");
-      try {
-        const prompt = await geminiWritePrompt(text, 'image');
-        cntStates.set(ctx.from.id, { type: 'waiting_img_quality', photos: state.photos, prompt });
-        await ctx.telegram.deleteMessage(ctx.chat.id, msg.message_id).catch(() => {});
-        const photoNote = state.photos.length > 0 ? ` (${state.photos.length} фото)` : '';
-        await ctx.reply(`📝 Промпт${photoNote}:\n${prompt}\n\nВыбери качество (2K и 4K: +30 сек):`,
-          Markup.keyboard([['🖼 1K (быстро)', '🖼 2K', '🖼 4K']]).resize());
-      } catch (e: any) {
-        cntStates.set(ctx.from.id, { type: 'idle' });
-        await ctx.telegram.deleteMessage(ctx.chat.id, msg.message_id).catch(() => {});
-        await ctx.reply(`❌ Ошибка: ${(e as Error).message}`, CONTENT_MENU);
-      }
+      cntStates.set(ctx.from.id, { type: 'waiting_img_quality', photos: state.photos, prompt: text });
+      const photoNote = state.photos.length > 0 ? ` (${state.photos.length} фото)` : '';
+      await ctx.reply(`📝 Промпт${photoNote}:\n${text}\n\nВыбери качество:`,
+        Markup.keyboard([['🖼 1K (быстро)', '🖼 2K', '🖼 4K']]).resize());
       return;
     }
 
@@ -2542,7 +2533,10 @@ function startContentBot() {
         const imageSize = quality === '4k' ? '4K' : quality === '2k' ? '2K' : '1K';
         const imgBuf = await geminiGenerateImage(state.prompt, state.photos.length > 0 ? state.photos : undefined, imageSize);
         await ctx.telegram.deleteMessage(ctx.chat.id, msg.message_id).catch(() => {});
-        await ctx.replyWithPhoto({ source: imgBuf }, { caption: `📝 ${state.prompt} (${imageSize})`, ...CONTENT_MENU });
+        await ctx.replyWithDocument(
+          { source: imgBuf, filename: `image_${imageSize}.jpg` },
+          { caption: `📝 ${state.prompt} (${imageSize})`, ...CONTENT_MENU }
+        );
       } catch (e: any) {
         await ctx.telegram.deleteMessage(ctx.chat.id, msg.message_id).catch(() => {});
         await ctx.reply(`❌ Ошибка генерации: ${(e as Error).message}`, CONTENT_MENU);
@@ -2550,19 +2544,11 @@ function startContentBot() {
       return;
     }
 
-    // Видео промпт — спрашиваем длительность
+    // Видео промпт — спрашиваем длительность (без улучшения промпта)
     if (state.type === 'waiting_vid_prompt') {
-      const msg = await ctx.reply("⏳ Улучшаю промпт...");
-      try {
-        const prompt = await geminiWritePrompt(text, 'video');
-        cntStates.set(ctx.from.id, { type: 'waiting_vid_duration', imageBase64: state.imageBase64, prompt });
-        await ctx.telegram.deleteMessage(ctx.chat.id, msg.message_id).catch(() => {});
-        await ctx.reply(`📝 Промпт готов:\n${prompt}\n\nВыбери длительность видео:`,
-          Markup.keyboard([['⏱ 5 секунд', '⏱ 10 секунд']]).resize());
-      } catch (e: any) {
-        cntStates.set(ctx.from.id, { type: 'idle' });
-        await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, undefined, `❌ ${(e as Error).message}`).catch(() => {});
-      }
+      cntStates.set(ctx.from.id, { type: 'waiting_vid_duration', imageBase64: state.imageBase64, prompt: text });
+      await ctx.reply(`📝 Промпт:\n${text}\n\nВыбери длительность видео:`,
+        Markup.keyboard([['⏱ 5 секунд', '⏱ 10 секунд']]).resize());
       return;
     }
 
@@ -2575,9 +2561,10 @@ function startContentBot() {
         const imageDataUrl = `data:image/jpeg;base64,${state.imageBase64}`;
         const videoUrl = await falGenerateVideo(state.prompt, imageDataUrl, duration, "9:16");
         await ctx.telegram.deleteMessage(ctx.chat.id, msg.message_id).catch(() => {});
-        await ctx.replyWithVideo({ url: videoUrl }, { caption: `📝 ${state.prompt}`, ...CONTENT_MENU });
+        await ctx.replyWithDocument({ url: videoUrl }, { caption: `📝 ${state.prompt}`, ...CONTENT_MENU });
       } catch (e: any) {
-        await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, undefined, `❌ ${(e as any).message}`).catch(() => {});
+        await ctx.telegram.deleteMessage(ctx.chat.id, msg.message_id).catch(() => {});
+        await ctx.reply(`❌ Ошибка видео: ${(e as any).message}`, CONTENT_MENU);
       }
       return;
     }
