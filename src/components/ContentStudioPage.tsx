@@ -27,6 +27,7 @@ export const ContentStudioPage: React.FC = () => {
   const [vidResult, setVidResult] = useState<string | null>(null);
   const [vidDuration, setVidDuration] = useState<'5' | '10'>('5');
   const [vidAspectRatio, setVidAspectRatio] = useState<'16:9' | '9:16' | '1:1'>('16:9');
+  const [vidMode, setVidMode] = useState<'fast' | 'standard'>('standard');
   const vidFileRef = useRef<HTMLInputElement>(null);
 
   // ── Prompt tab ──
@@ -157,7 +158,7 @@ export const ContentStudioPage: React.FC = () => {
       const r = await fetch('/api/content-studio/video', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt, imageBase64: vidImage?.base64, imageMimeType: vidImage?.mimeType, duration: vidDuration, aspectRatio: vidAspectRatio }),
+        body: JSON.stringify({ prompt, imageBase64: vidImage?.base64, imageMimeType: vidImage?.mimeType, duration: vidDuration, aspectRatio: vidAspectRatio, mode: vidMode }),
       });
       let d: any;
       try { d = await r.json(); } catch { throw new Error('Сервер не ответил — вероятно таймаут. Попробуй ещё раз.'); }
@@ -394,6 +395,22 @@ export const ContentStudioPage: React.FC = () => {
             </div>
 
             <div className="space-y-1.5">
+              <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Режим</label>
+              <div className="flex gap-2">
+                <button onClick={() => setVidMode('fast')}
+                  className={cn('flex-1 py-1.5 rounded-lg text-xs font-semibold border transition-colors',
+                    vidMode === 'fast' ? 'bg-purple-600 text-white border-purple-600' : 'border-slate-200 text-slate-600 hover:border-purple-300')}>
+                  ⚡ Fast (~30 сек)
+                </button>
+                <button onClick={() => setVidMode('standard')}
+                  className={cn('flex-1 py-1.5 rounded-lg text-xs font-semibold border transition-colors',
+                    vidMode === 'standard' ? 'bg-purple-600 text-white border-purple-600' : 'border-slate-200 text-slate-600 hover:border-purple-300')}>
+                  🎬 Standard (~2 мин)
+                </button>
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
               <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Формат</label>
               <div className="flex gap-2">
                 {(['16:9', '9:16', '1:1'] as const).map(r => (
@@ -412,7 +429,7 @@ export const ContentStudioPage: React.FC = () => {
               className="w-full bg-purple-600 text-white rounded-xl py-2.5 text-sm font-semibold flex items-center justify-center gap-2 hover:bg-purple-700 disabled:opacity-40 transition-colors"
             >
               {vidLoading === 'video'
-                ? <><Loader2 size={14} className="animate-spin" /> Генерирую видео (~2 мин)...</>
+                ? <><Loader2 size={14} className="animate-spin" /> Генерирую видео ({vidMode === 'fast' ? '~30 сек' : '~2 мин'})...</>
                 : <><Video size={14} /> Сгенерировать видео</>}
             </button>
           </div>
