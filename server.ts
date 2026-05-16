@@ -2408,11 +2408,14 @@ async function geminiGenerateImage(
   let lastError: Error = new Error("Gemini не вернул картинку");
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-      console.log(`[gemini-image] attempt ${attempt}, images=${images?.length ?? 0}, size=${imageSize}, ratio=${aspectRatio}`);
+      const hasReferenceImages = (images?.length ?? 0) > 0;
+      // aspectRatio не поддерживается Gemini в img2img режиме (с референс-фото) — вызывает таймаут
+      const imgConfig = hasReferenceImages ? { imageSize } : { imageSize, aspectRatio };
+      console.log(`[gemini-image] attempt ${attempt}, images=${images?.length ?? 0}, size=${imageSize}, ratio=${hasReferenceImages ? 'n/a(img2img)' : aspectRatio}`);
       const imgRes = await ai.models.generateContent({
         model: "gemini-3.1-flash-image-preview",
         contents: [{ role: "user", parts }],
-        config: { responseModalities: [Modality.IMAGE, Modality.TEXT], imageConfig: { imageSize, aspectRatio } },
+        config: { responseModalities: [Modality.IMAGE, Modality.TEXT], imageConfig: imgConfig },
       });
       console.log(`[gemini-image] response ok`);
       for (const part of (imgRes as any).candidates?.[0]?.content?.parts || []) {
