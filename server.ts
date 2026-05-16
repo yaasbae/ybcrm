@@ -2340,6 +2340,7 @@ type CntState =
   | { type: 'idle' }
   | { type: 'waiting_img_input'; photos: Array<{base64: string; mimeType: string}> }
   | { type: 'waiting_img_quality'; photos: Array<{base64: string; mimeType: string}>; prompt: string }
+  | { type: 'waiting_img_format'; photos: Array<{base64: string; mimeType: string}>; prompt: string; imageSize: '1K' | '2K' | '4K' }
   | { type: 'waiting_vid_image' }
   | { type: 'waiting_vid_prompt'; imageBase64: string }
   | { type: 'waiting_vid_duration'; imageBase64: string; prompt: string }
@@ -2393,11 +2394,19 @@ async function geminiGenerateImage(
   prompt: string,
   images?: Array<{base64: string; mimeType: string}>,
   imageSize: '1K' | '2K' | '4K' = '1K',
-  aspectRatio: '1:1' | '3:4' | '4:3' | '9:16' | '16:9' = '1:1',
+  aspectRatio: string = '1:1',
 ): Promise<Buffer> {
   const ai = new GoogleGenAI({ apiKey: CONTENT_GEMINI_KEY, httpOptions: { timeout: 240000 } });
 
-  const parts: any[] = [{ text: prompt }];
+  const ratioHint: Record<string, string> = {
+    '1:1': 'square 1:1 aspect ratio',
+    '3:4': 'portrait 3:4 aspect ratio',
+    '4:5': 'portrait 4:5 aspect ratio',
+    '9:16': 'vertical 9:16 portrait aspect ratio',
+    '16:9': 'horizontal 16:9 landscape aspect ratio',
+  };
+  const promptWithRatio = aspectRatio === '1:1' ? prompt : `${prompt}. ${ratioHint[aspectRatio] ?? ''}`;
+  const parts: any[] = [{ text: promptWithRatio }];
   for (const img of images ?? []) {
     const buf = Buffer.from(img.base64, 'base64');
     const resized = await sharp(buf).resize(768, 768, { fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 80 }).toBuffer();
@@ -2411,7 +2420,7 @@ async function geminiGenerateImage(
       const imgRes = await ai.models.generateContent({
         model: "gemini-3.1-flash-image-preview",
         contents: [{ role: "user", parts }],
-        config: { responseModalities: [Modality.IMAGE, Modality.TEXT], imageConfig: { imageSize, aspectRatio } },
+        config: { responseModalities: [Modality.IMAGE, Modality.TEXT], imageConfig: { imageSize } },
       });
       console.log(`[gemini-image] response ok`);
       for (const part of (imgRes as any).candidates?.[0]?.content?.parts || []) {
@@ -2548,19 +2557,27 @@ function startContentBot() {
       return;
     }
 
-    // Выбор качества → генерация картинки
+    // Выбор качества → спрашиваем формат
     if (state.type === 'waiting_img_quality') {
-      const quality: '1k' | '2k' | '4k' = text.includes('4K') ? '4k' : text.includes('2K') ? '2k' : '1k';
+      const imageSize: '1K' | '2K' | '4K' = text.includes('4K') ? '4K' : text.includes('2K') ? '2K' : '1K';
+      cntStates.set(ctx.from.id, { type: 'waiting_img_format', photos: state.photos, prompt: state.prompt, imageSize });
+      await ctx.reply(`Качество: ${imageSize}\n\nВыбери формат:`,
+        Markup.keyboard([['1:1', '4:5'], ['9:16', '16:9']]).resize());
+      return;
+    }
+
+    // Выбор формата → генерация картинки
+    if (state.type === 'waiting_img_format') {
+      const aspectRatio = ['1:1', '4:5', '9:16', '16:9'].find(r => text.includes(r)) ?? '1:1';
       cntStates.set(ctx.from.id, { type: 'idle' });
-      const qualityLabel = quality === '4k' ? '4K (~3 мин)' : quality === '2k' ? '2K (~2 мин)' : '1K (~1 мин)';
-      const msg = await ctx.reply(`⏳ Генерирую картинку ${qualityLabel}...`, CONTENT_MENU);
+      const label = `${state.imageSize} ${aspectRatio}`;
+      const msg = await ctx.reply(`⏳ Генерирую картинку ${label}...`, CONTENT_MENU);
       try {
-        const imageSize = quality === '4k' ? '4K' : quality === '2k' ? '2K' : '1K';
-        const imgBuf = await geminiGenerateImage(state.prompt, state.photos.length > 0 ? state.photos : undefined, imageSize);
+        const imgBuf = await geminiGenerateImage(state.prompt, state.photos.length > 0 ? state.photos : undefined, state.imageSize, aspectRatio);
         await ctx.telegram.deleteMessage(ctx.chat.id, msg.message_id).catch(() => {});
         await ctx.replyWithDocument(
-          { source: imgBuf, filename: `image_${imageSize}.jpg` },
-          { caption: `📝 ${state.prompt} (${imageSize})`, ...CONTENT_MENU }
+          { source: imgBuf, filename: `image_${state.imageSize}.jpg` },
+          { caption: `📝 ${state.prompt} (${label})`, ...CONTENT_MENU }
         );
       } catch (e: any) {
         await ctx.telegram.deleteMessage(ctx.chat.id, msg.message_id).catch(() => {});
@@ -2658,9 +2675,7 @@ app.post("/api/content-studio/image", async (req, res) => {
     if (!prompt) return res.status(400).json({ error: "prompt required" });
     const imgArray = images ?? (imageBase64 ? [{ base64: imageBase64, mimeType: imageMimeType || 'image/jpeg' }] : undefined);
     const imageSize = quality === '4k' ? '4K' : quality === '2k' ? '2K' : '1K';
-    // Gemini поддерживает: 1:1, 3:4, 4:3, 9:16, 16:9 — 4:5 маппим на 3:4
-    const geminiRatio = (aspectRatio === '4:5' ? '3:4' : aspectRatio || '1:1') as '1:1' | '3:4' | '4:3' | '9:16' | '16:9';
-    const buf = await geminiGenerateImage(prompt, imgArray, imageSize, geminiRatio);
+    const buf = await geminiGenerateImage(prompt, imgArray, imageSize, aspectRatio || '1:1');
     res.set("Content-Type", "image/jpeg").send(buf);
   } catch (e: any) {
     res.status(500).json({ error: e.message });
