@@ -2744,16 +2744,27 @@ function startContentBot() {
     return sendMenu(ctx);
   });
 
-  bot.launch().catch((e: any) => {
-    if (e.message?.includes('409')) {
-      console.log('[content-bot] 409 Conflict — другой инстанс уже опрашивает Telegram, polling пропущен');
-    } else {
-      console.error('[content-bot] launch error:', e.message);
+  let stopped = false;
+  const launchWithRetry = async () => {
+    while (!stopped) {
+      try {
+        await bot.launch();
+        console.log("[content-bot] polling запущен");
+        return;
+      } catch (e: any) {
+        if (e.message?.includes('409')) {
+          console.log('[content-bot] 409 Conflict — ждём старый инстанс и пробуем снова через 15 сек');
+          await new Promise(r => setTimeout(r, 15000));
+          continue;
+        }
+        console.error('[content-bot] launch error:', e.message);
+        await new Promise(r => setTimeout(r, 15000));
+      }
     }
-  });
+  };
+  launchWithRetry();
   process.once("SIGINT", () => bot.stop("SIGINT"));
-  process.once("SIGTERM", () => bot.stop("SIGTERM"));
-  console.log("[content-bot] запущен");
+  process.once("SIGTERM", () => { stopped = true; bot.stop("SIGTERM"); });
 }
 
 startContentBot();
