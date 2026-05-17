@@ -2408,17 +2408,17 @@ async function geminiGenerateImage(
     parts.push({ inlineData: { mimeType: 'image/jpeg', data: resized.toString('base64') } });
   }
 
-  // aspectRatio не поддерживается Gemini в img2img режиме (с референс-фото)
-  const imgConfig = hasReferenceImages ? { imageSize } : { imageSize, aspectRatio };
-
   let lastError: Error = new Error("Gemini не вернул картинку");
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-      console.log(`[gemini-image] attempt ${attempt}, images=${images?.length ?? 0}, size=${imageSize}, ratio=${hasReferenceImages ? 'n/a(img2img)' : aspectRatio}, timeout=${timeoutMs / 1000}s`);
+      // img2img не поддерживает imageConfig (imageSize/aspectRatio) — передаём только для text-to-image
+      const config: any = { responseModalities: [Modality.IMAGE, Modality.TEXT] };
+      if (!hasReferenceImages) config.imageConfig = { imageSize, aspectRatio };
+      console.log(`[gemini-image] attempt ${attempt}, images=${images?.length ?? 0}, size=${hasReferenceImages ? 'default(img2img)' : imageSize}, ratio=${hasReferenceImages ? 'n/a' : aspectRatio}, timeout=${timeoutMs / 1000}s`);
       const imgRes = await ai.models.generateContent({
         model: "gemini-3.1-flash-image-preview",
         contents: [{ role: "user", parts }],
-        config: { responseModalities: [Modality.IMAGE, Modality.TEXT], imageConfig: imgConfig },
+        config,
       });
       console.log(`[gemini-image] response ok`);
       for (const part of (imgRes as any).candidates?.[0]?.content?.parts || []) {
