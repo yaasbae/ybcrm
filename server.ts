@@ -2350,8 +2350,20 @@ const cntStates = new Map<number, CntState>();
 
 const CONTENT_MENU = Markup.keyboard([
   ['🖼 Сгенерировать картинку', '🎬 Видео из картинки'],
-  ['✏️ Написать промпт'],
+  ['✏️ Написать промпт', '❓ Помощь'],
 ]).resize();
+
+const CONTENT_CANCEL_MENU = Markup.keyboard([
+  ['❌ Отмена', '🏠 Меню'],
+]).resize();
+
+const CONTENT_HELP_TEXT = `Я умею делать контент:
+
+🖼 Картинка — можно с нуля или по 1-3 фото.
+🎬 Видео — сначала пришли картинку, потом промпт.
+✏️ Промпт — напишу промпт для картинки и видео.
+
+Пользуйся кнопками снизу. Если запутался — нажми «🏠 Меню» или напиши /menu.`;
 
 async function falGenerateVideo(
   prompt: string,
@@ -2502,27 +2514,45 @@ function startContentBot() {
 
   const bot = new Telegraf(CONTENT_BOT_TOKEN, { handlerTimeout: 600_000 });
 
-  const sendMenu = (ctx: any) => ctx.reply("Выбери действие:", CONTENT_MENU);
+  const sendMenu = (ctx: any, text = "Выбери действие:") => ctx.reply(text, CONTENT_MENU);
+  const resetToMenu = async (ctx: any, text = "Ок, вернул в главное меню.") => {
+    cntStates.set(ctx.from.id, { type: 'idle' });
+    await sendMenu(ctx, text);
+  };
 
   bot.start(async (ctx) => {
     cntStates.set(ctx.from.id, { type: 'idle' });
-    await ctx.reply("Привет! 👋 Я генерирую контент через Gemini Flash 3.1 и Seedance 2.0", CONTENT_MENU);
+    await ctx.reply(`Привет! Я генерирую контент через Gemini Flash 3.1 и Seedance 2.0.\n\n${CONTENT_HELP_TEXT}`, CONTENT_MENU);
   });
+
+  bot.telegram.setMyCommands([
+    { command: 'start', description: 'Запустить бота' },
+    { command: 'menu', description: 'Показать главное меню' },
+    { command: 'help', description: 'Что умеет бот' },
+    { command: 'cancel', description: 'Отменить текущее действие' },
+  ]).catch((e: any) => console.warn('[content-bot] setMyCommands error:', e?.message || e));
+
+  bot.command('menu', async (ctx) => resetToMenu(ctx, "Главное меню:"));
+  bot.command('cancel', async (ctx) => resetToMenu(ctx));
+  bot.command('help', async (ctx) => ctx.reply(CONTENT_HELP_TEXT, CONTENT_MENU));
+  bot.hears(['🏠 Меню', 'Меню'], async (ctx) => resetToMenu(ctx, "Главное меню:"));
+  bot.hears(['❌ Отмена', 'Отмена'], async (ctx) => resetToMenu(ctx));
+  bot.hears('❓ Помощь', async (ctx) => ctx.reply(CONTENT_HELP_TEXT, CONTENT_MENU));
 
   // ── Кнопки меню ──
   bot.hears('🖼 Сгенерировать картинку', async (ctx) => {
     cntStates.set(ctx.from.id, { type: 'waiting_img_input', photos: [] });
-    await ctx.reply("Отправь 1-3 фото (для редактирования/объединения) или сразу напиши тему:");
+    await ctx.reply("Отправь 1-3 фото для редактирования или сразу напиши тему для генерации с нуля.", CONTENT_CANCEL_MENU);
   });
 
   bot.hears('🎬 Видео из картинки', async (ctx) => {
     cntStates.set(ctx.from.id, { type: 'waiting_vid_image' });
-    await ctx.reply("Отправь картинку:");
+    await ctx.reply("Отправь картинку-основу для видео.", CONTENT_CANCEL_MENU);
   });
 
   bot.hears('✏️ Написать промпт', async (ctx) => {
     cntStates.set(ctx.from.id, { type: 'waiting_custom_prompt' });
-    await ctx.reply("Введи тему — сгенерирую промпт для картинки и видео:");
+    await ctx.reply("Введи тему, а я напишу промпт для картинки и видео.", CONTENT_CANCEL_MENU);
   });
 
   // ── Фото ──
@@ -2537,17 +2567,17 @@ function startContentBot() {
       const photos = [...state.photos, { base64, mimeType: 'image/jpeg' }];
       if (photos.length >= 3) {
         cntStates.set(ctx.from.id, { type: 'waiting_img_input', photos });
-        await ctx.reply(`📸 Фото ${photos.length}/3 получено. Максимум достигнут — напиши промпт:`);
+        await ctx.reply(`Фото ${photos.length}/3 получено. Максимум достигнут — теперь напиши, что сделать с фото.`, CONTENT_CANCEL_MENU);
       } else {
         cntStates.set(ctx.from.id, { type: 'waiting_img_input', photos });
-        await ctx.reply(`📸 Фото ${photos.length}/3 получено. Ещё фото или напиши промпт:`);
+        await ctx.reply(`Фото ${photos.length}/3 получено. Можешь прислать ещё фото или написать, что сделать.`, CONTENT_CANCEL_MENU);
       }
       return;
     }
 
     if (state.type === 'waiting_vid_image') {
       cntStates.set(ctx.from.id, { type: 'waiting_vid_prompt', imageBase64: base64 });
-      await ctx.reply("Картинка получена! Теперь введи тему или промпт для видео:");
+      await ctx.reply("Картинка получена. Теперь введи тему или промпт для видео.", CONTENT_CANCEL_MENU);
       return;
     }
 
@@ -2567,15 +2597,15 @@ function startContentBot() {
       const photos = [...state.photos, { base64, mimeType: doc.mime_type || 'image/jpeg' }];
       cntStates.set(ctx.from.id, { type: 'waiting_img_input', photos });
       if (photos.length >= 3) {
-        await ctx.reply(`📸 Фото ${photos.length}/3 получено. Максимум — напиши промпт:`);
+        await ctx.reply(`Фото ${photos.length}/3 получено. Максимум — теперь напиши, что сделать с фото.`, CONTENT_CANCEL_MENU);
       } else {
-        await ctx.reply(`📸 Фото ${photos.length}/3 получено. Ещё фото или напиши промпт:`);
+        await ctx.reply(`Фото ${photos.length}/3 получено. Можешь прислать ещё фото или написать, что сделать.`, CONTENT_CANCEL_MENU);
       }
       return;
     }
     if (state.type === 'waiting_vid_image') {
       cntStates.set(ctx.from.id, { type: 'waiting_vid_prompt', imageBase64: base64 });
-      await ctx.reply("Картинка получена! Теперь введи тему или промпт для видео:");
+      await ctx.reply("Картинка получена. Теперь введи тему или промпт для видео.", CONTENT_CANCEL_MENU);
       return;
     }
     return sendMenu(ctx);
@@ -2592,7 +2622,7 @@ function startContentBot() {
       cntStates.set(ctx.from.id, { type: 'waiting_img_quality', photos: state.photos, prompt: text });
       const photoNote = state.photos.length > 0 ? ` (${state.photos.length} фото)` : '';
       await ctx.reply(`📝 Промпт${photoNote}:\n${text}\n\nВыбери качество:`,
-        Markup.keyboard([['🖼 1K (быстро)', '🖼 2K', '🖼 4K']]).resize());
+        Markup.keyboard([['🖼 1K (быстро)', '🖼 2K', '🖼 4K'], ['❌ Отмена', '🏠 Меню']]).resize());
       return;
     }
 
@@ -2601,7 +2631,7 @@ function startContentBot() {
       const imageSize: '1K' | '2K' | '4K' = text.includes('4K') ? '4K' : text.includes('2K') ? '2K' : '1K';
       cntStates.set(ctx.from.id, { type: 'waiting_img_format', photos: state.photos, prompt: state.prompt, imageSize });
       await ctx.reply(`Качество: ${imageSize}\n\nВыбери формат:`,
-        Markup.keyboard([['1:1', '4:5'], ['9:16', '16:9']]).resize());
+        Markup.keyboard([['1:1', '4:5'], ['9:16', '16:9'], ['❌ Отмена', '🏠 Меню']]).resize());
       return;
     }
 
@@ -2632,6 +2662,7 @@ function startContentBot() {
         Markup.keyboard([
           ['⚡ 5 сек (Fast)', '⚡ 10 сек (Fast)'],
           ['🎬 5 сек (Standard)', '🎬 10 сек (Standard)'],
+          ['❌ Отмена', '🏠 Меню'],
         ]).resize());
       return;
     }
