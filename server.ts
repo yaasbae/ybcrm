@@ -556,6 +556,23 @@ app.post("/api/tg/accounts/remove", async (req, res) => {
   }
 });
 
+app.post("/api/tg/accounts/set-active", async (req, res) => {
+  const { phone, active, onlyThis } = req.body;
+  try {
+    if (!db) return res.status(500).json({ error: "DB not connected" });
+    const snap = await getDoc(doc(db, "settings", "tg_accounts"));
+    const accounts = snap.exists() ? snap.data().accounts || [] : [];
+    const updated = accounts.map((a: any) => {
+      if (onlyThis) return { ...a, active: a.phone === phone };
+      return a.phone === phone ? { ...a, active: !!active } : a;
+    });
+    await setDoc(doc(db, "settings", "tg_accounts"), { accounts: updated });
+    res.json({ success: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.post("/api/tg/accounts/set-proxy", async (req, res) => {
   const { phone, proxy } = req.body;
   try {
@@ -676,19 +693,27 @@ app.post('/api/ai/generate-variants', async (req, res) => {
 
   const prompt = `Перепиши это сообщение 9 разными способами для рассылки клиентам. Сохрани смысл, эмодзи и стиль, но измени структуру и формулировки чтобы каждый вариант был уникальным. Отвечай ТОЛЬКО пронумерованным списком 1-9, каждый вариант с новой строки, без пояснений:\n\n${message}`;
 
-  const geminiKey: string | null = process.env.GEMINI_API_KEY || null;
+  let geminiKey: string | null = process.env.GEMINI_API_KEY || null;
   let claudeKey: string | null = process.env.ANTHROPIC_API_KEY || null;
   if (db) {
     const cfg = await getDoc(doc(db, 'settings', 'ai_config')).catch(() => null);
-    if (cfg?.exists() && cfg.data().claudeKey) claudeKey = cfg.data().claudeKey;
+    if (cfg?.exists()) {
+      if (cfg.data().geminiKey) geminiKey = cfg.data().geminiKey;
+      if (cfg.data().claudeKey) claudeKey = cfg.data().claudeKey;
+    }
   }
 
-  const parseVariants = (text: string) =>
-    text.split('\n')
+  const parseVariants = (text: string) => {
+    const numbered = text.split('\n')
       .filter(l => /^\d+[.)]\s/.test(l.trim()))
       .map(l => l.replace(/^\d+[.)]\s*/, '').trim())
+      .filter(Boolean);
+    if (numbered.length > 0) return numbered.slice(0, 9);
+    return text.split('\n')
+      .map(l => l.replace(/^[-*•]\s*/, '').trim())
       .filter(Boolean)
       .slice(0, 9);
+  };
 
   try {
     if (geminiKey) {
@@ -699,6 +724,7 @@ app.post('/api/ai/generate-variants', async (req, res) => {
       });
       const text = result.candidates?.[0]?.content?.parts?.[0]?.text || '';
       const variants = parseVariants(text);
+      if (!variants.length) throw new Error('AI вернул пустой список вариантов');
       return res.json({ success: true, variants, engine: 'gemini' });
     }
     if (claudeKey) {
@@ -710,6 +736,7 @@ app.post('/api/ai/generate-variants', async (req, res) => {
       });
       const text = result.content[0].type === 'text' ? result.content[0].text : '';
       const variants = parseVariants(text);
+      if (!variants.length) throw new Error('AI вернул пустой список вариантов');
       return res.json({ success: true, variants, engine: 'claude' });
     }
     throw new Error('Нет API ключа — добавь Gemini или Claude ключ в Настройках рассылки');
@@ -718,18 +745,19 @@ app.post('/api/ai/generate-variants', async (req, res) => {
   }
 });
 
-// Стелс рассылка: 1 аккаунт → до 20 номеров → 10 мин между отправками → следующий аккаунт
+// Фоновая рассылка: 1 аккаунт → до 20 номеров → выбранная пауза между отправками → следующий аккаунт
 type StealthJobStatus = 'idle'|'running'|'waiting_accounts'|'stopped'|'done'|'error';
 let stealthJob: {
   status: StealthJobStatus;
   total: number; sent: number; failed: number; checked: number; currentIndex: number;
   currentAccount: string;
+  delayMinutes?: number;
   startedAt: string; finishedAt?: string; error?: string;
   stopRequested: boolean;
-  log: Array<{phone:string;name:string;status:string;error?:string}>;
+  log: Array<{phone:string;name:string;status:string;error?:string;account?:string}>;
 } = {
   status: 'idle', total: 0, sent: 0, failed: 0, checked: 0, currentIndex: 0,
-  currentAccount: '', startedAt: '', stopRequested: false, log: []
+  currentAccount: '', delayMinutes: 2, startedAt: '', stopRequested: false, log: []
 };
 
 const saveStealthProgress = async () => {
@@ -737,21 +765,23 @@ const saveStealthProgress = async () => {
   await setDoc(doc(db, 'settings', 'stealth_job'), { ...stealthJob, log: stealthJob.log.slice(-500) }).catch(() => {});
 };
 
-async function runStealthBroadcast(phones: string[], messageVariants: string[], contactButton: boolean, imageFiles: Array<{base64:string;name:string}>, startFrom = 0) {
+async function runStealthBroadcast(phones: string[], messageVariants: string[], contactButton: boolean, imageFiles: Array<{base64:string;name:string}>, startFrom = 0, delayMinutes = 2) {
   if (!db) return;
 
   const MESSAGES_PER_ACCOUNT = 20;
-  const DELAY_BETWEEN_SENDS = 2 * 60 * 1000; // 2 минуты между сообщениями
+  const safeDelayMinutes = [2, 5, 10].includes(Number(delayMinutes)) ? Number(delayMinutes) : 2;
+  const DELAY_BETWEEN_SENDS = safeDelayMinutes * 60 * 1000;
 
   if (startFrom === 0) {
-    stealthJob = { status: 'running', total: phones.length, sent: 0, failed: 0, checked: 0, currentIndex: 0, currentAccount: '', startedAt: new Date().toISOString(), stopRequested: false, log: [] };
-    await setDoc(doc(db, 'settings', 'stealth_job_data'), { phones, messageVariants, contactButton, imageFiles }).catch((e) => {
+    stealthJob = { status: 'running', total: phones.length, sent: 0, failed: 0, checked: 0, currentIndex: 0, currentAccount: '', delayMinutes: safeDelayMinutes, startedAt: new Date().toISOString(), stopRequested: false, log: [] };
+    await setDoc(doc(db, 'settings', 'stealth_job_data'), { phones, messageVariants, contactButton, imageFiles, delayMinutes: safeDelayMinutes }).catch((e) => {
       console.warn('[stealth] could not persist job data:', e?.message || e);
     });
   } else {
     stealthJob.status = 'running';
     stealthJob.stopRequested = false;
     stealthJob.currentIndex = startFrom;
+    stealthJob.delayMinutes = safeDelayMinutes;
   }
   await saveStealthProgress();
 
@@ -830,7 +860,7 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
     while (sentByThisAccount < MESSAGES_PER_ACCOUNT && phoneIdx < phones.length) {
       if (stealthJob.stopRequested) break;
 
-      // 10 минут только между отправками одного и того же аккаунта.
+      // Пауза действует между отправками одного и того же аккаунта.
       const accountKey = acc.phone || String(roundIdx);
       const lastSentAt = lastSentAtByAccount.get(accountKey) || 0;
       const waitMs = Math.max(0, DELAY_BETWEEN_SENDS - (Date.now() - lastSentAt));
@@ -881,7 +911,7 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
             // Все аккаунты дали PEER_FLOOD на этот номер — пропускаем, подождём следующего круга
             console.log(`[stealth] all accounts PEER_FLOOD for ${phone}, skipping for now`);
             phoneFloodTries.delete(phoneIdx);
-            stealthJob.log.push({ phone: rawPhone, name: rawPhone, status: 'error', error: 'PEER_FLOOD — все аккаунты' });
+            stealthJob.log.push({ phone: rawPhone, name: rawPhone, status: 'error', error: 'PEER_FLOOD — все аккаунты', account: acc.phone });
             stealthJob.failed++; phoneIdx++; stealthJob.checked++; stealthJob.currentIndex = phoneIdx;
             await saveStealthProgress();
           }
@@ -908,7 +938,7 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
             if (tries >= liveAccounts.length) {
               console.log(`[stealth] all accounts PEER_FLOOD for ${phone}, skipping`);
               phoneFloodTries.delete(phoneIdx);
-              stealthJob.log.push({ phone: rawPhone, name: rawPhone, status: 'error', error: 'PEER_FLOOD — все аккаунты' });
+              stealthJob.log.push({ phone: rawPhone, name: rawPhone, status: 'error', error: 'PEER_FLOOD — все аккаунты', account: acc.phone });
               stealthJob.failed++; phoneIdx++; stealthJob.checked++; stealthJob.currentIndex = phoneIdx;
               await saveStealthProgress();
             }
@@ -928,7 +958,7 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
             console.log(`[stealth] ALWAYS_TESTABLE ${phone} not found by ${acc.phone}, try ${tries}/${liveAccounts.length}`);
             if (tries >= liveAccounts.length) {
               phoneFloodTries.delete(phoneIdx);
-              stealthJob.log.push({ phone: rawPhone, name: rawPhone, status: 'error', error: 'не найден ни одним аккаунтом' });
+              stealthJob.log.push({ phone: rawPhone, name: rawPhone, status: 'error', error: 'не найден ни одним аккаунтом', account: acc.phone });
               stealthJob.failed++; phoneIdx++; stealthJob.checked++; stealthJob.currentIndex = phoneIdx;
               await saveStealthProgress();
             }
@@ -939,7 +969,7 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
             noTgSet.add(cleanPhone);
             newNoTg.push({ phone: cleanPhone, addedAt: new Date().toISOString() });
           }
-          stealthJob.log.push({ phone: rawPhone, name: rawPhone, status: 'no_tg', error: 'Нет Telegram' });
+          stealthJob.log.push({ phone: rawPhone, name: rawPhone, status: 'no_tg', error: 'Нет Telegram', account: acc.phone });
           stealthJob.failed++;
           phoneIdx++;
           stealthJob.checked++;
@@ -965,7 +995,7 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
           sentSet.add(cleanPhone);
           sentDateMap.set(cleanPhone, new Date().toISOString());
           newSent.push(cleanPhone);
-          stealthJob.log.push({ phone: rawPhone, name: rawPhone, status: 'sent' });
+          stealthJob.log.push({ phone: rawPhone, name: rawPhone, status: 'sent', account: acc.phone });
           lastSentAtByAccount.set(accountKey, Date.now());
           stealthJob.sent++;
           sentByThisAccount++;
@@ -992,14 +1022,14 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
           phoneFloodTries.set(phoneIdx, tries);
           if (tries >= liveAccounts.length) {
             phoneFloodTries.delete(phoneIdx);
-            stealthJob.log.push({ phone: rawPhone, name: rawPhone, status: 'error', error: 'PEER_FLOOD на отправке — все аккаунты' });
+            stealthJob.log.push({ phone: rawPhone, name: rawPhone, status: 'error', error: 'PEER_FLOOD на отправке — все аккаунты', account: acc.phone });
             stealthJob.failed++; phoneIdx++; stealthJob.checked++; stealthJob.currentIndex = phoneIdx;
             await saveStealthProgress();
           }
           accountBanned = true;
           break;
         }
-        stealthJob.log.push({ phone: rawPhone, name: rawPhone, status: 'error', error: errMsg });
+        stealthJob.log.push({ phone: rawPhone, name: rawPhone, status: 'error', error: errMsg, account: acc.phone });
         stealthJob.failed++;
         phoneIdx++;
         stealthJob.checked++;
@@ -1026,11 +1056,12 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
 }
 
 app.post('/api/broadcast/stealth-start', async (req, res) => {
-  const { phones, messageVariants, contactButton, images } = req.body;
+  const { phones, messageVariants, contactButton, images, delayMinutes } = req.body;
   if (!phones?.length || !messageVariants?.length) return res.status(400).json({ error: 'Нужны phones и messageVariants' });
   if (stealthJob.status === 'running') return res.status(400).json({ error: 'Рассылка уже идёт' });
-  runStealthBroadcast(phones, messageVariants, !!contactButton, images || []);
-  res.json({ success: true, total: phones.length });
+  const safeDelayMinutes = [2, 5, 10].includes(Number(delayMinutes)) ? Number(delayMinutes) : 2;
+  runStealthBroadcast(phones, messageVariants, !!contactButton, images || [], 0, safeDelayMinutes);
+  res.json({ success: true, total: phones.length, delayMinutes: safeDelayMinutes });
 });
 
 // Продолжить после добавления аккаунтов
@@ -1040,9 +1071,9 @@ app.post('/api/broadcast/stealth-resume', async (req, res) => {
   if (!db) return res.status(500).json({ error: 'DB не подключена' });
   const dataSnap = await getDoc(doc(db, 'settings', 'stealth_job_data')).catch(() => null);
   if (!dataSnap?.exists()) return res.status(400).json({ error: 'Данные задания не найдены' });
-  const { phones, messageVariants, contactButton, imageFiles } = dataSnap.data() as any;
+  const { phones, messageVariants, contactButton, imageFiles, delayMinutes } = dataSnap.data() as any;
   const resumeFrom = stealthJob.currentIndex;
-  runStealthBroadcast(phones, messageVariants, !!contactButton, imageFiles || [], resumeFrom);
+  runStealthBroadcast(phones, messageVariants, !!contactButton, imageFiles || [], resumeFrom, delayMinutes || stealthJob.delayMinutes || 2);
   res.json({ success: true, resumeFrom, total: phones.length });
 });
 
@@ -1058,7 +1089,7 @@ app.get('/api/broadcast/stealth-status', async (_req, res) => {
     if (snap?.exists()) {
       const d = snap.data() as any;
       if (d.status === 'waiting_accounts' || d.status === 'stopped') {
-        stealthJob = { status: d.status, total: d.total, sent: d.sent, failed: d.failed, checked: d.checked, currentIndex: d.currentIndex, currentAccount: d.currentAccount || '', startedAt: d.startedAt, finishedAt: d.finishedAt, stopRequested: false, log: d.log || [] };
+        stealthJob = { status: d.status, total: d.total, sent: d.sent, failed: d.failed, checked: d.checked, currentIndex: d.currentIndex, currentAccount: d.currentAccount || '', delayMinutes: d.delayMinutes || 2, startedAt: d.startedAt, finishedAt: d.finishedAt, stopRequested: false, log: d.log || [] };
       }
     }
   }

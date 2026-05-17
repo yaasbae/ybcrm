@@ -1,14 +1,13 @@
-import React, { useState, useEffect } from 'react';
-import Papa from 'papaparse';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   Send, CheckCircle2, XCircle,
   Loader2, ChevronDown, ChevronUp,
-  AlertCircle, LogOut, Smartphone, Search, Image
+  AlertCircle, Smartphone, Search, Image
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '../lib/utils';
 import { db } from '../firebase';
-import { collection, getDocs, addDoc, query, orderBy, setDoc, doc, getDoc } from 'firebase/firestore';
+import { collection, getDocs, query, orderBy, setDoc, doc, getDoc } from 'firebase/firestore';
 
 interface TgAccount {
   phone: string;
@@ -52,11 +51,12 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [message, setMessage] = useState('');
   const [isSending, setIsSending] = useState(false);
-  const [broadcastMode, setBroadcastMode] = useState<'burn' | 'safe' | 'stealth'>('safe');
+  const [sendIntervalMinutes, setSendIntervalMinutes] = useState<2 | 5 | 10>(2);
   const [messageVariants, setMessageVariants] = useState<string[]>([]);
   const [isGeneratingVariants, setIsGeneratingVariants] = useState(false);
+  const [variantsError, setVariantsError] = useState('');
   const [showVariants, setShowVariants] = useState(false);
-  const [stealthStatus, setStealthStatus] = useState<{status:string;sent:number;failed:number;checked:number;total:number;currentIndex?:number;currentAccount?:string;log?:Array<{phone:string;name:string;status:string;error?:string}>} | null>(null);
+  const [stealthStatus, setStealthStatus] = useState<{status:string;sent:number;failed:number;checked:number;total:number;delayMinutes?:number;currentIndex?:number;currentAccount?:string;log?:Array<{phone:string;name:string;status:string;error?:string;account?:string}>} | null>(null);
   const [clientRevenue, setClientRevenue] = useState<Map<string, number>>(new Map());
   const [clientOrders, setClientOrders] = useState<Map<string, number>>(new Map());
   const [sentPhones, setSentPhones] = useState<Set<string>>(new Set());
@@ -66,9 +66,11 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
   const [sendLog, setSendLog] = useState<Array<{ phone: string; name: string; status: 'sent' | 'error'; error?: string }>>([]);
   const [result, setResult] = useState<any>(null);
   const [noTelegramPhones, setNoTelegramPhones] = useState<Map<string, string>>(new Map()); // phone → addedAt ISO
+  const [accountStats, setAccountStats] = useState<Map<string, number>>(new Map()); // phone → sent count
   const [activeTab, setActiveTab] = useState<'compose' | 'settings'>('compose');
   const [isLoadingClients, setIsLoadingClients] = useState(true);
-  const [showAllClients, setShowAllClients] = useState(false);
+  const [visibleClientCount, setVisibleClientCount] = useState(10);
+  const [lastSelectedClientIndex, setLastSelectedClientIndex] = useState<number | null>(null);
   const [search, setSearch] = useState('');
   const [images, setImages] = useState<File[]>([]);
   const [imagePreviews, setImagePreviews] = useState<string[]>([]);
@@ -97,6 +99,7 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
   const [isSavingName, setIsSavingName] = useState(false);
   const [proxyInputs, setProxyInputs] = useState<Record<string, string>>({});
   const [savingProxy, setSavingProxy] = useState<string | null>(null);
+  const [savingActiveAccount, setSavingActiveAccount] = useState<string | null>(null);
 
   // Tochka Bank settings
   const [tochkaToken, setTochkaToken] = useState('');
@@ -261,6 +264,20 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
     await loadTgStatus();
   };
 
+  const handleSetAccountActive = async (phone: string, active: boolean, onlyThis = false) => {
+    setSavingActiveAccount(phone);
+    try {
+      await fetch('/api/tg/accounts/set-active', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phone, active, onlyThis })
+      });
+      await loadTgStatus();
+    } finally {
+      setSavingActiveAccount(null);
+    }
+  };
+
   const handleSaveProxy = async (phone: string) => {
     const raw = (proxyInputs[phone] || '').trim();
     let proxy: { ip: string; port: number; username?: string; password?: string; } | null = null;
@@ -301,6 +318,7 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
         const history: typeof broadcastHistory = [];
         let latestLog: Array<{ phone: string; name: string; status: 'sent' | 'error'; error?: string }> = [];
         let latestAt = '';
+        const accStats = new Map<string, number>();
         broadcastsSnap.docs.forEach(d => {
           const b = d.data() as any;
           if (b.sentCount === undefined) return;
@@ -308,7 +326,14 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
           (b.phones || []).forEach((p: string) => sent.add(normalizeBroadcastPhone(p)));
           history.push({ id: d.id, sentAt: b.sentAt, phones: b.phones || [], message: b.message || '', sentCount: b.sentCount || b.phones?.length || 0 });
           if (b.sentAt > latestAt && b.log?.length) { latestAt = b.sentAt; latestLog = b.log; }
+          (b.log || []).forEach((entry: any) => {
+            if (entry.account && entry.status === 'sent') {
+              const phone = entry.account.replace('+', '');
+              accStats.set(phone, (accStats.get(phone) || 0) + 1);
+            }
+          });
         });
+        setAccountStats(accStats);
         history.sort((a, b) => new Date(b.sentAt).getTime() - new Date(a.sentAt).getTime());
         setBroadcastHistory(history);
         if (latestLog.length > 0) setSendLog(latestLog);
@@ -368,34 +393,46 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
       if (d.messageVariants?.length) setMessageVariants(d.messageVariants);
       if (d.message) setMessage(d.message);
       if (typeof d.contactButton === 'boolean') setContactButton(d.contactButton);
+      if ([2, 5, 10].includes(d.sendIntervalMinutes)) setSendIntervalMinutes(d.sendIntervalMinutes);
     }).catch(() => {});
   }, []);
 
   // Авто-сохранение настроек рассылки в Firestore (дебаунс 1.5 сек)
   useEffect(() => {
     const timer = setTimeout(() => {
-      setDoc(doc(db, 'settings', 'broadcast_config'), { message, messageVariants, contactButton }).catch(() => {});
+      setDoc(doc(db, 'settings', 'broadcast_config'), { message, messageVariants, contactButton, sendIntervalMinutes }).catch(() => {});
     }, 1500);
     return () => clearTimeout(timer);
-  }, [message, messageVariants, contactButton]);
+  }, [message, messageVariants, contactButton, sendIntervalMinutes]);
 
-  const handleSelectFirst20 = () => {
-    const first20 = clients.slice(0, 20).map(c => c.phone || c.userId);
-    setSelected(new Set(first20));
+  const handleSelectFirst = (count: number) => {
+    setSelected(new Set(filteredPhones.slice(0, count)));
   };
 
   const handleSelectAll = () => {
-    const allFiltered = filteredClients.map(c => c.phone || c.userId);
-    const allSelected = allFiltered.every(p => selected.has(p));
-    if (allSelected) setSelected(new Set());
-    else setSelected(new Set(allFiltered));
+    if (allFilteredSelected) setSelected(new Set());
+    else setSelected(new Set(filteredPhones));
   };
 
-  const handleToggle = (phone: string) => {
+  const handleToggle = (phone: string, index: number, shiftKey = false) => {
+    if (shiftKey && lastSelectedClientIndex !== null) {
+      const start = Math.min(lastSelectedClientIndex, index);
+      const end = Math.max(lastSelectedClientIndex, index);
+      const rangePhones = filteredPhones.slice(start, end + 1);
+      setSelected(prev => {
+        const next = new Set(prev);
+        rangePhones.forEach(p => next.add(p));
+        return next;
+      });
+      setLastSelectedClientIndex(index);
+      return;
+    }
+
     const next = new Set(selected);
     if (next.has(phone)) next.delete(phone);
     else next.add(phone);
     setSelected(next);
+    setLastSelectedClientIndex(index);
   };
 
   const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -509,6 +546,7 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
   const handleGenerateVariants = async () => {
     if (!message.trim()) return;
     setIsGeneratingVariants(true);
+    setVariantsError('');
     try {
       const res = await fetch('/api/ai/generate-variants', {
         method: 'POST',
@@ -517,10 +555,18 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
       });
       const data = await res.json();
       if (data.error) throw new Error(data.error);
+      if (!data.variants?.length) throw new Error('AI не вернул варианты');
       setMessageVariants(data.variants || []);
       setShowVariants(true);
     } catch (e: any) {
-      alert('Ошибка генерации: ' + e.message);
+      const message = String(e.message || e);
+      if (message.includes('reported as leaked') || message.includes('PERMISSION_DENIED')) {
+        setVariantsError('Gemini ключ заблокирован Google как скомпрометированный. Создай новый ключ в AI Studio и сохрани его в Настройках.');
+      } else if (message.includes('Нет API ключа')) {
+        setVariantsError('Нет AI ключа. Добавь Gemini API ключ во вкладке Настройки.');
+      } else {
+        setVariantsError('Ошибка генерации: ' + message);
+      }
     } finally {
       setIsGeneratingVariants(false);
     }
@@ -593,46 +639,9 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
     const TEST_PHONE = '89196977790'; // всегда получает тест
     const TEST_NORM = normalizeBroadcastPhone(TEST_PHONE);
 
-    // Stealth режим — фоновый джоб на сервере
-    if (broadcastMode === 'stealth') {
-      try {
-        const phones = [TEST_PHONE, ...Array.from(selected).filter(p => normalizeBroadcastPhone(p) !== TEST_NORM)];
-        const allVariants = [message, ...messageVariants].filter(Boolean);
-        const imageFiles: Array<{ base64: string; name: string }> = [];
-        for (const img of images) {
-          const base64 = await new Promise<string>(res => {
-            const canvas = document.createElement('canvas');
-            const imgEl = new window.Image();
-            const url = URL.createObjectURL(img);
-            imgEl.onload = () => {
-              const MAX = 1280; let w = imgEl.width, h = imgEl.height;
-              if (w > MAX || h > MAX) { if (w > h) { h = Math.round(h * MAX / w); w = MAX; } else { w = Math.round(w * MAX / h); h = MAX; } }
-              canvas.width = w; canvas.height = h;
-              canvas.getContext('2d')!.drawImage(imgEl, 0, 0, w, h);
-              URL.revokeObjectURL(url);
-              res(canvas.toDataURL('image/jpeg', 0.85).split(',')[1]);
-            };
-            imgEl.src = url;
-          });
-          imageFiles.push({ base64, name: img.name.replace(/\.[^.]+$/, '.jpg') });
-        }
-        const res = await fetch('/api/broadcast/stealth-start', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ phones, messageVariants: allVariants, contactButton, images: imageFiles })
-        });
-        const data = await res.json();
-        if (data.error) throw new Error(data.error);
-        setStealthStatus({ status: 'running', sent: 0, failed: 0, checked: 0, total: data.total });
-      } catch (e: any) {
-        setResult({ error: e.message });
-        setIsSending(false);
-      }
-      return;
-    }
-
     try {
       const phones = [TEST_PHONE, ...Array.from(selected).filter(p => normalizeBroadcastPhone(p) !== TEST_NORM)];
+      const allVariants = [message, ...messageVariants].filter(Boolean);
       const imageFiles: Array<{ base64: string; name: string }> = [];
       for (const img of images) {
         const base64 = await new Promise<string>(res => {
@@ -655,64 +664,29 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
         });
         imageFiles.push({ base64, name: img.name.replace(/\.[^.]+$/, '.jpg') });
       }
-      const response = await fetch('/api/broadcast/gramjs', {
+      const response = await fetch('/api/broadcast/stealth-start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ phones, message, messageVariants: messageVariants.length > 0 ? [message, ...messageVariants] : undefined, images: imageFiles, displayName: displayName.trim() || null, mode: broadcastMode, contactButton })
+        body: JSON.stringify({ phones, messageVariants: allVariants, images: imageFiles, contactButton, delayMinutes: sendIntervalMinutes })
       });
       const data = await response.json();
-      setResult(data);
-      if (data.results) {
-        const log = data.results.map((r: any) => {
-          const client = clients.find(c => normalizeBroadcastPhone(c.phone) === normalizeBroadcastPhone(r.phone));
-          return { phone: r.phone, name: client?.fullName || client?.name || r.phone, status: r.status, error: r.error };
-        });
-        setSendLog(log);
-        setSentPhones(prev => { const next = new Set(prev); log.filter((l: any) => l.status === 'sent').forEach((l: any) => next.add(normalizeBroadcastPhone(l.phone))); return next; });
-
-        // Сохраняем новые "нет Telegram" в Firestore (накапливаем)
-        const newNoTgPhones = log.filter((l: any) => l.error === 'Нет Telegram').map((l: any) => normalizeBroadcastPhone(l.phone));
-        if (newNoTgPhones.length > 0) {
-          const now = new Date().toISOString();
-          setNoTelegramPhones(prev => {
-            const next = new Map(prev);
-            newNoTgPhones.forEach((p: string) => { if (!next.has(p)) next.set(p, now); });
-            return next;
-          });
-          const noTgSnap = await getDoc(doc(db, 'settings', 'no_telegram'));
-          const existing: Array<{ phone: string; addedAt: string }> = noTgSnap.exists() ? (noTgSnap.data().phones || []) : [];
-          const existingSet = new Set(existing.map((p: any) => p.phone));
-          const updated = [...existing, ...newNoTgPhones.filter((p: string) => !existingSet.has(p)).map((p: string) => ({ phone: p, addedAt: now }))];
-          await setDoc(doc(db, 'settings', 'no_telegram'), { phones: updated });
-        }
-      }
-      const sentList = (data.results || []).filter((r: any) => r.status === 'sent').map((r: any) => normalizeBroadcastPhone(r.phone));
-      const logToSave = (data.results || []).map((r: any) => {
-        const client = clients.find((c: any) => normalizeBroadcastPhone(c.phone) === normalizeBroadcastPhone(r.phone));
-        return { phone: r.phone, name: client?.fullName || client?.name || r.phone, status: r.status, ...(r.error ? { error: r.error } : {}) };
-      });
-      if (sentList.length > 0) {
-        await addDoc(collection(db, 'broadcasts'), {
-          phones: sentList,
-          message,
-          sentAt: new Date().toISOString(),
-          sentCount: sentList.length,
-          totalAttempted: phones.length,
-          log: logToSave,
-        });
-      }
+      if (data.error) throw new Error(data.error);
+      setStealthStatus({ status: 'running', sent: 0, failed: 0, checked: 0, total: data.total, delayMinutes: data.delayMinutes || sendIntervalMinutes });
     } catch (e: any) {
       setResult({ error: e.message });
-    } finally {
       setIsSending(false);
+    } finally {
+      // Фоновая рассылка сама обновит состояние через polling.
     }
   };
 
-  const activeSentSet = selectedBroadcast
-    ? new Set((broadcastHistory.find(b => b.id === selectedBroadcast)?.phones || []).map(p => normalizeBroadcastPhone(p)))
-    : sentPhones;
+  const activeSentSet = useMemo(() => (
+    selectedBroadcast
+      ? new Set((broadcastHistory.find(b => b.id === selectedBroadcast)?.phones || []).map(p => normalizeBroadcastPhone(p)))
+      : sentPhones
+  ), [broadcastHistory, selectedBroadcast, sentPhones]);
 
-  const filteredClients = clients.filter(c => {
+  const filteredClients = useMemo(() => clients.filter(c => {
     const phone = normalizeBroadcastPhone(c.phone || '');
     const wasSent = activeSentSet.has(phone);
     const noTg = noTelegramPhones.has(phone);
@@ -724,13 +698,41 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
     const q = search.toLowerCase();
     const name = (c.fullName || c.name || '').toLowerCase();
     return name.includes(q) || phone.includes(q);
-  });
-  const visibleClients = showAllClients ? filteredClients : filteredClients.slice(0, 10);
+  }), [activeSentSet, clientFilter, clients, noTelegramPhones, search]);
+
+  const filteredPhones = useMemo(() => filteredClients.map(c => c.phone || c.userId), [filteredClients]);
+  const selectedFilteredCount = useMemo(
+    () => filteredPhones.reduce((count, phone) => count + (selected.has(phone) ? 1 : 0), 0),
+    [filteredPhones, selected]
+  );
+  const allFilteredSelected = filteredPhones.length > 0 && selectedFilteredCount === filteredPhones.length;
+  const someFilteredSelected = selectedFilteredCount > 0 && !allFilteredSelected;
+  const visibleClients = useMemo(() => filteredClients.slice(0, visibleClientCount), [filteredClients, visibleClientCount]);
+  const clientByPhone = useMemo(() => {
+    const map = new Map<string, any>();
+    clients.forEach(client => {
+      const normalized = normalizeBroadcastPhone(client.phone || client.userId || '');
+      if (normalized) map.set(normalized, client);
+    });
+    return map;
+  }, [clients]);
   const charCount = message.length;
+  const stealthAccountStats = Array.from(
+    (stealthStatus?.log || []).reduce((map, entry) => {
+      if (entry.status === 'sent' && entry.account) map.set(entry.account, (map.get(entry.account) || 0) + 1);
+      return map;
+    }, new Map<string, number>())
+  );
+  const formatLogContact = (phone: string, fallbackName?: string) => {
+    const normalized = normalizeBroadcastPhone(phone);
+    const client = clientByPhone.get(normalized);
+    const name = client?.fullName || client?.name || fallbackName || 'Без имени';
+    return { name, phone: normalized || phone };
+  };
 
   return (
-    <div className="max-w-6xl mx-auto px-4 py-4 font-sans text-zinc-900">
-      <div className="flex gap-4 items-start">
+    <div className="max-w-6xl mx-auto px-3 sm:px-4 py-4 font-sans text-zinc-900">
+      <div className="flex flex-col lg:flex-row gap-4 items-stretch lg:items-start">
       <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
         className="tg-card bg-white border border-zinc-100 shadow-sm overflow-hidden flex-1 min-w-0"
       >
@@ -766,7 +768,7 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
             <div className="space-y-1">
               <div className="flex items-center justify-between ml-1 mb-2">
                 <label className="text-[9px] font-black text-zinc-400 uppercase tracking-widest">
-                  Telegram аккаунты ({tgStatus.accounts.length})
+                  Telegram аккаунты ({tgStatus.accounts.filter(a => a.active).length}/{tgStatus.accounts.length} вкл)
                 </label>
                 {tgStatus.accounts.length > 0 && (
                   <span className="text-[9px] text-zinc-400">каждые 20 сообщений — смена аккаунта</span>
@@ -787,9 +789,41 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
                         <div className="flex-1 min-w-0">
                           <p className="text-[11px] font-bold text-zinc-900 font-mono">{acc.phone}</p>
                           <p className="text-[9px] text-zinc-400">{new Date(acc.addedAt).toLocaleDateString('ru')}</p>
+                          {(() => {
+                            const sentCount = accountStats.get(acc.phone.replace('+', '')) || 0;
+                            if (sentCount > 0) return (
+                              <p className="text-[9px] text-zinc-400">
+                                📤 {sentCount} отпр.{(acc as any).bannedAt ? ` · 🔒 ${new Date((acc as any).bannedAt).toLocaleDateString('ru')}` : ''}
+                              </p>
+                            );
+                            if ((acc as any).bannedAt) return (
+                              <p className="text-[9px] text-red-400">🔒 Заморожен {new Date((acc as any).bannedAt).toLocaleDateString('ru')}</p>
+                            );
+                            return null;
+                          })()}
                         </div>
-                        <div className="flex items-center gap-2">
-                          <span className="text-[8px] font-black text-emerald-500 uppercase">активен</span>
+                        <div className="flex items-center gap-1.5">
+                          <span className={cn("text-[8px] font-black uppercase", acc.active ? "text-emerald-500" : "text-zinc-300")}>
+                            {acc.active ? 'активен' : 'выкл'}
+                          </span>
+                          <button
+                            onClick={() => handleSetAccountActive(acc.phone, true, true)}
+                            disabled={savingActiveAccount === acc.phone}
+                            className="px-2 py-1 bg-blue-50 text-blue-600 rounded-md text-[8px] font-black uppercase hover:bg-blue-100 transition-all disabled:opacity-40"
+                            title="Оставить включенным только этот аккаунт"
+                          >
+                            Только
+                          </button>
+                          <button
+                            onClick={() => handleSetAccountActive(acc.phone, !acc.active)}
+                            disabled={savingActiveAccount === acc.phone}
+                            className={cn(
+                              "px-2 py-1 rounded-md text-[8px] font-black uppercase transition-all disabled:opacity-40",
+                              acc.active ? "bg-zinc-100 text-zinc-500 hover:bg-zinc-200" : "bg-emerald-50 text-emerald-600 hover:bg-emerald-100"
+                            )}
+                          >
+                            {savingActiveAccount === acc.phone ? '...' : acc.active ? 'Выкл' : 'Вкл'}
+                          </button>
                           <button onClick={() => handleRemoveAccount(acc.phone)}
                             className="text-red-400 hover:text-red-600 transition-colors">
                             <XCircle size={14} />
@@ -1097,7 +1131,7 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
           <div className="space-y-4">
 
             {/* Sticky кнопка отправить */}
-            <div className="sticky top-0 z-10 bg-white border-b border-zinc-100 px-4 py-3 flex items-center gap-3">
+            <div className="sticky top-12 z-10 bg-white border-b border-zinc-100 px-4 py-3 flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
               <button
                 onClick={handleSend}
                 disabled={isSending || selected.size === 0 || !message.trim() || !tgStatus.authorized}
@@ -1106,19 +1140,20 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
                 {isSending ? <Loader2 size={13} className="animate-spin" /> : <Send size={13} />}
                 {isSending ? 'Отправляем...' : `Отправить${selected.size > 0 ? ` (${selected.size})` : ''}`}
               </button>
-              <div className="flex gap-1">
-                <button onClick={() => setBroadcastMode('safe')} title="Безопасный — 3-7 сек между сообщениями"
-                  className={`px-2.5 py-2 rounded-lg text-[8px] font-black uppercase transition-all border ${broadcastMode === 'safe' ? 'bg-emerald-500 text-white border-emerald-500' : 'bg-white text-zinc-400 border-zinc-200'}`}>
-                  🐢
-                </button>
-                <button onClick={() => setBroadcastMode('burn')} title="Быстрый — до бана"
-                  className={`px-2.5 py-2 rounded-lg text-[8px] font-black uppercase transition-all border ${broadcastMode === 'burn' ? 'bg-red-500 text-white border-red-500' : 'bg-white text-zinc-400 border-zinc-200'}`}>
-                  🔥
-                </button>
-                <button onClick={() => setBroadcastMode('stealth')} title="Стелс — 30 мин между сообщениями, фоновый режим"
-                  className={`px-2.5 py-2 rounded-lg text-[8px] font-black uppercase transition-all border ${broadcastMode === 'stealth' ? 'bg-violet-500 text-white border-violet-500' : 'bg-white text-zinc-400 border-zinc-200'}`}>
-                  🕵️
-                </button>
+              <div className="grid grid-cols-3 gap-1 sm:flex sm:shrink-0 p-1 bg-zinc-100 rounded-xl">
+                {([2, 5, 10] as const).map(minutes => (
+                  <button
+                    key={minutes}
+                    onClick={() => setSendIntervalMinutes(minutes)}
+                    title={`Пауза ${minutes} мин между отправками с одного аккаунта`}
+                    className={cn(
+                      "px-3 py-2 rounded-lg text-[9px] font-black uppercase transition-all",
+                      sendIntervalMinutes === minutes ? "bg-violet-500 text-white shadow-sm" : "bg-white text-zinc-500 hover:text-zinc-800"
+                    )}
+                  >
+                    {minutes} мин
+                  </button>
+                ))}
               </div>
             </div>
 
@@ -1142,7 +1177,7 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
 
             {/* 9 вариантов сообщений */}
             <div className="space-y-2">
-              <div className="flex items-center justify-between ml-1">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 ml-1">
                 <label className="text-[9px] font-black text-zinc-400 uppercase tracking-widest">
                   Варианты сообщений (1–9) — при рассылке каждому отправится случайный
                 </label>
@@ -1150,6 +1185,7 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
                   <button
                     onClick={handleGenerateVariants}
                     disabled={isGeneratingVariants || !message.trim()}
+                    title={!message.trim() ? 'Сначала напиши текст сообщения' : 'Сгенерировать 9 вариантов'}
                     className="flex items-center gap-1 px-2 py-1 bg-violet-100 hover:bg-violet-200 text-violet-700 rounded-lg text-[8px] font-black uppercase tracking-widest transition-all disabled:opacity-40"
                   >
                     {isGeneratingVariants ? <Loader2 size={9} className="animate-spin" /> : '✨'}
@@ -1163,6 +1199,11 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
                   </button>
                 </div>
               </div>
+              {variantsError && (
+                <div className="ml-1 p-2 bg-red-50 border border-red-100 rounded-lg text-[10px] font-semibold text-red-600">
+                  {variantsError}
+                </div>
+              )}
               <div className="space-y-1.5">
                 {Array.from({ length: 9 }).map((_, i) => (
                   <div key={i} className="flex gap-2 items-start">
@@ -1185,7 +1226,7 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
             </div>
 
             {/* Кнопка под сообщением */}
-            <div className="flex items-center justify-between px-1">
+            <div className="flex items-center justify-between gap-3 px-1">
               <div>
                 <p className="text-[10px] font-bold text-zinc-700">Кнопка "Написать менеджеру"</p>
                 <p className="text-[9px] text-zinc-400">Ссылка на @YAASBAE_CLO_bot под каждым сообщением</p>
@@ -1218,40 +1259,43 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
             </div>
 
             <div className="space-y-2">
-              <div className="flex items-center justify-between">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
                 <label className="text-[9px] font-black text-zinc-400 uppercase tracking-widest ml-1">
-                  Клиенты ({selected.size} выбрано из {filteredClients.length}{search ? ` / ${clients.length}` : ''})
+                  Клиенты ({selected.size} выбрано · {filteredClients.length} в фильтре{search ? ` / ${clients.length}` : ''})
                 </label>
-                <div className="flex gap-2">
-                  <button onClick={handleSelectFirst20} className="text-[9px] font-black text-blue-500 hover:text-blue-700 uppercase tracking-widest">
-                    Первые 20
+                <div className="flex flex-wrap justify-end gap-2">
+                  <button onClick={() => handleSelectFirst(10)} className="text-[9px] font-black text-blue-500 hover:text-blue-700 uppercase tracking-widest">
+                    Выбрать 10
+                  </button>
+                  <button onClick={() => handleSelectFirst(20)} className="text-[9px] font-black text-blue-500 hover:text-blue-700 uppercase tracking-widest">
+                    Выбрать 20
                   </button>
                   <span className="text-zinc-200">|</span>
                   <button onClick={handleSelectAll} className="text-[9px] font-black text-blue-500 hover:text-blue-700 uppercase tracking-widest">
-                    {filteredClients.every(c => selected.has(c.phone || c.userId)) && filteredClients.length > 0 ? 'Снять всё' : `Все (${filteredClients.length})`}
+                    {allFilteredSelected ? 'Снять всё' : `Весь фильтр (${filteredClients.length})`}
                   </button>
                 </div>
               </div>
 
               {/* Фильтр: не отправляли / отправляли */}
-              <div className="flex gap-1 p-1 bg-zinc-100 rounded-xl w-fit">
-                <button onClick={() => { setClientFilter('all'); setSelectedBroadcast(null); setSelected(new Set()); }}
+              <div className="flex flex-wrap gap-1 p-1 bg-zinc-100 rounded-xl w-full sm:w-fit">
+                <button onClick={() => { setClientFilter('all'); setSelectedBroadcast(null); setSelected(new Set()); setVisibleClientCount(10); setLastSelectedClientIndex(null); }}
                   className={cn("px-3 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all",
                     clientFilter === 'all' ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-400 hover:text-zinc-700")}>
                   Все ({clients.length})
                 </button>
-                <button onClick={() => { setClientFilter('unsent'); setSelectedBroadcast(null); setSelected(new Set()); }}
+                <button onClick={() => { setClientFilter('unsent'); setSelectedBroadcast(null); setSelected(new Set()); setVisibleClientCount(10); setLastSelectedClientIndex(null); }}
                   className={cn("px-3 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all",
                     clientFilter === 'unsent' ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-400 hover:text-zinc-700")}>
                   Не отправляли
                 </button>
-                <button onClick={() => { setClientFilter('sent'); setSelectedBroadcast(null); setSelected(new Set()); }}
+                <button onClick={() => { setClientFilter('sent'); setSelectedBroadcast(null); setSelected(new Set()); setVisibleClientCount(10); setLastSelectedClientIndex(null); }}
                   className={cn("px-3 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all",
                     clientFilter === 'sent' ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-400 hover:text-zinc-700")}>
                   Отправляли
                 </button>
                 {noTelegramPhones.size > 0 && (
-                  <button onClick={() => { setClientFilter('no_tg'); setSelected(new Set()); }}
+                  <button onClick={() => { setClientFilter('no_tg'); setSelected(new Set()); setVisibleClientCount(10); setLastSelectedClientIndex(null); }}
                     className={cn("px-3 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all",
                       clientFilter === 'no_tg' ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-400 hover:text-zinc-700")}>
                     Нет TG ({noTelegramPhones.size})
@@ -1309,7 +1353,7 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
                 <input
                   type="text"
                   value={search}
-                  onChange={e => { setSearch(e.target.value); setShowAllClients(true); }}
+                  onChange={e => { setSearch(e.target.value); setVisibleClientCount(10); setLastSelectedClientIndex(null); }}
                   placeholder="Поиск по имени или телефону..."
                   className="w-full bg-zinc-50 border border-zinc-200 rounded-xl pl-8 pr-4 py-2 text-[11px] focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 transition-all"
                 />
@@ -1326,14 +1370,10 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
                     <input
                       type="checkbox"
                       className="w-3.5 h-3.5 rounded shrink-0 accent-blue-500 cursor-pointer"
-                      checked={filteredClients.length > 0 && filteredClients.every(c => selected.has(c.phone || c.userId))}
-                      ref={el => { if (el) el.indeterminate = filteredClients.some(c => selected.has(c.phone || c.userId)) && !filteredClients.every(c => selected.has(c.phone || c.userId)); }}
+                      checked={allFilteredSelected}
+                      ref={el => { if (el) el.indeterminate = someFilteredSelected; }}
                       onChange={e => {
-                        if (e.target.checked) {
-                          setSelected(prev => { const next = new Set(prev); filteredClients.forEach(c => next.add(c.phone || c.userId)); return next; });
-                        } else {
-                          setSelected(prev => { const next = new Set(prev); filteredClients.forEach(c => next.delete(c.phone || c.userId)); return next; });
-                        }
+                        setSelected(e.target.checked ? new Set(filteredPhones) : new Set());
                       }}
                     />
                     <div className="flex-1 text-[8px] font-black text-zinc-400 uppercase tracking-widest">Клиент</div>
@@ -1342,6 +1382,7 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
                   </div>
                   {visibleClients.map((client, i) => {
                     const phone = client.phone || client.userId;
+                    const clientIndex = i;
                     const isSelected = selected.has(phone);
                     const key = normalizeBroadcastPhone(phone).slice(-10);
                     const rev = clientRevenue.get(key) || 0;
@@ -1349,10 +1390,10 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
                     const wasSent = activeSentSet.has(normalizeBroadcastPhone(phone));
                     return (
                       <div
-                        key={i}
-                        onClick={() => handleToggle(phone)}
+                        key={phone}
+                        onClick={e => handleToggle(phone, clientIndex, e.shiftKey)}
                         className={cn(
-                          "flex items-center gap-2 px-3 py-2.5 cursor-pointer transition-colors border-b border-zinc-100 last:border-b-0",
+                          "flex items-center gap-2 px-3 py-2.5 cursor-pointer select-none transition-colors border-b border-zinc-100 last:border-b-0",
                           isSelected ? "bg-blue-50" : "hover:bg-zinc-50"
                         )}
                       >
@@ -1391,13 +1432,18 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
                       </div>
                     );
                   })}
-                  {clients.length > 10 && (
+                  {filteredClients.length > 10 && (
                     <button
-                      onClick={() => setShowAllClients(!showAllClients)}
+                      onClick={() => {
+                        if (visibleClientCount >= filteredClients.length) setVisibleClientCount(10);
+                        else setVisibleClientCount(prev => Math.min(prev + 10, filteredClients.length));
+                      }}
                       className="w-full py-2.5 text-[9px] font-black text-zinc-400 hover:text-zinc-700 uppercase tracking-widest flex items-center justify-center gap-1 bg-zinc-50"
                     >
-                      {showAllClients ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-                      {showAllClients ? 'Скрыть' : `Показать ещё ${clients.length - 10}`}
+                      {visibleClientCount >= filteredClients.length ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                      {visibleClientCount >= filteredClients.length
+                        ? 'Свернуть до 10'
+                        : `Показать ещё ${Math.min(10, filteredClients.length - visibleClientCount)}`}
                     </button>
                   )}
                 </div>
@@ -1457,13 +1503,13 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
       </motion.div>
 
       {/* Боковой sticky лог */}
-      <div className="w-72 shrink-0 sticky top-4 self-start space-y-3">
+      <div className="w-full lg:w-72 shrink-0 lg:sticky lg:top-16 self-start space-y-3">
 
         {/* Stealth прогресс */}
         {stealthStatus && stealthStatus.status !== 'idle' && (
           <div className="bg-white border border-violet-100 shadow-sm rounded-2xl overflow-hidden">
             <div className="px-3 py-2.5 bg-violet-50 border-b border-violet-100 flex items-center justify-between">
-              <span className="text-[9px] font-black text-violet-600 uppercase tracking-widest">🕵️ Стелс рассылка</span>
+              <span className="text-[9px] font-black text-violet-600 uppercase tracking-widest">Рассылка</span>
               <div className="flex items-center gap-2">
                 {stealthStatus.status === 'running' && <Loader2 size={12} className="animate-spin text-violet-400" />}
                 {stealthStatus.status === 'done' && <span className="text-[9px] font-black text-emerald-500">Готово</span>}
@@ -1492,8 +1538,21 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
                 <span className="text-emerald-500 font-black">{stealthStatus.sent}✓ отправлено</span>
                 <span className="text-red-400 font-black">{stealthStatus.failed}✗</span>
               </div>
+              {stealthAccountStats.length > 0 && (
+                <div className="border-t border-violet-50 pt-2 space-y-1">
+                  <p className="text-[8px] font-black text-zinc-400 uppercase tracking-widest text-center">Отправлено с аккаунтов</p>
+                  {stealthAccountStats.map(([account, count]) => (
+                    <div key={account} className="flex items-center justify-between gap-2 text-[9px]">
+                      <span className="font-mono text-zinc-500 truncate">{account}</span>
+                      <span className="font-black text-violet-600 shrink-0">{count}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
               {stealthStatus.status === 'running' && stealthStatus.currentAccount && (
-                <p className="text-[8px] text-zinc-400 text-center">Аккаунт: {stealthStatus.currentAccount} · 10 мин между отправками</p>
+                <p className="text-[8px] text-zinc-400 text-center">
+                  Аккаунт: {stealthStatus.currentAccount} · {stealthStatus.delayMinutes || sendIntervalMinutes} мин между отправками
+                </p>
               )}
               {stealthStatus.status === 'waiting_accounts' && (
                 <div className="space-y-2">
@@ -1516,15 +1575,22 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
               )}
               {stealthStatus.log && stealthStatus.log.length > 0 && (
                 <div className="border-t border-violet-50 pt-2 space-y-1 max-h-48 overflow-y-auto">
-                  {[...stealthStatus.log].reverse().map((l, idx) => (
-                    <div key={idx} className={cn("px-2 py-1 rounded-lg text-[9px]", l.status === 'sent' ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-600')}>
-                      <div className="flex items-center gap-1">
-                        <span className="font-black shrink-0">{l.status === 'sent' ? '✓' : '✗'}</span>
-                        <span className="truncate">{l.phone}</span>
+                  {[...stealthStatus.log].reverse().map((l, idx) => {
+                    const contact = formatLogContact(l.phone, l.name);
+                    return (
+                      <div key={idx} className={cn("px-2 py-1.5 rounded-lg text-[9px]", l.status === 'sent' ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-600')}>
+                        <div className="flex items-center gap-1">
+                          <span className="font-black shrink-0">{l.status === 'sent' ? '✓' : '✗'}</span>
+                          <span className="font-bold truncate">{contact.name}</span>
+                        </div>
+                        <div className="ml-4 mt-0.5 flex items-center gap-1 text-[8px] text-zinc-400">
+                          <span className="font-mono truncate">+{contact.phone}</span>
+                          {l.account && <span className="shrink-0">через {l.account}</span>}
+                        </div>
+                        {l.error && <div className="text-[8px] text-red-400 mt-0.5 ml-4 truncate">{friendlyError(l.error)}</div>}
                       </div>
-                      {l.error && <div className="text-[8px] text-red-400 mt-0.5 truncate">{friendlyError(l.error)}</div>}
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -1562,6 +1628,7 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
                   </span>
                   <span className="text-[10px] font-bold text-zinc-700 truncate">{l.name}</span>
                 </div>
+                <p className="text-[9px] text-zinc-400 mt-0.5 ml-4 font-mono truncate">+{normalizeBroadcastPhone(l.phone)}</p>
                 {l.error && <p className="text-[9px] text-red-400 mt-0.5 ml-4 truncate">{friendlyError(l.error)}</p>}
               </div>
             ))}
