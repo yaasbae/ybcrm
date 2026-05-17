@@ -1083,6 +1083,15 @@ app.post('/api/broadcast/stealth-stop', (_req, res) => {
   res.json({ success: true });
 });
 
+app.post('/api/broadcast/stealth-clear', async (_req, res) => {
+  stealthJob = {
+    status: 'idle', total: 0, sent: 0, failed: 0, checked: 0, currentIndex: 0,
+    currentAccount: '', delayMinutes: 2, startedAt: '', stopRequested: false, log: []
+  };
+  await saveStealthProgress();
+  res.json({ success: true });
+});
+
 app.get('/api/broadcast/stealth-status', async (_req, res) => {
   if (stealthJob.status === 'idle' && db) {
     const snap = await getDoc(doc(db, 'settings', 'stealth_job')).catch(() => null);

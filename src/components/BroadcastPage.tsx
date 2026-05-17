@@ -69,7 +69,7 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
   const [accountStats, setAccountStats] = useState<Map<string, number>>(new Map()); // phone → sent count
   const [activeTab, setActiveTab] = useState<'compose' | 'settings'>('compose');
   const [isLoadingClients, setIsLoadingClients] = useState(true);
-  const [visibleClientCount, setVisibleClientCount] = useState(10);
+  const [visibleClientCount, setVisibleClientCount] = useState(50);
   const [lastSelectedClientIndex, setLastSelectedClientIndex] = useState<number | null>(null);
   const [search, setSearch] = useState('');
   const [images, setImages] = useState<File[]>([]);
@@ -723,6 +723,9 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
       return map;
     }, new Map<string, number>())
   );
+  const lastStealthErrors = (stealthStatus?.log || [])
+    .filter(entry => entry.status !== 'sent' && entry.error)
+    .slice(-3);
   const formatLogContact = (phone: string, fallbackName?: string) => {
     const normalized = normalizeBroadcastPhone(phone);
     const client = clientByPhone.get(normalized);
@@ -1279,23 +1282,23 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
 
               {/* Фильтр: не отправляли / отправляли */}
               <div className="flex flex-wrap gap-1 p-1 bg-zinc-100 rounded-xl w-full sm:w-fit">
-                <button onClick={() => { setClientFilter('all'); setSelectedBroadcast(null); setSelected(new Set()); setVisibleClientCount(10); setLastSelectedClientIndex(null); }}
+                <button onClick={() => { setClientFilter('all'); setSelectedBroadcast(null); setSelected(new Set()); setVisibleClientCount(50); setLastSelectedClientIndex(null); }}
                   className={cn("px-3 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all",
                     clientFilter === 'all' ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-400 hover:text-zinc-700")}>
                   Все ({clients.length})
                 </button>
-                <button onClick={() => { setClientFilter('unsent'); setSelectedBroadcast(null); setSelected(new Set()); setVisibleClientCount(10); setLastSelectedClientIndex(null); }}
+                <button onClick={() => { setClientFilter('unsent'); setSelectedBroadcast(null); setSelected(new Set()); setVisibleClientCount(50); setLastSelectedClientIndex(null); }}
                   className={cn("px-3 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all",
                     clientFilter === 'unsent' ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-400 hover:text-zinc-700")}>
                   Не отправляли
                 </button>
-                <button onClick={() => { setClientFilter('sent'); setSelectedBroadcast(null); setSelected(new Set()); setVisibleClientCount(10); setLastSelectedClientIndex(null); }}
+                <button onClick={() => { setClientFilter('sent'); setSelectedBroadcast(null); setSelected(new Set()); setVisibleClientCount(50); setLastSelectedClientIndex(null); }}
                   className={cn("px-3 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all",
                     clientFilter === 'sent' ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-400 hover:text-zinc-700")}>
                   Отправляли
                 </button>
                 {noTelegramPhones.size > 0 && (
-                  <button onClick={() => { setClientFilter('no_tg'); setSelected(new Set()); setVisibleClientCount(10); setLastSelectedClientIndex(null); }}
+                  <button onClick={() => { setClientFilter('no_tg'); setSelected(new Set()); setVisibleClientCount(50); setLastSelectedClientIndex(null); }}
                     className={cn("px-3 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all",
                       clientFilter === 'no_tg' ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-400 hover:text-zinc-700")}>
                     Нет TG ({noTelegramPhones.size})
@@ -1353,7 +1356,7 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
                 <input
                   type="text"
                   value={search}
-                  onChange={e => { setSearch(e.target.value); setVisibleClientCount(10); setLastSelectedClientIndex(null); }}
+                  onChange={e => { setSearch(e.target.value); setVisibleClientCount(50); setLastSelectedClientIndex(null); }}
                   placeholder="Поиск по имени или телефону..."
                   className="w-full bg-zinc-50 border border-zinc-200 rounded-xl pl-8 pr-4 py-2 text-[11px] focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 transition-all"
                 />
@@ -1432,18 +1435,18 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
                       </div>
                     );
                   })}
-                  {filteredClients.length > 10 && (
+                  {filteredClients.length > 50 && (
                     <button
                       onClick={() => {
-                        if (visibleClientCount >= filteredClients.length) setVisibleClientCount(10);
-                        else setVisibleClientCount(prev => Math.min(prev + 10, filteredClients.length));
+                        if (visibleClientCount >= filteredClients.length) setVisibleClientCount(50);
+                        else setVisibleClientCount(prev => Math.min(prev + 50, filteredClients.length));
                       }}
                       className="w-full py-2.5 text-[9px] font-black text-zinc-400 hover:text-zinc-700 uppercase tracking-widest flex items-center justify-center gap-1 bg-zinc-50"
                     >
                       {visibleClientCount >= filteredClients.length ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
                       {visibleClientCount >= filteredClients.length
-                        ? 'Свернуть до 10'
-                        : `Показать ещё ${Math.min(10, filteredClients.length - visibleClientCount)}`}
+                        ? 'Свернуть до 50'
+                        : `Показать ещё ${Math.min(50, filteredClients.length - visibleClientCount)}`}
                     </button>
                   )}
                 </div>
@@ -1572,6 +1575,28 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
                     Продолжить с позиции {stealthStatus.checked}
                   </button>
                 </div>
+              )}
+              {lastStealthErrors.length > 0 && (
+                <div className="border-t border-violet-50 pt-2 space-y-1">
+                  <p className="text-[8px] font-black text-red-400 uppercase tracking-widest text-center">Последние ошибки</p>
+                  {lastStealthErrors.map((entry, idx) => (
+                    <div key={idx} className="rounded-lg bg-red-50 px-2 py-1 text-[8px] font-semibold text-red-500">
+                      +{normalizeBroadcastPhone(entry.phone)} · {friendlyError(entry.error || '')}
+                    </div>
+                  ))}
+                </div>
+              )}
+              {['done', 'stopped', 'error'].includes(stealthStatus.status) && (
+                <button
+                  onClick={async () => {
+                    await fetch('/api/broadcast/stealth-clear', { method: 'POST' }).catch(() => {});
+                    setStealthStatus(null);
+                    setSendLog([]);
+                  }}
+                  className="w-full py-1.5 bg-zinc-100 text-zinc-500 rounded-lg text-[9px] font-black hover:bg-zinc-200 transition-all"
+                >
+                  Очистить статус
+                </button>
               )}
               {stealthStatus.log && stealthStatus.log.length > 0 && (
                 <div className="border-t border-violet-50 pt-2 space-y-1 max-h-48 overflow-y-auto">
