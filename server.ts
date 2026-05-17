@@ -2457,8 +2457,10 @@ async function geminiGenerateImage(
 ): Promise<Buffer> {
   if (!CONTENT_GEMINI_KEY) throw new Error("GEMINI_API_KEY не задан");
   const hasReferenceImages = (images?.length ?? 0) > 0;
-  // img2img: короткий таймаут — если Gemini не берёт запрос, он висит до таймаута, потом retry
-  const timeoutMs = hasReferenceImages ? 90000 : 240000;
+  const timeoutMs = hasReferenceImages
+    ? imageSize === '4K' ? 240000 : imageSize === '2K' ? 180000 : 120000
+    : 240000;
+  const maxAttempts = hasReferenceImages && imageSize !== '1K' ? 2 : 3;
   const ai = new GoogleGenAI({ apiKey: CONTENT_GEMINI_KEY, httpOptions: { timeout: timeoutMs } });
 
   const parts: any[] = [{ text: prompt }];
@@ -2472,7 +2474,7 @@ async function geminiGenerateImage(
   const imgConfig = hasReferenceImages ? { imageSize } : { imageSize, aspectRatio };
 
   let lastError: Error = new Error("Gemini не вернул картинку");
-  for (let attempt = 1; attempt <= 3; attempt++) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
       console.log(`[gemini-image] attempt ${attempt}, images=${images?.length ?? 0}, size=${imageSize}, ratio=${hasReferenceImages ? 'n/a(img2img)' : aspectRatio}, timeout=${timeoutMs / 1000}s`);
       const imgRes = await ai.models.generateContent({
@@ -2492,10 +2494,13 @@ async function geminiGenerateImage(
       const msg = e?.message || '';
       console.error(`[gemini-image] attempt ${attempt} error: ${msg.slice(0, 200)}`);
       // "aborted" — API нестабилен, retry обычно помогает (подтверждено логами)
-      const isRetriable = msg.includes('503') || msg.includes('UNAVAILABLE') || msg.includes('high demand') || msg.includes('aborted');
-      if (isRetriable && attempt < 3) {
+      const isRetriable = msg.includes('503') || msg.includes('UNAVAILABLE') || msg.includes('high demand') || msg.toLowerCase().includes('aborted');
+      if (isRetriable && attempt < maxAttempts) {
         await new Promise(r => setTimeout(r, 5000 * attempt));
         continue;
+      }
+      if (msg.toLowerCase().includes('aborted')) {
+        throw new Error(`Gemini не успел сгенерировать ${imageSize} по фото. Попробуй 1K или более короткий промпт.`);
       }
       throw e;
     }
