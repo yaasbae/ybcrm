@@ -51,6 +51,7 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [message, setMessage] = useState('');
   const [isSending, setIsSending] = useState(false);
+  const [sendDebug, setSendDebug] = useState('');
   const [sendIntervalMinutes, setSendIntervalMinutes] = useState<2 | 5 | 10>(2);
   const [messageVariants, setMessageVariants] = useState<string[]>([]);
   const [isGeneratingVariants, setIsGeneratingVariants] = useState(false);
@@ -75,6 +76,7 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
   const [images, setImages] = useState<File[]>([]);
   const [imagePreviews, setImagePreviews] = useState<string[]>([]);
   const [contactButton, setContactButton] = useState(true);
+  const [isConfigLoaded, setIsConfigLoaded] = useState(false);
   const [clientFilter, setClientFilter] = useState<'all' | 'unsent' | 'sent' | 'no_tg'>('unsent');
 
   // Telegram auth state
@@ -394,16 +396,17 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
       if (d.message) setMessage(d.message);
       if (typeof d.contactButton === 'boolean') setContactButton(d.contactButton);
       if ([2, 5, 10].includes(d.sendIntervalMinutes)) setSendIntervalMinutes(d.sendIntervalMinutes);
-    }).catch(() => {});
+    }).catch(() => {}).finally(() => setIsConfigLoaded(true));
   }, []);
 
   // Авто-сохранение настроек рассылки в Firestore (дебаунс 1.5 сек)
   useEffect(() => {
+    if (!isConfigLoaded) return;
     const timer = setTimeout(() => {
       setDoc(doc(db, 'settings', 'broadcast_config'), { message, messageVariants, contactButton, sendIntervalMinutes }).catch(() => {});
     }, 1500);
     return () => clearTimeout(timer);
-  }, [message, messageVariants, contactButton, sendIntervalMinutes]);
+  }, [isConfigLoaded, message, messageVariants, contactButton, sendIntervalMinutes]);
 
   const handleSelectFirst = (count: number) => {
     setSelected(new Set(filteredPhones.slice(0, count)));
@@ -633,6 +636,7 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
   const handleSend = async () => {
     if (!message.trim() || selected.size === 0 || !tgStatus?.authorized) return;
     setIsSending(true);
+    setSendDebug(`Готовлю рассылку: ${selected.size} клиентов, фото: ${images.length}`);
     setResult(null);
     setSendLog([]);
 
@@ -644,36 +648,64 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
       const allVariants = [message, ...messageVariants].filter(Boolean);
       const imageFiles: Array<{ base64: string; name: string }> = [];
       for (const img of images) {
-        const base64 = await new Promise<string>(res => {
+        setSendDebug(`Обрабатываю фото: ${img.name}`);
+        const base64 = await new Promise<string>((resolve, reject) => {
           const canvas = document.createElement('canvas');
           const imgEl = new window.Image();
           const url = URL.createObjectURL(img);
-          imgEl.onload = () => {
-            const MAX = 1280;
-            let w = imgEl.width, h = imgEl.height;
-            if (w > MAX || h > MAX) {
-              if (w > h) { h = Math.round(h * MAX / w); w = MAX; }
-              else { w = Math.round(w * MAX / h); h = MAX; }
-            }
-            canvas.width = w; canvas.height = h;
-            canvas.getContext('2d')!.drawImage(imgEl, 0, 0, w, h);
+          const timeout = window.setTimeout(() => {
             URL.revokeObjectURL(url);
-            res(canvas.toDataURL('image/jpeg', 0.85).split(',')[1]);
+            reject(new Error(`Фото "${img.name}" не прочиталось. Попробуй JPG/PNG или отправь без фото.`));
+          }, 15000);
+          imgEl.onload = () => {
+            try {
+              window.clearTimeout(timeout);
+              const MAX = 1280;
+              let w = imgEl.width, h = imgEl.height;
+              if (w > MAX || h > MAX) {
+                if (w > h) { h = Math.round(h * MAX / w); w = MAX; }
+                else { w = Math.round(w * MAX / h); h = MAX; }
+              }
+              canvas.width = w; canvas.height = h;
+              const ctx = canvas.getContext('2d');
+              if (!ctx) throw new Error('Canvas недоступен');
+              ctx.drawImage(imgEl, 0, 0, w, h);
+              URL.revokeObjectURL(url);
+              resolve(canvas.toDataURL('image/jpeg', 0.85).split(',')[1]);
+            } catch (err: any) {
+              URL.revokeObjectURL(url);
+              reject(new Error(`Не удалось подготовить фото "${img.name}": ${err.message}`));
+            }
+          };
+          imgEl.onerror = () => {
+            window.clearTimeout(timeout);
+            URL.revokeObjectURL(url);
+            reject(new Error(`Не удалось прочитать фото "${img.name}". Попробуй JPG/PNG или отправь без фото.`));
           };
           imgEl.src = url;
         });
         imageFiles.push({ base64, name: img.name.replace(/\.[^.]+$/, '.jpg') });
       }
+      setSendDebug(`Запускаю API: ${phones.length} номеров`);
       const response = await fetch('/api/broadcast/stealth-start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ phones, messageVariants: allVariants, images: imageFiles, contactButton, delayMinutes: sendIntervalMinutes })
       });
-      const data = await response.json();
+      const raw = await response.text();
+      let data: any = {};
+      try {
+        data = raw ? JSON.parse(raw) : {};
+      } catch {
+        throw new Error(`Сервер вернул не JSON: ${raw.slice(0, 160) || response.status}`);
+      }
+      if (!response.ok) throw new Error(data.error || `Ошибка API ${response.status}`);
       if (data.error) throw new Error(data.error);
       setStealthStatus({ status: 'running', sent: 0, failed: 0, checked: 0, total: data.total, delayMinutes: data.delayMinutes || sendIntervalMinutes });
+      setSendDebug(`Запущено: ${data.total} номеров`);
     } catch (e: any) {
       setResult({ error: e.message });
+      setSendDebug(`Ошибка: ${e.message}`);
       setIsSending(false);
     } finally {
       // Фоновая рассылка сама обновит состояние через polling.
@@ -1155,6 +1187,15 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
                   <div className="flex items-center gap-1.5 text-[9px] font-bold text-amber-600">
                     <AlertCircle size={11} />
                     {sendDisabledReason}
+                  </div>
+                )}
+                {sendDebug && (
+                  <div className={cn(
+                    "flex items-center gap-1.5 text-[9px] font-bold",
+                    sendDebug.startsWith('Ошибка') ? "text-red-500" : "text-blue-500"
+                  )}>
+                    {isSending && !sendDebug.startsWith('Ошибка') ? <Loader2 size={11} className="animate-spin" /> : <AlertCircle size={11} />}
+                    {sendDebug}
                   </div>
                 )}
               </div>
