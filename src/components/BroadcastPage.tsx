@@ -708,6 +708,13 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
   const allFilteredSelected = filteredPhones.length > 0 && selectedFilteredCount === filteredPhones.length;
   const someFilteredSelected = selectedFilteredCount > 0 && !allFilteredSelected;
   const visibleClients = useMemo(() => filteredClients.slice(0, visibleClientCount), [filteredClients, visibleClientCount]);
+  const sendDisabledReason = useMemo(() => {
+    if (!tgStatus.authorized) return 'Сначала подключи Telegram аккаунт';
+    if (!message.trim()) return 'Напиши текст сообщения';
+    if (selected.size === 0) return 'Выбери клиентов для рассылки';
+    if (isSending) return 'Рассылка уже идет';
+    return '';
+  }, [isSending, message, selected.size, tgStatus.authorized]);
   const clientByPhone = useMemo(() => {
     const map = new Map<string, any>();
     clients.forEach(client => {
@@ -1135,14 +1142,22 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
 
             {/* Sticky кнопка отправить */}
             <div className="sticky top-12 z-10 bg-white border-b border-zinc-100 px-4 py-3 flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
-              <button
-                onClick={handleSend}
-                disabled={isSending || selected.size === 0 || !message.trim() || !tgStatus.authorized}
-                className="flex-1 py-2.5 bg-blue-500 text-white rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-blue-600 transition-all flex items-center justify-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed shadow-md shadow-blue-500/20"
-              >
-                {isSending ? <Loader2 size={13} className="animate-spin" /> : <Send size={13} />}
-                {isSending ? 'Отправляем...' : `Отправить${selected.size > 0 ? ` (${selected.size})` : ''}`}
-              </button>
+              <div className="flex-1 space-y-1">
+                <button
+                  onClick={handleSend}
+                  disabled={!!sendDisabledReason}
+                  className="w-full py-2.5 bg-blue-500 text-white rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-blue-600 transition-all flex items-center justify-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed shadow-md shadow-blue-500/20"
+                >
+                  {isSending ? <Loader2 size={13} className="animate-spin" /> : <Send size={13} />}
+                  {isSending ? 'Отправляем...' : `Отправить${selected.size > 0 ? ` (${selected.size})` : ''}`}
+                </button>
+                {sendDisabledReason && !isSending && (
+                  <div className="flex items-center gap-1.5 text-[9px] font-bold text-amber-600">
+                    <AlertCircle size={11} />
+                    {sendDisabledReason}
+                  </div>
+                )}
+              </div>
               <div className="grid grid-cols-3 gap-1 sm:flex sm:shrink-0 p-1 bg-zinc-100 rounded-xl">
                 {([2, 5, 10] as const).map(minutes => (
                   <button
