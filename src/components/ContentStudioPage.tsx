@@ -1,9 +1,9 @@
 import React, { useState, useRef } from 'react';
-import { Wand2, Image, Video, FileText, Download, Loader2, Sparkles, Upload, X } from 'lucide-react';
+import { Wand2, Image, Video, FileText, Download, Loader2, Sparkles, Upload, X, Send, Copy, Check } from 'lucide-react';
 import { motion } from 'motion/react';
 import { cn } from '../lib/utils';
 
-type Tab = 'image' | 'video' | 'prompt';
+type Tab = 'image' | 'video' | 'prompt' | 'broadcast';
 
 export const ContentStudioPage: React.FC = () => {
   const [tab, setTab] = useState<Tab>('image');
@@ -36,9 +36,34 @@ export const ContentStudioPage: React.FC = () => {
   const [prmImageResult, setPrmImageResult] = useState('');
   const [prmVideoResult, setPrmVideoResult] = useState('');
 
-  function compressImage(file: File, maxPx = 1920): Promise<{ base64: string; mimeType: string; objectUrl: string }> {
+  // ── Broadcast tab ──
+  const [brText, setBrText] = useState('');
+  const [brResult, setBrResult] = useState('');
+  const [brVariants, setBrVariants] = useState<string[]>([]);
+  const [brLoading, setBrLoading] = useState<'copy' | 'variants' | null>(null);
+  const [copiedText, setCopiedText] = useState<string | null>(null);
+
+  async function normalizeImageFile(file: File): Promise<Blob> {
+    const isHeic = /hei[cf]/i.test(file.type) || /\.(heic|heif)$/i.test(file.name);
+    if (!isHeic) return file;
+    const { default: heic2any } = await import('heic2any');
+    const converted = await heic2any({ blob: file, toType: 'image/jpeg', quality: 0.9 });
+    return Array.isArray(converted) ? converted[0] : converted;
+  }
+
+  function getApiError(text: string, fallback = 'Ошибка сервера') {
+    try {
+      const json = JSON.parse(text);
+      return json.error || json.message || text || fallback;
+    } catch {
+      return text || fallback;
+    }
+  }
+
+  async function compressImage(file: File, maxPx = 1920): Promise<{ base64: string; mimeType: string; objectUrl: string }> {
+    const source = await normalizeImageFile(file);
     return new Promise((resolve, reject) => {
-      const objectUrl = URL.createObjectURL(file);
+      const objectUrl = URL.createObjectURL(source);
       const img = new window.Image();
       img.onload = () => {
         const { naturalWidth: w, naturalHeight: h } = img;
@@ -57,12 +82,11 @@ export const ContentStudioPage: React.FC = () => {
   }
 
   async function handleImgFileChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    if (imgSourceImages.length >= 3) return;
+    const files = Array.from(e.target.files || []).slice(0, 3 - imgSourceImages.length);
+    if (!files.length) return;
     try {
-      const compressed = await compressImage(file);
-      setImgSourceImages(prev => [...prev, compressed]);
+      const compressed = await Promise.all(files.map(file => compressImage(file)));
+      setImgSourceImages(prev => [...prev, ...compressed].slice(0, 3));
       setImgResult(null);
     } catch (err: any) {
       alert('Ошибка загрузки фото: ' + err.message);
@@ -102,7 +126,7 @@ export const ContentStudioPage: React.FC = () => {
         body: JSON.stringify({ text, mode }),
         signal: controller.signal,
       });
-      if (!r.ok) throw new Error(await r.text());
+      if (!r.ok) throw new Error(getApiError(await r.text()));
       const d = await r.json();
       if (d.prompt) setPrompt(d.prompt);
     } catch (e: any) {
@@ -130,9 +154,7 @@ export const ContentStudioPage: React.FC = () => {
         signal: controller.signal,
       });
       if (!r.ok) {
-        const text = await r.text();
-        let msg = text;
-        try { const j = JSON.parse(text); msg = j.error || text; } catch {}
+        let msg = getApiError(await r.text());
         if (msg.includes('high demand') || msg.includes('UNAVAILABLE') || msg.includes('503'))
           msg = 'Gemini перегружен, попробуй через минуту';
         throw new Error(msg);
@@ -153,11 +175,14 @@ export const ContentStudioPage: React.FC = () => {
     if (!prompt.trim()) return;
     setVidLoading('video');
     setVidResult(null);
+    const controller = new AbortController();
+    const tid = setTimeout(() => controller.abort(), 480000);
     try {
       const r = await fetch('/api/content-studio/video', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prompt, imageBase64: vidImage?.base64, imageMimeType: vidImage?.mimeType, duration: vidDuration, aspectRatio: vidAspectRatio, mode: vidMode }),
+        signal: controller.signal,
       });
       let d: any;
       try { d = await r.json(); } catch { throw new Error('Сервер не ответил — вероятно таймаут. Попробуй ещё раз.'); }
@@ -165,7 +190,10 @@ export const ContentStudioPage: React.FC = () => {
       if (!d.videoUrl) throw new Error(d.error || 'Нет ссылки на видео');
       setVidResult(d.videoUrl);
     } catch (e: any) {
-      alert('Ошибка: ' + e.message);
+      const msg = e.name === 'AbortError' ? 'Видео генерируется слишком долго. Попробуй Fast или 5 секунд.' : e.message;
+      alert('Ошибка: ' + msg);
+    } finally {
+      clearTimeout(tid);
     }
     setVidLoading(null);
   }
@@ -186,10 +214,58 @@ export const ContentStudioPage: React.FC = () => {
     setPrmLoading(false);
   }
 
+  async function handleWriteBroadcast() {
+    if (!brText.trim()) return;
+    setBrLoading('copy');
+    setBrResult('');
+    setBrVariants([]);
+    try {
+      const r = await fetch('/api/content-studio/broadcast-copy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: brText }),
+      });
+      const d = await r.json();
+      if (d.error) throw new Error(d.error);
+      if (d.message) setBrResult(d.message);
+    } catch (e: any) {
+      alert('Не удалось написать текст рассылки: ' + e.message);
+    } finally {
+      setBrLoading(null);
+    }
+  }
+
+  async function handleWriteBroadcastVariants() {
+    const base = brResult || brText;
+    if (!base.trim()) return;
+    setBrLoading('variants');
+    try {
+      const r = await fetch('/api/ai/generate-variants', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: base }),
+      });
+      const d = await r.json();
+      if (d.error) throw new Error(d.error);
+      setBrVariants(d.variants || []);
+    } catch (e: any) {
+      alert('Не удалось сделать варианты: ' + e.message);
+    } finally {
+      setBrLoading(null);
+    }
+  }
+
+  async function copyText(text: string, key: string) {
+    await navigator.clipboard.writeText(text);
+    setCopiedText(key);
+    window.setTimeout(() => setCopiedText(current => current === key ? null : current), 1200);
+  }
+
   const tabs: { id: Tab; label: string; icon: React.ReactNode }[] = [
     { id: 'image', label: 'Картинка', icon: <Image size={14} /> },
     { id: 'video', label: 'Видео', icon: <Video size={14} /> },
     { id: 'prompt', label: 'Промпт', icon: <FileText size={14} /> },
+    { id: 'broadcast', label: 'Рассылка', icon: <Send size={14} /> },
   ];
 
   return (
@@ -244,7 +320,7 @@ export const ContentStudioPage: React.FC = () => {
                   </button>
                 )}
               </div>
-              <input ref={imgFileRef} type="file" accept="image/*,image/heic,image/heif" className="hidden" onChange={handleImgFileChange} />
+              <input ref={imgFileRef} type="file" accept="image/*,image/heic,image/heif" multiple className="hidden" onChange={handleImgFileChange} />
             </div>
 
             {/* Промпт */}
@@ -270,7 +346,7 @@ export const ContentStudioPage: React.FC = () => {
               className="flex items-center gap-1.5 text-xs text-purple-600 font-medium hover:text-purple-800 disabled:opacity-40 transition-colors"
             >
               {imgLoading === 'prompt' ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />}
-              Улучшить промпт через Gemini 2.0
+              Улучшить промпт через Gemini 3.1
             </button>
 
             {imgPrompt && (
@@ -298,13 +374,15 @@ export const ContentStudioPage: React.FC = () => {
                 <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Формат</label>
                 <div className="grid grid-cols-2 gap-1">
                   {(['1:1', '4:5', '9:16', '16:9'] as const).map(r => (
-                    <button key={r} onClick={() => setImgAspectRatio(r)}
+                    <button key={r} onClick={() => setImgAspectRatio(r)} disabled={imgSourceImages.length > 0}
                       className={cn('py-1.5 rounded-lg text-xs font-semibold border transition-colors',
-                        imgAspectRatio === r ? 'bg-purple-600 text-white border-purple-600' : 'border-slate-200 text-slate-600 hover:border-purple-300')}>
+                        imgAspectRatio === r && imgSourceImages.length === 0 ? 'bg-purple-600 text-white border-purple-600' : 'border-slate-200 text-slate-600 hover:border-purple-300',
+                          imgSourceImages.length > 0 && 'opacity-40 cursor-not-allowed')}>
                       {r}
                     </button>
                   ))}
                 </div>
+                {imgSourceImages.length > 0 && <p className="text-xs text-slate-400">Формат работает только без фото</p>}
               </div>
             </div>
 
@@ -370,7 +448,7 @@ export const ContentStudioPage: React.FC = () => {
               className="flex items-center gap-1.5 text-xs text-purple-600 font-medium hover:text-purple-800 disabled:opacity-40 transition-colors"
             >
               {vidLoading === 'prompt' ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />}
-              Улучшить промпт через Gemini 2.0
+              Улучшить промпт через Gemini 3.1
             </button>
 
             {vidPrompt && (
@@ -494,6 +572,78 @@ export const ContentStudioPage: React.FC = () => {
                   </button>
                 </div>
               )}
+            </motion.div>
+          )}
+        </motion.div>
+      )}
+
+      {/* ── Broadcast Tab ── */}
+      {tab === 'broadcast' && (
+        <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="space-y-4">
+          <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-5 space-y-4">
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Тема рассылки</label>
+                <span className="text-xs text-slate-400">{(brResult || brText).length}/160</span>
+              </div>
+              <textarea
+                value={brText}
+                onChange={e => { setBrText(e.target.value); setBrResult(''); setBrVariants([]); }}
+                rows={3}
+                className="w-full border border-slate-200 rounded-xl px-3 py-2 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-purple-300"
+                placeholder="Например: новая коллекция, осталось мало размеров, предложить написать менеджеру"
+              />
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <button
+                onClick={handleWriteBroadcast}
+                disabled={!!brLoading || !brText.trim()}
+                className="w-full bg-purple-600 text-white rounded-xl py-2.5 text-sm font-semibold flex items-center justify-center gap-2 hover:bg-purple-700 disabled:opacity-40 transition-colors"
+              >
+                {brLoading === 'copy' ? <><Loader2 size={14} className="animate-spin" /> Пишу...</> : <><Sparkles size={14} /> Написать текст</>}
+              </button>
+              <button
+                onClick={handleWriteBroadcastVariants}
+                disabled={!!brLoading || !(brResult || brText).trim()}
+                className="w-full bg-slate-900 text-white rounded-xl py-2.5 text-sm font-semibold flex items-center justify-center gap-2 hover:bg-slate-800 disabled:opacity-40 transition-colors"
+              >
+                {brLoading === 'variants' ? <><Loader2 size={14} className="animate-spin" /> Генерирую...</> : <><Send size={14} /> 9 вариантов</>}
+              </button>
+            </div>
+          </div>
+
+          {brResult && (
+            <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} className="bg-white rounded-2xl border border-slate-100 shadow-sm p-5 space-y-3">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-500 uppercase">
+                  <Send size={12} /> Готовый текст
+                </div>
+                <button onClick={() => copyText(brResult, 'main')} className="flex items-center gap-1 text-xs text-purple-600 hover:text-purple-800 font-medium transition-colors">
+                  {copiedText === 'main' ? <Check size={13} /> : <Copy size={13} />}
+                  {copiedText === 'main' ? 'Скопировано' : 'Скопировать'}
+                </button>
+              </div>
+              <p className="text-sm text-slate-700 leading-relaxed">{brResult}</p>
+            </motion.div>
+          )}
+
+          {brVariants.length > 0 && (
+            <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} className="bg-white rounded-2xl border border-slate-100 shadow-sm p-5 space-y-3">
+              <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-500 uppercase">
+                <Sparkles size={12} /> Варианты для ротации
+              </div>
+              <div className="space-y-2">
+                {brVariants.map((variant, i) => (
+                  <div key={`${variant}-${i}`} className="flex items-start gap-2 rounded-xl bg-violet-50 border border-violet-100 p-3">
+                    <span className="text-xs font-bold text-violet-500 w-5 shrink-0">{i + 1}</span>
+                    <p className="text-xs text-slate-700 leading-relaxed flex-1">{variant}</p>
+                    <button onClick={() => copyText(variant, `variant-${i}`)} className="text-violet-500 hover:text-violet-700 transition-colors shrink-0">
+                      {copiedText === `variant-${i}` ? <Check size={14} /> : <Copy size={14} />}
+                    </button>
+                  </div>
+                ))}
+              </div>
             </motion.div>
           )}
         </motion.div>

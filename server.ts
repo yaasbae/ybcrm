@@ -2360,6 +2360,7 @@ async function falGenerateVideo(
   aspectRatio: "16:9" | "9:16" | "1:1" = "16:9",
   mode: "fast" | "standard" = "standard",
 ): Promise<string> {
+  if (!FAL_API_KEY) throw new Error("FAL_API_KEY не задан");
   const base = mode === "fast"
     ? "https://queue.fal.run/bytedance/seedance-2.0/fast/image-to-video"
     : "https://queue.fal.run/bytedance/seedance-2.0/image-to-video";
@@ -2370,18 +2371,31 @@ async function falGenerateVideo(
     headers: { "Authorization": `Key ${FAL_API_KEY}`, "Content-Type": "application/json" },
     body: JSON.stringify(body)
   });
-  const subData = await sub.json() as any;
+  const subText = await sub.text();
+  if (!sub.ok) throw new Error(`fal.ai Seedance submit ${sub.status}: ${subText.slice(0, 300)}`);
+  let subData: any;
+  try {
+    subData = JSON.parse(subText);
+  } catch {
+    throw new Error(`fal.ai Seedance: неверный ответ запуска ${subText.slice(0, 200)}`);
+  }
   const request_id = subData.request_id;
   if (!request_id) throw new Error(`fal.ai Seedance: ${JSON.stringify(subData)}`);
   const statusUrl = subData.status_url || `${base}/requests/${request_id}/status`;
   const resultUrl = subData.response_url || `${base}/requests/${request_id}`;
   for (let i = 0; i < 90; i++) {
     await new Promise(r => setTimeout(r, 4000));
-    const statusData = await (await fetch(statusUrl, { headers: { "Authorization": `Key ${FAL_API_KEY}` } })).json() as any;
+    const statusRes = await fetch(statusUrl, { headers: { "Authorization": `Key ${FAL_API_KEY}` } });
+    const statusText = await statusRes.text();
+    if (!statusRes.ok) throw new Error(`Seedance status ${statusRes.status}: ${statusText.slice(0, 300)}`);
+    const statusData = JSON.parse(statusText) as any;
     if (statusData.status === "FAILED") throw new Error("Seedance: генерация провалилась");
     if (statusData.status === "COMPLETED") {
-      const result = await (await fetch(resultUrl, { headers: { "Authorization": `Key ${FAL_API_KEY}` } })).json() as any;
-      const videoUrl = result.video?.url ?? result.output?.video?.url ?? result.output?.url ?? "";
+      const resultRes = await fetch(resultUrl, { headers: { "Authorization": `Key ${FAL_API_KEY}` } });
+      const resultText = await resultRes.text();
+      if (!resultRes.ok) throw new Error(`Seedance result ${resultRes.status}: ${resultText.slice(0, 300)}`);
+      const result = JSON.parse(resultText) as any;
+      const videoUrl = result.video?.url ?? result.output?.video?.url ?? result.output?.url ?? result.data?.video?.url ?? result.data?.url ?? "";
       if (!videoUrl) throw new Error(`Seedance: нет URL видео. Ответ: ${JSON.stringify(result).slice(0, 200)}`);
       return videoUrl;
     }
@@ -2396,6 +2410,7 @@ async function geminiGenerateImage(
   imageSize: '1K' | '2K' | '4K' = '1K',
   aspectRatio: string = '1:1',
 ): Promise<Buffer> {
+  if (!CONTENT_GEMINI_KEY) throw new Error("GEMINI_API_KEY не задан");
   const hasReferenceImages = (images?.length ?? 0) > 0;
   // img2img: короткий таймаут — если Gemini не берёт запрос, он висит до таймаута, потом retry
   const timeoutMs = hasReferenceImages ? 90000 : 240000;
@@ -2444,6 +2459,7 @@ async function geminiGenerateImage(
 }
 
 async function geminiWritePrompt(userText: string, mode: 'image' | 'video'): Promise<string> {
+  if (!CONTENT_GEMINI_KEY) throw new Error("GEMINI_API_KEY не задан");
   const ai = new GoogleGenAI({ apiKey: CONTENT_GEMINI_KEY, httpOptions: { timeout: 25000 } });
   const instruction = mode === 'image'
     ? `Write a detailed photorealistic image generation prompt in English for: "${userText}". Only the prompt, max 80 words.`
@@ -2452,6 +2468,28 @@ async function geminiWritePrompt(userText: string, mode: 'image' | 'video'): Pro
     setTimeout(() => reject(new Error('Gemini timeout — попробуй ещё раз')), 25000));
   const res = await Promise.race([
     ai.models.generateContent({ model: "gemini-3.1-flash-image-preview", contents: instruction }),
+    timeout,
+  ]);
+  return (res as any).candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? userText;
+}
+
+async function geminiWriteBroadcastCopy(userText: string): Promise<string> {
+  if (!CONTENT_GEMINI_KEY) throw new Error("GEMINI_API_KEY не задан");
+  const ai = new GoogleGenAI({ apiKey: CONTENT_GEMINI_KEY, httpOptions: { timeout: 25000 } });
+  const instruction = `Напиши один короткий продающий текст для клиентской рассылки в Telegram или мессенджере.
+Требования:
+- русский язык
+- до 160 символов
+- живой тон без канцелярита
+- без агрессивного спама и кликбейта
+- можно 1-2 эмодзи
+- ответь только готовым текстом, без пояснений
+
+Тема: ${userText}`;
+  const timeout = new Promise<never>((_, reject) =>
+    setTimeout(() => reject(new Error('Gemini timeout — попробуй ещё раз')), 25000));
+  const res = await Promise.race([
+    ai.models.generateContent({ model: "gemini-2.0-flash", contents: instruction }),
     timeout,
   ]);
   return (res as any).candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? userText;
@@ -2662,6 +2700,17 @@ app.post("/api/content-studio/prompt", async (req, res) => {
   }
 });
 
+app.post("/api/content-studio/broadcast-copy", async (req, res) => {
+  try {
+    const { text } = req.body as { text: string };
+    if (!text?.trim()) return res.status(400).json({ error: "text required" });
+    const message = await geminiWriteBroadcastCopy(text.trim());
+    res.json({ message });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.post("/api/content-studio/image", async (req, res) => {
   try {
     const { prompt, imageBase64, imageMimeType, images, quality, aspectRatio } = req.body as {
@@ -2688,6 +2737,7 @@ app.post("/api/content-studio/video", async (req, res) => {
       duration?: "5" | "10"; aspectRatio?: "16:9" | "9:16" | "1:1"; mode?: "fast" | "standard";
     };
     if (!prompt) return res.status(400).json({ error: "prompt required" });
+    if (!imageBase64) return res.status(400).json({ error: "image required" });
     const imageUrl = imageBase64 ? `data:${imageMimeType || "image/jpeg"};base64,${imageBase64}` : undefined;
     const videoUrl = await falGenerateVideo(prompt, imageUrl, duration || "5", aspectRatio || "16:9", mode || "standard");
     res.json({ videoUrl });
