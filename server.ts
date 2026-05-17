@@ -22,7 +22,6 @@ import sharp from "sharp";
 
 const _require = createRequire(import.meta.url);
 const Database = _require("better-sqlite3");
-const heicConvert = _require("heic-convert") as (opts: { buffer: Buffer; format: "JPEG" | "PNG"; quality?: number }) => Promise<Buffer | Uint8Array | ArrayBuffer>;
 
 // DC server address map for Pyrogram sessions (no server_address column)
 const TG_DC_SERVERS: Record<number, string> = {
@@ -2391,38 +2390,8 @@ const cntStates = new Map<number, CntState>();
 
 const CONTENT_MENU = Markup.keyboard([
   ['🖼 Сгенерировать картинку', '🎬 Видео из картинки'],
-  ['✏️ Написать промпт', '❓ Помощь'],
+  ['✏️ Написать промпт'],
 ]).resize();
-
-const CONTENT_CANCEL_MENU = Markup.keyboard([
-  ['❌ Отмена', '🏠 Меню'],
-]).resize();
-
-const CONTENT_HELP_TEXT = `Я умею делать контент:
-
-🖼 Картинка — можно с нуля или по 1-3 фото.
-🎬 Видео — сначала пришли картинку, потом промпт.
-✏️ Промпт — напишу промпт для картинки и видео.
-
-Пользуйся кнопками снизу. Если запутался — нажми «🏠 Меню» или напиши /menu.`;
-
-function isHeicImage(mimeType = "", buf?: Buffer): boolean {
-  const mime = mimeType.toLowerCase();
-  if (mime.includes("heic") || mime.includes("heif")) return true;
-  const header = buf?.subarray(0, 32).toString("latin1").toLowerCase() || "";
-  return header.includes("ftypheic") || header.includes("ftypheix") || header.includes("ftyphevc") || header.includes("ftyphevx") || header.includes("ftypmif1");
-}
-
-async function normalizeContentImageBuffer(buf: Buffer, mimeType = "image/jpeg"): Promise<{ buf: Buffer; mimeType: string }> {
-  if (!isHeicImage(mimeType, buf)) return { buf, mimeType: mimeType || "image/jpeg" };
-  try {
-    const converted = await heicConvert({ buffer: buf, format: "JPEG", quality: 0.92 });
-    return { buf: Buffer.from(converted as any), mimeType: "image/jpeg" };
-  } catch (e: any) {
-    console.error("[content-bot] HEIC convert error:", e?.message || e);
-    throw new Error("Не удалось конвертировать HEIC/HEIF в JPEG. Отправь фото как обычное изображение или JPG/PNG.");
-  }
-}
 
 async function falGenerateVideo(
   prompt: string,
@@ -2485,15 +2454,14 @@ async function geminiGenerateImage(
 ): Promise<Buffer> {
   if (!CONTENT_GEMINI_KEY) throw new Error("GEMINI_API_KEY не задан");
   const hasReferenceImages = (images?.length ?? 0) > 0;
-  const timeoutMs = hasReferenceImages ? 150000 : 240000;
-  const maxAttempts = hasReferenceImages ? 1 : 3;
+  // img2img: короткий таймаут — если Gemini не берёт запрос, он висит до таймаута, потом retry
+  const timeoutMs = hasReferenceImages ? 90000 : 240000;
   const ai = new GoogleGenAI({ apiKey: CONTENT_GEMINI_KEY, httpOptions: { timeout: timeoutMs } });
 
   const parts: any[] = [{ text: prompt }];
   for (const img of images ?? []) {
-    const raw = Buffer.from(img.base64, 'base64');
-    const normalized = await normalizeContentImageBuffer(raw, img.mimeType);
-    const resized = await sharp(normalized.buf).resize(768, 768, { fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 80 }).toBuffer();
+    const buf = Buffer.from(img.base64, 'base64');
+    const resized = await sharp(buf).resize(768, 768, { fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 80 }).toBuffer();
     parts.push({ inlineData: { mimeType: 'image/jpeg', data: resized.toString('base64') } });
   }
 
@@ -2501,7 +2469,7 @@ async function geminiGenerateImage(
   const imgConfig = hasReferenceImages ? { imageSize } : { imageSize, aspectRatio };
 
   let lastError: Error = new Error("Gemini не вернул картинку");
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+  for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       console.log(`[gemini-image] attempt ${attempt}, images=${images?.length ?? 0}, size=${imageSize}, ratio=${hasReferenceImages ? 'n/a(img2img)' : aspectRatio}, timeout=${timeoutMs / 1000}s`);
       const imgRes = await ai.models.generateContent({
@@ -2521,13 +2489,10 @@ async function geminiGenerateImage(
       const msg = e?.message || '';
       console.error(`[gemini-image] attempt ${attempt} error: ${msg.slice(0, 200)}`);
       // "aborted" — API нестабилен, retry обычно помогает (подтверждено логами)
-      const isRetriable = msg.includes('503') || msg.includes('UNAVAILABLE') || msg.includes('high demand') || msg.toLowerCase().includes('aborted');
-      if (isRetriable && attempt < maxAttempts) {
+      const isRetriable = msg.includes('503') || msg.includes('UNAVAILABLE') || msg.includes('high demand') || msg.includes('aborted');
+      if (isRetriable && attempt < 3) {
         await new Promise(r => setTimeout(r, 5000 * attempt));
         continue;
-      }
-      if (msg.toLowerCase().includes('aborted')) {
-        throw new Error(`Gemini не успел завершить генерацию ${imageSize} по фото. Попробуй запустить ещё раз.`);
       }
       throw e;
     }
@@ -2577,45 +2542,27 @@ function startContentBot() {
 
   const bot = new Telegraf(CONTENT_BOT_TOKEN, { handlerTimeout: 600_000 });
 
-  const sendMenu = (ctx: any, text = "Выбери действие:") => ctx.reply(text, CONTENT_MENU);
-  const resetToMenu = async (ctx: any, text = "Ок, вернул в главное меню.") => {
-    cntStates.set(ctx.from.id, { type: 'idle' });
-    await sendMenu(ctx, text);
-  };
+  const sendMenu = (ctx: any) => ctx.reply("Выбери действие:", CONTENT_MENU);
 
   bot.start(async (ctx) => {
     cntStates.set(ctx.from.id, { type: 'idle' });
-    await ctx.reply(`Привет! Я генерирую контент через Gemini Flash 3.1 и Seedance 2.0.\n\n${CONTENT_HELP_TEXT}`, CONTENT_MENU);
+    await ctx.reply("Привет! 👋 Я генерирую контент через Gemini Flash 3.1 и Seedance 2.0", CONTENT_MENU);
   });
-
-  bot.telegram.setMyCommands([
-    { command: 'start', description: 'Запустить бота' },
-    { command: 'menu', description: 'Показать главное меню' },
-    { command: 'help', description: 'Что умеет бот' },
-    { command: 'cancel', description: 'Отменить текущее действие' },
-  ]).catch((e: any) => console.warn('[content-bot] setMyCommands error:', e?.message || e));
-
-  bot.command('menu', async (ctx) => resetToMenu(ctx, "Главное меню:"));
-  bot.command('cancel', async (ctx) => resetToMenu(ctx));
-  bot.command('help', async (ctx) => ctx.reply(CONTENT_HELP_TEXT, CONTENT_MENU));
-  bot.hears(['🏠 Меню', 'Меню'], async (ctx) => resetToMenu(ctx, "Главное меню:"));
-  bot.hears(['❌ Отмена', 'Отмена'], async (ctx) => resetToMenu(ctx));
-  bot.hears('❓ Помощь', async (ctx) => ctx.reply(CONTENT_HELP_TEXT, CONTENT_MENU));
 
   // ── Кнопки меню ──
   bot.hears('🖼 Сгенерировать картинку', async (ctx) => {
     cntStates.set(ctx.from.id, { type: 'waiting_img_input', photos: [] });
-    await ctx.reply("Отправь 1-3 фото для редактирования или сразу напиши тему для генерации с нуля.", CONTENT_CANCEL_MENU);
+    await ctx.reply("Отправь 1-3 фото (для редактирования/объединения) или сразу напиши тему:");
   });
 
   bot.hears('🎬 Видео из картинки', async (ctx) => {
     cntStates.set(ctx.from.id, { type: 'waiting_vid_image' });
-    await ctx.reply("Отправь картинку-основу для видео.", CONTENT_CANCEL_MENU);
+    await ctx.reply("Отправь картинку:");
   });
 
   bot.hears('✏️ Написать промпт', async (ctx) => {
     cntStates.set(ctx.from.id, { type: 'waiting_custom_prompt' });
-    await ctx.reply("Введи тему, а я напишу промпт для картинки и видео.", CONTENT_CANCEL_MENU);
+    await ctx.reply("Введи тему — сгенерирую промпт для картинки и видео:");
   });
 
   // ── Фото ──
@@ -2630,17 +2577,17 @@ function startContentBot() {
       const photos = [...state.photos, { base64, mimeType: 'image/jpeg' }];
       if (photos.length >= 3) {
         cntStates.set(ctx.from.id, { type: 'waiting_img_input', photos });
-        await ctx.reply(`Фото ${photos.length}/3 получено. Максимум достигнут — теперь напиши, что сделать с фото.`, CONTENT_CANCEL_MENU);
+        await ctx.reply(`📸 Фото ${photos.length}/3 получено. Максимум достигнут — напиши промпт:`);
       } else {
         cntStates.set(ctx.from.id, { type: 'waiting_img_input', photos });
-        await ctx.reply(`Фото ${photos.length}/3 получено. Можешь прислать ещё фото или написать, что сделать.`, CONTENT_CANCEL_MENU);
+        await ctx.reply(`📸 Фото ${photos.length}/3 получено. Ещё фото или напиши промпт:`);
       }
       return;
     }
 
     if (state.type === 'waiting_vid_image') {
       cntStates.set(ctx.from.id, { type: 'waiting_vid_prompt', imageBase64: base64 });
-      await ctx.reply("Картинка получена. Теперь введи тему или промпт для видео.", CONTENT_CANCEL_MENU);
+      await ctx.reply("Картинка получена! Теперь введи тему или промпт для видео:");
       return;
     }
 
@@ -2654,22 +2601,21 @@ function startContentBot() {
     const state = cntStates.get(ctx.from.id) ?? { type: 'idle' };
     const fileUrl = await ctx.telegram.getFileLink(doc.file_id);
     const imgBuf = Buffer.from(await (await fetch(fileUrl.toString())).arrayBuffer());
-    const normalized = await normalizeContentImageBuffer(imgBuf, doc.mime_type || 'image/jpeg');
-    const base64 = normalized.buf.toString("base64");
+    const base64 = imgBuf.toString("base64");
 
     if (state.type === 'waiting_img_input') {
-      const photos = [...state.photos, { base64, mimeType: normalized.mimeType }];
+      const photos = [...state.photos, { base64, mimeType: doc.mime_type || 'image/jpeg' }];
       cntStates.set(ctx.from.id, { type: 'waiting_img_input', photos });
       if (photos.length >= 3) {
-        await ctx.reply(`Фото ${photos.length}/3 получено. Максимум — теперь напиши, что сделать с фото.`, CONTENT_CANCEL_MENU);
+        await ctx.reply(`📸 Фото ${photos.length}/3 получено. Максимум — напиши промпт:`);
       } else {
-        await ctx.reply(`Фото ${photos.length}/3 получено. Можешь прислать ещё фото или написать, что сделать.`, CONTENT_CANCEL_MENU);
+        await ctx.reply(`📸 Фото ${photos.length}/3 получено. Ещё фото или напиши промпт:`);
       }
       return;
     }
     if (state.type === 'waiting_vid_image') {
       cntStates.set(ctx.from.id, { type: 'waiting_vid_prompt', imageBase64: base64 });
-      await ctx.reply("Картинка получена. Теперь введи тему или промпт для видео.", CONTENT_CANCEL_MENU);
+      await ctx.reply("Картинка получена! Теперь введи тему или промпт для видео:");
       return;
     }
     return sendMenu(ctx);
@@ -2686,7 +2632,7 @@ function startContentBot() {
       cntStates.set(ctx.from.id, { type: 'waiting_img_quality', photos: state.photos, prompt: text });
       const photoNote = state.photos.length > 0 ? ` (${state.photos.length} фото)` : '';
       await ctx.reply(`📝 Промпт${photoNote}:\n${text}\n\nВыбери качество:`,
-        Markup.keyboard([['🖼 1K (быстро)', '🖼 2K', '🖼 4K'], ['❌ Отмена', '🏠 Меню']]).resize());
+        Markup.keyboard([['🖼 1K (быстро)', '🖼 2K', '🖼 4K']]).resize());
       return;
     }
 
@@ -2695,7 +2641,7 @@ function startContentBot() {
       const imageSize: '1K' | '2K' | '4K' = text.includes('4K') ? '4K' : text.includes('2K') ? '2K' : '1K';
       cntStates.set(ctx.from.id, { type: 'waiting_img_format', photos: state.photos, prompt: state.prompt, imageSize });
       await ctx.reply(`Качество: ${imageSize}\n\nВыбери формат:`,
-        Markup.keyboard([['1:1', '4:5'], ['9:16', '16:9'], ['❌ Отмена', '🏠 Меню']]).resize());
+        Markup.keyboard([['1:1', '4:5'], ['9:16', '16:9']]).resize());
       return;
     }
 
@@ -2726,7 +2672,6 @@ function startContentBot() {
         Markup.keyboard([
           ['⚡ 5 сек (Fast)', '⚡ 10 сек (Fast)'],
           ['🎬 5 сек (Standard)', '🎬 10 сек (Standard)'],
-          ['❌ Отмена', '🏠 Меню'],
         ]).resize());
       return;
     }
@@ -2777,27 +2722,16 @@ function startContentBot() {
     return sendMenu(ctx);
   });
 
-  let stopped = false;
-  const launchWithRetry = async () => {
-    while (!stopped) {
-      try {
-        await bot.launch();
-        console.log("[content-bot] polling запущен");
-        return;
-      } catch (e: any) {
-        if (e.message?.includes('409')) {
-          console.log('[content-bot] 409 Conflict — ждём старый инстанс и пробуем снова через 15 сек');
-          await new Promise(r => setTimeout(r, 15000));
-          continue;
-        }
-        console.error('[content-bot] launch error:', e.message);
-        await new Promise(r => setTimeout(r, 15000));
-      }
+  bot.launch().catch((e: any) => {
+    if (e.message?.includes('409')) {
+      console.log('[content-bot] 409 Conflict — другой инстанс уже опрашивает Telegram, polling пропущен');
+    } else {
+      console.error('[content-bot] launch error:', e.message);
     }
-  };
-  launchWithRetry();
+  });
   process.once("SIGINT", () => bot.stop("SIGINT"));
-  process.once("SIGTERM", () => { stopped = true; bot.stop("SIGTERM"); });
+  process.once("SIGTERM", () => bot.stop("SIGTERM"));
+  console.log("[content-bot] запущен");
 }
 
 startContentBot();
