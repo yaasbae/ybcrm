@@ -22,6 +22,7 @@ import sharp from "sharp";
 
 const _require = createRequire(import.meta.url);
 const Database = _require("better-sqlite3");
+const heicConvert = _require("heic-convert") as (opts: { buffer: Buffer; format: "JPEG" | "PNG"; quality?: number }) => Promise<Buffer | Uint8Array | ArrayBuffer>;
 
 // DC server address map for Pyrogram sessions (no server_address column)
 const TG_DC_SERVERS: Record<number, string> = {
@@ -2405,6 +2406,24 @@ const CONTENT_HELP_TEXT = `Я умею делать контент:
 
 Пользуйся кнопками снизу. Если запутался — нажми «🏠 Меню» или напиши /menu.`;
 
+function isHeicImage(mimeType = "", buf?: Buffer): boolean {
+  const mime = mimeType.toLowerCase();
+  if (mime.includes("heic") || mime.includes("heif")) return true;
+  const header = buf?.subarray(0, 32).toString("latin1").toLowerCase() || "";
+  return header.includes("ftypheic") || header.includes("ftypheix") || header.includes("ftyphevc") || header.includes("ftyphevx") || header.includes("ftypmif1");
+}
+
+async function normalizeContentImageBuffer(buf: Buffer, mimeType = "image/jpeg"): Promise<{ buf: Buffer; mimeType: string }> {
+  if (!isHeicImage(mimeType, buf)) return { buf, mimeType: mimeType || "image/jpeg" };
+  try {
+    const converted = await heicConvert({ buffer: buf, format: "JPEG", quality: 0.92 });
+    return { buf: Buffer.from(converted as any), mimeType: "image/jpeg" };
+  } catch (e: any) {
+    console.error("[content-bot] HEIC convert error:", e?.message || e);
+    throw new Error("Не удалось конвертировать HEIC/HEIF в JPEG. Отправь фото как обычное изображение или JPG/PNG.");
+  }
+}
+
 async function falGenerateVideo(
   prompt: string,
   imageUrl?: string,
@@ -2472,8 +2491,9 @@ async function geminiGenerateImage(
 
   const parts: any[] = [{ text: prompt }];
   for (const img of images ?? []) {
-    const buf = Buffer.from(img.base64, 'base64');
-    const resized = await sharp(buf).resize(768, 768, { fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 80 }).toBuffer();
+    const raw = Buffer.from(img.base64, 'base64');
+    const normalized = await normalizeContentImageBuffer(raw, img.mimeType);
+    const resized = await sharp(normalized.buf).resize(768, 768, { fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 80 }).toBuffer();
     parts.push({ inlineData: { mimeType: 'image/jpeg', data: resized.toString('base64') } });
   }
 
@@ -2634,10 +2654,11 @@ function startContentBot() {
     const state = cntStates.get(ctx.from.id) ?? { type: 'idle' };
     const fileUrl = await ctx.telegram.getFileLink(doc.file_id);
     const imgBuf = Buffer.from(await (await fetch(fileUrl.toString())).arrayBuffer());
-    const base64 = imgBuf.toString("base64");
+    const normalized = await normalizeContentImageBuffer(imgBuf, doc.mime_type || 'image/jpeg');
+    const base64 = normalized.buf.toString("base64");
 
     if (state.type === 'waiting_img_input') {
-      const photos = [...state.photos, { base64, mimeType: doc.mime_type || 'image/jpeg' }];
+      const photos = [...state.photos, { base64, mimeType: normalized.mimeType }];
       cntStates.set(ctx.from.id, { type: 'waiting_img_input', photos });
       if (photos.length >= 3) {
         await ctx.reply(`Фото ${photos.length}/3 получено. Максимум — теперь напиши, что сделать с фото.`, CONTENT_CANCEL_MENU);
