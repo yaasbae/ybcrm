@@ -2381,6 +2381,7 @@ async function falGenerateVideo(
   }
   const request_id = subData.request_id;
   if (!request_id) throw new Error(`fal.ai Seedance: ${JSON.stringify(subData)}`);
+  console.log(`[seedance] submitted request_id=${request_id}, mode=${mode}, duration=${duration}, ratio=${aspectRatio}`);
   const statusUrl = subData.status_url || `${base}/requests/${request_id}/status`;
   const resultUrl = subData.response_url || `${base}/requests/${request_id}`;
   for (let i = 0; i < 90; i++) {
@@ -2397,6 +2398,7 @@ async function falGenerateVideo(
       const result = JSON.parse(resultText) as any;
       const videoUrl = result.video?.url ?? result.output?.video?.url ?? result.output?.url ?? result.data?.video?.url ?? result.data?.url ?? "";
       if (!videoUrl) throw new Error(`Seedance: нет URL видео. Ответ: ${JSON.stringify(result).slice(0, 200)}`);
+      console.log(`[seedance] completed request_id=${request_id}, videoUrl=${String(videoUrl).slice(0, 160)}`);
       return videoUrl;
     }
   }
@@ -2644,8 +2646,15 @@ function startContentBot() {
       try {
         const imageDataUrl = `data:image/jpeg;base64,${state.imageBase64}`;
         const videoUrl = await falGenerateVideo(state.prompt, imageDataUrl, duration, "9:16", mode);
+        const videoRes = await fetch(videoUrl);
+        if (!videoRes.ok) throw new Error(`Не удалось скачать готовое видео: ${videoRes.status}`);
+        const videoBuf = Buffer.from(await videoRes.arrayBuffer());
+        console.log(`[content-bot] downloaded seedance video bytes=${videoBuf.length}, type=${videoRes.headers.get('content-type') || 'unknown'}`);
         await ctx.telegram.deleteMessage(ctx.chat.id, msg.message_id).catch(() => {});
-        await ctx.replyWithDocument({ url: videoUrl }, { caption: `📝 ${state.prompt}`, ...CONTENT_MENU });
+        await ctx.replyWithVideo(
+          { source: videoBuf, filename: `seedance-${duration}s.mp4` },
+          { caption: `📝 ${state.prompt}`, ...CONTENT_MENU },
+        );
       } catch (e: any) {
         await ctx.telegram.deleteMessage(ctx.chat.id, msg.message_id).catch(() => {});
         await ctx.reply(`❌ Ошибка видео: ${(e as any).message}`, CONTENT_MENU);
