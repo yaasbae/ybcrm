@@ -2457,10 +2457,8 @@ async function geminiGenerateImage(
 ): Promise<Buffer> {
   if (!CONTENT_GEMINI_KEY) throw new Error("GEMINI_API_KEY не задан");
   const hasReferenceImages = (images?.length ?? 0) > 0;
-  const timeoutMs = hasReferenceImages
-    ? imageSize === '4K' ? 240000 : imageSize === '2K' ? 180000 : 120000
-    : 240000;
-  const maxAttempts = hasReferenceImages && imageSize !== '1K' ? 2 : 3;
+  const timeoutMs = hasReferenceImages ? 150000 : 240000;
+  const maxAttempts = hasReferenceImages ? 1 : 3;
   const ai = new GoogleGenAI({ apiKey: CONTENT_GEMINI_KEY, httpOptions: { timeout: timeoutMs } });
 
   const parts: any[] = [{ text: prompt }];
@@ -2500,7 +2498,7 @@ async function geminiGenerateImage(
         continue;
       }
       if (msg.toLowerCase().includes('aborted')) {
-        throw new Error(`Gemini не успел сгенерировать ${imageSize} по фото. Попробуй 1K или более короткий промпт.`);
+        throw new Error(`Gemini не успел завершить генерацию ${imageSize} по фото. Попробуй запустить ещё раз.`);
       }
       throw e;
     }
