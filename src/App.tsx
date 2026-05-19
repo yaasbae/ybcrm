@@ -26,6 +26,40 @@ import {
 } from "lucide-react";
 import { motion } from "motion/react";
 
+type AppView = 'home' | 'calculator' | 'analytics' | 'orders' | 'clients' | 'marketing' | 'order-form' | 'products' | 'ai-agent' | 'public-product' | 'public-payment' | 'finance' | 'handbook' | 'broadcast' | 'bot' | 'content' | 'studio';
+
+const viewRoutes: Record<Exclude<AppView, 'public-product' | 'public-payment'>, string> = {
+  home: '/',
+  calculator: '/calculator',
+  analytics: '/analytics',
+  orders: '/orders',
+  clients: '/clients',
+  marketing: '/marketing',
+  'order-form': '/orders/new',
+  products: '/products',
+  'ai-agent': '/ai-agent',
+  finance: '/finance',
+  handbook: '/handbook',
+  broadcast: '/broadcast',
+  bot: '/bot',
+  content: '/content',
+  studio: '/studio',
+};
+
+const routeViews = Object.fromEntries(
+  Object.entries(viewRoutes).map(([view, route]) => [route, view])
+) as Record<string, AppView>;
+
+function getViewFromPath(path: string): AppView {
+  if (path.startsWith('/broadcast')) return 'broadcast';
+  return routeViews[path] || 'home';
+}
+
+function getRouteForView(view: AppView): string {
+  if (view === 'public-product' || view === 'public-payment') return window.location.pathname;
+  return viewRoutes[view] || '/';
+}
+
 interface ErrorBoundaryProps {
   children: ReactNode;
 }
@@ -72,7 +106,7 @@ class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
 }
 
 export default function App() {
-  const [view, setView] = useState<'home' | 'calculator' | 'analytics' | 'orders' | 'clients' | 'marketing' | 'order-form' | 'products' | 'ai-agent' | 'public-product' | 'public-payment' | 'finance' | 'handbook' | 'broadcast' | 'bot' | 'content' | 'studio'>('home');
+  const [view, setView] = useState<AppView>(() => getViewFromPath(window.location.pathname));
   const [publicProductId, setPublicProductId] = useState<string | null>(null);
   const [publicPaymentOrderId, setPublicPaymentOrderId] = useState<string | null>(null);
   const [activeSheetId, setActiveSheetId] = useState<string>('1xTDxiOMqJR-KBnLdbikKp2--ZBQBDkII-xMCoO2lSbM');
@@ -92,33 +126,48 @@ export default function App() {
 
   useEffect(() => {
     // Check for public product link in URL
-    const path = window.location.pathname;
-    if (path.startsWith('/product/')) {
+    const applyPath = () => {
+      const path = window.location.pathname;
+      if (path.startsWith('/product/')) {
       const id = path.split('/product/')[1];
       if (id) {
         setPublicProductId(id);
         setView('public-product');
       }
-    }
-    if (path.startsWith('/pay/')) {
-      const id = path.split('/pay/')[1];
-      if (id) {
-        setPublicPaymentOrderId(id);
-        setView('public-payment');
+        return;
       }
-    }
+      if (path.startsWith('/pay/')) {
+        const id = path.split('/pay/')[1];
+        if (id) {
+          setPublicPaymentOrderId(id);
+          setView('public-payment');
+        }
+        return;
+      }
+      setPublicProductId(null);
+      setPublicPaymentOrderId(null);
+      setView(getViewFromPath(path));
+    };
+
+    applyPath();
+    window.addEventListener('popstate', applyPath);
 
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       setUser(currentUser);
       setAuthLoading(false);
     });
-    return () => unsubscribe();
+    return () => {
+      window.removeEventListener('popstate', applyPath);
+      unsubscribe();
+    };
   }, []);
 
-  const handleNavigate = (newView: 'calculator' | 'analytics' | 'orders' | 'clients' | 'marketing' | 'order-form' | 'products' | 'ai-agent' | 'finance' | 'handbook' | 'broadcast' | 'bot' | 'content', clientData?: any) => {
+  const handleNavigate = (newView: 'calculator' | 'analytics' | 'orders' | 'clients' | 'marketing' | 'order-form' | 'products' | 'ai-agent' | 'finance' | 'handbook' | 'broadcast' | 'bot' | 'content' | 'studio' | 'home', clientData?: any) => {
     if (clientData) setInitialClient(clientData);
     else setInitialClient(null);
     setView(newView);
+    const route = getRouteForView(newView);
+    if (window.location.pathname !== route) window.history.pushState({}, '', route);
   };
 
   if (authLoading) {
@@ -260,7 +309,7 @@ export default function App() {
         <header className="sticky top-0 z-[100] h-12" style={{ backgroundColor: 'var(--card-bg)', borderBottom: '1px solid var(--card-border)' }}>
           <div className="max-w-7xl mx-auto px-4 h-full flex items-center justify-between">
             <div className="flex items-center gap-6">
-              <div className="flex items-center gap-2 cursor-pointer shrink-0" onClick={() => setView('home')}>
+              <div className="flex items-center gap-2 cursor-pointer shrink-0" onClick={() => handleNavigate('home')}>
                 <div className="w-7 h-7 bg-zinc-900 rounded-lg flex items-center justify-center text-white font-semibold text-[10px]">Y.</div>
                 <span className="hidden md:inline text-[10px] font-semibold tracking-widest uppercase" style={{ color: 'var(--text)' }}>YBCRM</span>
               </div>
@@ -377,9 +426,9 @@ export default function App() {
             <UnitCalculator
               onNavigateToAnalytics={(id) => {
                 setActiveSheetId(id);
-                setView('analytics');
+                handleNavigate('analytics');
               }}
-              onBack={() => setView('home')}
+              onBack={() => handleNavigate('home')}
             />
           )}
 
@@ -387,7 +436,7 @@ export default function App() {
             <AnalyticsDashboard
               sheetId={activeSheetId}
               initialTab="analytics"
-              onBack={() => setView('home')}
+              onBack={() => handleNavigate('home')}
               onNavigate={handleNavigate}
               selectedMonth={selectedMonth}
               setSelectedMonth={setSelectedMonth}
@@ -397,7 +446,7 @@ export default function App() {
           {view === 'orders' && (
             <OrdersPage
               sheetId={activeSheetId}
-              onBack={() => setView('home')}
+              onBack={() => handleNavigate('home')}
               onNavigate={handleNavigate}
               selectedMonth={selectedMonth}
               setSelectedMonth={setSelectedMonth}
@@ -407,7 +456,7 @@ export default function App() {
           {view === 'clients' && (
             <ClientsPage
               sheetId={activeSheetId}
-              onBack={() => setView('home')}
+              onBack={() => handleNavigate('home')}
               onNavigate={handleNavigate}
               selectedMonth={selectedMonth}
               setSelectedMonth={setSelectedMonth}
@@ -417,7 +466,7 @@ export default function App() {
           {view === 'marketing' && (
             <MarketingPage
               sheetId={activeSheetId}
-              onBack={() => setView('home')}
+              onBack={() => handleNavigate('home')}
               onNavigate={handleNavigate}
               selectedMonth={selectedMonth}
               setSelectedMonth={setSelectedMonth}
@@ -427,23 +476,23 @@ export default function App() {
           {view === 'order-form' && (
             <OrderForm 
               sheetId={activeSheetId}
-              onBack={() => setView('home')}
+              onBack={() => handleNavigate('home')}
               initialClient={initialClient}
             />
           )}
 
           {view === 'products' && (
             <Products 
-              onBack={() => setView('home')}
+              onBack={() => handleNavigate('home')}
             />
           )}
 
           {view === 'ai-agent' && (
-            <AISalesAgent onBack={() => setView('home')} />
+            <AISalesAgent onBack={() => handleNavigate('home')} />
           )}
 
           {view === 'finance' && (
-            <FinanceDashboard onBack={() => setView('home')} />
+            <FinanceDashboard onBack={() => handleNavigate('home')} />
           )}
 
           {view === 'handbook' && (
@@ -451,7 +500,7 @@ export default function App() {
           )}
 
           {view === 'broadcast' && (
-            <BroadcastPage sheetId={activeSheetId} />
+            <BroadcastPage sheetId={activeSheetId} initialTab={window.location.pathname.endsWith('/settings') ? 'settings' : 'compose'} />
           )}
 
           {view === 'bot' && (

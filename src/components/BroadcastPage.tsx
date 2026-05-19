@@ -7,7 +7,7 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '../lib/utils';
 import { db } from '../firebase';
-import { collection, getDocs, query, orderBy, setDoc, doc, getDoc } from 'firebase/firestore';
+import { collection, getDocs, query, orderBy, limit, setDoc, doc, getDoc } from 'firebase/firestore';
 
 interface TgAccount {
   phone: string;
@@ -21,7 +21,10 @@ interface TgStatus {
   accounts: TgAccount[];
 }
 
-interface Props { sheetId?: string; }
+interface Props {
+  sheetId?: string;
+  initialTab?: 'compose' | 'settings';
+}
 
 function friendlyError(err: string): string {
   if (!err) return '';
@@ -46,7 +49,7 @@ function normalizeBroadcastPhone(value: string): string {
   return digits.length === 11 && digits.startsWith('8') ? `7${digits.slice(1)}` : digits;
 }
 
-export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
+export const BroadcastPage: React.FC<Props> = ({ sheetId, initialTab = 'compose' }) => {
   const [clients, setClients] = useState<any[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [message, setMessage] = useState('');
@@ -68,7 +71,7 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
   const [result, setResult] = useState<any>(null);
   const [noTelegramPhones, setNoTelegramPhones] = useState<Map<string, string>>(new Map()); // phone → addedAt ISO
   const [accountStats, setAccountStats] = useState<Map<string, number>>(new Map()); // phone → sent count
-  const [activeTab, setActiveTab] = useState<'compose' | 'settings'>('compose');
+  const [activeTab, setActiveTab] = useState<'compose' | 'settings'>(initialTab);
   const [isLoadingClients, setIsLoadingClients] = useState(true);
   const [visibleClientCount, setVisibleClientCount] = useState(50);
   const [lastSelectedClientIndex, setLastSelectedClientIndex] = useState<number | null>(null);
@@ -102,6 +105,10 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
   const [proxyInputs, setProxyInputs] = useState<Record<string, string>>({});
   const [savingProxy, setSavingProxy] = useState<string | null>(null);
   const [savingActiveAccount, setSavingActiveAccount] = useState<string | null>(null);
+
+  useEffect(() => {
+    setActiveTab(initialTab);
+  }, [initialTab]);
 
   // Tochka Bank settings
   const [tochkaToken, setTochkaToken] = useState('');
@@ -303,7 +310,7 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
       try {
         const [contactsSnap, broadcastsSnap, noTgSnap, stealthSentSnap] = await Promise.all([
           getDocs(query(collection(db, 'contacts'), orderBy('totalSpent', 'desc'))),
-          getDocs(collection(db, 'broadcasts')),
+          getDocs(query(collection(db, 'broadcasts'), orderBy('sentAt', 'desc'), limit(30))),
           getDoc(doc(db, 'settings', 'no_telegram')),
           getDoc(doc(db, 'settings', 'stealth_sent')),
         ]);
@@ -790,7 +797,11 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId }) => {
           </div>
           <div className="flex gap-1 p-1 bg-zinc-100 rounded-xl">
             {(['compose', 'settings'] as const).map(tab => (
-              <button key={tab} onClick={() => setActiveTab(tab)}
+              <button key={tab} onClick={() => {
+                setActiveTab(tab);
+                const path = tab === 'settings' ? '/broadcast/settings' : '/broadcast';
+                if (window.location.pathname !== path) window.history.pushState({}, '', path);
+              }}
                 className={cn(
                   "px-3 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all",
                   activeTab === tab ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-400 hover:text-zinc-700"
