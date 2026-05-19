@@ -19,33 +19,49 @@ import { collection, getDocs, orderBy, query } from 'firebase/firestore';
 const STATUS_OPTIONS = ['Новый', 'В работе', 'Оплачен', 'Отгружен', 'Доставлен', 'Возврат', 'Отмена', 'Обмен'];
 const DELIVERY_OPTIONS = ['СДЭК', 'Почта РФ', 'Боксберри', 'Самовывоз', 'Курьер', 'DBS'];
 const SOURCE_OPTIONS = ['Instagram', 'WhatsApp', 'ТГ', 'Блогер', 'Контент', 'Сарафан', 'Повторный'];
+const RAW_COLOR_INDEX = 1;
+const RAW_SIZE_INDEX = 8;
+const RAW_REVENUE_INDEX = 14;
+const RAW_DELIVERY_INDEX = 15;
+const RAW_PAID_INDEX = 16;
+
+function getOrderPaymentDue(order: Pick<OrderData, 'revenue' | 'deliveryPrice' | 'paidAmount'>): number {
+  return Math.max(0, (order.revenue || 0) + (order.deliveryPrice || 0) - (order.paidAmount || 0));
+}
 
 const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string, field: string, value: any) => void }> = ({ order, updateOrderData }) => {
   const [loading, setLoading] = useState(false);
   const [paymentUrl, setPaymentUrl] = useState<string | null>(order.paymentUrl || null);
   const [copied, setCopied] = useState(false);
   const [showQr, setShowQr] = useState(false);
+  const [error, setError] = useState('');
 
   const pageUrl = `${window.location.origin}/pay/${order.orderId}`;
 
   const handleCreate = async () => {
     setLoading(true);
+    setError('');
     try {
+      const amount = getOrderPaymentDue(order);
+      if (amount <= 0) throw new Error('Остаток к оплате 0 ₽');
       const res = await fetch('/api/tochka/create-payment', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           orderId: order.orderId,
-          amount: order.revenue || 0,
+          amount,
           description: `Заказ #${order.orderId} ${order.item || ''}`,
         })
       });
       const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Не удалось создать счёт');
       if (data.paymentUrl) {
         setPaymentUrl(data.paymentUrl);
         updateOrderData(order.orderId, 'paymentUrl', data.paymentUrl);
       }
-    } catch {}
+    } catch (e: any) {
+      setError(e.message || 'Не удалось создать счёт');
+    }
     finally { setLoading(false); }
   };
 
@@ -57,14 +73,17 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
 
   if (!paymentUrl) {
     return (
-      <button
-        onClick={handleCreate}
-        disabled={loading}
-        className="mt-1.5 w-full text-[8px] font-black py-1 rounded-md border border-violet-200 bg-violet-50 text-violet-600 hover:bg-violet-500 hover:text-white hover:border-violet-500 transition-all flex items-center justify-center gap-1 disabled:opacity-50"
-      >
-        {loading ? <RefreshCcw size={8} className="animate-spin" /> : <QrCodeIcon size={8} />}
-        {loading ? 'Создаём...' : 'Создать счёт'}
-      </button>
+      <div className="mt-1.5">
+        <button
+          onClick={handleCreate}
+          disabled={loading}
+          className="w-full text-[8px] font-black py-1 rounded-md border border-violet-200 bg-violet-50 text-violet-600 hover:bg-violet-500 hover:text-white hover:border-violet-500 transition-all flex items-center justify-center gap-1 disabled:opacity-50"
+        >
+          {loading ? <RefreshCcw size={8} className="animate-spin" /> : <QrCodeIcon size={8} />}
+          {loading ? 'Создаём...' : 'Создать счёт'}
+        </button>
+        {error && <p className="mt-1 text-[8px] font-bold text-red-500">{error}</p>}
+      </div>
     );
   }
 
@@ -318,8 +337,8 @@ const OrderRow = React.memo(({
           className="w-full bg-transparent text-[12px] font-bold text-zinc-900 focus:bg-white focus:ring-1 focus:ring-blue-100 rounded-md px-2 py-1 outline-none mb-2 border border-transparent hover:border-zinc-100"
         />
         <div className="flex gap-2 mb-2">
-          {fieldInput('Цвет',   order.rawRow?.[1] || '', 'color-list',  (v) => updateOrderData(order.orderId, 'rawRow[1]', v))}
-          {fieldInput('Размер', order.rawRow?.[8] || '', 'size-list',   (v) => updateOrderData(order.orderId, 'rawRow[8]', v))}
+          {fieldInput('Цвет',   order.rawRow?.[RAW_COLOR_INDEX] || '', 'color-list',  (v) => updateOrderData(order.orderId, `rawRow[${RAW_COLOR_INDEX}]`, v))}
+          {fieldInput('Размер', order.rawRow?.[RAW_SIZE_INDEX] || '', 'size-list',   (v) => updateOrderData(order.orderId, `rawRow[${RAW_SIZE_INDEX}]`, v))}
           {fieldInput('Рост',   order.height  || '',     'height-list', (v) => updateOrderData(order.orderId, 'height', v))}
         </div>
         <div className="flex gap-2">
@@ -561,6 +580,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
   // QR / payment state after order creation
   const [createdOrderId, setCreatedOrderId] = useState<string | null>(null);
   const [createdPaymentUrl, setCreatedPaymentUrl] = useState<string | null>(null);
+  const [createdPaymentError, setCreatedPaymentError] = useState('');
   const [isCreatingQr, setIsCreatingQr] = useState(false);
   const [qrCopied, setQrCopied] = useState(false);
   const [tochkaConfigured, setTochkaConfigured] = useState(false);
@@ -947,10 +967,10 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                 />
                 <div className="relative">
                   <select
-                    value={newOrder.rawRow?.[1] || ''}
+                    value={newOrder.rawRow?.[RAW_COLOR_INDEX] || ''}
                     onChange={(e) => {
                       const nr = [...(newOrder.rawRow || Array(25).fill(''))];
-                      nr[1] = e.target.value;
+                      nr[RAW_COLOR_INDEX] = e.target.value;
                       setNewOrder({...newOrder, rawRow: nr});
                     }}
                     className="w-full bg-white border border-zinc-200 rounded-xl px-4 py-2.5 text-[11px] font-bold text-zinc-900 outline-none focus:ring-2 focus:ring-emerald-500/10 focus:border-emerald-500 transition-all shadow-sm appearance-none cursor-pointer"
@@ -962,10 +982,10 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                 </div>
                 <div className="relative">
                   <select
-                    value={newOrder.rawRow?.[12] || ''}
+                    value={newOrder.rawRow?.[RAW_SIZE_INDEX] || ''}
                     onChange={(e) => {
                       const nr = [...(newOrder.rawRow || Array(25).fill(''))];
-                      nr[12] = e.target.value;
+                      nr[RAW_SIZE_INDEX] = e.target.value;
                       setNewOrder({...newOrder, rawRow: nr});
                     }}
                     className="w-full bg-white border border-zinc-200 rounded-xl px-4 py-2.5 text-[11px] font-bold text-zinc-900 outline-none focus:ring-2 focus:ring-emerald-500/10 focus:border-emerald-500 transition-all shadow-sm appearance-none cursor-pointer"
@@ -1070,21 +1090,31 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                 if (!orderId) return;
                 setCreatedOrderId(orderId);
                 setCreatedPaymentUrl(null);
+                setCreatedPaymentError('');
                 if (tochkaConfigured) {
                   setIsCreatingQr(true);
                   try {
+                    const amount = getOrderPaymentDue({
+                      revenue: newOrder.revenue || 0,
+                      deliveryPrice: newOrder.deliveryPrice || 0,
+                      paidAmount: newOrder.paidAmount || 0,
+                    });
+                    if (amount <= 0) throw new Error('Остаток к оплате 0 ₽');
                     const res = await fetch('/api/tochka/create-payment', {
                       method: 'POST',
                       headers: { 'Content-Type': 'application/json' },
                       body: JSON.stringify({
                         orderId,
-                        amount: newOrder.revenue || 0,
+                        amount,
                         description: `Заказ #${newOrder.orderId} ${newOrder.item || ''}`,
                       })
                     });
                     const data = await res.json();
+                    if (!res.ok) throw new Error(data.error || 'Не удалось создать счёт');
                     if (data.paymentUrl) setCreatedPaymentUrl(data.paymentUrl);
-                  } catch {}
+                  } catch (e: any) {
+                    setCreatedPaymentError(e.message || 'Не удалось создать счёт');
+                  }
                   finally { setIsCreatingQr(false); }
                 }
               }}
@@ -1167,7 +1197,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                 </p>
               )}
               {!isCreatingQr && !createdPaymentUrl && tochkaConfigured && (
-                <p className="text-[10px] text-amber-600">Не удалось создать ссылку оплаты</p>
+                <p className="text-[10px] text-amber-600">{createdPaymentError || 'Не удалось создать ссылку оплаты'}</p>
               )}
             </motion.div>
           )}

@@ -26,6 +26,12 @@ interface ProductItem {
   productId?: string;
 }
 
+const RAW_COLOR_INDEX = 1;
+const RAW_SIZE_INDEX = 8;
+const RAW_REVENUE_INDEX = 14;
+const RAW_DELIVERY_INDEX = 15;
+const RAW_PAID_INDEX = 16;
+
 export const OrderForm: React.FC<OrderFormProps> = ({ onBack, sheetId, initialClient }) => {
   const [loading, setLoading] = useState(false);
   const [fetchingSuggestions, setFetchingSuggestions] = useState(false);
@@ -245,7 +251,14 @@ export const OrderForm: React.FC<OrderFormProps> = ({ onBack, sheetId, initialCl
       // Prepare data for Google Sheets
       const currentPrice = parseFloat(price) || 0;
       const currentPrepayment = parseFloat(prepaymentAmount) || 0;
-      const remainingAmount = currentPrice - currentPrepayment;
+      const currentShippingCost = parseFloat(shippingCost) || 0;
+      const remainingAmount = Math.max(0, currentPrice + currentShippingCost - currentPrepayment);
+      const rawRow = Array(30).fill('');
+      rawRow[RAW_COLOR_INDEX] = color;
+      rawRow[RAW_SIZE_INDEX] = size;
+      rawRow[RAW_REVENUE_INDEX] = String(currentPrice || '');
+      rawRow[RAW_DELIVERY_INDEX] = String(currentShippingCost || '');
+      rawRow[RAW_PAID_INDEX] = String(currentPrepayment || '');
 
       const formData = {
         orderNumber,
@@ -262,8 +275,10 @@ export const OrderForm: React.FC<OrderFormProps> = ({ onBack, sheetId, initialCl
         color,
         trackingNumber,
         shippingCost,
+        deliveryPrice: currentShippingCost,
         paymentType,
         price: currentPrice,
+        revenue: currentPrice,
         prepaymentAmount: currentPrepayment,
         remainingAmount: remainingAmount,
         paymentStatus: currentPrepayment >= currentPrice ? 'paid' : (currentPrepayment > 0 ? 'prepaid' : 'pending'),
@@ -292,7 +307,7 @@ export const OrderForm: React.FC<OrderFormProps> = ({ onBack, sheetId, initialCl
         date: new Date().toISOString(),
         deadlineDate: shipmentDate ? new Date(shipmentDate).toISOString() : new Date().toISOString(),
         revenue: currentPrice,
-        deliveryPrice: parseFloat(shippingCost) || 0,
+        deliveryPrice: currentShippingCost,
         paidAmount: currentPrepayment,
         clientName,
         clientPhone: phone,
@@ -309,7 +324,7 @@ export const OrderForm: React.FC<OrderFormProps> = ({ onBack, sheetId, initialCl
         isShipped: false,
         isLate: false,
         isOverdue: false,
-        rawRow: [color, '', '', '', '', '', '', '', size, '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', ''],
+        rawRow,
         height,
         manager,
         orderNumber,
@@ -379,7 +394,7 @@ export const OrderForm: React.FC<OrderFormProps> = ({ onBack, sheetId, initialCl
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           orderId: savedOrderId,
-          amount: parseFloat(price) || 0,
+          amount: Math.max(0, (parseFloat(price) || 0) + (parseFloat(shippingCost) || 0) - (parseFloat(prepaymentAmount) || 0)),
           description: `Заказ #${orderNumber} ${products.map(p => p.name).join(', ')}`,
         })
       });
@@ -957,7 +972,9 @@ export const OrderForm: React.FC<OrderFormProps> = ({ onBack, sheetId, initialCl
                   {!qrUrl ? (
                     <div className="space-y-2">
                       <p className="text-xs text-zinc-500">
-                        Сумма: <span className="font-bold text-zinc-900">{formatCurrency(parseFloat(price) || 0)}</span>
+                        Сумма: <span className="font-bold text-zinc-900">
+                          {formatCurrency(Math.max(0, (parseFloat(price) || 0) + (parseFloat(shippingCost) || 0) - (parseFloat(prepaymentAmount) || 0)))}
+                        </span>
                       </p>
                       <button
                         type="button"

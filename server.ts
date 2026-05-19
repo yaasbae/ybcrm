@@ -1936,7 +1936,8 @@ app.post('/api/tochka/save-token', async (req, res) => {
 // Создать ссылку/QR на оплату
 app.post('/api/tochka/create-payment', async (req, res) => {
   const { orderId, amount, description } = req.body;
-  if (!amount || !orderId) return res.status(400).json({ error: 'Нужны orderId и amount' });
+  const paymentAmount = Number(amount);
+  if (!orderId || !Number.isFinite(paymentAmount) || paymentAmount <= 0) return res.status(400).json({ error: 'Нужны orderId и amount больше 0' });
   if (!db) return res.status(503).json({ error: 'DB не подключена' });
   try {
     const token = await getTochkaToken();
@@ -1944,12 +1945,20 @@ app.post('/api/tochka/create-payment', async (req, res) => {
     const snap = await getDoc(doc(db, 'settings', 'tochka_api'));
     const customerCode = snap?.data()?.customerCode;
     const webhookUrl = process.env.SERVER_URL ? `${process.env.SERVER_URL}/api/tochka/webhook` : null;
+    console.log(`[tochka] create-payment start order=${orderId} amount=${paymentAmount}`);
+    await addDoc(collection(db, 'tochka_logs'), {
+      orderId,
+      amount: paymentAmount,
+      description: description || '',
+      status: 'request',
+      createdAt: new Date().toISOString(),
+    }).catch(() => {});
 
     const response = await axios.post(
       `${TOCHKA_API}/acquiring/v1.0/payments`,
       {
         customerCode,
-        amount: Math.round(parseFloat(amount) * 100) / 100,
+        amount: Math.round(paymentAmount * 100) / 100,
         purpose: description || `Оплата заказа ${orderId}`,
         redirectUrl: process.env.SERVER_URL ? `${process.env.SERVER_URL}/pay/success` : undefined,
         ttl: 72 * 60, // 72 часа
@@ -1959,24 +1968,54 @@ app.post('/api/tochka/create-payment', async (req, res) => {
 
     const paymentData = response.data;
     const paymentUrl = paymentData.paymentUrl || paymentData.data?.paymentUrl;
+    const paymentId = paymentData.operationId || paymentData.data?.operationId;
+    if (!paymentUrl) {
+      console.error('[tochka] create-payment no paymentUrl:', JSON.stringify(paymentData).slice(0, 500));
+      await addDoc(collection(db, 'tochka_logs'), {
+        orderId,
+        amount: paymentAmount,
+        status: 'error',
+        error: 'Точка не вернула paymentUrl',
+        response: JSON.stringify(paymentData).slice(0, 1000),
+        createdAt: new Date().toISOString(),
+      }).catch(() => {});
+      return res.status(502).json({ error: 'Точка не вернула ссылку оплаты', details: paymentData });
+    }
 
     // Сохраняем ссылку оплаты в заказ (обе коллекции)
     if (orderId && paymentUrl) {
       const paymentFields = {
         paymentUrl,
-        paymentId: paymentData.operationId || paymentData.data?.operationId,
+        paymentId,
         paymentStatus: 'pending',
         paymentCreatedAt: new Date().toISOString(),
-        paymentAmount: amount,
+        paymentAmount,
       };
       await updateDoc(doc(db, 'orders', orderId), paymentFields).catch(() => {});
       await updateDoc(doc(db, 'orders_new', orderId), paymentFields).catch(() => {});
     }
+    console.log(`[tochka] create-payment success order=${orderId} paymentId=${paymentId || 'n/a'}`);
+    await addDoc(collection(db, 'tochka_logs'), {
+      orderId,
+      amount: paymentAmount,
+      paymentId: paymentId || null,
+      paymentUrl,
+      status: 'success',
+      createdAt: new Date().toISOString(),
+    }).catch(() => {});
 
     res.json({ success: true, paymentUrl, data: paymentData });
   } catch (e: any) {
     const errData = e.response?.data;
     console.error('[tochka] create-payment error:', errData || e.message);
+    await addDoc(collection(db, 'tochka_logs'), {
+      orderId,
+      amount: paymentAmount,
+      status: 'error',
+      error: e.message,
+      details: errData ? JSON.stringify(errData).slice(0, 1000) : '',
+      createdAt: new Date().toISOString(),
+    }).catch(() => {});
     res.status(500).json({ error: e.message, details: errData });
   }
 });

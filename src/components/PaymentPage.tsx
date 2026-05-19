@@ -43,7 +43,10 @@ export const PaymentPage: React.FC<PaymentPageProps> = ({ orderId }) => {
 
   if (!order) return null;
 
-  const price = order.price || order.revenue || 0;
+  const price = order.paymentAmount ?? order.remainingAmount ?? Math.max(
+    0,
+    (order.price || order.revenue || 0) + (order.shippingCost || order.deliveryPrice || 0) - (order.prepaymentAmount || order.paidAmount || 0)
+  );
   const paymentUrl = order.paymentUrl;
 
   if (paid) return (

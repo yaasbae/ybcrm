@@ -49,6 +49,85 @@ function normalizeBroadcastPhone(value: string): string {
   return digits.length === 11 && digits.startsWith('8') ? `7${digits.slice(1)}` : digits;
 }
 
+const SenderNameField = React.memo(function SenderNameField({
+  initialValue,
+  isSaving,
+  onSave,
+}: {
+  initialValue: string;
+  isSaving: boolean;
+  onSave: (value: string) => void;
+}) {
+  const [value, setValue] = useState(initialValue);
+
+  useEffect(() => {
+    setValue(initialValue);
+  }, [initialValue]);
+
+  return (
+    <div className="space-y-2">
+      <label className="text-[9px] font-black text-zinc-400 uppercase tracking-widest ml-1">Имя отправителя</label>
+      <p className="text-[9px] text-zinc-400 ml-1">Все аккаунты получат это имя перед рассылкой</p>
+      <div className="flex gap-2">
+        <input
+          type="text"
+          value={value}
+          onChange={e => setValue(e.target.value)}
+          placeholder="YB Studio"
+          className="flex-1 bg-zinc-50 border border-zinc-200 rounded-xl px-3 py-2.5 text-[12px] font-medium focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 transition-all"
+        />
+        <button
+          onClick={() => onSave(value)}
+          disabled={isSaving || !value.trim()}
+          className="px-4 py-2.5 bg-zinc-900 text-white rounded-xl text-[10px] font-black hover:bg-zinc-800 transition-all disabled:opacity-40 flex items-center gap-1.5"
+        >
+          {isSaving ? <Loader2 size={12} className="animate-spin" /> : null}
+          Сохранить
+        </button>
+      </div>
+    </div>
+  );
+});
+
+const ProxyField = React.memo(function ProxyField({
+  phone,
+  initialValue,
+  hasProxy,
+  isSaving,
+  onSave,
+}: {
+  phone: string;
+  initialValue: string;
+  hasProxy: boolean;
+  isSaving: boolean;
+  onSave: (phone: string, value: string) => void;
+}) {
+  const [value, setValue] = useState(initialValue);
+
+  useEffect(() => {
+    setValue(initialValue);
+  }, [initialValue]);
+
+  return (
+    <div className="flex items-center gap-2 px-3 pb-2.5">
+      <input
+        type="text"
+        placeholder="прокси: ip:port:user:pass"
+        value={value}
+        onChange={e => setValue(e.target.value)}
+        className={`flex-1 bg-zinc-50 border rounded-lg px-2 py-1 text-[10px] font-mono focus:outline-none focus:ring-1 focus:ring-blue-500/30 ${hasProxy ? 'border-emerald-300' : 'border-zinc-200'}`}
+      />
+      <button
+        onClick={() => onSave(phone, value)}
+        disabled={isSaving}
+        className="px-2 py-1 bg-zinc-800 text-white rounded-lg text-[9px] font-black hover:bg-zinc-700 transition-all disabled:opacity-40 shrink-0"
+      >
+        {isSaving ? '...' : 'OK'}
+      </button>
+    </div>
+  );
+});
+
 export const BroadcastPage: React.FC<Props> = ({ sheetId, initialTab = 'compose' }) => {
   const [clients, setClients] = useState<any[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -228,14 +307,15 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId, initialTab = 'compose'
     }
   };
 
-  const handleSaveDisplayName = async () => {
+  const handleSaveDisplayName = async (nextDisplayName = displayName) => {
     setIsSavingName(true);
     try {
       await fetch('/api/tg/broadcast/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ displayName })
+        body: JSON.stringify({ displayName: nextDisplayName })
       });
+      setDisplayName(nextDisplayName);
     } finally {
       setIsSavingName(false);
     }
@@ -287,8 +367,8 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId, initialTab = 'compose'
     }
   };
 
-  const handleSaveProxy = async (phone: string) => {
-    const raw = (proxyInputs[phone] || '').trim();
+  const handleSaveProxy = async (phone: string, value = proxyInputs[phone] || '') => {
+    const raw = value.trim();
     let proxy: { ip: string; port: number; username?: string; password?: string; } | null = null;
     if (raw) {
       const parts = raw.split(':');
@@ -301,6 +381,7 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId, initialTab = 'compose'
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ phone, proxy })
     });
+    setProxyInputs(prev => ({ ...prev, [phone]: raw }));
     setSavingProxy(null);
     await loadTgStatus();
   };
@@ -883,22 +964,13 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId, initialTab = 'compose'
                           </button>
                         </div>
                       </div>
-                      <div className="flex items-center gap-2 px-3 pb-2.5">
-                        <input
-                          type="text"
-                          placeholder="прокси: ip:port:user:pass"
-                          value={proxyInputs[acc.phone] || ''}
-                          onChange={e => setProxyInputs(prev => ({ ...prev, [acc.phone]: e.target.value }))}
-                          className={`flex-1 bg-zinc-50 border rounded-lg px-2 py-1 text-[10px] font-mono focus:outline-none focus:ring-1 focus:ring-blue-500/30 ${acc.proxy ? 'border-emerald-300' : 'border-zinc-200'}`}
-                        />
-                        <button
-                          onClick={() => handleSaveProxy(acc.phone)}
-                          disabled={savingProxy === acc.phone}
-                          className="px-2 py-1 bg-zinc-800 text-white rounded-lg text-[9px] font-black hover:bg-zinc-700 transition-all disabled:opacity-40 shrink-0"
-                        >
-                          {savingProxy === acc.phone ? '...' : 'OK'}
-                        </button>
-                      </div>
+                      <ProxyField
+                        phone={acc.phone}
+                        initialValue={proxyInputs[acc.phone] || ''}
+                        hasProxy={!!acc.proxy}
+                        isSaving={savingProxy === acc.phone}
+                        onSave={handleSaveProxy}
+                      />
                     </div>
                   ))}
                 </div>
@@ -906,24 +978,11 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId, initialTab = 'compose'
             </div>
 
             {/* Имя отправителя */}
-            <div className="space-y-2">
-              <label className="text-[9px] font-black text-zinc-400 uppercase tracking-widest ml-1">Имя отправителя</label>
-              <p className="text-[9px] text-zinc-400 ml-1">Все аккаунты получат это имя перед рассылкой</p>
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={displayName}
-                  onChange={e => setDisplayName(e.target.value)}
-                  placeholder="YB Studio"
-                  className="flex-1 bg-zinc-50 border border-zinc-200 rounded-xl px-3 py-2.5 text-[12px] font-medium focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 transition-all"
-                />
-                <button onClick={handleSaveDisplayName} disabled={isSavingName || !displayName.trim()}
-                  className="px-4 py-2.5 bg-zinc-900 text-white rounded-xl text-[10px] font-black hover:bg-zinc-800 transition-all disabled:opacity-40 flex items-center gap-1.5">
-                  {isSavingName ? <Loader2 size={12} className="animate-spin" /> : null}
-                  Сохранить
-                </button>
-              </div>
-            </div>
+            <SenderNameField
+              initialValue={displayName}
+              isSaving={isSavingName}
+              onSave={handleSaveDisplayName}
+            />
 
             {/* Фото профиля аккаунтов */}
             <div className="space-y-2">
