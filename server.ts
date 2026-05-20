@@ -52,6 +52,7 @@ const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
 
 const TG_API_ID = Number(process.env.TG_API_ID || 2040);
 const TG_API_HASH = process.env.TG_API_HASH || "b18441a1ff607e10a989891a5462e627";
+const GEMINI_TEXT_MODEL = process.env.GEMINI_TEXT_MODEL || "gemini-2.5-flash";
 
 const pendingTgClients = new Map<string, { client: TelegramClient; phoneCodeHash: string }>();
 
@@ -717,15 +718,26 @@ app.post('/api/ai/generate-variants', async (req, res) => {
 
   try {
     if (geminiKey) {
-      const ai = new GoogleGenAI({ apiKey: geminiKey });
-      const result = await ai.models.generateContent({
-        model: 'gemini-2.0-flash',
-        contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      });
-      const text = result.candidates?.[0]?.content?.parts?.[0]?.text || '';
-      const variants = parseVariants(text);
-      if (!variants.length) throw new Error('AI вернул пустой список вариантов');
-      return res.json({ success: true, variants, engine: 'gemini' });
+      try {
+        const ai = new GoogleGenAI({ apiKey: geminiKey });
+        const result = await ai.models.generateContent({
+          model: GEMINI_TEXT_MODEL,
+          contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        });
+        const text = result.candidates?.[0]?.content?.parts?.[0]?.text || '';
+        const variants = parseVariants(text);
+        if (!variants.length) throw new Error('AI вернул пустой список вариантов');
+        return res.json({ success: true, variants, engine: 'gemini' });
+      } catch (geminiError: any) {
+        if (!claudeKey) {
+          const message = String(geminiError?.message || geminiError);
+          if (message.includes('User location is not supported')) {
+            throw new Error('Gemini не работает с текущего IP/локации. Включи VPN/прокси для Google API или добавь Claude ключ.');
+          }
+          throw geminiError;
+        }
+        console.warn('[ai/generate-variants] Gemini failed, trying Claude:', geminiError?.message || geminiError);
+      }
     }
     if (claudeKey) {
       const anthropic = new Anthropic({ apiKey: claudeKey });
@@ -1790,7 +1802,7 @@ app.post("/api/content/process", async (req, res) => {
 
     // Generate caption + hashtags
     const captionResp = await ai.models.generateContent({
-      model: "gemini-2.0-flash",
+      model: GEMINI_TEXT_MODEL,
       contents: [{ role: "user", parts: [
         { text: "Ты SMM-специалист fashion-бренда YB Studio. Создай цепляющий пост для Instagram на русском языке для этого образа. Формат: 2-3 строки текста + 10-15 хэштегов. Только текст поста, без пояснений." },
         { inlineData: { mimeType: "image/jpeg", data: lookBase64 } },
@@ -2570,7 +2582,7 @@ async function geminiWriteBroadcastCopy(userText: string): Promise<string> {
   const timeout = new Promise<never>((_, reject) =>
     setTimeout(() => reject(new Error('Gemini timeout — попробуй ещё раз')), 25000));
   const res = await Promise.race([
-    ai.models.generateContent({ model: "gemini-2.0-flash", contents: instruction }),
+    ai.models.generateContent({ model: GEMINI_TEXT_MODEL, contents: instruction }),
     timeout,
   ]);
   return (res as any).candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? userText;

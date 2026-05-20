@@ -49,6 +49,69 @@ function normalizeBroadcastPhone(value: string): string {
   return digits.length === 11 && digits.startsWith('8') ? `7${digits.slice(1)}` : digits;
 }
 
+function isHeicFile(file: File): boolean {
+  return /hei[cf]/i.test(file.type) || /\.(heic|heif)$/i.test(file.name);
+}
+
+async function fileToJpegData(file: File): Promise<{ base64: string; dataUrl: string; name: string }> {
+  let source: Blob = file;
+  if (isHeicFile(file)) {
+    const { default: heic2any } = await import('heic2any');
+    const converted = await heic2any({ blob: file, toType: 'image/jpeg', quality: 0.9 });
+    source = Array.isArray(converted) ? converted[0] : converted;
+  }
+
+  return new Promise((resolve, reject) => {
+    const canvas = document.createElement('canvas');
+    const imgEl = new window.Image();
+    const url = URL.createObjectURL(source);
+    const timeout = window.setTimeout(() => {
+      URL.revokeObjectURL(url);
+      reject(new Error(`Фото "${file.name}" не прочиталось. Попробуй JPG/PNG или отправь без фото.`));
+    }, 15000);
+
+    imgEl.onload = () => {
+      try {
+        window.clearTimeout(timeout);
+        const MAX = 1280;
+        let w = imgEl.width;
+        let h = imgEl.height;
+        if (w > MAX || h > MAX) {
+          if (w > h) {
+            h = Math.round(h * MAX / w);
+            w = MAX;
+          } else {
+            w = Math.round(w * MAX / h);
+            h = MAX;
+          }
+        }
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) throw new Error('Canvas недоступен');
+        ctx.drawImage(imgEl, 0, 0, w, h);
+        URL.revokeObjectURL(url);
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+        resolve({
+          base64: dataUrl.split(',')[1],
+          dataUrl,
+          name: file.name.replace(/\.[^.]+$/, '.jpg'),
+        });
+      } catch (err: any) {
+        URL.revokeObjectURL(url);
+        reject(new Error(`Не удалось подготовить фото "${file.name}": ${err.message}`));
+      }
+    };
+
+    imgEl.onerror = () => {
+      window.clearTimeout(timeout);
+      URL.revokeObjectURL(url);
+      reject(new Error(`Не удалось прочитать фото "${file.name}". Попробуй JPG/PNG или отправь без фото.`));
+    };
+    imgEl.src = url;
+  });
+}
+
 const SenderNameField = React.memo(function SenderNameField({
   initialValue,
   isSaving,
@@ -526,16 +589,24 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId, initialTab = 'compose'
     setLastSelectedClientIndex(index);
   };
 
-  const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleImageChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
     if (!files.length) return;
-    setImages(prev => [...prev, ...files]);
-    files.forEach(file => {
-      const reader = new FileReader();
-      reader.onload = () => setImagePreviews(prev => [...prev, reader.result as string]);
-      reader.readAsDataURL(file);
-    });
     e.target.value = '';
+    for (const file of files) {
+      try {
+        const prepared = await fileToJpegData(file);
+        const normalizedFile = new File(
+          [Uint8Array.from(atob(prepared.base64), c => c.charCodeAt(0))],
+          prepared.name,
+          { type: 'image/jpeg' }
+        );
+        setImages(prev => [...prev, normalizedFile]);
+        setImagePreviews(prev => [...prev, prepared.dataUrl]);
+      } catch (err: any) {
+        setResult({ error: err.message });
+      }
+    }
   };
 
   const handleRemoveImage = (idx: number) => {
@@ -737,42 +808,8 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId, initialTab = 'compose'
       const imageFiles: Array<{ base64: string; name: string }> = [];
       for (const img of images) {
         setSendDebug(`Обрабатываю фото: ${img.name}`);
-        const base64 = await new Promise<string>((resolve, reject) => {
-          const canvas = document.createElement('canvas');
-          const imgEl = new window.Image();
-          const url = URL.createObjectURL(img);
-          const timeout = window.setTimeout(() => {
-            URL.revokeObjectURL(url);
-            reject(new Error(`Фото "${img.name}" не прочиталось. Попробуй JPG/PNG или отправь без фото.`));
-          }, 15000);
-          imgEl.onload = () => {
-            try {
-              window.clearTimeout(timeout);
-              const MAX = 1280;
-              let w = imgEl.width, h = imgEl.height;
-              if (w > MAX || h > MAX) {
-                if (w > h) { h = Math.round(h * MAX / w); w = MAX; }
-                else { w = Math.round(w * MAX / h); h = MAX; }
-              }
-              canvas.width = w; canvas.height = h;
-              const ctx = canvas.getContext('2d');
-              if (!ctx) throw new Error('Canvas недоступен');
-              ctx.drawImage(imgEl, 0, 0, w, h);
-              URL.revokeObjectURL(url);
-              resolve(canvas.toDataURL('image/jpeg', 0.85).split(',')[1]);
-            } catch (err: any) {
-              URL.revokeObjectURL(url);
-              reject(new Error(`Не удалось подготовить фото "${img.name}": ${err.message}`));
-            }
-          };
-          imgEl.onerror = () => {
-            window.clearTimeout(timeout);
-            URL.revokeObjectURL(url);
-            reject(new Error(`Не удалось прочитать фото "${img.name}". Попробуй JPG/PNG или отправь без фото.`));
-          };
-          imgEl.src = url;
-        });
-        imageFiles.push({ base64, name: img.name.replace(/\.[^.]+$/, '.jpg') });
+        const prepared = await fileToJpegData(img);
+        imageFiles.push({ base64: prepared.base64, name: prepared.name });
       }
       setSendDebug(`Запускаю API: ${phones.length} номеров`);
       const response = await fetch('/api/broadcast/stealth-start', {
