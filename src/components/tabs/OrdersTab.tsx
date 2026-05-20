@@ -14,7 +14,7 @@ import { formatCurrency, cn } from '../../lib/utils';
 import { motion, AnimatePresence } from 'motion/react';
 import { OrderData } from '../AnalyticsDashboard';
 import { db } from '../../firebase';
-import { collection, getDocs, orderBy, query } from 'firebase/firestore';
+import { collection, getDocs, onSnapshot, orderBy, query } from 'firebase/firestore';
 
 const STATUS_OPTIONS = ['Новый', 'В работе', 'Оплачен', 'Отгружен', 'Доставлен', 'Возврат', 'Отмена', 'Обмен'];
 const DELIVERY_OPTIONS = ['СДЭК', 'Почта РФ', 'Боксберри', 'Самовывоз', 'Курьер', 'DBS'];
@@ -25,8 +25,63 @@ const RAW_REVENUE_INDEX = 14;
 const RAW_DELIVERY_INDEX = 15;
 const RAW_PAID_INDEX = 16;
 
+interface ProductCatalogItem {
+  id: string;
+  name: string;
+  color?: string;
+  sizeGrid?: string;
+  height?: string;
+  sellingPrice?: number;
+}
+
+const normalizeProductName = (value: string) => value.trim().toLowerCase();
+
 function getOrderPaymentDue(order: Pick<OrderData, 'revenue' | 'deliveryPrice' | 'paidAmount'>): number {
   return Math.max(0, (order.revenue || 0) + (order.deliveryPrice || 0) - (order.paidAmount || 0));
+}
+
+function buildPaymentPageUrl(orderId: string): string {
+  return `${window.location.origin}/pay/${orderId}`;
+}
+
+function buildOrderShareText(order: Partial<OrderData>, paymentPageUrl: string): string {
+  const amount = getOrderPaymentDue({
+    revenue: order.revenue || 0,
+    deliveryPrice: order.deliveryPrice || 0,
+    paidAmount: order.paidAmount || 0,
+  });
+  const color = order.rawRow?.[RAW_COLOR_INDEX] || '';
+  const size = order.rawRow?.[RAW_SIZE_INDEX] || '';
+  const lines = [
+    `Здравствуйте! Счёт на оплату заказа #${order.orderId || ''}`,
+    '',
+    order.item ? `Заказ: ${order.item}` : '',
+    color ? `Цвет: ${color}` : '',
+    size ? `Размер: ${size}` : '',
+    order.height ? `Рост: ${order.height}` : '',
+    order.deliveryMethod ? `Доставка: ${order.deliveryMethod}` : '',
+    order.clientName ? `Клиент: ${order.clientName}` : '',
+    '',
+    `К оплате: ${formatCurrency(amount)}`,
+    `Ссылка на заказ и оплату: ${paymentPageUrl}`,
+  ];
+
+  return lines.filter((line, index, arr) => line || arr[index - 1]).join('\n').trim();
+}
+
+function openMessengerShare(messenger: 'telegram' | 'whatsapp', text: string, url: string): void {
+  const href = messenger === 'telegram'
+    ? `https://t.me/share/url?url=${encodeURIComponent(url)}&text=${encodeURIComponent(text)}`
+    : `https://wa.me/?text=${encodeURIComponent(text)}`;
+  window.open(href, '_blank', 'noopener,noreferrer');
+}
+
+async function shareOrder(text: string, url: string): Promise<void> {
+  if (navigator.share) {
+    await navigator.share({ title: 'Счёт на оплату заказа', text, url });
+    return;
+  }
+  await navigator.clipboard.writeText(text);
 }
 
 const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string, field: string, value: any) => void }> = ({ order, updateOrderData }) => {
@@ -36,7 +91,8 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
   const [showQr, setShowQr] = useState(false);
   const [error, setError] = useState('');
 
-  const pageUrl = `${window.location.origin}/pay/${order.orderId}`;
+  const pageUrl = buildPaymentPageUrl(order.orderId);
+  const shareText = buildOrderShareText(order, pageUrl);
 
   const handleCreate = async () => {
     setLoading(true);
@@ -65,8 +121,8 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
     finally { setLoading(false); }
   };
 
-  const handleCopy = () => {
-    navigator.clipboard.writeText(pageUrl);
+  const handleCopy = (text = pageUrl) => {
+    navigator.clipboard.writeText(text);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
@@ -91,20 +147,32 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
     <div className="mt-1.5 space-y-1">
       <div className="flex gap-1">
         <button
-          onClick={handleCopy}
+          onClick={() => handleCopy(shareText)}
           className="flex-1 text-[8px] font-black py-1 rounded-md border border-zinc-200 bg-white text-zinc-600 hover:bg-zinc-50 transition-all flex items-center justify-center gap-1"
         >
           <Copy size={8} />
           {copied ? 'Скопировано!' : 'Скопировать'}
         </button>
-        <a
-          href={`https://t.me/share/url?url=${encodeURIComponent(pageUrl)}&text=${encodeURIComponent(`Счёт на оплату заказа #${order.orderId}`)}`}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="flex-1 text-[8px] font-black py-1 rounded-md border border-blue-200 bg-blue-50 text-blue-600 hover:bg-blue-500 hover:text-white hover:border-blue-500 transition-all flex items-center justify-center gap-1"
+        <button
+          onClick={() => shareOrder(shareText, pageUrl).catch(() => navigator.clipboard.writeText(shareText))}
+          className="flex-1 text-[8px] font-black py-1 rounded-md border border-violet-200 bg-violet-50 text-violet-600 hover:bg-violet-500 hover:text-white hover:border-violet-500 transition-all flex items-center justify-center gap-1"
         >
-          <Send size={8} /> Отправить
-        </a>
+          <Send size={8} /> Поделиться
+        </button>
+      </div>
+      <div className="flex gap-1">
+        <button
+          onClick={() => openMessengerShare('telegram', shareText, pageUrl)}
+          className="flex-1 text-[8px] font-black py-1 rounded-md border border-blue-200 bg-blue-50 text-blue-600 hover:bg-blue-500 hover:text-white hover:border-blue-500 transition-all"
+        >
+          Telegram
+        </button>
+        <button
+          onClick={() => openMessengerShare('whatsapp', shareText, pageUrl)}
+          className="flex-1 text-[8px] font-black py-1 rounded-md border border-emerald-200 bg-emerald-50 text-emerald-600 hover:bg-emerald-500 hover:text-white hover:border-emerald-500 transition-all"
+        >
+          WhatsApp
+        </button>
       </div>
       <button
         onClick={() => setShowQr(v => !v)}
@@ -133,6 +201,7 @@ const OrderRow = React.memo(({
   handbookLabels,
   handbookManagers,
   handbookBloggers,
+  productCatalog,
 }: {
   order: OrderData;
   updateOrderData: (id: string, field: string, value: any) => void;
@@ -145,6 +214,7 @@ const OrderRow = React.memo(({
   handbookLabels: string[];
   handbookManagers: string[];
   handbookBloggers: string[];
+  productCatalog: ProductCatalogItem[];
 }) => {
   const nameParts = (order.clientName || '').split(/\s+/);
   const surname = nameParts[0] || '';
@@ -169,6 +239,17 @@ const OrderRow = React.memo(({
       />
     </div>
   );
+
+  const applyProductCharacteristics = (value: string) => {
+    updateOrderData(order.orderId, 'item', value);
+
+    const product = productCatalog.find(p => normalizeProductName(p.name) === normalizeProductName(value));
+    if (!product) return;
+
+    if (product.color) updateOrderData(order.orderId, `rawRow[${RAW_COLOR_INDEX}]`, product.color);
+    if (product.sizeGrid) updateOrderData(order.orderId, `rawRow[${RAW_SIZE_INDEX}]`, product.sizeGrid);
+    if (product.height) updateOrderData(order.orderId, 'height', product.height);
+  };
 
   return (
     <tr className={cn(
@@ -332,7 +413,7 @@ const OrderRow = React.memo(({
           type="text"
           list="product-list"
           value={order.item}
-          onChange={(e) => updateOrderData(order.orderId, 'item', e.target.value)}
+          onChange={(e) => applyProductCharacteristics(e.target.value)}
           placeholder="Название изделия..."
           className="w-full bg-transparent text-[12px] font-bold text-zinc-900 focus:bg-white focus:ring-1 focus:ring-blue-100 rounded-md px-2 py-1 outline-none mb-2 border border-transparent hover:border-zinc-100"
         />
@@ -580,13 +661,25 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
   // QR / payment state after order creation
   const [createdOrderId, setCreatedOrderId] = useState<string | null>(null);
   const [createdPaymentUrl, setCreatedPaymentUrl] = useState<string | null>(null);
+  const [createdShareText, setCreatedShareText] = useState('');
   const [createdPaymentError, setCreatedPaymentError] = useState('');
   const [isCreatingQr, setIsCreatingQr] = useState(false);
   const [qrCopied, setQrCopied] = useState(false);
   const [tochkaConfigured, setTochkaConfigured] = useState(false);
+  const [productCatalog, setProductCatalog] = useState<ProductCatalogItem[]>([]);
 
   useEffect(() => {
     fetch('/api/tochka/status').then(r => r.json()).then(d => setTochkaConfigured(!!d.configured)).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    const unsubscribe = onSnapshot(
+      query(collection(db, 'products'), orderBy('name', 'asc')),
+      snap => setProductCatalog(snap.docs.map(d => ({ id: d.id, ...d.data() } as ProductCatalogItem))),
+      () => setProductCatalog([])
+    );
+
+    return () => unsubscribe();
   }, []);
 
   useEffect(() => {
@@ -634,6 +727,36 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
     setPhoneQuery(client.phone || '');
     setShowSuggestions(false);
     setShowPhoneSuggestions(false);
+  };
+
+  const productOptions = useMemo(() => {
+    const seen = new Set<string>();
+    return [...productCatalog.map(p => p.name), ...handbookProducts]
+      .filter(Boolean)
+      .filter(name => {
+        const key = normalizeProductName(name);
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .sort((a, b) => a.localeCompare(b));
+  }, [productCatalog, handbookProducts]);
+
+  const applyNewOrderProduct = (value: string) => {
+    const product = productCatalog.find(p => normalizeProductName(p.name) === normalizeProductName(value));
+    const rawRow = [...(newOrder.rawRow || Array(30).fill(''))];
+    while (rawRow.length < 30) rawRow.push('');
+
+    if (product?.color) rawRow[RAW_COLOR_INDEX] = product.color;
+    if (product?.sizeGrid) rawRow[RAW_SIZE_INDEX] = product.sizeGrid;
+
+    setNewOrder({
+      ...newOrder,
+      item: value,
+      rawRow,
+      height: product?.height || newOrder.height || '',
+      revenue: !newOrder.revenue && product?.sellingPrice ? product.sellingPrice : newOrder.revenue,
+    });
   };
 
   return (
@@ -962,7 +1085,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                   list="product-list"
                   placeholder="Наименование"
                   value={newOrder.item || ''}
-                  onChange={(e) => setNewOrder({...newOrder, item: e.target.value})}
+                  onChange={(e) => applyNewOrderProduct(e.target.value)}
                   className="col-span-2 bg-white border border-zinc-200 rounded-xl px-4 py-2.5 text-[11px] font-bold text-zinc-900 outline-none focus:ring-2 focus:ring-emerald-500/10 focus:border-emerald-500 transition-all shadow-sm"
                 />
                 <div className="relative">
@@ -1086,9 +1209,12 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
 
             <button
               onClick={async () => {
+                const orderSnapshot = { ...newOrder, rawRow: [...(newOrder.rawRow || [])] };
                 const orderId = await handleCreateOrder();
                 if (!orderId) return;
+                const paymentPageUrl = buildPaymentPageUrl(orderId);
                 setCreatedOrderId(orderId);
+                setCreatedShareText(buildOrderShareText({ ...orderSnapshot, orderId }, paymentPageUrl));
                 setCreatedPaymentUrl(null);
                 setCreatedPaymentError('');
                 if (tochkaConfigured) {
@@ -1106,7 +1232,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                       body: JSON.stringify({
                         orderId,
                         amount,
-                        description: `Заказ #${newOrder.orderId} ${newOrder.item || ''}`,
+                        description: `Заказ #${orderId} ${orderSnapshot.item || ''}`,
                       })
                     });
                     const data = await res.json();
@@ -1140,7 +1266,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                   <CheckCircle2 size={16} />
                   <span className="text-[11px] font-black uppercase tracking-widest">Заказ создан!</span>
                 </div>
-                <button onClick={() => { setCreatedOrderId(null); setCreatedPaymentUrl(null); }} className="text-zinc-300 hover:text-zinc-500">
+                <button onClick={() => { setCreatedOrderId(null); setCreatedPaymentUrl(null); setCreatedShareText(''); }} className="text-zinc-300 hover:text-zinc-500">
                   <X size={14} />
                 </button>
               </div>
@@ -1162,23 +1288,34 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                   <div className="flex gap-2">
                     <button
                       onClick={() => {
-                        const url = `${window.location.origin}/pay/${createdOrderId}`;
-                        navigator.clipboard.writeText(url);
+                        navigator.clipboard.writeText(createdShareText || buildPaymentPageUrl(createdOrderId));
                         setQrCopied(true);
                         setTimeout(() => setQrCopied(false), 2000);
                       }}
                       className="flex-1 py-2.5 rounded-xl border border-zinc-200 text-[10px] font-black text-zinc-700 hover:bg-zinc-50 flex items-center justify-center gap-1.5"
                     >
-                      {qrCopied ? '✓ Скопировано!' : <><Copy size={11} /> Копировать ссылку</>}
+                      {qrCopied ? '✓ Скопировано!' : <><Copy size={11} /> Копировать текст</>}
                     </button>
-                    <a
-                      href={`https://t.me/share/url?url=${encodeURIComponent(`${window.location.origin}/pay/${createdOrderId}`)}&text=${encodeURIComponent(`Счёт на оплату заказа #${createdOrderId}`)}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
+                    <button
+                      onClick={() => shareOrder(createdShareText, buildPaymentPageUrl(createdOrderId)).catch(() => navigator.clipboard.writeText(createdShareText))}
                       className="flex-1 py-2.5 rounded-xl bg-blue-500 text-white text-[10px] font-black hover:bg-blue-600 flex items-center justify-center gap-1.5"
                     >
-                      <Send size={11} /> Отправить клиенту
-                    </a>
+                      <Send size={11} /> Поделиться
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      onClick={() => openMessengerShare('telegram', createdShareText, buildPaymentPageUrl(createdOrderId))}
+                      className="py-2 rounded-xl border border-blue-200 bg-blue-50 text-blue-600 text-[10px] font-black hover:bg-blue-500 hover:text-white transition-colors"
+                    >
+                      Telegram
+                    </button>
+                    <button
+                      onClick={() => openMessengerShare('whatsapp', createdShareText, buildPaymentPageUrl(createdOrderId))}
+                      className="py-2 rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-600 text-[10px] font-black hover:bg-emerald-500 hover:text-white transition-colors"
+                    >
+                      WhatsApp
+                    </button>
                   </div>
                   <a
                     href={`/pay/${createdOrderId}`}
@@ -1262,6 +1399,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                   handbookLabels={handbookLabels}
                   handbookManagers={handbookManagers}
                   handbookBloggers={handbookBloggers}
+                  productCatalog={productCatalog}
                 />
               ))}
             </tbody>
@@ -1302,7 +1440,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
 
       {/* Global Datalists */}
       <datalist id="product-list">
-        {handbookProducts.map((p, idx) => (
+        {productOptions.map((p, idx) => (
           <option key={`hp-${idx}`} value={p} />
         ))}
       </datalist>

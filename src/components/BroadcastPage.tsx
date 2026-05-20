@@ -254,6 +254,7 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId, initialTab = 'compose'
 
   // Tochka Bank settings
   const [tochkaToken, setTochkaToken] = useState('');
+  const [tochkaMerchantId, setTochkaMerchantId] = useState('');
   const [isSavingTochka, setIsSavingTochka] = useState(false);
   const [tochkaSaveResult, setTochkaSaveResult] = useState('');
   const [tochkaConfigured, setTochkaConfigured] = useState(false);
@@ -1241,6 +1242,12 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId, initialTab = 'compose'
                 rows={3}
                 className="w-full bg-zinc-50 border border-zinc-200 rounded-xl px-3 py-2.5 text-[10px] font-mono focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-400 transition-all resize-none"
               />
+              <input
+                value={tochkaMerchantId}
+                onChange={e => setTochkaMerchantId(e.target.value)}
+                placeholder="merchantId, если торговых точек несколько"
+                className="w-full bg-zinc-50 border border-zinc-200 rounded-xl px-3 py-2.5 text-[10px] font-mono focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-400 transition-all"
+              />
               {tochkaSaveResult && (
                 <p className="text-[10px] font-medium ml-1" style={{ color: tochkaSaveResult.includes('Ошибка') ? '#ef4444' : '#22c55e' }}>{tochkaSaveResult}</p>
               )}
@@ -1253,13 +1260,18 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId, initialTab = 'compose'
                     const res = await fetch('/api/tochka/save-token', {
                       method: 'POST',
                       headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({ jwtToken: tochkaToken.trim() })
+                      body: JSON.stringify({
+                        jwtToken: tochkaToken.trim(),
+                        merchantId: tochkaMerchantId.trim(),
+                        paymentMode: ['sbp'],
+                      })
                     });
                     const data = await res.json();
                     if (!res.ok) throw new Error(data.error || 'Ошибка');
                     setTochkaSaveResult(`Сохранено! Код клиента: ${data.customerCode}`);
                     setTochkaConfigured(true);
                     setTochkaToken('');
+                    setTochkaMerchantId('');
                   } catch (e: any) {
                     setTochkaSaveResult(`Ошибка: ${e.message}`);
                   } finally {

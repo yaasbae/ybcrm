@@ -4,7 +4,7 @@ import {
   MapPin, CreditCard, Instagram, Plus,
   Trash2, CheckCircle2, AlertCircle, Loader2,
   ChevronDown, ChevronUp, Image as ImageIcon, X,
-  QrCode, Copy, ExternalLink
+  QrCode, Copy, ExternalLink, Send
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import Papa from 'papaparse';
@@ -45,6 +45,13 @@ export const OrderForm: React.FC<OrderFormProps> = ({ onBack, sheetId, initialCl
   const [copied, setCopied] = useState(false);
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const [appProducts, setAppProducts] = useState<any[]>([]);
+  const [handbookProducts, setHandbookProducts] = useState<string[]>([]);
+  const [handbookColors, setHandbookColors] = useState<string[]>([]);
+  const [handbookSizes, setHandbookSizes] = useState<string[]>([]);
+  const [handbookHeights, setHandbookHeights] = useState<string[]>([]);
+  const [handbookSources, setHandbookSources] = useState<string[]>([]);
+  const [handbookDeliveries, setHandbookDeliveries] = useState<string[]>([]);
+  const [handbookManagers, setHandbookManagers] = useState<string[]>([]);
   const [contacts, setContacts] = useState<any[]>([]);
   const [clientSearchTerm, setClientSearchTerm] = useState('');
   const [showClientDropdown, setShowClientDropdown] = useState(false);
@@ -88,6 +95,23 @@ export const OrderForm: React.FC<OrderFormProps> = ({ onBack, sheetId, initialCl
       setAppProducts(productsData);
     }, (err) => {
       handleFirestoreError(err, OperationType.LIST, 'products');
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  // Fetch handbook values used by selects/datalists
+  useEffect(() => {
+    const unsubscribe = onSnapshot(doc(db, 'settings', 'handbook'), (snap) => {
+      if (!snap.exists()) return;
+      const d = snap.data();
+      setHandbookProducts(d.productNames || []);
+      setHandbookColors(d.colors || []);
+      setHandbookSizes(d.sizes || []);
+      setHandbookHeights(d.heights || []);
+      setHandbookSources(d.sources || []);
+      setHandbookDeliveries(d.deliveries || []);
+      setHandbookManagers(d.managers || []);
     });
 
     return () => unsubscribe();
@@ -141,16 +165,22 @@ export const OrderForm: React.FC<OrderFormProps> = ({ onBack, sheetId, initialCl
       display: s
     }));
 
+    const handbookSuggestions = handbookProducts.map(s => ({
+      name: s,
+      display: s
+    }));
+
     // Merge and remove duplicates by name
     const seen = new Set();
-    const combined = [...productSuggestions, ...sheetSuggestions].filter(item => {
-      if (seen.has(item.name)) return false;
-      seen.add(item.name);
+    const combined = [...productSuggestions, ...handbookSuggestions, ...sheetSuggestions].filter(item => {
+      const key = item.name.trim().toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
       return true;
     });
 
     return combined.sort((a, b) => a.name.localeCompare(b.name));
-  }, [suggestions, appProducts]);
+  }, [suggestions, appProducts, handbookProducts]);
 
   // Form State
   const [orderNumber, setOrderNumber] = useState('');
@@ -204,10 +234,12 @@ export const OrderForm: React.FC<OrderFormProps> = ({ onBack, sheetId, initialCl
     
     // If name is updated, try to find the product and auto-fill other fields
     if (field === 'name') {
-      const found = appProducts.find(ap => ap.name === value);
+      const found = appProducts.find(ap => String(ap.name || '').trim().toLowerCase() === value.trim().toLowerCase());
       if (found) {
         setProducts(prev => prev.map(p => p.id === id ? { ...p, productId: found.id } : p));
         if (found.color) setColor(found.color);
+        if (found.sizeGrid) setSize(found.sizeGrid);
+        if (!price && found.sellingPrice) setPrice(String(found.sellingPrice));
         if (found.photos && found.photos.length > 0 && !found.photos[0].includes('picsum.photos/seed/product')) {
           setProductImage(found.photos[0]);
         }
@@ -410,11 +442,52 @@ export const OrderForm: React.FC<OrderFormProps> = ({ onBack, sheetId, initialCl
 
   const handleCopyLink = () => {
     if (qrUrl) {
-      navigator.clipboard.writeText(qrUrl).then(() => {
+      navigator.clipboard.writeText(buildShareText()).then(() => {
         setCopied(true);
         setTimeout(() => setCopied(false), 2000);
       });
     }
+  };
+
+  const getPaymentPageUrl = () => savedOrderId ? `${window.location.origin}/pay/${savedOrderId}` : '';
+
+  const buildShareText = () => {
+    const paymentPageUrl = getPaymentPageUrl();
+    const amount = Math.max(0, (parseFloat(price) || 0) + (parseFloat(shippingCost) || 0) - (parseFloat(prepaymentAmount) || 0));
+    return [
+      `Здравствуйте! Счёт на оплату заказа #${orderNumber || savedOrderId || ''}`,
+      '',
+      `Заказ: ${products.map(p => p.name).filter(Boolean).join(', ')}`,
+      color ? `Цвет: ${color}` : '',
+      size ? `Размер: ${size}` : '',
+      height ? `Рост: ${height}` : '',
+      shipping ? `Доставка: ${shipping}` : '',
+      clientName ? `Клиент: ${clientName}` : '',
+      '',
+      `К оплате: ${formatCurrency(amount)}`,
+      `Ссылка на заказ и оплату: ${paymentPageUrl}`,
+    ].filter((line, index, arr) => line || arr[index - 1]).join('\n').trim();
+  };
+
+  const openMessengerShare = (messenger: 'telegram' | 'whatsapp') => {
+    const text = buildShareText();
+    const paymentPageUrl = getPaymentPageUrl();
+    const href = messenger === 'telegram'
+      ? `https://t.me/share/url?url=${encodeURIComponent(paymentPageUrl)}&text=${encodeURIComponent(text)}`
+      : `https://wa.me/?text=${encodeURIComponent(text)}`;
+    window.open(href, '_blank', 'noopener,noreferrer');
+  };
+
+  const shareOrder = async () => {
+    const text = buildShareText();
+    const paymentPageUrl = getPaymentPageUrl();
+    if (navigator.share) {
+      await navigator.share({ title: 'Счёт на оплату заказа', text, url: paymentPageUrl });
+      return;
+    }
+    await navigator.clipboard.writeText(text);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
   };
 
   return (
@@ -474,6 +547,7 @@ export const OrderForm: React.FC<OrderFormProps> = ({ onBack, sheetId, initialCl
                 <label className="text-[10px] font-medium text-zinc-400 uppercase tracking-widest ml-1">Менеджер</label>
                 <input 
                   required
+                  list="manager-options"
                   value={manager}
                   onChange={e => setManager(e.target.value)}
                   className="w-full bg-zinc-50 border-none rounded-xl px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 transition-all outline-none"
@@ -538,6 +612,7 @@ export const OrderForm: React.FC<OrderFormProps> = ({ onBack, sheetId, initialCl
                 <div className="space-y-1.5">
                   <label className="text-[10px] font-semibold text-zinc-400 uppercase tracking-widest ml-1">Цвет</label>
                   <input 
+                    list="color-options"
                     value={color}
                     onChange={e => setColor(e.target.value)}
                     className="w-full bg-zinc-50 border-none rounded-xl px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 transition-all outline-none"
@@ -575,15 +650,12 @@ export const OrderForm: React.FC<OrderFormProps> = ({ onBack, sheetId, initialCl
                       className="w-full bg-zinc-50 border-none rounded-xl px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 transition-all outline-none appearance-none cursor-pointer"
                     >
                       <option value="">Выберите размер</option>
-                      <option>over</option>
-                      <option>over 100</option>
-                      <option>over 200</option>
-                      <option>over xs-s</option>
-                      <option>over m-l</option>
-                      <option>xs</option>
-                      <option>s</option>
-                      <option>m</option>
-                      <option>l</option>
+                      {(handbookSizes.length ? handbookSizes : ['OVER', 'OVER 100', 'OVER 200', 'OVER XS/S', 'OVER M/L', 'XS', 'S', 'M', 'L']).map(opt => (
+                        <option key={opt} value={opt}>{opt}</option>
+                      ))}
+                      {size && !(handbookSizes.length ? handbookSizes : ['OVER', 'OVER 100', 'OVER 200', 'OVER XS/S', 'OVER M/L', 'XS', 'S', 'M', 'L']).includes(size) && (
+                        <option value={size}>{size}</option>
+                      )}
                     </select>
                     <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-zinc-400">
                       <Plus className="w-3 h-3 rotate-45" />
@@ -598,10 +670,10 @@ export const OrderForm: React.FC<OrderFormProps> = ({ onBack, sheetId, initialCl
                       className="w-full bg-zinc-50 border-none rounded-xl px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 transition-all outline-none appearance-none cursor-pointer"
                     >
                       <option value="">Выберите рост</option>
-                      <option>160-165</option>
-                      <option>170-175</option>
-                      <option>180-185</option>
-                      {height && !['160-165', '170-175', '180-185'].includes(height) && (
+                      {(handbookHeights.length ? handbookHeights : ['160-165', '170-175', '180-185']).map(opt => (
+                        <option key={opt} value={opt}>{opt}</option>
+                      ))}
+                      {height && !(handbookHeights.length ? handbookHeights : ['160-165', '170-175', '180-185']).includes(height) && (
                         <option value={height}>{height}</option>
                       )}
                     </select>
@@ -808,10 +880,12 @@ export const OrderForm: React.FC<OrderFormProps> = ({ onBack, sheetId, initialCl
                     className="w-full bg-zinc-50 border-none rounded-xl px-3 py-2 text-sm focus:ring-2 focus:ring-purple-500 transition-all outline-none appearance-none cursor-pointer"
                   >
                     <option>Наш клиент</option>
-                    <option>Рилс</option>
-                    <option>Рекомендация</option>
-                    <option>Таргет</option>
-                    <option>Онлайн примерка</option>
+                    {(handbookSources.length ? handbookSources : ['Рилс', 'Рекомендация', 'Таргет', 'Онлайн примерка']).map(opt => (
+                      <option key={opt} value={opt}>{opt}</option>
+                    ))}
+                    {saleSource && saleSource !== 'Наш клиент' && !(handbookSources.length ? handbookSources : ['Рилс', 'Рекомендация', 'Таргет', 'Онлайн примерка']).includes(saleSource) && (
+                      <option value={saleSource}>{saleSource}</option>
+                    )}
                   </select>
                   <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400">
                     <Plus className="w-3 h-3 rotate-45" />
@@ -859,14 +933,21 @@ export const OrderForm: React.FC<OrderFormProps> = ({ onBack, sheetId, initialCl
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="space-y-1.5">
                 <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest ml-1 flex items-center justify-between">
-                  Доставка (₽)
+                  Метод доставки
                 </label>
-                <input 
-                  type="number"
+                <select 
                   value={shipping}
                   onChange={e => setShipping(e.target.value)}
-                  className="w-full bg-slate-50 border-none rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-slate-900 transition-all outline-none"
-                />
+                  className="w-full bg-slate-50 border-none rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-slate-900 transition-all outline-none cursor-pointer"
+                >
+                  <option value="">Выберите доставку</option>
+                  {(handbookDeliveries.length ? handbookDeliveries : ['СДЭК', 'Почта РФ', 'Курьер', 'Самовывоз']).map(opt => (
+                    <option key={opt} value={opt}>{opt}</option>
+                  ))}
+                  {shipping && !(handbookDeliveries.length ? handbookDeliveries : ['СДЭК', 'Почта РФ', 'Курьер', 'Самовывоз']).includes(shipping) && (
+                    <option value={shipping}>{shipping}</option>
+                  )}
+                </select>
               </div>
               <div className="space-y-1.5">
                 <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest ml-1">Тип оплаты</label>
@@ -893,9 +974,12 @@ export const OrderForm: React.FC<OrderFormProps> = ({ onBack, sheetId, initialCl
                     className="w-full bg-zinc-50 border-none rounded-xl px-3 py-2 text-sm focus:ring-2 focus:ring-purple-500 transition-all outline-none appearance-none cursor-pointer"
                   >
                     <option>Instagram</option>
-                    <option>VK</option>
-                    <option>Telegram</option>
-                    <option>Max</option>
+                    {(handbookSources.length ? handbookSources : ['VK', 'Telegram', 'Max']).map(opt => (
+                      <option key={opt} value={opt}>{opt}</option>
+                    ))}
+                    {socialSource && socialSource !== 'Instagram' && !(handbookSources.length ? handbookSources : ['VK', 'Telegram', 'Max']).includes(socialSource) && (
+                      <option value={socialSource}>{socialSource}</option>
+                    )}
                   </select>
                   <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-zinc-400">
                     <Plus className="w-3 h-3 rotate-45" />
@@ -1008,18 +1092,42 @@ export const OrderForm: React.FC<OrderFormProps> = ({ onBack, sheetId, initialCl
                           className="flex-1 py-2.5 rounded-xl border border-slate-200 text-xs font-semibold text-zinc-700 hover:bg-slate-50 transition-colors flex items-center justify-center gap-2"
                         >
                           <Copy className="w-3.5 h-3.5" />
-                          {copied ? 'Скопировано!' : 'Копировать ссылку'}
+                          {copied ? 'Скопировано!' : 'Копировать текст'}
                         </button>
-                        <a
-                          href={qrUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
+                        <button
+                          type="button"
+                          onClick={shareOrder}
                           className="flex-1 py-2.5 rounded-xl border border-violet-200 bg-violet-50 text-xs font-semibold text-violet-700 hover:bg-violet-100 transition-colors flex items-center justify-center gap-2"
                         >
-                          <ExternalLink className="w-3.5 h-3.5" />
-                          Открыть ссылку
-                        </a>
+                          <Send className="w-3.5 h-3.5" />
+                          Поделиться
+                        </button>
                       </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          onClick={() => openMessengerShare('telegram')}
+                          className="py-2.5 rounded-xl border border-blue-200 bg-blue-50 text-xs font-semibold text-blue-700 hover:bg-blue-100 transition-colors"
+                        >
+                          Telegram
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => openMessengerShare('whatsapp')}
+                          className="py-2.5 rounded-xl border border-emerald-200 bg-emerald-50 text-xs font-semibold text-emerald-700 hover:bg-emerald-100 transition-colors"
+                        >
+                          WhatsApp
+                        </button>
+                      </div>
+                      <a
+                        href={getPaymentPageUrl()}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="flex-1 py-2.5 rounded-xl border border-slate-200 text-xs font-semibold text-zinc-700 hover:bg-slate-50 transition-colors flex items-center justify-center gap-2"
+                      >
+                        <ExternalLink className="w-3.5 h-3.5" />
+                        Открыть страницу оплаты
+                      </a>
                       <button
                         type="button"
                         onClick={onBack}
@@ -1044,6 +1152,13 @@ export const OrderForm: React.FC<OrderFormProps> = ({ onBack, sheetId, initialCl
             </AnimatePresence>
           </div>
         </form>
+
+        <datalist id="color-options">
+          {handbookColors.map(opt => <option key={opt} value={opt} />)}
+        </datalist>
+        <datalist id="manager-options">
+          {handbookManagers.map(opt => <option key={opt} value={opt} />)}
+        </datalist>
 
         <footer className="text-center pb-12">
           <p className="text-[10px] font-bold text-slate-300 uppercase tracking-[0.2em]">

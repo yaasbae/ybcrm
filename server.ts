@@ -81,6 +81,7 @@ try {
 
 app.use(cors());
 app.use(express.json({ limit: '20mb' }));
+app.use(express.text({ type: ['text/*', 'application/jwt'], limit: '1mb' }));
 app.use(express.urlencoded({ extended: true, limit: '20mb' }));
 
 app.get("/api/ping", (req, res) => {
@@ -1921,7 +1922,7 @@ app.post("/api/content/instagram-settings", async (req, res) => {
 
 // ─── Точка Банк API ─────────────────────────────────────────────────────────
 
-const TOCHKA_API = 'https://enter.tochka.com';
+const TOCHKA_API = 'https://enter.tochka.com/uapi';
 
 async function getTochkaToken(): Promise<string | null> {
   if (!db) return null;
@@ -1931,14 +1932,19 @@ async function getTochkaToken(): Promise<string | null> {
 
 // Сохранить JWT токен Точки
 app.post('/api/tochka/save-token', async (req, res) => {
-  const { jwtToken } = req.body;
+  const { jwtToken, merchantId, paymentMode } = req.body;
   if (!jwtToken?.trim()) return res.status(400).json({ error: 'Нужен jwtToken' });
   if (!db) return res.status(503).json({ error: 'DB не подключена' });
   // Декодируем customerCode из JWT
   try {
     const payload = JSON.parse(Buffer.from(jwtToken.split('.')[1], 'base64').toString());
-    const customerCode = payload.customer_code || '';
-    await setDoc(doc(db, 'settings', 'tochka_api'), { jwtToken, customerCode });
+    const customerCode = payload.customerCode || payload.customer_code || '';
+    await setDoc(doc(db, 'settings', 'tochka_api'), {
+      jwtToken,
+      customerCode,
+      merchantId: merchantId || '',
+      paymentMode: Array.isArray(paymentMode) ? paymentMode : ['sbp'],
+    }, { merge: true });
     res.json({ success: true, customerCode });
   } catch (e: any) {
     res.status(400).json({ error: 'Невалидный JWT: ' + e.message });
@@ -1955,7 +1961,12 @@ app.post('/api/tochka/create-payment', async (req, res) => {
     const token = await getTochkaToken();
     if (!token) return res.status(400).json({ error: 'Токен Точки не настроен' });
     const snap = await getDoc(doc(db, 'settings', 'tochka_api'));
-    const customerCode = snap?.data()?.customerCode;
+    const tochkaSettings = snap?.data() || {};
+    const customerCode = tochkaSettings.customerCode;
+    const merchantId = tochkaSettings.merchantId;
+    const paymentMode = Array.isArray(tochkaSettings.paymentMode) && tochkaSettings.paymentMode.length
+      ? tochkaSettings.paymentMode
+      : ['sbp'];
     const webhookUrl = process.env.SERVER_URL ? `${process.env.SERVER_URL}/api/tochka/webhook` : null;
     console.log(`[tochka] create-payment start order=${orderId} amount=${paymentAmount}`);
     await addDoc(collection(db, 'tochka_logs'), {
@@ -1969,18 +1980,26 @@ app.post('/api/tochka/create-payment', async (req, res) => {
     const response = await axios.post(
       `${TOCHKA_API}/acquiring/v1.0/payments`,
       {
-        customerCode,
-        amount: Math.round(paymentAmount * 100) / 100,
-        purpose: description || `Оплата заказа ${orderId}`,
-        redirectUrl: process.env.SERVER_URL ? `${process.env.SERVER_URL}/pay/success` : undefined,
-        ttl: 72 * 60, // 72 часа
+        Data: {
+          customerCode,
+          amount: Math.round(paymentAmount * 100) / 100,
+          purpose: description || `Оплата заказа ${orderId}`,
+          paymentMode,
+          paymentLinkId: orderId,
+          redirectUrl: process.env.SERVER_URL ? `${process.env.SERVER_URL}/pay/${orderId}` : undefined,
+          ttl: 72 * 60, // 72 часа
+          ...(merchantId ? { merchantId } : {}),
+        },
       },
-      { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } }
+      {
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        timeout: 20000,
+      }
     );
 
     const paymentData = response.data;
-    const paymentUrl = paymentData.paymentUrl || paymentData.data?.paymentUrl;
-    const paymentId = paymentData.operationId || paymentData.data?.operationId;
+    const paymentUrl = paymentData.paymentUrl || paymentData.data?.paymentUrl || paymentData.Data?.paymentUrl;
+    const paymentId = paymentData.operationId || paymentData.data?.operationId || paymentData.Data?.operationId;
     if (!paymentUrl) {
       console.error('[tochka] create-payment no paymentUrl:', JSON.stringify(paymentData).slice(0, 500));
       await addDoc(collection(db, 'tochka_logs'), {
@@ -2032,17 +2051,48 @@ app.post('/api/tochka/create-payment', async (req, res) => {
   }
 });
 
+app.get('/api/tochka/retailers', async (_req, res) => {
+  if (!db) return res.status(503).json({ error: 'DB не подключена' });
+  try {
+    const token = await getTochkaToken();
+    if (!token) return res.status(400).json({ error: 'Токен Точки не настроен' });
+    const response = await axios.get(
+      `${TOCHKA_API}/acquiring/v1.0/retailers`,
+      {
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        timeout: 20000,
+      }
+    );
+    res.json(response.data);
+  } catch (e: any) {
+    const errData = e.response?.data;
+    console.error('[tochka] retailers error:', errData || e.message);
+    res.status(e.response?.status || 500).json({ error: e.message, details: errData });
+  }
+});
+
 // Webhook — уведомление об оплате от Точки
 app.post('/api/tochka/webhook', async (req, res) => {
   try {
-    const body = req.body;
+    const body = typeof req.body === 'string'
+      ? JSON.parse(Buffer.from(req.body.split('.')[1] || '', 'base64').toString())
+      : req.body?.token
+        ? JSON.parse(Buffer.from(String(req.body.token).split('.')[1] || '', 'base64').toString())
+        : req.body;
     console.log('[tochka] webhook:', JSON.stringify(body).slice(0, 200));
     // Найти заказ по operationId и обновить статус
-    if (db && body.operationId) {
-      const ordersSnap = await getDocs(query(collection(db, 'orders'), where('paymentId', '==', body.operationId)));
-      for (const d of ordersSnap.docs) {
-        const status = body.status === 'Paid' || body.status === 'paid' ? 'paid' : body.status;
-        await updateDoc(d.ref, { paymentStatus: status, paymentPaidAt: new Date().toISOString() });
+    if (db && (body.operationId || body.paymentLinkId)) {
+      const status = ['Paid', 'paid', 'APPROVED'].includes(body.status) ? 'paid' : body.status;
+      if (body.paymentLinkId) {
+        await updateDoc(doc(db, 'orders', body.paymentLinkId), { paymentStatus: status, paymentPaidAt: new Date().toISOString() }).catch(() => {});
+        await updateDoc(doc(db, 'orders_new', body.paymentLinkId), { paymentStatus: status, paymentPaidAt: new Date().toISOString() }).catch(() => {});
+      }
+      if (body.operationId) {
+        const ordersSnap = await getDocs(query(collection(db, 'orders'), where('paymentId', '==', body.operationId)));
+        for (const d of ordersSnap.docs) {
+          await updateDoc(d.ref, { paymentStatus: status, paymentPaidAt: new Date().toISOString() });
+          await updateDoc(doc(db, 'orders_new', d.id), { paymentStatus: status, paymentPaidAt: new Date().toISOString() }).catch(() => {});
+        }
       }
     }
     res.json({ success: true });
