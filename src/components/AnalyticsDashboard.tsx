@@ -298,7 +298,9 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
     try {
       const color = orderToCreate.rawRow?.[1] || '';
       const size = orderToCreate.rawRow?.[8] || '';
-      const paymentDue = Math.max(0, orderToCreate.revenue + orderToCreate.deliveryPrice - orderToCreate.paidAmount);
+      const paymentDue = orderToCreate.paidAmount > 0
+        ? orderToCreate.paidAmount
+        : Math.max(0, orderToCreate.revenue + orderToCreate.deliveryPrice);
       await setDoc(doc(db, 'orders_new', orderToCreate.orderId), {
         ...orderToCreate,
         date: orderToCreate.date.toISOString(),
@@ -326,7 +328,7 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
         deliveryPrice: orderToCreate.deliveryPrice,
         prepaymentAmount: orderToCreate.paidAmount,
         remainingAmount: paymentDue,
-        paymentStatus: paymentDue <= 0 ? 'paid' : (orderToCreate.paidAmount > 0 ? 'prepaid' : 'pending'),
+        paymentStatus: 'pending',
         manager: orderToCreate.manager || '',
         rawRow: orderToCreate.rawRow,
       }, { merge: true });

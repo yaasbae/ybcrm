@@ -37,8 +37,16 @@ interface ProductCatalogItem {
 
 const normalizeProductName = (value: string) => value.trim().toLowerCase();
 
-function getOrderPaymentDue(order: Pick<OrderData, 'revenue' | 'deliveryPrice' | 'paidAmount'>): number {
-  return Math.max(0, (order.revenue || 0) + (order.deliveryPrice || 0) - (order.paidAmount || 0));
+function getOrderPaymentDue(order: Partial<Pick<OrderData, 'revenue' | 'deliveryPrice' | 'paidAmount' | 'paymentStatus' | 'status'>>): number {
+  const paymentStatus = String(order.paymentStatus || '').toLowerCase();
+  const orderStatus = String(order.status || '').toLowerCase();
+  if (paymentStatus === 'paid' || orderStatus.includes('оплачен')) return 0;
+
+  const fullAmount = Math.max(0, (Number(order.revenue) || 0) + (Number(order.deliveryPrice) || 0));
+  const prepayment = Math.max(0, Number(order.paidAmount) || 0);
+
+  if (prepayment > 0) return prepayment;
+  return fullAmount;
 }
 
 function buildPaymentPageUrl(orderId: string): string {
