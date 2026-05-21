@@ -541,10 +541,12 @@ const OrderRow = React.memo(({
 
 const OrderCard = React.memo(({
   order,
-  updateOrderData
+  updateOrderData,
+  onDelete,
 }: {
   order: OrderData;
   updateOrderData: (id: string, field: string, value: any) => void;
+  onDelete: (id: string) => void;
 }) => {
   const [copied, setCopied] = useState(false);
   const paymentUrl = order.paymentUrl || '';
@@ -724,6 +726,17 @@ const OrderCard = React.memo(({
         >
           Реком.
         </button>
+        {order.isFirebase && (
+          <button
+            onClick={() => {
+              if (window.confirm(`Удалить заказ ${order.orderId}?`)) onDelete(order.orderId);
+            }}
+            className="w-11 py-2 rounded-lg text-red-500 bg-red-50 border border-red-100 transition-all active:bg-red-100 flex items-center justify-center"
+            title="Удалить заказ"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+          </button>
+        )}
       </div>
     </div>
   );
@@ -1614,7 +1627,12 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
         {/* Mobile Card View */}
         <div className="md:hidden flex flex-col divide-y divide-zinc-100">
           {pagedOrders.map((order, i) => (
-            <OrderCard key={`${order.orderId}-${i}`} order={order} updateOrderData={updateOrderData} />
+            <OrderCard
+              key={`${order.orderId}-${i}`}
+              order={order}
+              updateOrderData={updateOrderData}
+              onDelete={deleteOrder}
+            />
           ))}
 
           {filteredOrders.length > displayCount && (
