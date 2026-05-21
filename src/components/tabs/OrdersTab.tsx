@@ -44,7 +44,7 @@ function buildPaymentPageUrl(orderId: string): string {
   return `${window.location.origin}/pay/${orderId}`;
 }
 
-function buildOrderShareText(order: Partial<OrderData>, paymentPageUrl: string): string {
+function buildOrderShareText(order: Partial<OrderData>, paymentUrl: string): string {
   const amount = getOrderPaymentDue({
     revenue: order.revenue || 0,
     deliveryPrice: order.deliveryPrice || 0,
@@ -63,7 +63,7 @@ function buildOrderShareText(order: Partial<OrderData>, paymentPageUrl: string):
     order.clientName ? `Клиент: ${order.clientName}` : '',
     '',
     `К оплате: ${formatCurrency(amount)}`,
-    `Ссылка на заказ и оплату: ${paymentPageUrl}`,
+    `Ссылка на оплату СБП: ${paymentUrl}`,
   ];
 
   return lines.filter((line, index, arr) => line || arr[index - 1]).join('\n').trim();
@@ -84,15 +84,80 @@ async function shareOrder(text: string, url: string): Promise<void> {
   await navigator.clipboard.writeText(text);
 }
 
+async function createPngFileFromSvg(svg: SVGSVGElement, orderId: string): Promise<File> {
+  const svgText = new XMLSerializer().serializeToString(svg);
+  const svgUrl = URL.createObjectURL(new Blob([svgText], { type: 'image/svg+xml;charset=utf-8' }));
+
+  try {
+    const image = new Image();
+    image.decoding = 'async';
+    image.src = svgUrl;
+    await new Promise<void>((resolve, reject) => {
+      image.onload = () => resolve();
+      image.onerror = reject;
+    });
+
+    const sourceWidth = image.naturalWidth || svg.viewBox.baseVal.width || 300;
+    const sourceHeight = image.naturalHeight || svg.viewBox.baseVal.height || 300;
+    const scale = Math.max(1, Math.ceil(900 / Math.max(sourceWidth, sourceHeight)));
+    const canvas = document.createElement('canvas');
+    canvas.width = sourceWidth * scale;
+    canvas.height = sourceHeight * scale;
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('Не удалось подготовить QR');
+    context.fillStyle = '#ffffff';
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+
+    const blob = await new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob(result => result ? resolve(result) : reject(new Error('Не удалось создать PNG')), 'image/png');
+    });
+
+    return new File([blob], `qr-order-${orderId}.png`, { type: 'image/png' });
+  } finally {
+    URL.revokeObjectURL(svgUrl);
+  }
+}
+
+async function shareQrImage(svg: SVGSVGElement | null, orderId: string, text: string): Promise<void> {
+  if (!svg) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const file = await createPngFileFromSvg(svg, orderId);
+  const nav = navigator as Navigator & {
+    canShare?: (data: ShareData & { files?: File[] }) => boolean;
+    share?: (data: ShareData & { files?: File[] }) => Promise<void>;
+  };
+
+  if (nav.share && (!nav.canShare || nav.canShare({ files: [file] }))) {
+    await nav.share({ title: `QR-код заказа #${orderId}`, text, files: [file] });
+    return;
+  }
+
+  const url = URL.createObjectURL(file);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = file.name;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+  await navigator.clipboard.writeText(text);
+}
+
 const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string, field: string, value: any) => void }> = ({ order, updateOrderData }) => {
   const [loading, setLoading] = useState(false);
   const [paymentUrl, setPaymentUrl] = useState<string | null>(order.paymentUrl || null);
   const [copied, setCopied] = useState(false);
   const [showQr, setShowQr] = useState(false);
   const [error, setError] = useState('');
+  const qrRef = useRef<HTMLDivElement>(null);
 
   const pageUrl = buildPaymentPageUrl(order.orderId);
-  const shareText = buildOrderShareText(order, pageUrl);
+  const targetPaymentUrl = paymentUrl || pageUrl;
+  const shareText = buildOrderShareText(order, targetPaymentUrl);
 
   const handleCreate = async () => {
     setLoading(true);
@@ -154,7 +219,7 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
           {copied ? 'Скопировано!' : 'Скопировать'}
         </button>
         <button
-          onClick={() => shareOrder(shareText, pageUrl).catch(() => navigator.clipboard.writeText(shareText))}
+          onClick={() => shareOrder(shareText, targetPaymentUrl).catch(() => navigator.clipboard.writeText(shareText))}
           className="flex-1 text-[8px] font-black py-1 rounded-md border border-violet-200 bg-violet-50 text-violet-600 hover:bg-violet-500 hover:text-white hover:border-violet-500 transition-all flex items-center justify-center gap-1"
         >
           <Send size={8} /> Поделиться
@@ -162,13 +227,13 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
       </div>
       <div className="flex gap-1">
         <button
-          onClick={() => openMessengerShare('telegram', shareText, pageUrl)}
+          onClick={() => openMessengerShare('telegram', shareText, targetPaymentUrl)}
           className="flex-1 text-[8px] font-black py-1 rounded-md border border-blue-200 bg-blue-50 text-blue-600 hover:bg-blue-500 hover:text-white hover:border-blue-500 transition-all"
         >
           Telegram
         </button>
         <button
-          onClick={() => openMessengerShare('whatsapp', shareText, pageUrl)}
+          onClick={() => openMessengerShare('whatsapp', shareText, targetPaymentUrl)}
           className="flex-1 text-[8px] font-black py-1 rounded-md border border-emerald-200 bg-emerald-50 text-emerald-600 hover:bg-emerald-500 hover:text-white hover:border-emerald-500 transition-all"
         >
           WhatsApp
@@ -181,8 +246,16 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
         <QrCodeIcon size={8} /> {showQr ? 'Скрыть QR' : 'QR код'}
       </button>
       {showQr && (
-        <div className="flex justify-center p-2 bg-white border border-zinc-100 rounded-lg">
-          <QRCodeSVG value={pageUrl} size={100} />
+        <div className="space-y-1">
+          <div ref={qrRef} className="flex justify-center p-2 bg-white border border-zinc-100 rounded-lg">
+            <QRCodeSVG value={targetPaymentUrl} size={100} />
+          </div>
+          <button
+            onClick={() => shareQrImage(qrRef.current?.querySelector('svg') || null, order.orderId, shareText).catch(() => navigator.clipboard.writeText(shareText))}
+            className="w-full text-[8px] font-black py-1 rounded-md border border-zinc-200 bg-white text-zinc-600 hover:bg-zinc-50 transition-all"
+          >
+            Отправить QR
+          </button>
         </div>
       )}
     </div>
@@ -667,6 +740,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
   const [qrCopied, setQrCopied] = useState(false);
   const [tochkaConfigured, setTochkaConfigured] = useState(false);
   const [productCatalog, setProductCatalog] = useState<ProductCatalogItem[]>([]);
+  const createdQrRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     fetch('/api/tochka/status').then(r => r.json()).then(d => setTochkaConfigured(!!d.configured)).catch(() => {});
@@ -1237,7 +1311,10 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                     });
                     const data = await res.json();
                     if (!res.ok) throw new Error(data.error || 'Не удалось создать счёт');
-                    if (data.paymentUrl) setCreatedPaymentUrl(data.paymentUrl);
+                    if (data.paymentUrl) {
+                      setCreatedPaymentUrl(data.paymentUrl);
+                      setCreatedShareText(buildOrderShareText({ ...orderSnapshot, orderId }, data.paymentUrl));
+                    }
                   } catch (e: any) {
                     setCreatedPaymentError(e.message || 'Не удалось создать счёт');
                   }
@@ -1281,14 +1358,14 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
               {createdPaymentUrl && (
                 <div className="space-y-3">
                   <div className="flex justify-center">
-                    <div className="p-3 bg-white border border-zinc-200 rounded-xl inline-block">
-                      <QRCodeSVG value={`${window.location.origin}/pay/${createdOrderId}`} size={160} />
+                    <div ref={createdQrRef} className="p-3 bg-white border border-zinc-200 rounded-xl inline-block">
+                      <QRCodeSVG value={createdPaymentUrl} size={160} />
                     </div>
                   </div>
                   <div className="flex gap-2">
                     <button
                       onClick={() => {
-                        navigator.clipboard.writeText(createdShareText || buildPaymentPageUrl(createdOrderId));
+                        navigator.clipboard.writeText(createdShareText || createdPaymentUrl);
                         setQrCopied(true);
                         setTimeout(() => setQrCopied(false), 2000);
                       }}
@@ -1297,7 +1374,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                       {qrCopied ? '✓ Скопировано!' : <><Copy size={11} /> Копировать текст</>}
                     </button>
                     <button
-                      onClick={() => shareOrder(createdShareText, buildPaymentPageUrl(createdOrderId)).catch(() => navigator.clipboard.writeText(createdShareText))}
+                      onClick={() => shareOrder(createdShareText, createdPaymentUrl).catch(() => navigator.clipboard.writeText(createdShareText))}
                       className="flex-1 py-2.5 rounded-xl bg-blue-500 text-white text-[10px] font-black hover:bg-blue-600 flex items-center justify-center gap-1.5"
                     >
                       <Send size={11} /> Поделиться
@@ -1305,25 +1382,31 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                   </div>
                   <div className="grid grid-cols-2 gap-2">
                     <button
-                      onClick={() => openMessengerShare('telegram', createdShareText, buildPaymentPageUrl(createdOrderId))}
+                      onClick={() => openMessengerShare('telegram', createdShareText, createdPaymentUrl)}
                       className="py-2 rounded-xl border border-blue-200 bg-blue-50 text-blue-600 text-[10px] font-black hover:bg-blue-500 hover:text-white transition-colors"
                     >
                       Telegram
                     </button>
                     <button
-                      onClick={() => openMessengerShare('whatsapp', createdShareText, buildPaymentPageUrl(createdOrderId))}
+                      onClick={() => openMessengerShare('whatsapp', createdShareText, createdPaymentUrl)}
                       className="py-2 rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-600 text-[10px] font-black hover:bg-emerald-500 hover:text-white transition-colors"
                     >
                       WhatsApp
                     </button>
                   </div>
+                  <button
+                    onClick={() => shareQrImage(createdQrRef.current?.querySelector('svg') || null, createdOrderId, createdShareText).catch(() => navigator.clipboard.writeText(createdShareText))}
+                    className="w-full py-2.5 rounded-xl border border-violet-200 bg-violet-50 text-violet-600 text-[10px] font-black hover:bg-violet-500 hover:text-white transition-colors flex items-center justify-center gap-1.5"
+                  >
+                    <QrCodeIcon size={11} /> Отправить QR картинкой
+                  </button>
                   <a
-                    href={`/pay/${createdOrderId}`}
+                    href={createdPaymentUrl}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="block text-center text-[9px] text-zinc-400 hover:text-violet-600 underline"
                   >
-                    Открыть страницу оплаты
+                    Открыть ссылку СБП
                   </a>
                 </div>
               )}
