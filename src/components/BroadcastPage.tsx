@@ -255,6 +255,7 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId, initialTab = 'compose'
   // Tochka Bank settings
   const [tochkaToken, setTochkaToken] = useState('');
   const [tochkaMerchantId, setTochkaMerchantId] = useState('');
+  const [tochkaAccountId, setTochkaAccountId] = useState('');
   const [isSavingTochka, setIsSavingTochka] = useState(false);
   const [tochkaSaveResult, setTochkaSaveResult] = useState('');
   const [tochkaConfigured, setTochkaConfigured] = useState(false);
@@ -1234,7 +1235,7 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId, initialTab = 'compose'
                 <label className="text-[9px] font-black text-zinc-400 uppercase tracking-widest ml-1">Точка Банк · QR-оплата</label>
                 {tochkaConfigured && <span className="text-[8px] font-black text-emerald-500 uppercase tracking-widest">✓ настроен</span>}
               </div>
-              <p className="text-[9px] text-zinc-400 ml-1">Вставь JWT токен из личного кабинета Точки для создания QR-ссылок при оформлении заказов</p>
+              <p className="text-[9px] text-zinc-400 ml-1">JWT нужен при первой настройке. Merchant/account можно сохранить отдельно, если токен уже настроен.</p>
               <textarea
                 value={tochkaToken}
                 onChange={e => setTochkaToken(e.target.value)}
@@ -1245,7 +1246,13 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId, initialTab = 'compose'
               <input
                 value={tochkaMerchantId}
                 onChange={e => setTochkaMerchantId(e.target.value)}
-                placeholder="merchantId, если торговых точек несколько"
+                placeholder="merchantId для прямого СБП QR, например MF0000000001"
+                className="w-full bg-zinc-50 border border-zinc-200 rounded-xl px-3 py-2.5 text-[10px] font-mono focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-400 transition-all"
+              />
+              <input
+                value={tochkaAccountId}
+                onChange={e => setTochkaAccountId(e.target.value)}
+                placeholder="accountId для СБП QR: счет/БИК, например 408028.../044525104"
                 className="w-full bg-zinc-50 border border-zinc-200 rounded-xl px-3 py-2.5 text-[10px] font-mono focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-400 transition-all"
               />
               {tochkaSaveResult && (
@@ -1253,16 +1260,23 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId, initialTab = 'compose'
               )}
               <button
                 onClick={async () => {
-                  if (!tochkaToken.trim()) return;
+                  if (!tochkaToken.trim() && !tochkaConfigured) {
+                    setTochkaSaveResult('Ошибка: сначала вставь JWT токен');
+                    return;
+                  }
                   setIsSavingTochka(true);
                   setTochkaSaveResult('');
+                  const controller = new AbortController();
+                  const timeoutId = window.setTimeout(() => controller.abort(), 20000);
                   try {
                     const res = await fetch('/api/tochka/save-token', {
                       method: 'POST',
                       headers: { 'Content-Type': 'application/json' },
+                      signal: controller.signal,
                       body: JSON.stringify({
                         jwtToken: tochkaToken.trim(),
                         merchantId: tochkaMerchantId.trim(),
+                        accountId: tochkaAccountId.trim(),
                         paymentMode: ['sbp'],
                       })
                     });
@@ -1272,13 +1286,15 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId, initialTab = 'compose'
                     setTochkaConfigured(true);
                     setTochkaToken('');
                     setTochkaMerchantId('');
+                    setTochkaAccountId('');
                   } catch (e: any) {
-                    setTochkaSaveResult(`Ошибка: ${e.message}`);
+                    setTochkaSaveResult(`Ошибка: ${e.name === 'AbortError' ? 'сервер не ответил за 20 секунд, попробуй ещё раз' : e.message}`);
                   } finally {
+                    window.clearTimeout(timeoutId);
                     setIsSavingTochka(false);
                   }
                 }}
-                disabled={isSavingTochka || !tochkaToken.trim()}
+                disabled={isSavingTochka || (!tochkaToken.trim() && !tochkaConfigured)}
                 className="w-full py-2.5 bg-violet-600 text-white rounded-xl text-[10px] font-black hover:bg-violet-700 transition-all disabled:opacity-40 flex items-center justify-center gap-2"
               >
                 {isSavingTochka ? <><span className="animate-spin">⟳</span> Сохраняем...</> : 'Сохранить токен'}
