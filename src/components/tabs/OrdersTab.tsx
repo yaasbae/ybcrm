@@ -1097,9 +1097,9 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
       </div>
 
       {/* New Order Form Block */}
-      <div className="tg-card p-4 sm:p-6 bg-zinc-50 border-zinc-100 text-zinc-900 shadow-sm">
+      <div className="tg-card p-4 sm:p-6 bg-white border border-zinc-200 text-zinc-900 shadow-sm">
         <div className="flex items-center gap-3 mb-6">
-          <div className="p-2.5 bg-emerald-500 rounded-2xl shadow-lg shadow-emerald-500/20">
+          <div className="p-2.5 bg-zinc-900 rounded-2xl shadow-lg shadow-zinc-200">
             <Plus className="w-5 h-5 text-white" />
           </div>
           <div>
@@ -1114,21 +1114,21 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
             {/* Group: Basic Info */}
             <div className="space-y-2">
               <label className="text-[10px] font-black text-zinc-400 uppercase tracking-[0.15em] flex items-center gap-2 mb-1">
-                <Calendar className="w-3 h-3 text-emerald-500" /> Дата и ID
+                <Calendar className="w-3 h-3 text-zinc-500" /> Дата и ID
               </label>
               <div className="flex flex-col gap-2">
                 <input
                   type="date"
                   value={newOrder.date ? newOrder.date.toISOString().split('T')[0] : ''}
                   onChange={(e) => setNewOrder({...newOrder, date: new Date(e.target.value)})}
-                  className="w-full bg-white border border-zinc-200 rounded-xl px-4 py-2.5 text-[11px] font-bold text-zinc-900 outline-none focus:ring-2 focus:ring-emerald-500/10 focus:border-emerald-500 transition-all shadow-sm"
+                  className="w-full bg-zinc-50 border border-zinc-200 rounded-xl px-4 py-2.5 text-[11px] font-bold text-zinc-900 outline-none focus:bg-white focus:ring-2 focus:ring-zinc-500/10 focus:border-zinc-400 transition-all shadow-sm"
                 />
                 <input
                   type="text"
                   placeholder="ID заказа"
                   value={newOrder.orderId || ''}
                   onChange={(e) => setNewOrder({...newOrder, orderId: e.target.value.toUpperCase()})}
-                  className="w-full bg-white border border-zinc-200 rounded-xl px-4 py-2.5 text-[11px] font-bold text-zinc-900 outline-none focus:ring-2 focus:ring-emerald-500/10 focus:border-emerald-500 transition-all shadow-sm"
+                  className="w-full bg-zinc-50 border border-zinc-200 rounded-xl px-4 py-2.5 text-[11px] font-bold text-zinc-900 outline-none focus:bg-white focus:ring-2 focus:ring-zinc-500/10 focus:border-zinc-400 transition-all shadow-sm"
                 />
               </div>
             </div>
@@ -1136,7 +1136,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
             {/* Group: Client Info */}
             <div className="space-y-2">
               <label className="text-[10px] font-black text-zinc-400 uppercase tracking-[0.15em] flex items-center gap-2 mb-1">
-                <Users className="w-3 h-3 text-emerald-500" /> Клиент
+                <Users className="w-3 h-3 text-zinc-500" /> Клиент
               </label>
               <div className="flex flex-col gap-2">
                 <div className="relative" ref={suggestionsRef}>
@@ -1150,7 +1150,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                     setShowSuggestions(true);
                   }}
                   onFocus={() => setShowSuggestions(true)}
-                  className="w-full bg-white border border-zinc-200 rounded-xl px-4 py-2.5 text-[11px] font-bold text-zinc-900 outline-none focus:ring-2 focus:ring-emerald-500/10 focus:border-emerald-500 transition-all shadow-sm"
+                  className="w-full bg-zinc-50 border border-zinc-200 rounded-xl px-4 py-2.5 text-[11px] font-bold text-zinc-900 outline-none focus:bg-white focus:ring-2 focus:ring-zinc-500/10 focus:border-zinc-400 transition-all shadow-sm"
                   autoComplete="off"
                 />
                 <AnimatePresence>
@@ -1192,7 +1192,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                       setShowPhoneSuggestions(true);
                     }}
                     onFocus={() => setShowPhoneSuggestions(true)}
-                    className="w-full bg-white border border-zinc-200 rounded-xl px-4 py-2.5 text-[11px] font-bold text-zinc-900 outline-none focus:ring-2 focus:ring-emerald-500/10 focus:border-emerald-500 transition-all shadow-sm"
+                    className="w-full bg-zinc-50 border border-zinc-200 rounded-xl px-4 py-2.5 text-[11px] font-bold text-zinc-900 outline-none focus:bg-white focus:ring-2 focus:ring-zinc-500/10 focus:border-zinc-400 transition-all shadow-sm"
                     autoComplete="off"
                   />
                   <AnimatePresence>
@@ -1227,7 +1227,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
             {/* Group: Product Details */}
             <div className="space-y-2">
               <label className="text-[10px] font-black text-zinc-400 uppercase tracking-[0.15em] flex items-center gap-2 mb-1">
-                <ShoppingBag className="w-3 h-3 text-emerald-500" /> Изделие
+                <ShoppingBag className="w-3 h-3 text-zinc-500" /> Изделие
               </label>
               <div className="grid grid-cols-2 gap-2">
                 <input
@@ -1236,7 +1236,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                   placeholder="Наименование"
                   value={newOrder.item || ''}
                   onChange={(e) => applyNewOrderProduct(e.target.value)}
-                  className="col-span-2 bg-white border border-zinc-200 rounded-xl px-4 py-2.5 text-[11px] font-bold text-zinc-900 outline-none focus:ring-2 focus:ring-emerald-500/10 focus:border-emerald-500 transition-all shadow-sm"
+                  className="col-span-2 bg-zinc-50 border border-zinc-200 rounded-xl px-4 py-2.5 text-[11px] font-bold text-zinc-900 outline-none focus:bg-white focus:ring-2 focus:ring-zinc-500/10 focus:border-zinc-400 transition-all shadow-sm"
                 />
                 <div className="relative">
                   <select
@@ -1246,7 +1246,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                       nr[RAW_COLOR_INDEX] = e.target.value;
                       setNewOrder({...newOrder, rawRow: nr});
                     }}
-                    className="w-full bg-white border border-zinc-200 rounded-xl px-4 py-2.5 text-[11px] font-bold text-zinc-900 outline-none focus:ring-2 focus:ring-emerald-500/10 focus:border-emerald-500 transition-all shadow-sm appearance-none cursor-pointer"
+                    className="w-full bg-zinc-50 border border-zinc-200 rounded-xl px-4 py-2.5 text-[11px] font-bold text-zinc-900 outline-none focus:bg-white focus:ring-2 focus:ring-zinc-500/10 focus:border-zinc-400 transition-all shadow-sm appearance-none cursor-pointer"
                   >
                     <option value="">Цвет?</option>
                     {handbookColors.map(opt => <option key={opt} value={opt}>{opt}</option>)}
@@ -1261,7 +1261,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                       nr[RAW_SIZE_INDEX] = e.target.value;
                       setNewOrder({...newOrder, rawRow: nr});
                     }}
-                    className="w-full bg-white border border-zinc-200 rounded-xl px-4 py-2.5 text-[11px] font-bold text-zinc-900 outline-none focus:ring-2 focus:ring-emerald-500/10 focus:border-emerald-500 transition-all shadow-sm appearance-none cursor-pointer"
+                    className="w-full bg-zinc-50 border border-zinc-200 rounded-xl px-4 py-2.5 text-[11px] font-bold text-zinc-900 outline-none focus:bg-white focus:ring-2 focus:ring-zinc-500/10 focus:border-zinc-400 transition-all shadow-sm appearance-none cursor-pointer"
                   >
                     <option value="">Размер?</option>
                     {handbookSizes.map(opt => <option key={opt} value={opt}>{opt}</option>)}
@@ -1274,14 +1274,14 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
             {/* Group: Logistics */}
             <div className="space-y-2">
               <label className="text-[10px] font-black text-zinc-400 uppercase tracking-[0.15em] flex items-center gap-2 mb-1">
-                <MapPin className="w-3 h-3 text-emerald-500" /> Логистика
+                <MapPin className="w-3 h-3 text-zinc-500" /> Логистика
               </label>
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-1 gap-2">
                 <div className="relative">
                   <select
                     value={newOrder.deliveryMethod || ''}
                     onChange={(e) => setNewOrder({...newOrder, deliveryMethod: e.target.value})}
-                    className="w-full bg-white border border-zinc-200 rounded-xl px-4 py-2.5 text-[11px] font-bold text-zinc-900 outline-none focus:ring-2 focus:ring-emerald-500/10 focus:border-emerald-500 transition-all shadow-sm appearance-none cursor-pointer"
+                    className="w-full bg-zinc-50 border border-zinc-200 rounded-xl px-4 py-2.5 text-[11px] font-bold text-zinc-900 outline-none focus:bg-white focus:ring-2 focus:ring-zinc-500/10 focus:border-zinc-400 transition-all shadow-sm appearance-none cursor-pointer"
                   >
                     <option value="">Доставка?</option>
                     {(handbookDeliveries.length ? handbookDeliveries : DELIVERY_OPTIONS).map(opt => <option key={opt} value={opt}>{opt}</option>)}
@@ -1292,7 +1292,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                   <select
                     value={newOrder.source || ''}
                     onChange={(e) => setNewOrder({...newOrder, source: e.target.value})}
-                    className="w-full bg-white border border-zinc-200 rounded-xl px-4 py-2.5 text-[11px] font-bold text-zinc-900 outline-none focus:ring-2 focus:ring-emerald-500/10 focus:border-emerald-500 transition-all shadow-sm appearance-none cursor-pointer"
+                    className="w-full bg-zinc-50 border border-zinc-200 rounded-xl px-4 py-2.5 text-[11px] font-bold text-zinc-900 outline-none focus:bg-white focus:ring-2 focus:ring-zinc-500/10 focus:border-zinc-400 transition-all shadow-sm appearance-none cursor-pointer"
                   >
                     <option value="">Источник?</option>
                     {(handbookSources.length ? handbookSources : SOURCE_OPTIONS).map(opt => <option key={opt} value={opt}>{opt}</option>)}
@@ -1316,7 +1316,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                 <select
                   value={value}
                   onChange={(e) => onChange(e.target.value)}
-                  className="w-full bg-white border border-zinc-200 rounded-xl px-4 py-2.5 text-[11px] font-bold text-zinc-900 outline-none focus:ring-2 focus:ring-emerald-500/10 focus:border-emerald-500 transition-all shadow-sm appearance-none cursor-pointer"
+                  className="w-full bg-zinc-50 border border-zinc-200 rounded-xl px-4 py-2.5 text-[11px] font-bold text-zinc-900 outline-none focus:bg-white focus:ring-2 focus:ring-zinc-500/10 focus:border-zinc-400 transition-all shadow-sm appearance-none cursor-pointer"
                 >
                   <option value="">{label}?</option>
                   {opts.map(opt => <option key={opt} value={opt}>{opt}</option>)}
@@ -1338,20 +1338,20 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                     placeholder="0.00"
                     value={Number.isNaN(newOrder.revenue) ? "" : newOrder.revenue || ""}
                     onChange={(e) => setNewOrder({...newOrder, revenue: parseFloat(e.target.value) || 0})}
-                    className="w-full sm:w-36 bg-white border border-zinc-200 rounded-xl pl-8 pr-4 py-2.5 text-[11px] font-black text-zinc-900 outline-none focus:ring-2 focus:ring-emerald-500/10 focus:border-emerald-500 transition-all shadow-sm"
+                    className="w-full sm:w-36 bg-zinc-50 border border-zinc-200 rounded-xl pl-8 pr-4 py-2.5 text-[11px] font-black text-zinc-900 outline-none focus:bg-white focus:ring-2 focus:ring-zinc-500/10 focus:border-zinc-400 transition-all shadow-sm"
                   />
                 </div>
               </div>
               <div className="space-y-2">
-                <label className="text-[9px] font-black text-emerald-500 uppercase tracking-widest pl-1">Предоплата 50%</label>
+                <label className="text-[9px] font-black text-zinc-400 uppercase tracking-widest pl-1">Предоплата 50%</label>
                 <div className="relative">
-                  <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-[10px] font-black text-emerald-300">₽</span>
+                  <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-[10px] font-black text-zinc-300">₽</span>
                   <input
                     type="number"
                     placeholder="0.00"
                     value={Number.isNaN(newOrder.paidAmount) ? "" : newOrder.paidAmount || ""}
                     onChange={(e) => setNewOrder({...newOrder, paidAmount: parseFloat(e.target.value) || 0})}
-                    className="w-full sm:w-36 bg-emerald-50/20 border border-emerald-100 rounded-xl pl-8 pr-4 py-2.5 text-[11px] font-black text-emerald-700 outline-none focus:ring-2 focus:ring-emerald-500/10 focus:border-emerald-500 transition-all shadow-sm"
+                    className="w-full sm:w-36 bg-zinc-50 border border-zinc-200 rounded-xl pl-8 pr-4 py-2.5 text-[11px] font-black text-zinc-900 outline-none focus:bg-white focus:ring-2 focus:ring-zinc-500/10 focus:border-zinc-400 transition-all shadow-sm"
                   />
                 </div>
               </div>
