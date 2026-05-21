@@ -53,16 +53,17 @@ function buildOrderShareText(order: Partial<OrderData>, paymentUrl: string): str
   const color = order.rawRow?.[RAW_COLOR_INDEX] || '';
   const size = order.rawRow?.[RAW_SIZE_INDEX] || '';
   const lines = [
-    `Здравствуйте! Счёт на оплату заказа #${order.orderId || ''}`,
+    `Здравствуйте! Счет на оплату заказа #${order.orderId || ''}`,
     '',
-    order.item ? `Заказ: ${order.item}` : '',
+    order.item ? `Модель: ${order.item}` : '',
     color ? `Цвет: ${color}` : '',
     size ? `Размер: ${size}` : '',
     order.height ? `Рост: ${order.height}` : '',
     order.deliveryMethod ? `Доставка: ${order.deliveryMethod}` : '',
-    order.clientName ? `Клиент: ${order.clientName}` : '',
+    order.clientName ? `ФИО: ${order.clientName}` : '',
+    order.clientPhone ? `Телефон: ${order.clientPhone}` : '',
     '',
-    `К оплате: ${formatCurrency(amount)}`,
+    `Сумма: ${formatCurrency(amount)}`,
     `Ссылка на оплату СБП: ${paymentUrl}`,
   ];
 
@@ -71,14 +72,14 @@ function buildOrderShareText(order: Partial<OrderData>, paymentUrl: string): str
 
 function openMessengerShare(messenger: 'telegram' | 'whatsapp', text: string, url: string): void {
   const href = messenger === 'telegram'
-    ? `https://t.me/share/url?url=${encodeURIComponent(url)}&text=${encodeURIComponent(text)}`
+    ? `https://t.me/share/url?text=${encodeURIComponent(text)}`
     : `https://wa.me/?text=${encodeURIComponent(text)}`;
   window.open(href, '_blank', 'noopener,noreferrer');
 }
 
 async function shareOrder(text: string, url: string): Promise<void> {
   if (navigator.share) {
-    await navigator.share({ title: 'Счёт на оплату заказа', text, url });
+    await navigator.share({ title: 'Счет на оплату заказа', text });
     return;
   }
   await navigator.clipboard.writeText(text);
@@ -420,17 +421,6 @@ const OrderRow = React.memo(({
         </div>
         <div className="flex gap-1">
           <button
-            onClick={() => updateOrderData(order.orderId, 'status', 'Оплачен')}
-            className={cn(
-              "flex-1 text-[8px] font-black py-1 rounded-md border transition-all uppercase tracking-tight",
-              order.status === 'Оплачен'
-                ? "bg-emerald-500 border-emerald-500 text-white"
-                : "bg-white border-emerald-300 text-emerald-600 hover:bg-emerald-50"
-            )}
-          >
-            ✓ Оплачен
-          </button>
-          <button
             onClick={() => updateOrderData(order.orderId, 'isRecommended', order.isRecommended ? null : true)}
             className={cn(
               "flex-1 text-[8px] font-black py-1 rounded-md border transition-all uppercase tracking-tight",
@@ -451,7 +441,7 @@ const OrderRow = React.memo(({
       <td className="px-3 py-3 align-top w-[120px] text-right">
         <div className="space-y-1.5">
           <div>
-            <div className="text-[8px] font-bold text-zinc-300 uppercase tracking-widest mb-0.5">Цена</div>
+            <div className="text-[8px] font-bold text-zinc-300 uppercase tracking-widest mb-0.5">Стоимость 100%</div>
             <input
               type="number"
               value={order.revenue ?? ''}
@@ -469,7 +459,7 @@ const OrderRow = React.memo(({
             />
           </div>
           <div className="border-t border-zinc-100 pt-1.5">
-            <div className="text-[8px] font-bold text-emerald-400 uppercase tracking-widest mb-0.5">Оплачено</div>
+            <div className="text-[8px] font-bold text-emerald-400 uppercase tracking-widest mb-0.5">Предоплата 50%</div>
             <input
               type="number"
               value={order.paidAmount ?? ''}
@@ -520,11 +510,11 @@ const OrderRow = React.memo(({
           )}
           {order.paymentUrl && (
             <a
-              href={`/pay/${order.orderId}`}
+              href={order.paymentUrl}
               target="_blank"
               rel="noopener noreferrer"
               className="mt-1 w-full flex items-center justify-center gap-0.5 py-1 rounded-md border border-violet-200 bg-violet-50 text-violet-500 hover:bg-violet-500 hover:text-white hover:border-violet-500 transition-all"
-              title="Открыть страницу оплаты"
+              title="Открыть ссылку СБП"
             >
               <QrCodeIcon size={10} />
             </a>
@@ -850,7 +840,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
             </div>
             <div className="w-[1px] h-6 bg-zinc-200" />
             <div className="flex flex-col items-end">
-              <span className="text-[8px] font-bold text-zinc-400 uppercase tracking-tight">Всего оплат</span>
+              <span className="text-[8px] font-bold text-zinc-400 uppercase tracking-tight">Всего предоплат</span>
               <span className="text-[11px] font-black text-emerald-600 tracking-tight">{formatCurrency(stats.totalActualPayments)}</span>
             </div>
           </div>
@@ -879,7 +869,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                     <span className="text-[9px] font-black text-zinc-900">{formatCurrency(m.revenue)}</span>
                   </div>
                   <div className="flex items-center justify-between">
-                    <span className="text-[8px] font-medium text-emerald-600/70 uppercase">Оплачено:</span>
+                    <span className="text-[8px] font-medium text-emerald-600/70 uppercase">Предоплата:</span>
                     <span className="text-[9px] font-black text-emerald-600">{formatCurrency(m.paid)}</span>
                   </div>
                   <div className="pt-1.5 border-t border-zinc-200/50 flex items-center justify-between">
@@ -1254,7 +1244,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
           <div className="pt-6 border-t border-zinc-200 flex flex-col md:flex-row items-center justify-between gap-6">
             <div className="w-full md:w-auto grid grid-cols-2 sm:flex gap-3 sm:gap-4 items-end">
               <div className="space-y-2">
-                <label className="text-[9px] font-black text-zinc-400 uppercase tracking-widest pl-1">Стоимость</label>
+                <label className="text-[9px] font-black text-zinc-400 uppercase tracking-widest pl-1">Стоимость 100%</label>
                 <div className="relative">
                   <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-[10px] font-black text-zinc-300">₽</span>
                   <input
@@ -1267,7 +1257,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                 </div>
               </div>
               <div className="space-y-2">
-                <label className="text-[9px] font-black text-emerald-500 uppercase tracking-widest pl-1">Оплачено</label>
+                <label className="text-[9px] font-black text-emerald-500 uppercase tracking-widest pl-1">Предоплата 50%</label>
                 <div className="relative">
                   <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-[10px] font-black text-emerald-300">₽</span>
                   <input
