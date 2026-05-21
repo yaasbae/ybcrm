@@ -557,7 +557,12 @@ const OrderCard = React.memo(({
   onDelete: (id: string) => void;
 }) => {
   const [copied, setCopied] = useState(false);
-  const paymentUrl = order.paymentUrl || '';
+  const [mobilePaymentUrl, setMobilePaymentUrl] = useState(order.paymentUrl || '');
+  const [mobilePaymentLoading, setMobilePaymentLoading] = useState(false);
+  const [mobilePaymentError, setMobilePaymentError] = useState('');
+  const [showMobileQr, setShowMobileQr] = useState(false);
+  const mobileQrRef = useRef<HTMLDivElement>(null);
+  const paymentUrl = mobilePaymentUrl;
   const dueAmount = getOrderPaymentDue(order);
   const shareText = paymentUrl ? buildOrderShareText(order, paymentUrl) : '';
   const chipItems = [
@@ -577,6 +582,40 @@ const OrderCard = React.memo(({
     navigator.clipboard.writeText(shareText);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  };
+
+  useEffect(() => {
+    setMobilePaymentUrl(order.paymentUrl || '');
+  }, [order.paymentUrl]);
+
+  const createMobilePayment = async () => {
+    setMobilePaymentLoading(true);
+    setMobilePaymentError('');
+    try {
+      const amount = getOrderPaymentDue(order);
+      if (amount <= 0) throw new Error('Сумма к оплате 0 ₽');
+
+      const res = await fetch('/api/tochka/create-payment', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          orderId: order.orderId,
+          amount,
+          description: `Заказ #${order.orderId} ${order.item || ''}`,
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Не удалось создать счёт');
+      if (!data.paymentUrl) throw new Error('Точка не вернула ссылку оплаты');
+
+      setMobilePaymentUrl(data.paymentUrl);
+      setShowMobileQr(true);
+      updateOrderData(order.orderId, 'paymentUrl', data.paymentUrl);
+    } catch (e: any) {
+      setMobilePaymentError(e.message || 'Не удалось создать счёт');
+    } finally {
+      setMobilePaymentLoading(false);
+    }
   };
 
   return (
@@ -689,7 +728,8 @@ const OrderCard = React.memo(({
         </div>
 
         {paymentUrl ? (
-          <div className="grid grid-cols-3 gap-1.5">
+          <div className="space-y-2">
+            <div className="grid grid-cols-3 gap-1.5">
             <button
               onClick={copyPaymentText}
               className="py-2 rounded-lg bg-white border border-violet-100 text-[8px] font-black text-violet-600 uppercase"
@@ -708,9 +748,41 @@ const OrderCard = React.memo(({
             >
               WhatsApp
             </button>
+            </div>
+            <button
+              onClick={() => setShowMobileQr(v => !v)}
+              className="w-full py-2 rounded-lg bg-white border border-violet-100 text-[8px] font-black text-violet-600 uppercase"
+            >
+              {showMobileQr ? 'Скрыть QR' : 'Показать QR'}
+            </button>
+            {showMobileQr && (
+              <div className="space-y-2">
+                <div ref={mobileQrRef} className="flex justify-center p-3 bg-white border border-zinc-100 rounded-xl">
+                  <QRCodeSVG value={paymentUrl} size={180} />
+                </div>
+                <button
+                  onClick={() => shareQrImage(mobileQrRef.current?.querySelector('svg') || null, order.orderId, shareText).catch(() => navigator.clipboard.writeText(shareText))}
+                  className="w-full py-2 rounded-lg bg-zinc-900 text-white text-[8px] font-black uppercase tracking-wider"
+                >
+                  Отправить QR
+                </button>
+              </div>
+            )}
           </div>
         ) : (
-          <PaymentRowBlock order={order} updateOrderData={updateOrderData} />
+          <div className="space-y-1.5">
+            <button
+              onClick={createMobilePayment}
+              disabled={mobilePaymentLoading}
+              className="w-full py-2 rounded-lg border border-violet-200 bg-violet-50 text-violet-600 text-[8px] font-black uppercase tracking-wider flex items-center justify-center gap-1.5 disabled:opacity-60"
+            >
+              {mobilePaymentLoading ? <RefreshCcw size={11} className="animate-spin" /> : <QrCodeIcon size={11} />}
+              {mobilePaymentLoading ? 'Создаём...' : 'Создать счёт'}
+            </button>
+            {mobilePaymentError && (
+              <p className="text-[9px] font-bold text-red-500">{mobilePaymentError}</p>
+            )}
+          </div>
         )}
       </div>
 
