@@ -1246,9 +1246,12 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                       nr[RAW_COLOR_INDEX] = e.target.value;
                       setNewOrder({...newOrder, rawRow: nr});
                     }}
-                    className="w-full bg-zinc-50 border border-zinc-200 rounded-xl px-4 py-2.5 text-[11px] font-bold text-zinc-900 outline-none focus:bg-white focus:ring-2 focus:ring-zinc-500/10 focus:border-zinc-400 transition-all shadow-sm appearance-none cursor-pointer"
+                    className={cn(
+                      "w-full bg-zinc-50 border border-zinc-200 rounded-xl px-4 py-2.5 text-[11px] font-bold outline-none focus:bg-white focus:ring-2 focus:ring-zinc-500/10 focus:border-zinc-400 transition-all shadow-sm appearance-none cursor-pointer",
+                      newOrder.rawRow?.[RAW_COLOR_INDEX] ? "text-zinc-900" : "text-zinc-400"
+                    )}
                   >
-                    <option value="">Цвет?</option>
+                    <option value="">Цвет</option>
                     {handbookColors.map(opt => <option key={opt} value={opt}>{opt}</option>)}
                   </select>
                   <ChevronRight className="absolute right-3 top-1/2 -translate-y-1/2 w-3 h-3 text-zinc-400 rotate-90 pointer-events-none" />
@@ -1261,9 +1264,12 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                       nr[RAW_SIZE_INDEX] = e.target.value;
                       setNewOrder({...newOrder, rawRow: nr});
                     }}
-                    className="w-full bg-zinc-50 border border-zinc-200 rounded-xl px-4 py-2.5 text-[11px] font-bold text-zinc-900 outline-none focus:bg-white focus:ring-2 focus:ring-zinc-500/10 focus:border-zinc-400 transition-all shadow-sm appearance-none cursor-pointer"
+                    className={cn(
+                      "w-full bg-zinc-50 border border-zinc-200 rounded-xl px-4 py-2.5 text-[11px] font-bold outline-none focus:bg-white focus:ring-2 focus:ring-zinc-500/10 focus:border-zinc-400 transition-all shadow-sm appearance-none cursor-pointer",
+                      newOrder.rawRow?.[RAW_SIZE_INDEX] ? "text-zinc-900" : "text-zinc-400"
+                    )}
                   >
-                    <option value="">Размер?</option>
+                    <option value="">Размер</option>
                     {handbookSizes.map(opt => <option key={opt} value={opt}>{opt}</option>)}
                   </select>
                   <ChevronRight className="absolute right-3 top-1/2 -translate-y-1/2 w-3 h-3 text-zinc-400 rotate-90 pointer-events-none" />
@@ -1281,9 +1287,12 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                   <select
                     value={newOrder.deliveryMethod || ''}
                     onChange={(e) => setNewOrder({...newOrder, deliveryMethod: e.target.value})}
-                    className="w-full bg-zinc-50 border border-zinc-200 rounded-xl px-4 py-2.5 text-[11px] font-bold text-zinc-900 outline-none focus:bg-white focus:ring-2 focus:ring-zinc-500/10 focus:border-zinc-400 transition-all shadow-sm appearance-none cursor-pointer"
+                    className={cn(
+                      "w-full bg-zinc-50 border border-zinc-200 rounded-xl px-4 py-2.5 text-[11px] font-bold outline-none focus:bg-white focus:ring-2 focus:ring-zinc-500/10 focus:border-zinc-400 transition-all shadow-sm appearance-none cursor-pointer",
+                      newOrder.deliveryMethod ? "text-zinc-900" : "text-zinc-400"
+                    )}
                   >
-                    <option value="">Доставка?</option>
+                    <option value="">Доставка</option>
                     {(handbookDeliveries.length ? handbookDeliveries : DELIVERY_OPTIONS).map(opt => <option key={opt} value={opt}>{opt}</option>)}
                   </select>
                   <ChevronRight className="absolute right-3 top-1/2 -translate-y-1/2 w-3 h-3 text-zinc-400 rotate-90 pointer-events-none" />
@@ -1292,9 +1301,12 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                   <select
                     value={newOrder.source || ''}
                     onChange={(e) => setNewOrder({...newOrder, source: e.target.value})}
-                    className="w-full bg-zinc-50 border border-zinc-200 rounded-xl px-4 py-2.5 text-[11px] font-bold text-zinc-900 outline-none focus:bg-white focus:ring-2 focus:ring-zinc-500/10 focus:border-zinc-400 transition-all shadow-sm appearance-none cursor-pointer"
+                    className={cn(
+                      "w-full bg-zinc-50 border border-zinc-200 rounded-xl px-4 py-2.5 text-[11px] font-bold outline-none focus:bg-white focus:ring-2 focus:ring-zinc-500/10 focus:border-zinc-400 transition-all shadow-sm appearance-none cursor-pointer",
+                      newOrder.source ? "text-zinc-900" : "text-zinc-400"
+                    )}
                   >
-                    <option value="">Источник?</option>
+                    <option value="">Источник</option>
                     {(handbookSources.length ? handbookSources : SOURCE_OPTIONS).map(opt => <option key={opt} value={opt}>{opt}</option>)}
                   </select>
                   <ChevronRight className="absolute right-3 top-1/2 -translate-y-1/2 w-3 h-3 text-zinc-400 rotate-90 pointer-events-none" />
@@ -1316,9 +1328,12 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                 <select
                   value={value}
                   onChange={(e) => onChange(e.target.value)}
-                  className="w-full bg-zinc-50 border border-zinc-200 rounded-xl px-4 py-2.5 text-[11px] font-bold text-zinc-900 outline-none focus:bg-white focus:ring-2 focus:ring-zinc-500/10 focus:border-zinc-400 transition-all shadow-sm appearance-none cursor-pointer"
+                  className={cn(
+                    "w-full bg-zinc-50 border border-zinc-200 rounded-xl px-4 py-2.5 text-[11px] font-bold outline-none focus:bg-white focus:ring-2 focus:ring-zinc-500/10 focus:border-zinc-400 transition-all shadow-sm appearance-none cursor-pointer",
+                    value ? "text-zinc-900" : "text-zinc-400"
+                  )}
                 >
-                  <option value="">{label}?</option>
+                  <option value="">{label}</option>
                   {opts.map(opt => <option key={opt} value={opt}>{opt}</option>)}
                 </select>
                 <ChevronRight className="absolute right-3 top-1/2 -translate-y-1/2 w-3 h-3 text-zinc-400 rotate-90 pointer-events-none" />

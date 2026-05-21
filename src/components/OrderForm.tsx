@@ -123,7 +123,7 @@ export const OrderForm: React.FC<OrderFormProps> = ({ onBack, sheetId, initialCl
       setFetchingSuggestions(true);
       try {
         // Using gid=1235690567 for the 'справочник' sheet
-        const url = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv&gid=1235690567`;
+        const url = `/api/sheet/export?sheetId=${encodeURIComponent(sheetId)}&gid=1235690567`;
         const response = await fetch(url);
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const csvText = await response.text();

@@ -101,7 +101,7 @@ export const Home: React.FC<HomeProps> = ({ sheetId, onNavigate, selectedMonth, 
   const fetchData = async () => {
     try {
       setLoading(true);
-      const url = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv&t=${Date.now()}`;
+      const url = `/api/sheet/export?sheetId=${encodeURIComponent(sheetId)}`;
       const response = await fetch(url);
       if (!response.ok) throw new Error("Не удалось загрузить данные.");
       const csvText = await response.text();

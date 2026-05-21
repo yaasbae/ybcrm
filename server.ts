@@ -88,6 +88,40 @@ app.get("/api/ping", (req, res) => {
   res.send("ybcrm-system 2.0 - Claude AI + ManyChat v8");
 });
 
+app.get("/api/sheet/export", async (req, res) => {
+  try {
+    const sheetId = String(req.query.sheetId || "").trim();
+    const gid = req.query.gid ? String(req.query.gid).trim() : "";
+
+    if (!/^[a-zA-Z0-9-_]+$/.test(sheetId)) {
+      return res.status(400).json({ error: "Invalid sheetId" });
+    }
+
+    const url = new URL(`https://docs.google.com/spreadsheets/d/${sheetId}/export`);
+    url.searchParams.set("format", "csv");
+    if (gid) url.searchParams.set("gid", gid);
+    url.searchParams.set("t", String(Date.now()));
+
+    const response = await axios.get(url.toString(), {
+      responseType: "text",
+      timeout: 20000,
+      headers: {
+        "User-Agent": "Mozilla/5.0 YBCRM Sheet Loader",
+      },
+      transformResponse: [(data) => data],
+    });
+
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.send(response.data);
+  } catch (error: any) {
+    console.error("Sheet export error:", error.response?.status, error.message);
+    res.status(error.response?.status || 500).json({
+      error: "Не удалось загрузить таблицу",
+      message: error.message,
+    });
+  }
+});
+
 const IS_TEST = process.env.CDEK_IS_TEST === "true";
 const CDEK_BASE_URL = IS_TEST ? "https://api.edu.cdek.ru/v2" : "https://api.cdek.ru/v2";
 let cdekToken: string | null = null;

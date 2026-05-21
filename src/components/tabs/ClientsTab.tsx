@@ -174,7 +174,7 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
     setImportDone(false);
     try {
       // Fetch client database sheet
-      const url = `https://docs.google.com/spreadsheets/d/${CLIENT_DB_SHEET_ID}/export?format=csv`;
+      const url = `/api/sheet/export?sheetId=${encodeURIComponent(CLIENT_DB_SHEET_ID)}`;
       const res = await fetch(url);
       if (!res.ok) throw new Error('Не удалось загрузить таблицу клиентов');
       const csv = await res.text();

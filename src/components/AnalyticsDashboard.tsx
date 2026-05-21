@@ -358,7 +358,7 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
 
     try {
       const finalSheetId = sheetId && sheetId !== 'your_sheet_id_here' ? sheetId : '1xTDxiOMqJR-KBnLdbikKp2--ZBQBDkII-xMCoO2lSbM';
-      const url = `https://docs.google.com/spreadsheets/d/${finalSheetId}/export?format=csv`;
+      const url = `/api/sheet/export?sheetId=${encodeURIComponent(finalSheetId)}`;
 
       const response = await fetch(url);
       if (!response.ok) throw new Error('Failed to fetch spreadsheet');
