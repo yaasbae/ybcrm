@@ -126,27 +126,108 @@ const IS_TEST = process.env.CDEK_IS_TEST === "true";
 const CDEK_BASE_URL = IS_TEST ? "https://api.edu.cdek.ru/v2" : "https://api.cdek.ru/v2";
 let cdekToken: string | null = null;
 let tokenExpiry: number = 0;
+let cdekTokenKey: string | null = null;
+
+async function getCdekSettings() {
+  const snap = db ? await getDoc(doc(db, "settings", "cdek_api")).catch(() => null) : null;
+  const saved = snap?.exists?.() ? snap.data() : {};
+  const isTest = typeof saved?.isTest === "boolean" ? saved.isTest : IS_TEST;
+  return {
+    clientId: saved?.clientId || process.env.CDEK_CLIENT_ID || "",
+    clientSecret: saved?.clientSecret || process.env.CDEK_CLIENT_SECRET || "",
+    isTest,
+    baseUrl: isTest ? "https://api.edu.cdek.ru/v2" : "https://api.cdek.ru/v2",
+    senderCityCode: Number(saved?.senderCityCode || process.env.CDEK_SENDER_CITY_CODE || 44),
+    senderCity: saved?.senderCity || process.env.CDEK_SENDER_CITY || "",
+    senderAddress: saved?.senderAddress || process.env.CDEK_SENDER_ADDRESS || "",
+    senderName: saved?.senderName || process.env.CDEK_SENDER_NAME || "",
+    senderPhone: saved?.senderPhone || process.env.CDEK_SENDER_PHONE || "",
+    shipmentPoint: saved?.shipmentPoint || process.env.CDEK_SHIPMENT_POINT || "",
+  };
+}
 
 async function getCdekToken() {
-  if (cdekToken && Date.now() < tokenExpiry) return cdekToken;
-  const clientId = process.env.CDEK_CLIENT_ID;
-  const clientSecret = process.env.CDEK_CLIENT_SECRET;
+  const settings = await getCdekSettings();
+  const key = `${settings.baseUrl}:${settings.clientId}`;
+  if (cdekToken && Date.now() < tokenExpiry && cdekTokenKey === key) return cdekToken;
+  const clientId = settings.clientId;
+  const clientSecret = settings.clientSecret;
   if (!clientId || !clientSecret) throw new Error("CDEK credentials not configured");
   const params = new URLSearchParams();
   params.append("grant_type", "client_credentials");
   params.append("client_id", clientId);
   params.append("client_secret", clientSecret);
-  const response = await axios.post(`${CDEK_BASE_URL}/oauth/token`, params);
+  const response = await axios.post(`${settings.baseUrl}/oauth/token`, params);
   cdekToken = response.data.access_token;
+  cdekTokenKey = key;
   tokenExpiry = Date.now() + (response.data.expires_in - 60) * 1000;
   return cdekToken;
 }
+
+app.get("/api/cdek/status", async (_req, res) => {
+  try {
+    const settings = await getCdekSettings();
+    res.json({
+      configured: Boolean(settings.clientId && settings.clientSecret),
+      isTest: settings.isTest,
+      senderCityCode: settings.senderCityCode,
+      senderCity: settings.senderCity,
+      senderAddress: settings.senderAddress,
+      senderName: settings.senderName,
+      senderPhone: settings.senderPhone,
+      shipmentPoint: settings.shipmentPoint,
+    });
+  } catch (error: any) {
+    res.status(500).json({ configured: false, error: error.message });
+  }
+});
+
+app.post("/api/cdek/save-settings", async (req, res) => {
+  try {
+    if (!db) return res.status(500).json({ error: "Firebase not configured" });
+    const currentSnap = await getDoc(doc(db, "settings", "cdek_api")).catch(() => null);
+    const current = currentSnap?.exists?.() ? currentSnap.data() : {};
+    const {
+      clientId,
+      clientSecret,
+      isTest,
+      senderCityCode,
+      senderCity,
+      senderAddress,
+      senderName,
+      senderPhone,
+      shipmentPoint,
+    } = req.body || {};
+
+    const payload = {
+      clientId: String(clientId || current.clientId || "").trim(),
+      clientSecret: String(clientSecret || current.clientSecret || "").trim(),
+      isTest: Boolean(isTest),
+      senderCityCode: Number(senderCityCode || current.senderCityCode || process.env.CDEK_SENDER_CITY_CODE || 44),
+      senderCity: String(senderCity || current.senderCity || "").trim(),
+      senderAddress: String(senderAddress || current.senderAddress || "").trim(),
+      senderName: String(senderName || current.senderName || "").trim(),
+      senderPhone: String(senderPhone || current.senderPhone || "").trim(),
+      shipmentPoint: String(shipmentPoint || current.shipmentPoint || "").trim(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    await setDoc(doc(db, "settings", "cdek_api"), payload, { merge: true });
+    cdekToken = null;
+    tokenExpiry = 0;
+    cdekTokenKey = null;
+    res.json({ success: true, configured: Boolean(payload.clientId && payload.clientSecret) });
+  } catch (error: any) {
+    res.status(500).json({ error: "Не удалось сохранить настройки СДЭК", message: error.message });
+  }
+});
 
 app.get("/api/cdek/cities", async (req, res) => {
   try {
     const { q } = req.query;
     const token = await getCdekToken();
-    const response = await axios.get(`${CDEK_BASE_URL}/location/cities`, {
+    const settings = await getCdekSettings();
+    const response = await axios.get(`${settings.baseUrl}/location/cities`, {
       headers: { Authorization: `Bearer ${token}` },
       params: { cityName: q, size: 20, country_codes: "RU" }
     });
@@ -172,14 +253,155 @@ app.post("/api/cdek/calculate", async (req, res) => {
   try {
     const { from_city_code, to_city_code, packages } = req.body;
     const token = await getCdekToken();
-    const response = await axios.post(`${CDEK_BASE_URL}/calculator/tarifflist`, {
-      from_location: { code: from_city_code || (process.env.CDEK_SENDER_CITY_CODE ? Number(process.env.CDEK_SENDER_CITY_CODE) : 44) },
+    const settings = await getCdekSettings();
+    const response = await axios.post(`${settings.baseUrl}/calculator/tarifflist`, {
+      from_location: { code: from_city_code || settings.senderCityCode },
       to_location: { code: to_city_code },
       packages: packages || [{ weight: 700, length: 30, width: 20, height: 10 }]
     }, { headers: { Authorization: `Bearer ${token}` } });
     res.json(response.data);
   } catch (error: any) {
     res.status(500).json({ error: error.message });
+  }
+});
+
+app.get("/api/cdek/deliverypoints", async (req, res) => {
+  try {
+    const token = await getCdekToken();
+    const settings = await getCdekSettings();
+    const cityCode = Number(req.query.city_code || 0);
+    if (!cityCode) return res.status(400).json({ error: "Нужен city_code" });
+    const response = await axios.get(`${settings.baseUrl}/deliverypoints`, {
+      headers: { Authorization: `Bearer ${token}` },
+      params: { city_code: cityCode, type: "PVZ", size: 50 },
+    });
+    res.json(response.data);
+  } catch (error: any) {
+    res.status(error.response?.status || 500).json({ error: "Ошибка поиска ПВЗ СДЭК", details: error.response?.data || error.message });
+  }
+});
+
+app.post("/api/cdek/create-order", async (req, res) => {
+  try {
+    const token = await getCdekToken();
+    const settings = await getCdekSettings();
+    const body = req.body || {};
+    const orderId = String(body.orderId || "").trim();
+    const recipientName = String(body.recipientName || "").trim();
+    const recipientPhone = String(body.recipientPhone || "").trim();
+    const tariffCode = Number(body.tariffCode || 136);
+    const deliveryType = String(body.deliveryType || "pvz");
+    const toCityCode = Number(body.toCityCode || 0);
+    const deliveryPoint = String(body.deliveryPoint || "").trim();
+    const toAddress = String(body.toAddress || "").trim();
+    const itemName = String(body.itemName || "Заказ YBCRM").trim();
+    const itemCost = Math.max(0, Math.round(Number(body.itemCost || 0) * 100) / 100);
+    const codAmount = Math.max(0, Math.round(Number(body.codAmount || 0) * 100) / 100);
+    const weight = Math.max(1, Number(body.weight || 700));
+    const length = Math.max(1, Number(body.length || 30));
+    const width = Math.max(1, Number(body.width || 20));
+    const height = Math.max(1, Number(body.height || 10));
+
+    if (!recipientName || !recipientPhone) return res.status(400).json({ error: "Нужны ФИО и телефон получателя" });
+    if (!toCityCode && !deliveryPoint) return res.status(400).json({ error: "Нужен город получателя или код ПВЗ" });
+    if (deliveryType === "pvz" && !deliveryPoint) return res.status(400).json({ error: "Для ПВЗ нужен код пункта СДЭК" });
+    if (deliveryType === "door" && !toAddress) return res.status(400).json({ error: "Для курьера нужен адрес получателя" });
+
+    const packageNumber = orderId || `ybcrm-${Date.now()}`;
+    const payload: any = {
+      type: 1,
+      number: packageNumber,
+      tariff_code: tariffCode,
+      comment: String(body.comment || "").trim() || undefined,
+      recipient: {
+        name: recipientName,
+        phones: [{ number: recipientPhone }],
+      },
+      sender: settings.senderName || settings.senderPhone ? {
+        name: settings.senderName || undefined,
+        phones: settings.senderPhone ? [{ number: settings.senderPhone }] : undefined,
+      } : undefined,
+      packages: [{
+        number: "1",
+        weight,
+        length,
+        width,
+        height,
+        comment: String(body.packageComment || "").trim() || undefined,
+        items: [{
+          name: itemName,
+          ware_key: String(body.wareKey || orderId || "ybcrm-item"),
+          payment: { value: codAmount },
+          cost: itemCost || codAmount || 1,
+          amount: 1,
+          weight,
+        }],
+      }],
+    };
+
+    if (settings.shipmentPoint) {
+      payload.shipment_point = settings.shipmentPoint;
+    } else {
+      payload.from_location = {
+        code: settings.senderCityCode,
+        city: settings.senderCity || undefined,
+        address: settings.senderAddress || undefined,
+      };
+    }
+
+    if (deliveryType === "pvz") {
+      payload.delivery_point = deliveryPoint;
+      if (toCityCode) payload.to_location = { code: toCityCode };
+    } else {
+      payload.to_location = { code: toCityCode, address: toAddress };
+    }
+
+    const response = await axios.post(`${settings.baseUrl}/orders`, payload, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    const entity = response.data?.entity || response.data?.entities?.[0] || response.data;
+    const cdekUuid = entity?.uuid || entity?.entity_uuid || response.data?.entity_uuid || null;
+    const cdekNumber = entity?.cdek_number || entity?.cdekNumber || null;
+    const cdekFields = {
+      cdekUuid,
+      cdekNumber,
+      cdekStatus: "created",
+      cdekCreatedAt: new Date().toISOString(),
+      cdekPayload: {
+        tariffCode,
+        deliveryType,
+        toCityCode,
+        deliveryPoint,
+        toAddress,
+        weight,
+        length,
+        width,
+        height,
+      },
+    };
+
+    if (db && orderId) {
+      await updateDoc(doc(db, "orders", orderId), cdekFields).catch(() => {});
+      await updateDoc(doc(db, "orders_new", orderId), cdekFields).catch(() => {});
+    }
+
+    if (db) {
+      await addDoc(collection(db, "cdek_logs"), {
+        orderId: orderId || null,
+        cdekUuid,
+        cdekNumber,
+        request: payload,
+        response: response.data,
+        createdAt: serverTimestamp(),
+      }).catch(() => {});
+    }
+
+    res.json({ success: true, cdekUuid, cdekNumber, data: response.data });
+  } catch (error: any) {
+    const details = error.response?.data || error.message;
+    console.error("[cdek] create-order error:", details);
+    res.status(error.response?.status || 500).json({ error: "Не удалось создать заказ СДЭК", details });
   }
 });
 
