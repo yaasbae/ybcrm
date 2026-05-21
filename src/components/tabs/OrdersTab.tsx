@@ -544,6 +544,28 @@ const OrderCard = React.memo(({
   order: OrderData;
   updateOrderData: (id: string, field: string, value: any) => void;
 }) => {
+  const [copied, setCopied] = useState(false);
+  const paymentUrl = order.paymentUrl || '';
+  const dueAmount = getOrderPaymentDue(order);
+  const shareText = paymentUrl ? buildOrderShareText(order, paymentUrl) : '';
+  const chipItems = [
+    ['Цвет', order.rawRow?.[RAW_COLOR_INDEX]],
+    ['Размер', order.rawRow?.[RAW_SIZE_INDEX]],
+    ['Рост', order.height],
+    ['Доставка', order.deliveryMethod],
+    ['Источник', order.source],
+    ['Метка', order.label],
+    ['Менеджер', order.manager],
+    ['Блогер', order.blogger],
+  ].filter(([, value]) => value);
+
+  const copyPaymentText = () => {
+    if (!shareText) return;
+    navigator.clipboard.writeText(shareText);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
   return (
     <div className={cn(
       "p-4 flex flex-col gap-3 transition-colors",
@@ -583,7 +605,7 @@ const OrderCard = React.memo(({
       </div>
 
       {/* Client Info Mobile */}
-      <div className="bg-zinc-50/50 p-2.5 rounded-xl border border-zinc-100/50 space-y-1.5">
+      <div className="bg-zinc-50/60 p-3 rounded-xl border border-zinc-100 space-y-1.5">
         <div className="flex items-center gap-2">
           <Users className="w-3 h-3 text-zinc-400" />
           <p className="text-[10px] font-black text-zinc-900 uppercase tracking-tight truncate flex-1">{order.clientName}</p>
@@ -595,37 +617,92 @@ const OrderCard = React.memo(({
       </div>
 
       {/* Product Details Mobile */}
-      <div className="space-y-1.5">
-        <div className="flex items-center gap-2">
-          <ShoppingBag className="w-3 h-3 text-blue-500" />
-          <p className="text-[9px] font-bold text-zinc-700 italic truncate flex-1">{order.item}</p>
+      <div className="rounded-xl border border-zinc-100 p-3 space-y-2">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2 mb-1">
+              <ShoppingBag className="w-3 h-3 text-blue-500 shrink-0" />
+              <span className="text-[8px] font-black text-zinc-400 uppercase tracking-widest">Модель</span>
+            </div>
+            <p className="text-[12px] font-black text-zinc-900 leading-tight">{order.item || '—'}</p>
+          </div>
+          <div className="text-right shrink-0">
+            <p className="text-[8px] font-black text-zinc-400 uppercase tracking-widest">Стоимость 100%</p>
+            <p className="text-[13px] font-black text-zinc-900">{formatCurrency(order.revenue)}</p>
+          </div>
         </div>
         <div className="flex flex-wrap gap-1">
-          {([1, 12] as number[]).map(idx => (
-            <div key={idx} className="px-1.5 py-0.5 bg-white border border-zinc-100 rounded text-[8px] font-bold text-zinc-500 uppercase tracking-tighter">
-              {order.rawRow?.[idx]}
+          {chipItems.map(([label, value]) => (
+            <div key={label} className="px-2 py-1 bg-white border border-zinc-100 rounded-md text-[8px] font-black text-zinc-600 uppercase tracking-tight">
+              <span className="text-zinc-300">{label}: </span>{value}
             </div>
           ))}
-          <div className="px-1.5 py-0.5 bg-amber-50 border border-amber-100 rounded text-[8px] font-black text-amber-600 uppercase tracking-tighter">
-            {order.source}
-          </div>
-          <div className="px-1.5 py-0.5 bg-blue-50 border border-blue-100 rounded text-[8px] font-black text-blue-600 uppercase tracking-tighter">
-            {order.deliveryMethod}
-          </div>
         </div>
+      </div>
+
+      {/* Finance Mobile */}
+      <div className="grid grid-cols-3 gap-2">
+        <div className="rounded-xl bg-zinc-50 border border-zinc-100 p-2">
+          <p className="text-[7px] font-black text-zinc-400 uppercase tracking-tight">Доставка</p>
+          <p className="text-[10px] font-black text-zinc-800">{formatCurrency(order.deliveryPrice || 0)}</p>
+        </div>
+        <div className="rounded-xl bg-emerald-50 border border-emerald-100 p-2">
+          <p className="text-[7px] font-black text-emerald-500 uppercase tracking-tight">Предоплата 50%</p>
+          <p className="text-[10px] font-black text-emerald-700">{formatCurrency(order.paidAmount || 0)}</p>
+        </div>
+        <div className="rounded-xl bg-blue-50 border border-blue-100 p-2">
+          <p className="text-[7px] font-black text-blue-500 uppercase tracking-tight">К оплате</p>
+          <p className="text-[10px] font-black text-blue-700">{formatCurrency(dueAmount)}</p>
+        </div>
+      </div>
+
+      {/* Payment Mobile */}
+      <div className="rounded-xl border border-violet-100 bg-violet-50/40 p-2.5 space-y-2">
+        <div className="flex items-center justify-between gap-2">
+          <div>
+            <p className="text-[8px] font-black text-violet-500 uppercase tracking-widest">СБП оплата</p>
+            <p className="text-[8px] font-bold text-zinc-400">{paymentUrl ? 'Ссылка создана' : 'Ссылка еще не создана'}</p>
+          </div>
+          {paymentUrl && (
+            <a
+              href={paymentUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="px-3 py-1.5 rounded-lg bg-violet-600 text-white text-[8px] font-black uppercase tracking-wider"
+            >
+              Открыть
+            </a>
+          )}
+        </div>
+
+        {paymentUrl ? (
+          <div className="grid grid-cols-3 gap-1.5">
+            <button
+              onClick={copyPaymentText}
+              className="py-2 rounded-lg bg-white border border-violet-100 text-[8px] font-black text-violet-600 uppercase"
+            >
+              {copied ? 'Готово' : 'Копия'}
+            </button>
+            <button
+              onClick={() => openMessengerShare('telegram', shareText, paymentUrl)}
+              className="py-2 rounded-lg bg-blue-50 border border-blue-100 text-[8px] font-black text-blue-600 uppercase"
+            >
+              Telegram
+            </button>
+            <button
+              onClick={() => openMessengerShare('whatsapp', shareText, paymentUrl)}
+              className="py-2 rounded-lg bg-emerald-50 border border-emerald-100 text-[8px] font-black text-emerald-600 uppercase"
+            >
+              WhatsApp
+            </button>
+          </div>
+        ) : (
+          <PaymentRowBlock order={order} updateOrderData={updateOrderData} />
+        )}
       </div>
 
       {/* Quick Actions Mobile */}
       <div className="flex items-center gap-2 pt-1">
-        <button
-          onClick={() => updateOrderData(order.orderId, 'status', 'Оплачен')}
-          className={cn(
-            "flex-1 py-2 rounded-lg text-[8px] font-black uppercase tracking-widest border transition-all",
-            order.status === 'Оплачен' ? "bg-emerald-500 border-emerald-600 text-white" : "bg-white border-zinc-200 text-zinc-400"
-          )}
-        >
-          Оплатить
-        </button>
         <button
           onClick={() => updateOrderData(order.orderId, 'isShipped', !order.isShipped)}
           className={cn(
@@ -634,6 +711,15 @@ const OrderCard = React.memo(({
           )}
         >
           Отгрузить
+        </button>
+        <button
+          onClick={() => updateOrderData(order.orderId, 'isRecommended', order.isRecommended ? null : true)}
+          className={cn(
+            "flex-1 py-2 rounded-lg text-[8px] font-black uppercase tracking-widest border transition-all",
+            order.isRecommended ? "bg-zinc-800 border-black text-white" : "bg-white border-zinc-200 text-zinc-400"
+          )}
+        >
+          Реком.
         </button>
       </div>
     </div>
