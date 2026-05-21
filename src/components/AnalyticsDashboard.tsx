@@ -52,6 +52,7 @@ export interface OrderData {
   blogger?: string;
   paymentUrl?: string;
   paymentStatus?: string;
+  paymentType?: string;
 }
 
 export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = (props) => {
@@ -117,6 +118,7 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
   const [handbookSources, setHandbookSources] = useState<string[]>([]);
   const [handbookLabels, setHandbookLabels] = useState<string[]>([]);
   const [handbookDeliveries, setHandbookDeliveries] = useState<string[]>([]);
+  const [handbookPaymentTypes, setHandbookPaymentTypes] = useState<string[]>([]);
   const [handbookManagers, setHandbookManagers] = useState<string[]>([]);
   const [handbookBloggers, setHandbookBloggers] = useState<string[]>([]);
   const [newOrder, setNewOrder] = useState<Partial<OrderData>>({
@@ -129,6 +131,7 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
     revenue: 0,
     paidAmount: 0,
     deliveryMethod: '',
+    paymentType: '',
     source: '',
     height: '',
     label: '',
@@ -154,6 +157,7 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
         if (d.sources) setHandbookSources(d.sources);
         if (d.labels) setHandbookLabels(d.labels);
         if (d.deliveries) setHandbookDeliveries(d.deliveries);
+        if (d.paymentTypes) setHandbookPaymentTypes(d.paymentTypes);
         if (d.managers) setHandbookManagers(d.managers);
         if (d.bloggers) setHandbookBloggers(d.bloggers);
       }
@@ -198,6 +202,7 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
             source: ['saleSource'],
             item: ['products'],
             deliveryMethod: ['shipping'],
+            paymentType: ['paymentType'],
             revenue: ['price', 'revenue'],
             deliveryPrice: ['shippingCost', 'deliveryPrice'],
             paidAmount: ['prepaymentAmount'],
@@ -273,6 +278,7 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
       source: newOrder.source || '',
       item: newOrder.item || '',
       deliveryMethod: newOrder.deliveryMethod || '',
+      paymentType: newOrder.paymentType || '',
       year: (newOrder.date || new Date()).getFullYear(),
       month: (newOrder.date || new Date()).getMonth(),
       isBlogger: false,
@@ -313,6 +319,7 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
         status: orderToCreate.status,
         saleSource: orderToCreate.source,
         shipping: orderToCreate.deliveryMethod,
+        paymentType: orderToCreate.paymentType || '',
         price: orderToCreate.revenue,
         revenue: orderToCreate.revenue,
         shippingCost: orderToCreate.deliveryPrice,
@@ -334,6 +341,7 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
         revenue: 0,
         paidAmount: 0,
         deliveryMethod: '',
+        paymentType: '',
         source: '',
         height: '',
         label: '',
@@ -878,6 +886,7 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
             handbookSources={handbookSources}
             handbookLabels={handbookLabels}
             handbookDeliveries={handbookDeliveries}
+            handbookPaymentTypes={handbookPaymentTypes}
             handbookManagers={handbookManagers}
             handbookBloggers={handbookBloggers}
             exportToCsv={exportToCsv}

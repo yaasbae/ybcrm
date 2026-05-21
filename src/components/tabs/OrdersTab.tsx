@@ -19,6 +19,7 @@ import { collection, getDocs, onSnapshot, orderBy, query } from 'firebase/firest
 const STATUS_OPTIONS = ['Новый', 'В работе', 'Оплачен', 'Отгружен', 'Доставлен', 'Возврат', 'Отмена', 'Обмен'];
 const DELIVERY_OPTIONS = ['СДЭК', 'Почта РФ', 'Боксберри', 'Самовывоз', 'Курьер', 'DBS'];
 const SOURCE_OPTIONS = ['Instagram', 'WhatsApp', 'ТГ', 'Блогер', 'Контент', 'Сарафан', 'Повторный'];
+const PAYMENT_TYPE_OPTIONS = ['QR код', 'Сплитами', 'Долями', 'Наличкой', 'Наложенный СДЭК'];
 const RAW_COLOR_INDEX = 1;
 const RAW_SIZE_INDEX = 8;
 const RAW_REVENUE_INDEX = 14;
@@ -485,10 +486,11 @@ const OrderRow = React.memo(({
           {fieldInput('Размер', order.rawRow?.[RAW_SIZE_INDEX] || '', 'size-list',   (v) => updateOrderData(order.orderId, `rawRow[${RAW_SIZE_INDEX}]`, v))}
           {fieldInput('Рост',   order.height  || '',     'height-list', (v) => updateOrderData(order.orderId, 'height', v))}
         </div>
-        <div className="flex gap-2">
+        <div className="grid grid-cols-2 xl:grid-cols-4 gap-2">
           {fieldInput('Метка',    order.label   || '', 'label-list',   (v) => updateOrderData(order.orderId, 'label', v))}
           {fieldInput('Менеджер', order.manager || '', 'manager-list', (v) => updateOrderData(order.orderId, 'manager', v))}
           {fieldInput('Блогер',   order.blogger || '', 'blogger-list', (v) => updateOrderData(order.orderId, 'blogger', v))}
+          {fieldInput('Оплата',   order.paymentType || '', 'payment-type-list', (v) => updateOrderData(order.orderId, 'paymentType', v))}
         </div>
       </td>
 
@@ -553,6 +555,7 @@ const OrderCard = React.memo(({
     ['Размер', order.rawRow?.[RAW_SIZE_INDEX]],
     ['Рост', order.height],
     ['Доставка', order.deliveryMethod],
+    ['Оплата', order.paymentType],
     ['Источник', order.source],
     ['Метка', order.label],
     ['Менеджер', order.manager],
@@ -753,6 +756,7 @@ interface OrdersTabProps {
   handbookSources: string[];
   handbookLabels: string[];
   handbookDeliveries: string[];
+  handbookPaymentTypes: string[];
   handbookManagers: string[];
   handbookBloggers: string[];
   exportToCsv: () => void;
@@ -790,6 +794,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
   handbookSources,
   handbookLabels,
   handbookDeliveries,
+  handbookPaymentTypes,
   handbookManagers,
   handbookBloggers,
   exportToCsv,
@@ -1299,6 +1304,20 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                 </div>
                 <div className="relative">
                   <select
+                    value={newOrder.paymentType || ''}
+                    onChange={(e) => setNewOrder({...newOrder, paymentType: e.target.value})}
+                    className={cn(
+                      "w-full bg-zinc-50 border border-zinc-200 rounded-xl px-4 py-2.5 text-[11px] font-bold outline-none focus:bg-white focus:ring-2 focus:ring-zinc-500/10 focus:border-zinc-400 transition-all shadow-sm appearance-none cursor-pointer",
+                      newOrder.paymentType ? "text-zinc-900" : "text-zinc-400"
+                    )}
+                  >
+                    <option value="">Вид оплаты</option>
+                    {(handbookPaymentTypes.length ? handbookPaymentTypes : PAYMENT_TYPE_OPTIONS).map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                  </select>
+                  <ChevronRight className="absolute right-3 top-1/2 -translate-y-1/2 w-3 h-3 text-zinc-400 rotate-90 pointer-events-none" />
+                </div>
+                <div className="relative">
+                  <select
                     value={newOrder.source || ''}
                     onChange={(e) => setNewOrder({...newOrder, source: e.target.value})}
                     className={cn(
@@ -1651,6 +1670,11 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
       <datalist id="label-list">
         {handbookLabels.map((l, idx) => (
           <option key={`hl-${idx}`} value={l} />
+        ))}
+      </datalist>
+      <datalist id="payment-type-list">
+        {(handbookPaymentTypes.length ? handbookPaymentTypes : PAYMENT_TYPE_OPTIONS).map((p, idx) => (
+          <option key={`hpay-${idx}`} value={p} />
         ))}
       </datalist>
       <datalist id="manager-list">
