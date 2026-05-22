@@ -69,6 +69,16 @@ const parsePackageNumber = (value: unknown, fallback: number): number => {
   return parsed <= 20 ? Math.round(parsed * 1000) : Math.round(parsed);
 };
 
+const getApiErrorMessage = (data: any, fallback: string): string => {
+  if (!data) return fallback;
+  if (typeof data === 'string') return data;
+  if (data.message) return String(data.message);
+  if (data.error) return String(data.error);
+  if (data.details?.message) return String(data.details.message);
+  if (Array.isArray(data.details?.errors) && data.details.errors[0]?.message) return String(data.details.errors[0].message);
+  return fallback;
+};
+
 function getOrderPaymentDue(order: Partial<Pick<OrderData, 'revenue' | 'deliveryPrice' | 'paidAmount' | 'paymentStatus' | 'status'>>): number {
   const paymentStatus = String(order.paymentStatus || '').toLowerCase();
   const orderStatus = String(order.status || '').toLowerCase();
@@ -331,6 +341,19 @@ const CdekOrderBlock: React.FC<{
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
   const [statusText, setStatusText] = useState('');
+  const [settingsChecked, setSettingsChecked] = useState(false);
+
+  useEffect(() => {
+    fetch('/api/cdek/status')
+      .then(r => r.json())
+      .then(data => {
+        if (!data.configured) {
+          setError('СДЭК API не настроен: нужны Account и Secure password в разделе СДЭК');
+        }
+      })
+      .catch(() => setError('Не удалось проверить настройки СДЭК'))
+      .finally(() => setSettingsChecked(true));
+  }, []);
 
   useEffect(() => {
     if (saved.weight || !product?.weight) return;
@@ -345,12 +368,16 @@ const CdekOrderBlock: React.FC<{
     }
     const timer = window.setTimeout(async () => {
       setLoadingCities(true);
+      setError('');
       try {
         const res = await fetch(`/api/cdek/cities?q=${encodeURIComponent(q)}`);
         const data = await res.json();
+        if (!res.ok) throw new Error(getApiErrorMessage(data, 'СДЭК не вернул города'));
         setCities(Array.isArray(data) ? data.slice(0, 6) : []);
-      } catch {
+        if (Array.isArray(data) && data.length === 0) setError('СДЭК не нашел такой город');
+      } catch (e: any) {
         setCities([]);
+        setError(e.message || 'Ошибка поиска города СДЭК');
       } finally {
         setLoadingCities(false);
       }
@@ -365,12 +392,16 @@ const CdekOrderBlock: React.FC<{
     }
     const loadPoints = async () => {
       setLoadingPoints(true);
+      setError('');
       try {
         const res = await fetch(`/api/cdek/deliverypoints?city_code=${encodeURIComponent(toCityCode)}`);
         const data = await res.json();
+        if (!res.ok) throw new Error(getApiErrorMessage(data, 'СДЭК не вернул ПВЗ'));
         setPoints(Array.isArray(data) ? data.slice(0, 80) : []);
-      } catch {
+        if (Array.isArray(data) && data.length === 0) setError('В этом городе СДЭК не вернул ПВЗ');
+      } catch (e: any) {
         setPoints([]);
+        setError(e.message || 'Ошибка загрузки ПВЗ СДЭК');
       } finally {
         setLoadingPoints(false);
       }
@@ -534,7 +565,7 @@ const CdekOrderBlock: React.FC<{
       <button
         type="button"
         onClick={createCdekOrder}
-        disabled={submitting}
+        disabled={submitting || !settingsChecked}
         className={cn(
           'w-full rounded-lg border border-zinc-200 bg-white font-black uppercase tracking-widest text-zinc-700 hover:bg-zinc-900 hover:text-white transition-all flex items-center justify-center gap-1.5 disabled:opacity-60',
           mobile ? 'py-2.5 text-[8px]' : 'py-1.5 text-[7px]'
