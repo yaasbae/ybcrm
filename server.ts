@@ -398,7 +398,6 @@ app.post("/api/cdek/create-order", async (req, res) => {
 
     if (deliveryType === "pvz") {
       payload.delivery_point = deliveryPoint;
-      if (toCityCode) payload.to_location = { code: toCityCode };
     } else {
       payload.to_location = { code: toCityCode, address: toAddress };
     }

@@ -61,6 +61,15 @@ const normalizeProductName = (value: string) => value.trim().toLowerCase();
 const getProductForOrder = (products: ProductCatalogItem[], itemName: string) =>
   products.find(p => normalizeProductName(p.name) === normalizeProductName(itemName || ''));
 
+const optionList = (items: string[], fallback: string[] = []) =>
+  Array.from(new Set([...(items.length ? items : fallback)].map(item => String(item || '').trim()).filter(Boolean)));
+
+const optionsWithCurrent = (items: string[], current: string, fallback: string[] = []) => {
+  const options = optionList(items, fallback);
+  const value = String(current || '').trim();
+  return value && !options.includes(value) ? [value, ...options] : options;
+};
+
 const parsePackageNumber = (value: unknown, fallback: number): number => {
   if (value === null || value === undefined || value === '') return fallback;
   const normalized = String(value).replace(',', '.').match(/\d+(\.\d+)?/)?.[0];
@@ -277,35 +286,12 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
 
   return (
     <div className="mt-1.5 space-y-1">
-      <div className="flex gap-1">
-        <button
-          onClick={() => handleCopy(shareText)}
-          className="flex-1 text-[8px] font-black py-1 rounded-md border border-zinc-200 bg-white text-zinc-600 hover:bg-zinc-50 transition-all flex items-center justify-center gap-1"
-        >
-          <Copy size={8} />
-          {copied ? 'Скопировано!' : 'Скопировать'}
-        </button>
-        <button
-          onClick={() => shareOrder(shareText, targetPaymentUrl).catch(() => navigator.clipboard.writeText(shareText))}
-          className="flex-1 text-[8px] font-black py-1 rounded-md border border-violet-200 bg-violet-50 text-violet-600 hover:bg-violet-500 hover:text-white hover:border-violet-500 transition-all flex items-center justify-center gap-1"
-        >
-          <Send size={8} /> Поделиться
-        </button>
-      </div>
-      <div className="flex gap-1">
-        <button
-          onClick={() => openMessengerShare('telegram', shareText, targetPaymentUrl)}
-          className="flex-1 text-[8px] font-black py-1 rounded-md border border-blue-200 bg-blue-50 text-blue-600 hover:bg-blue-500 hover:text-white hover:border-blue-500 transition-all"
-        >
-          Telegram
-        </button>
-        <button
-          onClick={() => openMessengerShare('whatsapp', shareText, targetPaymentUrl)}
-          className="flex-1 text-[8px] font-black py-1 rounded-md border border-emerald-200 bg-emerald-50 text-emerald-600 hover:bg-emerald-500 hover:text-white hover:border-emerald-500 transition-all"
-        >
-          WhatsApp
-        </button>
-      </div>
+      <button
+        onClick={() => shareOrder(shareText, targetPaymentUrl).catch(() => navigator.clipboard.writeText(shareText))}
+        className="w-full text-[8px] font-black py-1.5 rounded-md border border-violet-200 bg-violet-50 text-violet-600 hover:bg-violet-500 hover:text-white hover:border-violet-500 transition-all flex items-center justify-center gap-1"
+      >
+        <Send size={8} /> Поделиться
+      </button>
       <button
         onClick={() => setShowQr(v => !v)}
         className="w-full text-[8px] font-black py-1 rounded-md border border-violet-200 bg-violet-50 text-violet-600 hover:bg-violet-100 transition-all flex items-center justify-center gap-1"
@@ -478,7 +464,7 @@ const CdekOrderBlock: React.FC<{
         body: JSON.stringify(payload),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.details?.message || data.error || 'СДЭК не принял заказ');
+      if (!res.ok) throw new Error(getApiErrorMessage(data, 'СДЭК не принял заказ'));
 
       if (data.cdekUuid) updateOrderData(order.orderId, 'cdekUuid', data.cdekUuid);
       if (data.cdekNumber) updateOrderData(order.orderId, 'cdekNumber', data.cdekNumber);
@@ -497,7 +483,7 @@ const CdekOrderBlock: React.FC<{
 
   return (
     <div className={cn(
-      mobile ? 'rounded-xl border border-zinc-100 bg-zinc-50/60 p-2.5 space-y-2' : 'mt-2 w-[320px] rounded-xl border border-zinc-100 bg-zinc-50/60 p-3 space-y-2'
+      mobile ? 'rounded-xl border border-zinc-100 bg-zinc-50/60 p-2.5 space-y-2' : 'mt-2 w-full max-w-[520px] rounded-xl border border-zinc-100 bg-zinc-50/60 p-3 space-y-2'
     )}>
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-1.5">
@@ -614,12 +600,14 @@ const OrderRow = React.memo(({
   order,
   updateOrderData,
   onDelete,
+  handbookStatuses,
   handbookSources,
   handbookDeliveries,
   handbookSizes,
   handbookColors,
   handbookHeights,
   handbookLabels,
+  handbookPaymentTypes,
   handbookManagers,
   handbookBloggers,
   productCatalog,
@@ -627,12 +615,14 @@ const OrderRow = React.memo(({
   order: OrderData;
   updateOrderData: (id: string, field: string, value: any) => void;
   onDelete: (id: string) => void;
+  handbookStatuses: string[];
   handbookSources: string[];
   handbookDeliveries: string[];
   handbookSizes: string[];
   handbookColors: string[];
   handbookHeights: string[];
   handbookLabels: string[];
+  handbookPaymentTypes: string[];
   handbookManagers: string[];
   handbookBloggers: string[];
   productCatalog: ProductCatalogItem[];
@@ -658,6 +648,20 @@ const OrderRow = React.memo(({
         placeholder="—"
         className="bg-zinc-50 border border-zinc-100 rounded-md px-2 py-1 text-[10px] text-zinc-700 font-medium focus:bg-white focus:border-blue-200 focus:ring-1 focus:ring-blue-100 outline-none w-full"
       />
+    </div>
+  );
+
+  const fieldSelect = (label: string, value: string, options: string[], onChange: (v: string) => void) => (
+    <div key={label} className="flex flex-col gap-0.5 min-w-[72px]">
+      <span className="text-[8px] font-black text-zinc-300 uppercase tracking-wider leading-none px-1">{label}</span>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="bg-zinc-50 border border-zinc-100 rounded-md px-2 py-1 text-[10px] text-zinc-700 font-medium focus:bg-white focus:border-blue-200 focus:ring-1 focus:ring-blue-100 outline-none w-full"
+      >
+        <option value="">—</option>
+        {options.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+      </select>
     </div>
   );
 
@@ -737,7 +741,7 @@ const OrderRow = React.memo(({
       </td>
 
       {/* Статус / Доставка */}
-      <td className="px-2 py-3 align-top w-[340px]">
+      <td className="px-2 py-3 align-top w-[520px]">
         <select
           value={order.status}
           onChange={(e) => updateOrderData(order.orderId, 'status', e.target.value)}
@@ -746,7 +750,7 @@ const OrderRow = React.memo(({
             statusColor
           )}
         >
-          {STATUS_OPTIONS.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+          {optionsWithCurrent(handbookStatuses, order.status, STATUS_OPTIONS).map(opt => <option key={opt} value={opt}>{opt}</option>)}
         </select>
         <div className="flex gap-1 mb-2">
           <select
@@ -831,15 +835,15 @@ const OrderRow = React.memo(({
           className="w-full bg-transparent text-[12px] font-bold text-zinc-900 focus:bg-white focus:ring-1 focus:ring-blue-100 rounded-md px-2 py-1 outline-none mb-2 border border-transparent hover:border-zinc-100"
         />
         <div className="flex gap-2 mb-2">
-          {fieldInput('Цвет',   order.rawRow?.[RAW_COLOR_INDEX] || '', 'color-list',  (v) => updateOrderData(order.orderId, `rawRow[${RAW_COLOR_INDEX}]`, v))}
-          {fieldInput('Размер', order.rawRow?.[RAW_SIZE_INDEX] || '', 'size-list',   (v) => updateOrderData(order.orderId, `rawRow[${RAW_SIZE_INDEX}]`, v))}
-          {fieldInput('Рост',   order.height  || '',     'height-list', (v) => updateOrderData(order.orderId, 'height', v))}
+          {fieldSelect('Цвет',   order.rawRow?.[RAW_COLOR_INDEX] || '', optionsWithCurrent(handbookColors, order.rawRow?.[RAW_COLOR_INDEX] || ''),  (v) => updateOrderData(order.orderId, `rawRow[${RAW_COLOR_INDEX}]`, v))}
+          {fieldSelect('Размер', order.rawRow?.[RAW_SIZE_INDEX] || '', optionsWithCurrent(handbookSizes, order.rawRow?.[RAW_SIZE_INDEX] || ''),   (v) => updateOrderData(order.orderId, `rawRow[${RAW_SIZE_INDEX}]`, v))}
+          {fieldSelect('Рост',   order.height  || '', optionsWithCurrent(handbookHeights, order.height || ''), (v) => updateOrderData(order.orderId, 'height', v))}
         </div>
         <div className="grid grid-cols-2 xl:grid-cols-4 gap-2">
-          {fieldInput('Метка',    order.label   || '', 'label-list',   (v) => updateOrderData(order.orderId, 'label', v))}
-          {fieldInput('Менеджер', order.manager || '', 'manager-list', (v) => updateOrderData(order.orderId, 'manager', v))}
-          {fieldInput('Блогер',   order.blogger || '', 'blogger-list', (v) => updateOrderData(order.orderId, 'blogger', v))}
-          {fieldInput('Оплата',   order.paymentType || '', 'payment-type-list', (v) => updateOrderData(order.orderId, 'paymentType', v))}
+          {fieldSelect('Метка',    order.label   || '', optionsWithCurrent(handbookLabels, order.label || ''),   (v) => updateOrderData(order.orderId, 'label', v))}
+          {fieldSelect('Менеджер', order.manager || '', optionsWithCurrent(handbookManagers, order.manager || ''), (v) => updateOrderData(order.orderId, 'manager', v))}
+          {fieldSelect('Блогер',   order.blogger || '', optionsWithCurrent(handbookBloggers, order.blogger || ''), (v) => updateOrderData(order.orderId, 'blogger', v))}
+          {fieldSelect('Оплата',   order.paymentType || '', optionsWithCurrent(handbookPaymentTypes, order.paymentType || '', PAYMENT_TYPE_OPTIONS), (v) => updateOrderData(order.orderId, 'paymentType', v))}
         </div>
       </td>
 
@@ -1072,26 +1076,12 @@ const OrderCard = React.memo(({
 
         {paymentUrl ? (
           <div className="space-y-2">
-            <div className="grid grid-cols-3 gap-1.5">
             <button
-              onClick={copyPaymentText}
-              className="py-2 rounded-lg bg-white border border-violet-100 text-[8px] font-black text-violet-600 uppercase"
+              onClick={() => shareOrder(shareText, paymentUrl).catch(() => navigator.clipboard.writeText(shareText))}
+              className="w-full py-2 rounded-lg bg-violet-600 border border-violet-600 text-[8px] font-black text-white uppercase flex items-center justify-center gap-1.5"
             >
-              {copied ? 'Готово' : 'Копия'}
+              <Send size={10} /> Поделиться
             </button>
-            <button
-              onClick={() => openMessengerShare('telegram', shareText, paymentUrl)}
-              className="py-2 rounded-lg bg-blue-50 border border-blue-100 text-[8px] font-black text-blue-600 uppercase"
-            >
-              Telegram
-            </button>
-            <button
-              onClick={() => openMessengerShare('whatsapp', shareText, paymentUrl)}
-              className="py-2 rounded-lg bg-emerald-50 border border-emerald-100 text-[8px] font-black text-emerald-600 uppercase"
-            >
-              WhatsApp
-            </button>
-            </div>
             <button
               onClick={() => setShowMobileQr(v => !v)}
               className="w-full py-2 rounded-lg bg-white border border-violet-100 text-[8px] font-black text-violet-600 uppercase"
@@ -1178,6 +1168,8 @@ interface OrdersTabProps {
   setDisplayCount: (n: number) => void;
   ordersFilterMonth: number;
   setOrdersFilterMonth: (n: number) => void;
+  orderStatusFilter: string;
+  setOrderStatusFilter: (s: string) => void;
   slaFilterMonth: number;
   setSlaFilterMonth: (n: number) => void;
   filteredSlaStats: any;
@@ -1193,6 +1185,7 @@ interface OrdersTabProps {
   handbookSizes: string[];
   handbookHeights: string[];
   handbookCompositions: string[];
+  handbookStatuses: string[];
   handbookSources: string[];
   handbookLabels: string[];
   handbookDeliveries: string[];
@@ -1216,6 +1209,8 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
   setDisplayCount,
   ordersFilterMonth,
   setOrdersFilterMonth,
+  orderStatusFilter,
+  setOrderStatusFilter,
   slaFilterMonth,
   setSlaFilterMonth,
   filteredSlaStats,
@@ -1231,6 +1226,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
   handbookSizes,
   handbookHeights,
   handbookCompositions,
+  handbookStatuses,
   handbookSources,
   handbookLabels,
   handbookDeliveries,
@@ -2004,6 +2000,27 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
             />
           </div>
         </div>
+        <div className="px-3 py-2 border-b border-zinc-100 flex gap-1.5 overflow-x-auto">
+          {['Все', ...optionList(handbookStatuses, STATUS_OPTIONS)].map(status => {
+            const value = status === 'Все' ? '' : status;
+            const active = orderStatusFilter === value;
+            return (
+              <button
+                key={status}
+                type="button"
+                onClick={() => setOrderStatusFilter(value)}
+                className={cn(
+                  'shrink-0 px-3 py-1.5 rounded-lg border text-[8px] font-black uppercase tracking-widest transition-colors',
+                  active
+                    ? 'bg-zinc-900 text-white border-zinc-900'
+                    : 'bg-white text-zinc-500 border-zinc-100 hover:bg-zinc-50'
+                )}
+              >
+                {status}
+              </button>
+            );
+          })}
+        </div>
         <div className="overflow-x-auto print:overflow-visible">
           {/* Desktop Table View */}
           <table className="w-full text-left border-collapse hidden md:table">
@@ -2011,7 +2028,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
               <tr className="text-[9px] font-bold text-zinc-400 uppercase tracking-widest bg-zinc-50/50">
                 <th className="px-2 py-2 border-none w-20">Дата/ID</th>
                 <th className="px-2 py-2 border-none w-48">Клиент / Контакт</th>
-                <th className="px-2 py-2 border-none w-32">Статус / Доставка</th>
+                <th className="px-2 py-2 border-none w-[520px]">Статус / Доставка</th>
                 <th className="px-2 py-2 border-none w-40 text-right">Финансы</th>
                 <th className="px-2 py-2 border-none">Изделие и Доп. (A-X)</th>
                 <th className="px-2 py-2 border-none w-16">Срок</th>
@@ -2024,12 +2041,14 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                   order={order}
                   updateOrderData={updateOrderData}
                   onDelete={deleteOrder}
+                  handbookStatuses={handbookStatuses}
                   handbookSources={handbookSources}
                   handbookDeliveries={handbookDeliveries}
                   handbookSizes={handbookSizes}
                   handbookColors={handbookColors}
                   handbookHeights={handbookHeights}
                   handbookLabels={handbookLabels}
+                  handbookPaymentTypes={handbookPaymentTypes}
                   handbookManagers={handbookManagers}
                   handbookBloggers={handbookBloggers}
                   productCatalog={productCatalog}

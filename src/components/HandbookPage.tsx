@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import {
   BookOpen, ShoppingBag, X, Palette, Layout,
-  TrendingUp, FileText, Truck, UserCircle, Star, Award, CreditCard
+  TrendingUp, FileText, Truck, UserCircle, Star, Award, CreditCard, CheckCircle2
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { motion } from 'motion/react';
@@ -9,6 +9,7 @@ import { db } from '../firebase';
 import { doc, onSnapshot, setDoc } from 'firebase/firestore';
 
 const DEFAULT_PAYMENT_TYPES = ["QR код", "Сплитами", "Долями", "Наличкой", "Наложенный СДЭК"];
+const DEFAULT_STATUSES = ["Новый", "В работе", "Оплачен", "Отгружен", "Доставлен", "Возврат", "Отмена", "Обмен"];
 
 export const HandbookPage: React.FC = () => {
   const [handbookProducts, setHandbookProducts] = useState<string[]>([]);
@@ -16,6 +17,7 @@ export const HandbookPage: React.FC = () => {
   const [handbookSizes, setHandbookSizes] = useState<string[]>([]);
   const [handbookHeights, setHandbookHeights] = useState<string[]>([]);
   const [handbookCompositions, setHandbookCompositions] = useState<string[]>([]);
+  const [handbookStatuses, setHandbookStatuses] = useState<string[]>(DEFAULT_STATUSES);
   const [handbookSources, setHandbookSources] = useState<string[]>([]);
   const [handbookLabels, setHandbookLabels] = useState<string[]>([]);
   const [handbookDeliveries, setHandbookDeliveries] = useState<string[]>([]);
@@ -32,6 +34,7 @@ export const HandbookPage: React.FC = () => {
         if (d.sizes) setHandbookSizes(d.sizes);
         if (d.heights) setHandbookHeights(d.heights);
         if (d.compositions) setHandbookCompositions(d.compositions);
+        if (d.statuses) setHandbookStatuses(d.statuses);
         if (d.sources) setHandbookSources(d.sources);
         if (d.labels) setHandbookLabels(d.labels);
         if (d.deliveries) setHandbookDeliveries(d.deliveries);
@@ -144,6 +147,7 @@ export const HandbookPage: React.FC = () => {
             <ListSection icon={Layout} iconColor="text-emerald-500" title="Размеры" items={handbookSizes} setItems={setHandbookSizes} saveKey="sizes" placeholder="Добавить..." />
             <ListSection icon={TrendingUp} iconColor="text-amber-500" title="Рост" items={handbookHeights} setItems={setHandbookHeights} saveKey="heights" placeholder="Рост..." />
             <ListSection icon={FileText} iconColor="text-sky-500" title="Состав" items={handbookCompositions} setItems={setHandbookCompositions} saveKey="compositions" placeholder="Состав..." />
+            <ListSection icon={CheckCircle2} iconColor="text-zinc-500" title="Статусы" items={handbookStatuses} setItems={setHandbookStatuses} saveKey="statuses" placeholder="Статус..." />
             <ListSection icon={Layout} iconColor="text-purple-500" title="Источники" items={handbookSources} setItems={setHandbookSources} saveKey="sources" placeholder="Источник..." />
             <ListSection icon={Award} iconColor="text-rose-500" title="Метки" items={handbookLabels} setItems={setHandbookLabels} saveKey="labels" placeholder="Метка..." />
             <ListSection icon={Truck} iconColor="text-emerald-500" title="Доставка" items={handbookDeliveries} setItems={setHandbookDeliveries} saveKey="deliveries" placeholder="Доставка..." />
@@ -160,16 +164,17 @@ export const HandbookPage: React.FC = () => {
                   const ds = ["XS", "S", "M", "L", "XL", "XXL", "OVER", "OVER 100", "OVER 200", "OVER XS/S", "OVER M/L"];
                   const dh = ["150-155", "160-165", "170-175", "180-185"];
                   const dcomp = ["Хлопок 100%", "Хлопок 95%, Лайкра 5%", "Лен", "Шерсть", "Футер"];
+                  const dst = DEFAULT_STATUSES;
                   const dsrc = ["Instagram", "WhatsApp", "Telegram", "Повторный заказ", "Блогер"];
                   const dlbl = ["Приоритет", "VIP", "Скидка", "Оптовик"];
                   const ddel = ["СДЭК", "Почта РФ", "Курьер", "Самовывоз"];
                   const dpay = DEFAULT_PAYMENT_TYPES;
 
                   setHandbookColors(dc); setHandbookSizes(ds); setHandbookHeights(dh);
-                  setHandbookCompositions(dcomp); setHandbookSources(dsrc); setHandbookLabels(dlbl); setHandbookDeliveries(ddel); setHandbookPaymentTypes(dpay);
+                  setHandbookCompositions(dcomp); setHandbookStatuses(dst); setHandbookSources(dsrc); setHandbookLabels(dlbl); setHandbookDeliveries(ddel); setHandbookPaymentTypes(dpay);
 
                   saveHandbook('colors', dc); saveHandbook('sizes', ds); saveHandbook('heights', dh);
-                  saveHandbook('compositions', dcomp); saveHandbook('sources', dsrc); saveHandbook('labels', dlbl); saveHandbook('deliveries', ddel); saveHandbook('paymentTypes', dpay);
+                  saveHandbook('compositions', dcomp); saveHandbook('statuses', dst); saveHandbook('sources', dsrc); saveHandbook('labels', dlbl); saveHandbook('deliveries', ddel); saveHandbook('paymentTypes', dpay);
                 }
               }}
               className="text-[9px] font-black uppercase tracking-widest text-blue-500 hover:text-blue-600 transition-colors bg-blue-50 px-3 py-2 rounded-lg"

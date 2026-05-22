@@ -121,6 +121,7 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [ordersFilterMonth, setOrdersFilterMonth] = useState<number>(-1);
+  const [orderStatusFilter, setOrderStatusFilter] = useState<string>('');
   const [slaFilterMonth, setSlaFilterMonth] = useState<number>(-1);
   const [searchTerm, setSearchTerm] = useState("");
   const [displayCount, setDisplayCount] = useState(50);
@@ -130,6 +131,7 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
   const [handbookSizes, setHandbookSizes] = useState<string[]>([]);
   const [handbookHeights, setHandbookHeights] = useState<string[]>([]);
   const [handbookCompositions, setHandbookCompositions] = useState<string[]>([]);
+  const [handbookStatuses, setHandbookStatuses] = useState<string[]>([]);
   const [handbookSources, setHandbookSources] = useState<string[]>([]);
   const [handbookLabels, setHandbookLabels] = useState<string[]>([]);
   const [handbookDeliveries, setHandbookDeliveries] = useState<string[]>([]);
@@ -169,6 +171,7 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
         if (d.sizes) setHandbookSizes(d.sizes);
         if (d.heights) setHandbookHeights(d.heights);
         if (d.compositions) setHandbookCompositions(d.compositions);
+        if (d.statuses) setHandbookStatuses(d.statuses);
         if (d.sources) setHandbookSources(d.sources);
         if (d.labels) setHandbookLabels(d.labels);
         if (d.deliveries) setHandbookDeliveries(d.deliveries);
@@ -778,14 +781,15 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
       .sort((a: OrderData, b: OrderData) => b.date.getTime() - a.date.getTime())
       .filter((o: OrderData) => {
         const matchesMonth = ordersFilterMonth === -1 || o.month === ordersFilterMonth;
+        const matchesStatus = !orderStatusFilter || String(o.status || '').toLowerCase() === orderStatusFilter.toLowerCase();
         const search = searchTerm.toLowerCase();
         const matchesSearch = !searchTerm ||
           o.orderId.toLowerCase().includes(search) ||
           o.clientName.toLowerCase().includes(search) ||
           (o.clientPhone && o.clientPhone.includes(search));
-        return matchesMonth && matchesSearch;
+        return matchesMonth && matchesStatus && matchesSearch;
       });
-  }, [stats?.uniqueOrders, searchTerm, ordersFilterMonth]);
+  }, [stats?.uniqueOrders, searchTerm, ordersFilterMonth, orderStatusFilter]);
 
   const pagedOrders = useMemo(() => {
     return filteredOrders.slice(0, displayCount);
@@ -885,6 +889,8 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
             setDisplayCount={setDisplayCount}
             ordersFilterMonth={ordersFilterMonth}
             setOrdersFilterMonth={setOrdersFilterMonth}
+            orderStatusFilter={orderStatusFilter}
+            setOrderStatusFilter={setOrderStatusFilter}
             slaFilterMonth={slaFilterMonth}
             setSlaFilterMonth={setSlaFilterMonth}
             filteredSlaStats={filteredSlaStats}
@@ -900,6 +906,7 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
             handbookSizes={handbookSizes}
             handbookHeights={handbookHeights}
             handbookCompositions={handbookCompositions}
+            handbookStatuses={handbookStatuses}
             handbookSources={handbookSources}
             handbookLabels={handbookLabels}
             handbookDeliveries={handbookDeliveries}
