@@ -74,6 +74,8 @@ const getApiErrorMessage = (data: any, fallback: string): string => {
   if (typeof data === 'string') return data;
   if (data.message) return String(data.message);
   if (data.error) return String(data.error);
+  if (data.details?.error_description) return String(data.details.error_description);
+  if (data.details?.error) return String(data.details.error);
   if (data.details?.message) return String(data.details.message);
   if (Array.isArray(data.details?.errors) && data.details.errors[0]?.message) return String(data.details.errors[0].message);
   return fallback;
@@ -452,6 +454,7 @@ const CdekOrderBlock: React.FC<{
         comment: `CRM заказ #${order.orderId}`,
       };
       if (!payload.recipientName || !payload.recipientPhone) throw new Error('Нужны ФИО и телефон клиента');
+      if (deliveryType === 'pvz' && !toCityCode) throw new Error('Выберите город СДЭК из подсказки');
       if (deliveryType === 'pvz' && !deliveryPoint) throw new Error('Выберите ПВЗ СДЭК');
       if (deliveryType === 'door' && !toAddress) throw new Error('Укажите адрес доставки');
 
@@ -543,14 +546,16 @@ const CdekOrderBlock: React.FC<{
       </div>
 
       {deliveryType === 'pvz' ? (
-        <select value={deliveryPoint} onChange={e => setDeliveryPoint(e.target.value)} disabled={!toCityCode || loadingPoints} className={inputClass}>
-          <option value="">{loadingPoints ? 'Загружаю ПВЗ...' : toCityCode ? 'Выберите ПВЗ СДЭК' : 'Сначала выберите город из списка'}</option>
-          {points.map(point => (
-            <option key={point.code} value={point.code}>
-              {point.code} · {point.name || point.address || point.location?.address}
-            </option>
-          ))}
-        </select>
+        toCityCode ? (
+          <select value={deliveryPoint} onChange={e => setDeliveryPoint(e.target.value)} disabled={loadingPoints} className={inputClass}>
+            <option value="">{loadingPoints ? 'Загружаю ПВЗ...' : 'ПВЗ СДЭК'}</option>
+            {points.map(point => (
+              <option key={point.code} value={point.code}>
+                {point.name || point.code} · {point.address || point.location?.address || point.code}
+              </option>
+            ))}
+          </select>
+        ) : null
       ) : (
         <input value={toAddress} onChange={e => setToAddress(e.target.value)} placeholder="Адрес доставки" className={inputClass} />
       )}

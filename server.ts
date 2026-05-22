@@ -167,6 +167,14 @@ async function getCdekToken() {
   return cdekToken;
 }
 
+function getCdekError(error: any) {
+  return {
+    status: error.response?.status || 500,
+    message: error.message,
+    details: error.response?.data || null,
+  };
+}
+
 app.get("/api/cdek/status", async (_req, res) => {
   try {
     const settings = await getCdekSettings();
@@ -225,6 +233,27 @@ app.post("/api/cdek/save-settings", async (req, res) => {
   }
 });
 
+app.get("/api/cdek/diagnostics", async (_req, res) => {
+  try {
+    const settings = await getCdekSettings();
+    const token = await getCdekToken();
+    res.json({
+      configured: Boolean(settings.clientId && settings.clientSecret),
+      isTest: settings.isTest,
+      baseUrl: settings.baseUrl,
+      auth: "ok",
+      tokenPreview: token ? `${token.slice(0, 8)}...` : null,
+    });
+  } catch (error: any) {
+    const cdekError = getCdekError(error);
+    res.status(cdekError.status).json({
+      configured: true,
+      auth: "failed",
+      ...cdekError,
+    });
+  }
+});
+
 app.get("/api/cdek/cities", async (req, res) => {
   try {
     const { q } = req.query;
@@ -248,7 +277,8 @@ app.get("/api/cdek/cities", async (req, res) => {
     }).slice(0, 10);
     res.json(sortedCities);
   } catch (error: any) {
-    res.status(error.response?.status || 500).json({ error: "Ошибка поиска СДЭК", message: error.message });
+    const cdekError = getCdekError(error);
+    res.status(cdekError.status).json({ error: "Ошибка поиска СДЭК", ...cdekError });
   }
 });
 
@@ -264,7 +294,8 @@ app.post("/api/cdek/calculate", async (req, res) => {
     }, { headers: { Authorization: `Bearer ${token}` } });
     res.json(response.data);
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    const cdekError = getCdekError(error);
+    res.status(cdekError.status).json({ error: "Ошибка расчета СДЭК", ...cdekError });
   }
 });
 
@@ -280,7 +311,8 @@ app.get("/api/cdek/deliverypoints", async (req, res) => {
     });
     res.json(response.data);
   } catch (error: any) {
-    res.status(error.response?.status || 500).json({ error: "Ошибка поиска ПВЗ СДЭК", details: error.response?.data || error.message });
+    const cdekError = getCdekError(error);
+    res.status(cdekError.status).json({ error: "Ошибка поиска ПВЗ СДЭК", ...cdekError });
   }
 });
 
