@@ -336,11 +336,19 @@ app.post("/api/cdek/create-order", async (req, res) => {
     const length = Math.max(1, Number(body.length || 30));
     const width = Math.max(1, Number(body.width || 20));
     const height = Math.max(1, Number(body.height || 10));
+    const warehouseOriginTariffs = new Set([136, 137]);
+    const doorOriginTariffs = new Set([138, 139]);
 
     if (!recipientName || !recipientPhone) return res.status(400).json({ error: "Нужны ФИО и телефон получателя" });
     if (!toCityCode && !deliveryPoint) return res.status(400).json({ error: "Нужен город получателя или код ПВЗ" });
     if (deliveryType === "pvz" && !deliveryPoint) return res.status(400).json({ error: "Для ПВЗ нужен код пункта СДЭК" });
     if (deliveryType === "door" && !toAddress) return res.status(400).json({ error: "Для курьера нужен адрес получателя" });
+    if (warehouseOriginTariffs.has(tariffCode) && !settings.shipmentPoint) {
+      return res.status(400).json({ error: "Для тарифа от склада нужен код ПВЗ отправки в настройках СДЭК" });
+    }
+    if (doorOriginTariffs.has(tariffCode) && !settings.senderAddress) {
+      return res.status(400).json({ error: "Для тарифа от двери нужен адрес отправителя в настройках СДЭК" });
+    }
 
     const packageNumber = orderId || `ybcrm-${Date.now()}`;
     const payload: any = {
@@ -435,7 +443,7 @@ app.post("/api/cdek/create-order", async (req, res) => {
     res.json({ success: true, cdekUuid, cdekNumber, data: response.data });
   } catch (error: any) {
     const details = error.response?.data || error.message;
-    console.error("[cdek] create-order error:", details);
+    console.error("[cdek] create-order error:", JSON.stringify(details, null, 2));
     res.status(error.response?.status || 500).json({ error: "Не удалось создать заказ СДЭК", details });
   }
 });

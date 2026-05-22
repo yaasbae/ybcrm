@@ -52,8 +52,8 @@ type CdekDeliveryPoint = {
 const CDEK_TARIFFS = [
   { code: '136', label: 'Склад → ПВЗ' },
   { code: '137', label: 'Склад → дверь' },
-  { code: '138', label: 'Дверь → дверь' },
-  { code: '139', label: 'Дверь → ПВЗ' },
+  { code: '138', label: 'Дверь → ПВЗ' },
+  { code: '139', label: 'Дверь → дверь' },
 ];
 
 const normalizeProductName = (value: string) => value.trim().toLowerCase();
@@ -77,6 +77,13 @@ const getApiErrorMessage = (data: any, fallback: string): string => {
   if (data.details?.error_description) return String(data.details.error_description);
   if (data.details?.error) return String(data.details.error);
   if (data.details?.message) return String(data.details.message);
+  const requestErrors = data.details?.requests?.flatMap((request: any) => request.errors || []);
+  if (requestErrors?.length) {
+    return requestErrors
+      .map((item: any) => item.message || item.code || JSON.stringify(item))
+      .filter(Boolean)
+      .join('; ');
+  }
   if (Array.isArray(data.details?.errors) && data.details.errors[0]?.message) return String(data.details.errors[0].message);
   return fallback;
 };
@@ -335,7 +342,7 @@ const CdekOrderBlock: React.FC<{
   const [length, setLength] = useState(String(saved.length || 30));
   const [width, setWidth] = useState(String(saved.width || 20));
   const [height, setHeight] = useState(String(saved.height || 10));
-  const [tariffCode, setTariffCode] = useState(String(saved.tariffCode || (initialDeliveryType === 'door' ? 137 : 136)));
+  const [tariffCode, setTariffCode] = useState(String(saved.tariffCode || (initialDeliveryType === 'door' ? 139 : 138)));
   const [cities, setCities] = useState<CdekCityOption[]>([]);
   const [points, setPoints] = useState<CdekDeliveryPoint[]>([]);
   const [loadingCities, setLoadingCities] = useState(false);
@@ -504,7 +511,7 @@ const CdekOrderBlock: React.FC<{
           onChange={(e) => {
             const next = e.target.value;
             setDeliveryType(next);
-            setTariffCode(next === 'door' ? '137' : '136');
+            setTariffCode(next === 'door' ? '139' : '138');
           }}
           className={inputClass}
         >
