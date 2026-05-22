@@ -72,11 +72,17 @@ const parsePackageNumber = (value: unknown, fallback: number): number => {
 const getApiErrorMessage = (data: any, fallback: string): string => {
   if (!data) return fallback;
   if (typeof data === 'string') return data;
-  if (data.message) return String(data.message);
-  if (data.error) return String(data.error);
-  if (data.details?.error_description) return String(data.details.error_description);
+  if (data.details?.error_description) {
+    const description = String(data.details.error_description);
+    if (description === 'No such account secure') {
+      return 'СДЭК не принял Account / Secure password. Проверьте ключи в настройках СДЭК';
+    }
+    return description;
+  }
   if (data.details?.error) return String(data.details.error);
   if (data.details?.message) return String(data.details.message);
+  if (data.message) return String(data.message);
+  if (data.error) return String(data.error);
   const requestErrors = data.details?.requests?.flatMap((request: any) => request.errors || []);
   if (requestErrors?.length) {
     return requestErrors
