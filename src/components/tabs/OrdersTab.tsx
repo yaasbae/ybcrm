@@ -7,7 +7,7 @@ import {
   Calendar, Award, AlertCircle, Search, Plus,
   X, MapPin, Star, RefreshCcw,
   Tag, Trash2, Phone, UserCircle, ChevronRight, QrCode as QrCodeIcon,
-  CheckCircle2, Copy, Send
+  CheckCircle2, Copy, Send, Truck
 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { formatCurrency, cn } from '../../lib/utils';
@@ -32,10 +32,35 @@ interface ProductCatalogItem {
   color?: string;
   sizeGrid?: string;
   height?: string;
+  weight?: string;
   sellingPrice?: number;
 }
 
+type CdekCityOption = {
+  code: number;
+  city: string;
+  region?: string;
+};
+
+type CdekDeliveryPoint = {
+  code: string;
+  name?: string;
+  address?: string;
+  location?: { address?: string };
+};
+
 const normalizeProductName = (value: string) => value.trim().toLowerCase();
+
+const getProductForOrder = (products: ProductCatalogItem[], itemName: string) =>
+  products.find(p => normalizeProductName(p.name) === normalizeProductName(itemName || ''));
+
+const parsePackageNumber = (value: unknown, fallback: number): number => {
+  if (value === null || value === undefined || value === '') return fallback;
+  const normalized = String(value).replace(',', '.').match(/\d+(\.\d+)?/)?.[0];
+  const parsed = Number(normalized);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return parsed <= 20 ? Math.round(parsed * 1000) : Math.round(parsed);
+};
 
 function getOrderPaymentDue(order: Partial<Pick<OrderData, 'revenue' | 'deliveryPrice' | 'paidAmount' | 'paymentStatus' | 'status'>>): number {
   const paymentStatus = String(order.paymentStatus || '').toLowerCase();
@@ -272,6 +297,240 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
   );
 };
 
+const CdekOrderBlock: React.FC<{
+  order: OrderData;
+  updateOrderData: (id: string, field: string, value: any) => void;
+  productCatalog: ProductCatalogItem[];
+  mobile?: boolean;
+}> = ({ order, updateOrderData, productCatalog, mobile = false }) => {
+  const product = getProductForOrder(productCatalog, order.item);
+  const saved = order.cdekPayload || {};
+  const initialDeliveryType = String(saved.deliveryType || '').trim()
+    || (String(order.deliveryMethod || '').toLowerCase().includes('курьер') ? 'door' : 'pvz');
+  const [deliveryType, setDeliveryType] = useState(initialDeliveryType);
+  const [cityQuery, setCityQuery] = useState(String(saved.toCity || order.clientCity || ''));
+  const [toCityCode, setToCityCode] = useState(String(saved.toCityCode || ''));
+  const [deliveryPoint, setDeliveryPoint] = useState(String(saved.deliveryPoint || ''));
+  const [toAddress, setToAddress] = useState(String(saved.toAddress || ''));
+  const [weight, setWeight] = useState(String(saved.weight || parsePackageNumber(product?.weight, 700)));
+  const [length, setLength] = useState(String(saved.length || 30));
+  const [width, setWidth] = useState(String(saved.width || 20));
+  const [height, setHeight] = useState(String(saved.height || 10));
+  const [tariffCode, setTariffCode] = useState(String(saved.tariffCode || (initialDeliveryType === 'door' ? 137 : 136)));
+  const [cities, setCities] = useState<CdekCityOption[]>([]);
+  const [points, setPoints] = useState<CdekDeliveryPoint[]>([]);
+  const [loadingCities, setLoadingCities] = useState(false);
+  const [loadingPoints, setLoadingPoints] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState('');
+  const [statusText, setStatusText] = useState('');
+
+  useEffect(() => {
+    if (saved.weight || !product?.weight) return;
+    setWeight(String(parsePackageNumber(product.weight, 700)));
+  }, [product?.weight, saved.weight]);
+
+  useEffect(() => {
+    const q = cityQuery.trim();
+    if (q.length < 2) {
+      setCities([]);
+      return;
+    }
+    const timer = window.setTimeout(async () => {
+      setLoadingCities(true);
+      try {
+        const res = await fetch(`/api/cdek/cities?q=${encodeURIComponent(q)}`);
+        const data = await res.json();
+        setCities(Array.isArray(data) ? data.slice(0, 6) : []);
+      } catch {
+        setCities([]);
+      } finally {
+        setLoadingCities(false);
+      }
+    }, 350);
+    return () => window.clearTimeout(timer);
+  }, [cityQuery]);
+
+  useEffect(() => {
+    if (!toCityCode || deliveryType !== 'pvz') {
+      setPoints([]);
+      return;
+    }
+    const loadPoints = async () => {
+      setLoadingPoints(true);
+      try {
+        const res = await fetch(`/api/cdek/deliverypoints?city_code=${encodeURIComponent(toCityCode)}`);
+        const data = await res.json();
+        setPoints(Array.isArray(data) ? data.slice(0, 80) : []);
+      } catch {
+        setPoints([]);
+      } finally {
+        setLoadingPoints(false);
+      }
+    };
+    loadPoints();
+  }, [toCityCode, deliveryType]);
+
+  const selectCity = (city: CdekCityOption) => {
+    setToCityCode(String(city.code));
+    setCityQuery(`${city.city}${city.region ? `, ${city.region}` : ''}`);
+    setDeliveryPoint('');
+    setCities([]);
+  };
+
+  const persistPayload = (patch: Record<string, any>) => {
+    updateOrderData(order.orderId, 'cdekPayload', { ...saved, ...patch });
+  };
+
+  const createCdekOrder = async () => {
+    setSubmitting(true);
+    setError('');
+    setStatusText('');
+    try {
+      const payload = {
+        orderId: order.orderId,
+        recipientName: order.clientName,
+        recipientPhone: order.clientPhone,
+        itemName: order.item || `Заказ ${order.orderId}`,
+        itemCost: Number(order.revenue) || 0,
+        codAmount: String(order.paymentType || '').toLowerCase().includes('налож') ? getOrderPaymentDue(order) : 0,
+        tariffCode,
+        deliveryType,
+        toCityCode,
+        toCity: cityQuery,
+        deliveryPoint,
+        toAddress,
+        weight,
+        length,
+        width,
+        height,
+        comment: `CRM заказ #${order.orderId}`,
+      };
+      if (!payload.recipientName || !payload.recipientPhone) throw new Error('Нужны ФИО и телефон клиента');
+      if (deliveryType === 'pvz' && !deliveryPoint) throw new Error('Выберите ПВЗ СДЭК');
+      if (deliveryType === 'door' && !toAddress) throw new Error('Укажите адрес доставки');
+
+      persistPayload(payload);
+      const res = await fetch('/api/cdek/create-order', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.details?.message || data.error || 'СДЭК не принял заказ');
+
+      if (data.cdekUuid) updateOrderData(order.orderId, 'cdekUuid', data.cdekUuid);
+      if (data.cdekNumber) updateOrderData(order.orderId, 'cdekNumber', data.cdekNumber);
+      updateOrderData(order.orderId, 'cdekStatus', 'created');
+      setStatusText(data.cdekNumber ? `Создан: ${data.cdekNumber}` : 'Создан, номер появится позже');
+    } catch (e: any) {
+      setError(e.message || 'Не удалось создать СДЭК');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const inputClass = mobile
+    ? 'w-full rounded-lg border border-zinc-100 bg-white px-2 py-2 text-[10px] font-bold text-zinc-700 outline-none focus:border-blue-200'
+    : 'w-full rounded-md border border-zinc-100 bg-white px-2 py-1 text-[9px] font-bold text-zinc-700 outline-none focus:border-blue-200';
+
+  return (
+    <div className={cn(
+      mobile ? 'rounded-xl border border-zinc-100 bg-zinc-50/60 p-2.5 space-y-2' : 'mt-2 rounded-lg border border-zinc-100 bg-zinc-50/60 p-2 space-y-1.5'
+    )}>
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-1.5">
+          <Truck className={cn(mobile ? 'w-3.5 h-3.5' : 'w-3 h-3', 'text-zinc-500')} />
+          <p className={cn(mobile ? 'text-[8px]' : 'text-[7px]', 'font-black uppercase tracking-widest text-zinc-500')}>СДЭК</p>
+        </div>
+        {(order.cdekNumber || order.cdekUuid || statusText) && (
+          <span className="text-[7px] font-black uppercase text-emerald-600">
+            {order.cdekNumber || statusText || 'Создан'}
+          </span>
+        )}
+      </div>
+
+      <div className={cn('grid gap-1.5', mobile ? 'grid-cols-2' : 'grid-cols-2')}>
+        <select
+          value={deliveryType}
+          onChange={(e) => {
+            const next = e.target.value;
+            setDeliveryType(next);
+            setTariffCode(next === 'door' ? '137' : '136');
+          }}
+          className={inputClass}
+        >
+          <option value="pvz">До ПВЗ</option>
+          <option value="door">Курьером</option>
+        </select>
+        <input value={tariffCode} onChange={e => setTariffCode(e.target.value)} placeholder="Тариф" className={inputClass} />
+      </div>
+
+      <div className="relative">
+        <input
+          value={cityQuery}
+          onChange={e => {
+            setCityQuery(e.target.value);
+            setToCityCode('');
+          }}
+          placeholder="Город получателя"
+          className={inputClass}
+        />
+        {(loadingCities || cities.length > 0) && (
+          <div className="absolute z-20 mt-1 w-full rounded-lg border border-zinc-100 bg-white shadow-xl overflow-hidden">
+            {loadingCities && <div className="px-2 py-1.5 text-[8px] font-bold text-zinc-400">Ищу город...</div>}
+            {cities.map(city => (
+              <button
+                key={city.code}
+                type="button"
+                onClick={() => selectCity(city)}
+                className="w-full text-left px-2 py-1.5 text-[9px] font-bold text-zinc-700 hover:bg-zinc-50"
+              >
+                {city.city}{city.region ? `, ${city.region}` : ''} <span className="text-zinc-300">#{city.code}</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {deliveryType === 'pvz' ? (
+        <select value={deliveryPoint} onChange={e => setDeliveryPoint(e.target.value)} disabled={!toCityCode || loadingPoints} className={inputClass}>
+          <option value="">{loadingPoints ? 'Загружаю ПВЗ...' : 'ПВЗ СДЭК'}</option>
+          {points.map(point => (
+            <option key={point.code} value={point.code}>
+              {point.code} · {point.name || point.address || point.location?.address}
+            </option>
+          ))}
+        </select>
+      ) : (
+        <input value={toAddress} onChange={e => setToAddress(e.target.value)} placeholder="Адрес доставки" className={inputClass} />
+      )}
+
+      <div className="grid grid-cols-4 gap-1.5">
+        <input value={weight} onChange={e => setWeight(e.target.value)} placeholder="Вес г" className={inputClass} />
+        <input value={length} onChange={e => setLength(e.target.value)} placeholder="Д" className={inputClass} />
+        <input value={width} onChange={e => setWidth(e.target.value)} placeholder="Ш" className={inputClass} />
+        <input value={height} onChange={e => setHeight(e.target.value)} placeholder="В" className={inputClass} />
+      </div>
+
+      <button
+        type="button"
+        onClick={createCdekOrder}
+        disabled={submitting}
+        className={cn(
+          'w-full rounded-lg border border-zinc-200 bg-white font-black uppercase tracking-widest text-zinc-700 hover:bg-zinc-900 hover:text-white transition-all flex items-center justify-center gap-1.5 disabled:opacity-60',
+          mobile ? 'py-2.5 text-[8px]' : 'py-1.5 text-[7px]'
+        )}
+      >
+        {submitting ? <RefreshCcw className="w-3 h-3 animate-spin" /> : <Send className="w-3 h-3" />}
+        {submitting ? 'Создаю...' : 'Создать накладную'}
+      </button>
+      {error && <p className="text-[8px] font-bold text-red-500">{error}</p>}
+      {statusText && <p className="text-[8px] font-bold text-emerald-600">{statusText}</p>}
+    </div>
+  );
+};
+
 const OrderRow = React.memo(({
   order,
   updateOrderData,
@@ -444,6 +703,9 @@ const OrderRow = React.memo(({
 
         {/* QR / Отправить счёт */}
         <PaymentRowBlock order={order} updateOrderData={updateOrderData} />
+        {String(order.deliveryMethod || '').toLowerCase().includes('сдэк') && (
+          <CdekOrderBlock order={order} updateOrderData={updateOrderData} productCatalog={productCatalog} />
+        )}
       </td>
 
       {/* Финансы */}
@@ -551,10 +813,12 @@ const OrderCard = React.memo(({
   order,
   updateOrderData,
   onDelete,
+  productCatalog,
 }: {
   order: OrderData;
   updateOrderData: (id: string, field: string, value: any) => void;
   onDelete: (id: string) => void;
+  productCatalog: ProductCatalogItem[];
 }) => {
   const [copied, setCopied] = useState(false);
   const [mobilePaymentUrl, setMobilePaymentUrl] = useState(order.paymentUrl || '');
@@ -785,6 +1049,10 @@ const OrderCard = React.memo(({
           </div>
         )}
       </div>
+
+      {String(order.deliveryMethod || '').toLowerCase().includes('сдэк') && (
+        <CdekOrderBlock order={order} updateOrderData={updateOrderData} productCatalog={productCatalog} mobile />
+      )}
 
       {/* Quick Actions Mobile */}
       <div className="flex items-center gap-2 pt-1">
@@ -1712,6 +1980,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
               order={order}
               updateOrderData={updateOrderData}
               onDelete={deleteOrder}
+              productCatalog={productCatalog}
             />
           ))}
 

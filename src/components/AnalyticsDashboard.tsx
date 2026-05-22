@@ -53,6 +53,21 @@ export interface OrderData {
   paymentUrl?: string;
   paymentStatus?: string;
   paymentType?: string;
+  cdekUuid?: string;
+  cdekNumber?: string;
+  cdekStatus?: string;
+  cdekPayload?: {
+    deliveryType?: string;
+    toCityCode?: string | number;
+    toCity?: string;
+    deliveryPoint?: string;
+    toAddress?: string;
+    weight?: string | number;
+    length?: string | number;
+    width?: string | number;
+    height?: string | number;
+    tariffCode?: string | number;
+  };
 }
 
 export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = (props) => {
