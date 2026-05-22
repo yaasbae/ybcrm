@@ -49,6 +49,13 @@ type CdekDeliveryPoint = {
   location?: { address?: string };
 };
 
+const CDEK_TARIFFS = [
+  { code: '136', label: 'Склад → ПВЗ' },
+  { code: '137', label: 'Склад → дверь' },
+  { code: '138', label: 'Дверь → дверь' },
+  { code: '139', label: 'Дверь → ПВЗ' },
+];
+
 const normalizeProductName = (value: string) => value.trim().toLowerCase();
 
 const getProductForOrder = (products: ProductCatalogItem[], itemName: string) =>
@@ -371,6 +378,13 @@ const CdekOrderBlock: React.FC<{
     loadPoints();
   }, [toCityCode, deliveryType]);
 
+  useEffect(() => {
+    if (toCityCode || cities.length === 0) return;
+    const normalizedQuery = cityQuery.split(',')[0].trim().toLowerCase();
+    const exactCity = cities.find(city => city.city.trim().toLowerCase() === normalizedQuery);
+    if (exactCity) selectCity(exactCity);
+  }, [cities, cityQuery, toCityCode]);
+
   const selectCity = (city: CdekCityOption) => {
     setToCityCode(String(city.code));
     setCityQuery(`${city.city}${city.region ? `, ${city.region}` : ''}`);
@@ -432,11 +446,11 @@ const CdekOrderBlock: React.FC<{
 
   const inputClass = mobile
     ? 'w-full rounded-lg border border-zinc-100 bg-white px-2 py-2 text-[10px] font-bold text-zinc-700 outline-none focus:border-blue-200'
-    : 'w-full rounded-md border border-zinc-100 bg-white px-2 py-1 text-[9px] font-bold text-zinc-700 outline-none focus:border-blue-200';
+    : 'w-full rounded-lg border border-zinc-100 bg-white px-3 py-2 text-[10px] font-bold text-zinc-700 outline-none focus:border-blue-200';
 
   return (
     <div className={cn(
-      mobile ? 'rounded-xl border border-zinc-100 bg-zinc-50/60 p-2.5 space-y-2' : 'mt-2 rounded-lg border border-zinc-100 bg-zinc-50/60 p-2 space-y-1.5'
+      mobile ? 'rounded-xl border border-zinc-100 bg-zinc-50/60 p-2.5 space-y-2' : 'mt-2 w-[320px] rounded-xl border border-zinc-100 bg-zinc-50/60 p-3 space-y-2'
     )}>
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-1.5">
@@ -450,7 +464,7 @@ const CdekOrderBlock: React.FC<{
         )}
       </div>
 
-      <div className={cn('grid gap-1.5', mobile ? 'grid-cols-2' : 'grid-cols-2')}>
+      <div className={cn('grid gap-1.5', mobile ? 'grid-cols-2' : 'grid-cols-[120px_1fr]')}>
         <select
           value={deliveryType}
           onChange={(e) => {
@@ -463,7 +477,11 @@ const CdekOrderBlock: React.FC<{
           <option value="pvz">До ПВЗ</option>
           <option value="door">Курьером</option>
         </select>
-        <input value={tariffCode} onChange={e => setTariffCode(e.target.value)} placeholder="Тариф" className={inputClass} />
+        <select value={tariffCode} onChange={e => setTariffCode(e.target.value)} className={inputClass} title="Тариф СДЭК">
+          {CDEK_TARIFFS.map(tariff => (
+            <option key={tariff.code} value={tariff.code}>{tariff.label}</option>
+          ))}
+        </select>
       </div>
 
       <div className="relative">
@@ -484,10 +502,10 @@ const CdekOrderBlock: React.FC<{
                 key={city.code}
                 type="button"
                 onClick={() => selectCity(city)}
-                className="w-full text-left px-2 py-1.5 text-[9px] font-bold text-zinc-700 hover:bg-zinc-50"
-              >
-                {city.city}{city.region ? `, ${city.region}` : ''} <span className="text-zinc-300">#{city.code}</span>
-              </button>
+              className="w-full text-left px-3 py-2 text-[10px] font-bold text-zinc-700 hover:bg-zinc-50"
+            >
+              {city.city}{city.region ? `, ${city.region}` : ''} <span className="text-zinc-300">#{city.code}</span>
+            </button>
             ))}
           </div>
         )}
@@ -495,7 +513,7 @@ const CdekOrderBlock: React.FC<{
 
       {deliveryType === 'pvz' ? (
         <select value={deliveryPoint} onChange={e => setDeliveryPoint(e.target.value)} disabled={!toCityCode || loadingPoints} className={inputClass}>
-          <option value="">{loadingPoints ? 'Загружаю ПВЗ...' : 'ПВЗ СДЭК'}</option>
+          <option value="">{loadingPoints ? 'Загружаю ПВЗ...' : toCityCode ? 'Выберите ПВЗ СДЭК' : 'Сначала выберите город из списка'}</option>
           {points.map(point => (
             <option key={point.code} value={point.code}>
               {point.code} · {point.name || point.address || point.location?.address}
@@ -658,7 +676,7 @@ const OrderRow = React.memo(({
       </td>
 
       {/* Статус / Доставка */}
-      <td className="px-2 py-3 align-top w-[160px]">
+      <td className="px-2 py-3 align-top w-[340px]">
         <select
           value={order.status}
           onChange={(e) => updateOrderData(order.orderId, 'status', e.target.value)}
