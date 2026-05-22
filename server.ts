@@ -261,7 +261,7 @@ app.get("/api/cdek/cities", async (req, res) => {
     const settings = await getCdekSettings();
     const response = await axios.get(`${settings.baseUrl}/location/cities`, {
       headers: { Authorization: `Bearer ${token}` },
-      params: { cityName: q, size: 20, country_codes: "RU" }
+      params: { city: q, size: 20, country_codes: "RU" }
     });
     const sortedCities = response.data.sort((a: any, b: any) => {
       const searchLower = String(q).toLowerCase();
