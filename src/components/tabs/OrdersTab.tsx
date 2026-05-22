@@ -560,11 +560,23 @@ const CdekOrderBlock: React.FC<{
         <input value={toAddress} onChange={e => setToAddress(e.target.value)} placeholder="Адрес доставки" className={inputClass} />
       )}
 
-      <div className="grid grid-cols-4 gap-1.5">
-        <input value={weight} onChange={e => setWeight(e.target.value)} placeholder="Вес г" className={inputClass} />
-        <input value={length} onChange={e => setLength(e.target.value)} placeholder="Д" className={inputClass} />
-        <input value={width} onChange={e => setWidth(e.target.value)} placeholder="Ш" className={inputClass} />
-        <input value={height} onChange={e => setHeight(e.target.value)} placeholder="В" className={inputClass} />
+      <div className={cn('grid gap-1.5', mobile ? 'grid-cols-2' : 'grid-cols-4')}>
+        {[
+          { label: 'Вес, г', value: weight, setValue: setWeight, placeholder: '700' },
+          { label: 'Длина, см', value: length, setValue: setLength, placeholder: '30' },
+          { label: 'Ширина, см', value: width, setValue: setWidth, placeholder: '20' },
+          { label: 'Высота, см', value: height, setValue: setHeight, placeholder: '10' },
+        ].map(field => (
+          <label key={field.label} className="space-y-1">
+            <span className="block px-1 text-[7px] font-black uppercase tracking-widest text-zinc-400">{field.label}</span>
+            <input
+              value={field.value}
+              onChange={e => field.setValue(e.target.value)}
+              placeholder={field.placeholder}
+              className={cn(inputClass, mobile ? 'min-h-[38px]' : 'min-h-[42px]')}
+            />
+          </label>
+        ))}
       </div>
 
       <button
