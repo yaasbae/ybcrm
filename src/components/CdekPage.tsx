@@ -18,6 +18,7 @@ type DeliveryPoint = {
 
 type CdekSettings = {
   configured: boolean;
+  clientIdPreview?: string;
   isTest: boolean;
   senderCityCode: number;
   senderCity: string;
@@ -30,8 +31,8 @@ type CdekSettings = {
 const defaultSettings: CdekSettings = {
   configured: false,
   isTest: false,
-  senderCityCode: 44,
-  senderCity: '',
+  senderCityCode: 424,
+  senderCity: 'Казань',
   senderAddress: '',
   senderName: '',
   senderPhone: '',
@@ -217,9 +218,15 @@ export const CdekPage: React.FC = () => {
         <div className="p-4 grid md:grid-cols-3 gap-3">
           <Field label="Account / client_id">
             <input value={clientId} onChange={e => setClientId(e.target.value)} placeholder={settings.configured ? 'Оставьте пустым, если не менять' : 'client_id'} className="field" />
+            {settings.clientIdPreview && !clientId && (
+              <p className="mt-1 px-1 text-[9px] font-bold text-emerald-600">Сохранен: {settings.clientIdPreview}</p>
+            )}
           </Field>
           <Field label="Secure password">
             <input value={clientSecret} onChange={e => setClientSecret(e.target.value)} placeholder={settings.configured ? 'Оставьте пустым, если не менять' : 'client_secret'} type="password" className="field" />
+            {settings.configured && !clientSecret && (
+              <p className="mt-1 px-1 text-[9px] font-bold text-emerald-600">Пароль сохранен, повторно вводить не нужно</p>
+            )}
           </Field>
           <Field label="Режим">
             <select value={settings.isTest ? 'test' : 'prod'} onChange={e => setSettings(prev => ({ ...prev, isTest: e.target.value === 'test' }))} className="field">
@@ -403,4 +410,3 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
     </label>
   );
 }
-

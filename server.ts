@@ -178,8 +178,12 @@ function getCdekError(error: any) {
 app.get("/api/cdek/status", async (_req, res) => {
   try {
     const settings = await getCdekSettings();
+    const clientIdPreview = settings.clientId
+      ? `${settings.clientId.slice(0, 4)}...${settings.clientId.slice(-4)}`
+      : "";
     res.json({
       configured: Boolean(settings.clientId && settings.clientSecret),
+      clientIdPreview,
       isTest: settings.isTest,
       senderCityCode: settings.senderCityCode,
       senderCity: settings.senderCity,
