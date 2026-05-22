@@ -157,7 +157,10 @@ async function getCdekToken() {
   params.append("grant_type", "client_credentials");
   params.append("client_id", clientId);
   params.append("client_secret", clientSecret);
-  const response = await axios.post(`${settings.baseUrl}/oauth/token`, params);
+  const response = await axios.post(`${settings.baseUrl}/oauth/token`, null, {
+    params,
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+  });
   cdekToken = response.data.access_token;
   cdekTokenKey = key;
   tokenExpiry = Date.now() + (response.data.expires_in - 60) * 1000;
