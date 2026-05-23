@@ -665,10 +665,6 @@ const OrderRow = React.memo(({
   handbookBloggers: string[];
   productCatalog: ProductCatalogItem[];
 }) => {
-  const nameParts = (order.clientName || '').split(/\s+/);
-  const surname = nameParts[0] || '';
-  const otherNames = nameParts.slice(1).join(' ');
-
   const statusColor =
     order.status?.toLowerCase().includes('оплачен') ? 'text-emerald-700 bg-emerald-50 border-emerald-100' :
     order.status?.toLowerCase().includes('отгружен') || order.status?.toLowerCase().includes('доставлен') ? 'text-blue-700 bg-blue-50 border-blue-100' :
@@ -695,7 +691,7 @@ const OrderRow = React.memo(({
       <select
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="min-h-[34px] bg-zinc-50 border border-zinc-100 rounded-lg px-2.5 py-1.5 text-[10px] text-zinc-700 font-bold focus:bg-white focus:border-blue-200 focus:ring-1 focus:ring-blue-100 outline-none w-full truncate"
+        className="h-9 bg-zinc-50 border border-zinc-100 rounded-lg px-2.5 text-[10px] text-zinc-700 font-bold focus:bg-white focus:border-blue-200 focus:ring-1 focus:ring-blue-100 outline-none w-full truncate"
       >
         <option value="">—</option>
         {options.map(opt => <option key={opt} value={opt}>{opt}</option>)}
@@ -748,38 +744,25 @@ const OrderRow = React.memo(({
       </td>
 
       {/* Клиент */}
-      <td className="px-3 py-3 align-top w-[190px]">
+      <td className="px-3 py-3 align-top w-[220px]">
         <input
           type="text"
-          value={surname}
-          onChange={(e) => {
-            const n = [e.target.value, otherNames].filter(Boolean).join(' ');
-            updateOrderData(order.orderId, 'clientName', n);
-          }}
-          placeholder="ФАМИЛИЯ"
-          className="bg-transparent text-[11px] font-black text-zinc-900 uppercase tracking-tight focus:bg-white focus:ring-1 focus:ring-blue-100 rounded px-1 outline-none w-full leading-tight"
-        />
-        <input
-          type="text"
-          value={otherNames}
-          onChange={(e) => {
-            const n = [surname, e.target.value].filter(Boolean).join(' ');
-            updateOrderData(order.orderId, 'clientName', n);
-          }}
-          placeholder="Имя Отчество"
-          className="bg-transparent text-[9px] font-medium text-zinc-500 focus:bg-white focus:ring-1 focus:ring-blue-100 rounded px-1 outline-none w-full mt-0.5"
+          value={order.clientName || ''}
+          onChange={(e) => updateOrderData(order.orderId, 'clientName', e.target.value)}
+          placeholder="ФИО клиента"
+          className="bg-transparent text-[11px] font-black text-zinc-900 uppercase tracking-tight focus:bg-white focus:ring-1 focus:ring-blue-100 rounded px-1 outline-none w-full leading-tight truncate"
         />
         <input
           type="text"
           value={order.clientPhone}
           onChange={(e) => updateOrderData(order.orderId, 'clientPhone', e.target.value.replace(/[^0-9]/g, ''))}
           placeholder="телефон"
-          className="bg-transparent font-mono text-[9px] text-zinc-400 focus:text-zinc-900 focus:bg-white focus:ring-1 focus:ring-blue-100 rounded px-1 outline-none w-full mt-1"
+          className="bg-transparent font-mono text-[9px] text-zinc-400 focus:text-zinc-900 focus:bg-white focus:ring-1 focus:ring-blue-100 rounded px-1 outline-none w-full mt-1 truncate"
         />
       </td>
 
       {/* Статус / Доставка */}
-      <td className="px-2 py-3 align-top w-[390px]">
+      <td className="px-2 py-3 align-top w-[360px]">
         <select
           value={order.status}
           onChange={(e) => updateOrderData(order.orderId, 'status', e.target.value)}
@@ -830,72 +813,67 @@ const OrderRow = React.memo(({
       </td>
 
       {/* Финансы + изделие */}
-      <td className="px-3 py-3 align-top min-w-[760px]" colSpan={2}>
-        <div className="rounded-xl border border-zinc-100 bg-white p-3 shadow-sm">
-          <div className="grid grid-cols-[1fr_260px] gap-3 items-start">
-            <div className="min-w-0 space-y-2.5">
+      <td className="px-3 py-3 align-top min-w-[860px]" colSpan={2}>
+        <div className="rounded-xl border border-zinc-100 bg-white p-3 shadow-sm space-y-2.5">
+          <div className="grid grid-cols-[minmax(280px,1fr)_140px_120px_150px] gap-2 items-end">
+            <div className="min-w-0">
+              <span className="text-[8px] font-black text-zinc-300 uppercase tracking-wider leading-none px-1">Изделие</span>
               <input
                 type="text"
                 list="product-list"
                 value={order.item}
                 onChange={(e) => applyProductCharacteristics(e.target.value)}
                 placeholder="Название изделия..."
-                className="w-full bg-zinc-50 text-[13px] font-black text-zinc-900 focus:bg-white focus:ring-1 focus:ring-blue-100 rounded-lg px-3 py-2 outline-none border border-zinc-100"
+                className="mt-1 h-10 w-full bg-zinc-50 text-[13px] font-black text-zinc-900 focus:bg-white focus:ring-1 focus:ring-blue-100 rounded-lg px-3 outline-none border border-zinc-100 truncate"
               />
-              <div className="grid grid-cols-3 gap-2">
-                {fieldSelect('Цвет',   order.rawRow?.[RAW_COLOR_INDEX] || '', optionsWithCurrent(handbookColors, order.rawRow?.[RAW_COLOR_INDEX] || ''),  (v) => updateOrderData(order.orderId, `rawRow[${RAW_COLOR_INDEX}]`, v))}
-                {fieldSelect('Размер', order.rawRow?.[RAW_SIZE_INDEX] || '', optionsWithCurrent(handbookSizes, order.rawRow?.[RAW_SIZE_INDEX] || ''),   (v) => updateOrderData(order.orderId, `rawRow[${RAW_SIZE_INDEX}]`, v))}
-                {fieldSelect('Рост',   order.height  || '', optionsWithCurrent(handbookHeights, order.height || ''), (v) => updateOrderData(order.orderId, 'height', v))}
-              </div>
-              <div className="grid grid-cols-4 gap-2">
-                {fieldSelect('Метка',    order.label   || '', optionsWithCurrent(handbookLabels, order.label || ''),   (v) => updateOrderData(order.orderId, 'label', v))}
-                {fieldSelect('Менеджер', order.manager || '', optionsWithCurrent(handbookManagers, order.manager || ''), (v) => updateOrderData(order.orderId, 'manager', v))}
-                {fieldSelect('Блогер',   order.blogger || '', optionsWithCurrent(handbookBloggers, order.blogger || ''), (v) => updateOrderData(order.orderId, 'blogger', v))}
-                {fieldSelect('Оплата',   order.paymentType || '', optionsWithCurrent(handbookPaymentTypes, order.paymentType || '', PAYMENT_TYPE_OPTIONS), (v) => updateOrderData(order.orderId, 'paymentType', v))}
-              </div>
             </div>
-
-            <div className="grid grid-cols-1 gap-2">
-              <div className="rounded-lg bg-zinc-50 border border-zinc-100 p-2.5">
-                <div className="text-[7px] font-black text-zinc-400 uppercase tracking-widest leading-none">Стоимость 100%</div>
-                <input
-                  type="number"
-                  value={order.revenue ?? ''}
-                  onChange={(e) => updateOrderData(order.orderId, 'revenue', parseFloat(e.target.value) || 0)}
-                  className="mt-1 w-full bg-transparent text-[17px] font-black text-zinc-900 text-right tabular-nums focus:bg-white focus:ring-1 focus:ring-blue-100 rounded px-1 outline-none"
-                />
-              </div>
-              <div className="grid grid-cols-2 gap-2">
-                <div className="rounded-lg bg-zinc-50 border border-zinc-100 p-2.5">
-                  <div className="text-[7px] font-black text-zinc-400 uppercase tracking-widest leading-none">Доставка</div>
-                  <input
-                    type="number"
-                    value={order.deliveryPrice ?? ''}
-                    onChange={(e) => updateOrderData(order.orderId, 'deliveryPrice', parseFloat(e.target.value) || 0)}
-                    className="mt-1 w-full bg-transparent text-[13px] font-black text-zinc-700 text-right tabular-nums focus:bg-white focus:ring-1 focus:ring-blue-100 rounded px-1 outline-none"
-                  />
-                </div>
-                <div className={cn(
-                  "rounded-lg border p-2.5",
-                  (order.paidAmount || 0) > 0 ? "bg-emerald-50 border-emerald-100" : "bg-amber-50 border-amber-100"
-                )}>
-                  <div className={cn(
-                    "text-[7px] font-black uppercase tracking-widest leading-none",
-                    (order.paidAmount || 0) > 0 ? "text-emerald-500" : "text-amber-500"
-                  )}>Предоплата 50%</div>
-                  <input
-                    type="number"
-                    value={order.paidAmount ?? ''}
-                    onChange={(e) => updateOrderData(order.orderId, 'paidAmount', parseFloat(e.target.value) || 0)}
-                    className={cn(
-                      "mt-1 w-full bg-transparent text-[13px] font-black text-right tabular-nums focus:bg-white focus:ring-1 focus:ring-blue-100 rounded px-1 outline-none",
-                      (order.paidAmount || 0) > 0 ? "text-emerald-700" : "text-amber-700"
-                    )}
-                  />
-                </div>
-              </div>
-            </div>
+            <label className="rounded-lg bg-zinc-50 border border-zinc-100 p-2">
+              <span className="block text-[7px] font-black text-zinc-400 uppercase tracking-widest leading-none">Стоимость 100%</span>
+              <input
+                type="number"
+                value={order.revenue ?? ''}
+                onChange={(e) => updateOrderData(order.orderId, 'revenue', parseFloat(e.target.value) || 0)}
+                className="mt-1 w-full bg-transparent text-[15px] font-black text-zinc-900 text-right tabular-nums focus:bg-white focus:ring-1 focus:ring-blue-100 rounded px-1 outline-none"
+              />
+            </label>
+            <label className="rounded-lg bg-zinc-50 border border-zinc-100 p-2">
+              <span className="block text-[7px] font-black text-zinc-400 uppercase tracking-widest leading-none">Доставка</span>
+              <input
+                type="number"
+                value={order.deliveryPrice ?? ''}
+                onChange={(e) => updateOrderData(order.orderId, 'deliveryPrice', parseFloat(e.target.value) || 0)}
+                className="mt-1 w-full bg-transparent text-[13px] font-black text-zinc-700 text-right tabular-nums focus:bg-white focus:ring-1 focus:ring-blue-100 rounded px-1 outline-none"
+              />
+            </label>
+            <label className={cn(
+              "rounded-lg border p-2",
+              (order.paidAmount || 0) > 0 ? "bg-emerald-50 border-emerald-100" : "bg-amber-50 border-amber-100"
+            )}>
+              <span className={cn(
+                "block text-[7px] font-black uppercase tracking-widest leading-none",
+                (order.paidAmount || 0) > 0 ? "text-emerald-500" : "text-amber-500"
+              )}>Предоплата 50%</span>
+              <input
+                type="number"
+                value={order.paidAmount ?? ''}
+                onChange={(e) => updateOrderData(order.orderId, 'paidAmount', parseFloat(e.target.value) || 0)}
+                className={cn(
+                  "mt-1 w-full bg-transparent text-[13px] font-black text-right tabular-nums focus:bg-white focus:ring-1 focus:ring-blue-100 rounded px-1 outline-none",
+                  (order.paidAmount || 0) > 0 ? "text-emerald-700" : "text-amber-700"
+                )}
+              />
+            </label>
           </div>
+
+          <div className="grid grid-cols-[repeat(7,minmax(82px,1fr))] gap-2">
+            {fieldSelect('Цвет',   order.rawRow?.[RAW_COLOR_INDEX] || '', optionsWithCurrent(handbookColors, order.rawRow?.[RAW_COLOR_INDEX] || ''),  (v) => updateOrderData(order.orderId, `rawRow[${RAW_COLOR_INDEX}]`, v))}
+            {fieldSelect('Размер', order.rawRow?.[RAW_SIZE_INDEX] || '', optionsWithCurrent(handbookSizes, order.rawRow?.[RAW_SIZE_INDEX] || ''),   (v) => updateOrderData(order.orderId, `rawRow[${RAW_SIZE_INDEX}]`, v))}
+            {fieldSelect('Рост',   order.height  || '', optionsWithCurrent(handbookHeights, order.height || ''), (v) => updateOrderData(order.orderId, 'height', v))}
+            {fieldSelect('Метка',    order.label   || '', optionsWithCurrent(handbookLabels, order.label || ''),   (v) => updateOrderData(order.orderId, 'label', v))}
+            {fieldSelect('Менеджер', order.manager || '', optionsWithCurrent(handbookManagers, order.manager || ''), (v) => updateOrderData(order.orderId, 'manager', v))}
+            {fieldSelect('Блогер',   order.blogger || '', optionsWithCurrent(handbookBloggers, order.blogger || ''), (v) => updateOrderData(order.orderId, 'blogger', v))}
+            {fieldSelect('Оплата',   order.paymentType || '', optionsWithCurrent(handbookPaymentTypes, order.paymentType || '', PAYMENT_TYPE_OPTIONS), (v) => updateOrderData(order.orderId, 'paymentType', v))}
+            </div>
         </div>
       </td>
 
