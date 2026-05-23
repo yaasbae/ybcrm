@@ -355,6 +355,7 @@ app.post("/api/cdek/create-order", async (req, res) => {
     const warehouseOriginTariffs = new Set([136, 137]);
     const doorOriginTariffs = new Set([138, 139]);
 
+    if (!orderId) return res.status(400).json({ error: "Нужен номер заказа CRM для поля Номер ИМ в СДЭК" });
     if (!recipientName || !recipientPhone) return res.status(400).json({ error: "Нужны ФИО и телефон получателя" });
     if (!toCityCode && !deliveryPoint) return res.status(400).json({ error: "Нужен город получателя или код ПВЗ" });
     if (deliveryType === "pvz" && !deliveryPoint) return res.status(400).json({ error: "Для ПВЗ нужен код пункта СДЭК" });
@@ -366,7 +367,7 @@ app.post("/api/cdek/create-order", async (req, res) => {
       return res.status(400).json({ error: "Для тарифа от двери нужен адрес отправителя в настройках СДЭК" });
     }
 
-    const packageNumber = orderId || `ybcrm-${Date.now()}`;
+    const packageNumber = orderId;
     const payload: any = {
       type: 1,
       number: packageNumber,
@@ -389,7 +390,7 @@ app.post("/api/cdek/create-order", async (req, res) => {
         comment: String(body.packageComment || "").trim() || undefined,
         items: [{
           name: itemName,
-          ware_key: String(body.wareKey || orderId || "ybcrm-item"),
+          ware_key: String(body.wareKey || orderId),
           payment: { value: codAmount },
           cost: itemCost || codAmount || 1,
           amount: 1,
