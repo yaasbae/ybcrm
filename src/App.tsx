@@ -17,7 +17,7 @@ const ContentPage = lazy(() => import("./components/ContentPage").then(m => ({ d
 const ContentStudioPage = lazy(() => import("./components/ContentStudioPage").then(m => ({ default: m.ContentStudioPage })));
 const PaymentPage = lazy(() => import("./components/PaymentPage").then(m => ({ default: m.PaymentPage })));
 const CdekPage = lazy(() => import("./components/CdekPage").then(m => ({ default: m.CdekPage })));
-import { auth, signInWithGoogle, signInWithEmail, logOut } from "./firebase";
+import { auth, completeGoogleRedirectSignIn, getGoogleAuthErrorMessage, signInWithGoogle, signInWithEmail, logOut } from "./firebase";
 import { onAuthStateChanged, User as FirebaseUser } from "firebase/auth";
 import { cn } from "./lib/utils";
 import {
@@ -127,6 +127,12 @@ export default function App() {
   }, [theme]);
 
   useEffect(() => {
+    completeGoogleRedirectSignIn().catch((err) => {
+      console.error("Google redirect auth error:", err);
+      setAuthError(getGoogleAuthErrorMessage(err));
+      setAuthLoading(false);
+    });
+
     // Check for public product link in URL
     const applyPath = () => {
       const path = window.location.pathname;
@@ -278,11 +284,7 @@ export default function App() {
                   await signInWithGoogle();
                 } catch (err: any) {
                   console.error("Auth error:", err);
-                  if (err.message?.includes('missing initial state') || err.code === 'auth/internal-error') {
-                    setAuthError("Ошибка безопасности браузера. Откройте сайт в новой вкладке.");
-                  } else {
-                    setAuthError("Не удалось войти через Google.");
-                  }
+                  setAuthError(getGoogleAuthErrorMessage(err));
                 }
               }}
               className="w-full bg-white border border-zinc-200 text-zinc-700 py-2.5 rounded-xl font-semibold text-[11px] uppercase tracking-widest hover:bg-zinc-50 transition-all flex items-center justify-center gap-3 active:scale-[0.98]"

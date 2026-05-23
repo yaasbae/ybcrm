@@ -2533,11 +2533,27 @@ let costumesCacheAt = 0;
 async function getCostumes(): Promise<any[]> {
   if (costumesCache && Date.now() - costumesCacheAt < 5 * 60 * 1000) return costumesCache;
   if (!db) return [];
-  const snap = await getDocs(collection(db, "costumes")).catch(() => null);
+  const snap = await Promise.race([
+    getDocs(collection(db, "costumes")),
+    new Promise<never>((_, rej) => setTimeout(() => rej(new Error("costumes timeout")), 3500))
+  ]).catch(() => null) as any;
   if (!snap) return costumesCache || [];
   costumesCache = snap.docs.map(d => ({ id: d.id, ...d.data() }));
   costumesCacheAt = Date.now();
   return costumesCache;
+}
+
+async function getCostumeById(costumeId: string): Promise<any | null> {
+  const cached = costumesCache?.find(c => c.id === costumeId);
+  if (cached) return cached;
+  if (!db) return null;
+
+  const snap = await Promise.race([
+    getDoc(doc(db, "costumes", costumeId)),
+    new Promise<never>((_, rej) => setTimeout(() => rej(new Error("costume timeout")), 3500))
+  ]).catch(() => null) as any;
+  if (!snap?.exists()) return null;
+  return { id: snap.id, ...snap.data() };
 }
 
 // Bot button config — editable from CRM
@@ -2657,7 +2673,7 @@ function startTelegramBot() {
   };
 
   bot.start(async (ctx) => {
-    await saveSubscriber(ctx);
+    saveSubscriber(ctx).catch(() => {});
     const name = ctx.from?.first_name || "друг";
     const welcome = botCfg.welcomeText.replace("{name}", name);
     await ctx.reply(welcome, { parse_mode: "Markdown", ...getMainMenu() });
@@ -2669,12 +2685,8 @@ function startTelegramBot() {
       await ctx.answerCbQuery().catch(() => {});
       const costumeId = ctx.match[1];
       if (!db) return ctx.reply("База данных недоступна, попробуй позже").catch(() => {});
-      const snap = await Promise.race([
-        getDoc(doc(db, "costumes", costumeId)),
-        new Promise<never>((_, rej) => setTimeout(() => rej(new Error("timeout")), 8000))
-      ]).catch(() => null) as any;
-      if (!snap?.exists()) return ctx.reply("Модель не найдена, попробуй ещё раз").catch(() => {});
-      const c = snap.data() as any;
+      const c = await getCostumeById(costumeId);
+      if (!c) return ctx.reply("Модель не найдена, попробуй ещё раз").catch(() => {});
       const urls: string[] = c.imageUrls?.length ? c.imageUrls : [c.imageUrl];
 
       // Send photos album — pass URLs directly, Telegram downloads them
@@ -2709,12 +2721,8 @@ function startTelegramBot() {
       await ctx.answerCbQuery().catch(() => {});
       const costumeId = ctx.match[1];
       if (!db) return ctx.reply("База данных недоступна, попробуй позже").catch(() => {});
-      const snap = await Promise.race([
-        getDoc(doc(db, "costumes", costumeId)),
-        new Promise<never>((_, rej) => setTimeout(() => rej(new Error("timeout")), 8000))
-      ]).catch(() => null) as any;
-      if (!snap?.exists()) return ctx.reply("Костюм не найден, попробуй выбрать снова").catch(() => {});
-      const costume = snap.data() as any;
+      const costume = await getCostumeById(costumeId);
+      if (!costume) return ctx.reply("Костюм не найден, попробуй выбрать снова").catch(() => {});
       const urls: string[] = costume.imageUrls?.length ? costume.imageUrls : [costume.imageUrl];
       await setTryOnState(String(ctx.from!.id), { costumeUrls: urls, costumeName: costume.name });
       await ctx.reply(
@@ -2791,55 +2799,53 @@ function startTelegramBot() {
   // Text messages — handles both menu buttons and free text
   bot.on("text", async (ctx) => {
     try {
-    const text = (ctx.message as any).text as string;
-    if (text.startsWith("/")) return;
+      const text = (ctx.message as any).text as string;
+      if (text.startsWith("/")) return;
 
-    // Check if text matches any menu button label
-    const btn = botCfg.buttons.find(b => b.label === text);
-    if (btn) {
-      if (btn.id === "catalog" || btn.id === "tryon") {
-        // Show catalog as list of model name buttons
-        await saveSubscriber(ctx);
-        const costumes = await getCostumes();
-        if (!costumes.length) return ctx.reply("Каталог костюмов пока пустой — скоро добавим! 👗");
+      // Check if text matches any menu button label
+      const btn = botCfg.buttons.find(b => b.label === text);
+      if (btn) {
+        if (btn.id === "catalog" || btn.id === "tryon") {
+          // Show catalog as list of model name buttons
+          saveSubscriber(ctx).catch(() => {});
+          const costumes = await getCostumes();
+          if (!costumes.length) return ctx.reply("Каталог костюмов пока пустой — скоро добавим! 👗");
 
-        const modelButtons = costumes.map((c: any) =>
-          [Markup.button.callback(`👗 ${c.name}`, `catalog_${c.id}`)]
-        );
-        await ctx.reply(
-          btn.id === "tryon"
-            ? "✨ *Онлайн примерка* _(тестовый режим)_\n\nВыбери модель для примерки 👇"
-            : "👗 *Каталог YB Studio*\n\nВыбери модель чтобы посмотреть фото 👇",
-          { parse_mode: "Markdown", ...Markup.inlineKeyboard(modelButtons) }
-        );
-      } else if (btn.id === "contact") {
-        await ctx.reply(
-          "📞 *Связаться с нами*\n\nНажми кнопку ниже — откроется чат с менеджером 👇",
-          {
-            parse_mode: "Markdown",
-            ...Markup.inlineKeyboard([[Markup.button.url("💬 Написать менеджеру", "https://t.me/YAASBAE_CLO_bot")]])
-          }
-        );
-      } else if (btn.response) {
-        await ctx.reply(btn.response, { parse_mode: "Markdown" });
+          const modelButtons = costumes.map((c: any) =>
+            [Markup.button.callback(`👗 ${c.name}`, `catalog_${c.id}`)]
+          );
+          await ctx.reply(
+            btn.id === "tryon"
+              ? "✨ *Онлайн примерка* _(тестовый режим)_\n\nВыбери модель для примерки 👇"
+              : "👗 *Каталог YB Studio*\n\nВыбери модель чтобы посмотреть фото 👇",
+            { parse_mode: "Markdown", ...Markup.inlineKeyboard(modelButtons) }
+          );
+        } else if (btn.id === "contact") {
+          await ctx.reply(
+            "📞 *Связаться с нами*\n\nНажми кнопку ниже — откроется чат с менеджером 👇",
+            {
+              parse_mode: "Markdown",
+              ...Markup.inlineKeyboard([[Markup.button.url("💬 Написать менеджеру", "https://t.me/YAASBAE_CLO_bot")]])
+            }
+          );
+        } else if (btn.response) {
+          await ctx.reply(btn.response, { parse_mode: "Markdown" });
+        }
+        return;
       }
-      return;
-    }
 
-    // Free text — save as message and reply
-    if (db) {
-      try {
-        await addDoc(collection(db, "bot_messages"), {
+      // Free text — save as message and reply
+      await ctx.reply("Спасибо! Менеджер ответит в ближайшее время 🙏", getMainMenu());
+      if (db) {
+        addDoc(collection(db, "bot_messages"), {
           userId: String(ctx.from.id),
           username: ctx.from.username || "",
           firstName: ctx.from.first_name || "",
           text,
           receivedAt: new Date().toISOString(),
           replied: false,
-        });
-      } catch {}
-    }
-    await ctx.reply("Спасибо! Менеджер ответит в ближайшее время 🙏", getMainMenu());
+        }).catch(() => {});
+      }
     } catch (e: any) { console.error("text handler error:", e.message); }
   });
 
@@ -2866,6 +2872,8 @@ function startTelegramBot() {
     process.once("SIGINT", () => bot.stop("SIGINT"));
     process.once("SIGTERM", () => bot.stop("SIGTERM"));
   }
+
+  getCostumes().catch(() => {});
 }
 
 loadBotCfg().then(() => startTelegramBot());
