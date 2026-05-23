@@ -421,7 +421,20 @@ app.post("/api/cdek/create-order", async (req, res) => {
 
     const entity = response.data?.entity || response.data?.entities?.[0] || response.data;
     const cdekUuid = entity?.uuid || entity?.entity_uuid || response.data?.entity_uuid || null;
-    const cdekNumber = entity?.cdek_number || entity?.cdekNumber || null;
+    let cdekNumber = entity?.cdek_number || entity?.cdekNumber || null;
+    let cdekOrderDetails: any = null;
+    if (!cdekNumber && cdekUuid) {
+      try {
+        const detailResponse = await axios.get(`${settings.baseUrl}/orders/${cdekUuid}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        cdekOrderDetails = detailResponse.data;
+        const detailEntity = detailResponse.data?.entity || detailResponse.data;
+        cdekNumber = detailEntity?.cdek_number || detailEntity?.cdekNumber || detailEntity?.number || null;
+      } catch (detailsError: any) {
+        console.warn("[cdek] number lookup skipped:", detailsError?.response?.data || detailsError?.message || detailsError);
+      }
+    }
     const cdekFields = {
       cdekUuid,
       cdekNumber,
@@ -460,11 +473,45 @@ app.post("/api/cdek/create-order", async (req, res) => {
       }
     }
 
-    res.json({ success: true, cdekUuid, cdekNumber, data: response.data });
+    res.json({ success: true, cdekUuid, cdekNumber, data: response.data, details: cdekOrderDetails });
   } catch (error: any) {
     const details = error.response?.data || error.message;
     console.error("[cdek] create-order error:", JSON.stringify(details, null, 2));
     res.status(error.response?.status || 500).json({ error: "Не удалось создать заказ СДЭК", details });
+  }
+});
+
+app.get("/api/cdek/order/:uuid", async (req, res) => {
+  try {
+    const token = await getCdekToken();
+    const settings = await getCdekSettings();
+    const uuid = String(req.params.uuid || "").trim();
+    const orderId = String(req.query.orderId || "").trim();
+    if (!uuid) return res.status(400).json({ error: "Нужен uuid заказа СДЭК" });
+
+    const response = await axios.get(`${settings.baseUrl}/orders/${uuid}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const entity = response.data?.entity || response.data;
+    const cdekNumber = entity?.cdek_number || entity?.cdekNumber || entity?.number || null;
+    const cdekStatus = entity?.statuses?.[0]?.code || entity?.status?.code || entity?.status || "created";
+    const patch = stripUndefined({
+      cdekUuid: uuid,
+      cdekNumber,
+      cdekStatus,
+      cdekLastCheckedAt: new Date().toISOString(),
+    });
+
+    if (db && orderId) {
+      await updateDoc(doc(db, "orders", orderId), patch).catch(() => {});
+      await updateDoc(doc(db, "orders_new", orderId), patch).catch(() => {});
+    }
+
+    res.json({ success: true, cdekUuid: uuid, cdekNumber, cdekStatus, data: response.data });
+  } catch (error: any) {
+    const details = error.response?.data || error.message;
+    console.error("[cdek] order lookup error:", JSON.stringify(details, null, 2));
+    res.status(error.response?.status || 500).json({ error: "Не удалось получить заказ СДЭК", details });
   }
 });
 

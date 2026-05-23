@@ -57,6 +57,7 @@ const CDEK_TARIFFS = [
 ];
 
 const normalizeProductName = (value: string) => value.trim().toLowerCase();
+const shortCdekId = (value: string) => value ? `${value.slice(0, 8)}...${value.slice(-4)}` : '';
 
 const getProductForOrder = (products: ProductCatalogItem[], itemName: string) =>
   products.find(p => normalizeProductName(p.name) === normalizeProductName(itemName || ''));
@@ -340,6 +341,7 @@ const CdekOrderBlock: React.FC<{
   const [loadingCities, setLoadingCities] = useState(false);
   const [loadingPoints, setLoadingPoints] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [refreshingNumber, setRefreshingNumber] = useState(false);
   const [error, setError] = useState('');
   const [statusText, setStatusText] = useState('');
   const [settingsChecked, setSettingsChecked] = useState(false);
@@ -469,11 +471,33 @@ const CdekOrderBlock: React.FC<{
       if (data.cdekUuid) updateOrderData(order.orderId, 'cdekUuid', data.cdekUuid);
       if (data.cdekNumber) updateOrderData(order.orderId, 'cdekNumber', data.cdekNumber);
       updateOrderData(order.orderId, 'cdekStatus', 'created');
-      setStatusText(data.cdekNumber ? `Создан: ${data.cdekNumber}` : 'Создан, номер появится позже');
+      setStatusText(data.cdekNumber ? `Накладная: ${data.cdekNumber}` : `Создан. ID: ${shortCdekId(data.cdekUuid || '')}`);
     } catch (e: any) {
       setError(e.message || 'Не удалось создать СДЭК');
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const refreshCdekNumber = async () => {
+    const uuid = order.cdekUuid;
+    if (!uuid) return;
+    setRefreshingNumber(true);
+    setError('');
+    try {
+      const res = await fetch(`/api/cdek/order/${encodeURIComponent(uuid)}?orderId=${encodeURIComponent(order.orderId)}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(getApiErrorMessage(data, 'Не удалось обновить номер СДЭК'));
+      if (data.cdekNumber) {
+        updateOrderData(order.orderId, 'cdekNumber', data.cdekNumber);
+        setStatusText(`Накладная: ${data.cdekNumber}`);
+      } else {
+        setStatusText(`ID СДЭК: ${shortCdekId(uuid)}`);
+      }
+    } catch (e: any) {
+      setError(e.message || 'Не удалось обновить номер СДЭК');
+    } finally {
+      setRefreshingNumber(false);
     }
   };
 
@@ -483,7 +507,7 @@ const CdekOrderBlock: React.FC<{
 
   return (
     <div className={cn(
-      mobile ? 'rounded-xl border border-zinc-100 bg-zinc-50/60 p-2.5 space-y-2' : 'mt-2 w-full max-w-[520px] rounded-xl border border-zinc-100 bg-zinc-50/60 p-3 space-y-2'
+      mobile ? 'rounded-xl border border-zinc-100 bg-zinc-50/60 p-2.5 space-y-2' : 'mt-2 w-full rounded-xl border border-zinc-100 bg-zinc-50/60 p-3 space-y-2'
     )}>
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-1.5">
@@ -491,8 +515,8 @@ const CdekOrderBlock: React.FC<{
           <p className={cn(mobile ? 'text-[8px]' : 'text-[7px]', 'font-black uppercase tracking-widest text-zinc-500')}>СДЭК</p>
         </div>
         {(order.cdekNumber || order.cdekUuid || statusText) && (
-          <span className="text-[7px] font-black uppercase text-emerald-600">
-            {order.cdekNumber || statusText || 'Создан'}
+          <span className="text-[7px] font-black uppercase text-emerald-600 text-right">
+            {order.cdekNumber ? `№ ${order.cdekNumber}` : statusText || `ID ${shortCdekId(order.cdekUuid || '')}`}
           </span>
         )}
       </div>
@@ -590,8 +614,25 @@ const CdekOrderBlock: React.FC<{
         {submitting ? <RefreshCcw className="w-3 h-3 animate-spin" /> : <Send className="w-3 h-3" />}
         {submitting ? 'Создаю...' : 'Создать накладную'}
       </button>
+      {order.cdekUuid && !order.cdekNumber && (
+        <button
+          type="button"
+          onClick={refreshCdekNumber}
+          disabled={refreshingNumber}
+          className={cn(
+            'w-full rounded-lg border border-emerald-100 bg-emerald-50 font-black uppercase tracking-widest text-emerald-700 hover:bg-emerald-100 transition-all flex items-center justify-center gap-1.5 disabled:opacity-60',
+            mobile ? 'py-2.5 text-[8px]' : 'py-1.5 text-[7px]'
+          )}
+        >
+          {refreshingNumber ? <RefreshCcw className="w-3 h-3 animate-spin" /> : <Search className="w-3 h-3" />}
+          Обновить номер СДЭК
+        </button>
+      )}
       {error && <p className="text-[8px] font-bold text-red-500">{error}</p>}
       {statusText && <p className="text-[8px] font-bold text-emerald-600">{statusText}</p>}
+      {order.cdekUuid && !order.cdekNumber && (
+        <p className="text-[8px] font-bold text-zinc-400">ID СДЭК: {shortCdekId(order.cdekUuid)}</p>
+      )}
     </div>
   );
 };
@@ -652,12 +693,12 @@ const OrderRow = React.memo(({
   );
 
   const fieldSelect = (label: string, value: string, options: string[], onChange: (v: string) => void) => (
-    <div key={label} className="flex flex-col gap-0.5 min-w-[72px]">
+    <div key={label} className="flex flex-col gap-1 min-w-0">
       <span className="text-[8px] font-black text-zinc-300 uppercase tracking-wider leading-none px-1">{label}</span>
       <select
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="bg-zinc-50 border border-zinc-100 rounded-md px-2 py-1 text-[10px] text-zinc-700 font-medium focus:bg-white focus:border-blue-200 focus:ring-1 focus:ring-blue-100 outline-none w-full"
+        className="min-h-[34px] bg-zinc-50 border border-zinc-100 rounded-lg px-2.5 py-1.5 text-[10px] text-zinc-700 font-bold focus:bg-white focus:border-blue-200 focus:ring-1 focus:ring-blue-100 outline-none w-full truncate"
       >
         <option value="">—</option>
         {options.map(opt => <option key={opt} value={opt}>{opt}</option>)}
@@ -741,7 +782,7 @@ const OrderRow = React.memo(({
       </td>
 
       {/* Статус / Доставка */}
-      <td className="px-2 py-3 align-top w-[520px]">
+      <td className="px-2 py-3 align-top w-[420px]">
         <select
           value={order.status}
           onChange={(e) => updateOrderData(order.orderId, 'status', e.target.value)}
@@ -792,7 +833,7 @@ const OrderRow = React.memo(({
       </td>
 
       {/* Финансы */}
-      <td className="px-3 py-3 align-top w-[120px] text-right">
+      <td className="px-3 py-3 align-top w-[130px] text-right">
         <div className="space-y-1.5">
           <div>
             <div className="text-[8px] font-bold text-zinc-300 uppercase tracking-widest mb-0.5">Стоимость 100%</div>
@@ -825,25 +866,27 @@ const OrderRow = React.memo(({
       </td>
 
       {/* Изделие */}
-      <td className="px-3 py-3 align-top">
+      <td className="px-3 py-3 align-top min-w-[560px]">
+        <div className="rounded-xl border border-zinc-100 bg-white/80 p-3 shadow-sm space-y-3">
         <input
           type="text"
           list="product-list"
           value={order.item}
           onChange={(e) => applyProductCharacteristics(e.target.value)}
           placeholder="Название изделия..."
-          className="w-full bg-transparent text-[12px] font-bold text-zinc-900 focus:bg-white focus:ring-1 focus:ring-blue-100 rounded-md px-2 py-1 outline-none mb-2 border border-transparent hover:border-zinc-100"
+          className="w-full bg-zinc-50 text-[13px] font-black text-zinc-900 focus:bg-white focus:ring-1 focus:ring-blue-100 rounded-lg px-3 py-2 outline-none border border-zinc-100"
         />
-        <div className="flex gap-2 mb-2">
+        <div className="grid grid-cols-3 gap-2">
           {fieldSelect('Цвет',   order.rawRow?.[RAW_COLOR_INDEX] || '', optionsWithCurrent(handbookColors, order.rawRow?.[RAW_COLOR_INDEX] || ''),  (v) => updateOrderData(order.orderId, `rawRow[${RAW_COLOR_INDEX}]`, v))}
           {fieldSelect('Размер', order.rawRow?.[RAW_SIZE_INDEX] || '', optionsWithCurrent(handbookSizes, order.rawRow?.[RAW_SIZE_INDEX] || ''),   (v) => updateOrderData(order.orderId, `rawRow[${RAW_SIZE_INDEX}]`, v))}
           {fieldSelect('Рост',   order.height  || '', optionsWithCurrent(handbookHeights, order.height || ''), (v) => updateOrderData(order.orderId, 'height', v))}
         </div>
-        <div className="grid grid-cols-2 xl:grid-cols-4 gap-2">
+        <div className="grid grid-cols-4 gap-2">
           {fieldSelect('Метка',    order.label   || '', optionsWithCurrent(handbookLabels, order.label || ''),   (v) => updateOrderData(order.orderId, 'label', v))}
           {fieldSelect('Менеджер', order.manager || '', optionsWithCurrent(handbookManagers, order.manager || ''), (v) => updateOrderData(order.orderId, 'manager', v))}
           {fieldSelect('Блогер',   order.blogger || '', optionsWithCurrent(handbookBloggers, order.blogger || ''), (v) => updateOrderData(order.orderId, 'blogger', v))}
           {fieldSelect('Оплата',   order.paymentType || '', optionsWithCurrent(handbookPaymentTypes, order.paymentType || '', PAYMENT_TYPE_OPTIONS), (v) => updateOrderData(order.orderId, 'paymentType', v))}
+        </div>
         </div>
       </td>
 
@@ -2028,9 +2071,9 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
               <tr className="text-[9px] font-bold text-zinc-400 uppercase tracking-widest bg-zinc-50/50">
                 <th className="px-2 py-2 border-none w-20">Дата/ID</th>
                 <th className="px-2 py-2 border-none w-48">Клиент / Контакт</th>
-                <th className="px-2 py-2 border-none w-[520px]">Статус / Доставка</th>
+                <th className="px-2 py-2 border-none w-[420px]">Статус / Доставка</th>
                 <th className="px-2 py-2 border-none w-40 text-right">Финансы</th>
-                <th className="px-2 py-2 border-none">Изделие и Доп. (A-X)</th>
+                <th className="px-3 py-2 border-none min-w-[560px]">Изделие и Доп. (A-X)</th>
                 <th className="px-2 py-2 border-none w-16">Срок</th>
               </tr>
             </thead>
