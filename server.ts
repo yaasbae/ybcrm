@@ -2567,8 +2567,13 @@ function looksLikePhone(value: string): boolean {
   return digits.length >= 10 && digits.length <= 15;
 }
 
-function phoneUsageDocId(phone: string, date = new Date()): string {
-  return `${date.toISOString().slice(0, 10)}_${normalizePhone(phone)}`;
+function tryOnUsageKey(userId: string, phone?: string): string {
+  const normalized = normalizePhone(phone || "");
+  return normalized ? `phone_${normalized}` : `tg_${userId}`;
+}
+
+function tryOnUsageDocId(key: string, date = new Date()): string {
+  return `${date.toISOString().slice(0, 10)}_${key}`;
 }
 
 // Costumes cache — refreshed every 5 minutes to avoid Firestore reads on every catalog open
@@ -2744,23 +2749,16 @@ function startTelegramBot() {
     }, { merge: true }).catch(() => {});
   };
 
-  const requestPhone = (ctx: any) => ctx.reply(
-    "Чтобы защититься от спама, перед примеркой нужно подтвердить номер. На один номер доступно 10 онлайн-примерок в сутки.",
-    Markup.keyboard([[Markup.button.contactRequest("📱 Отправить номер")]]).resize().oneTime()
-  );
-
-  const getTryOnUsage = async (phone: string) => {
-    const normalized = normalizePhone(phone);
-    if (!db || !normalized) return { used: 0, remaining: DAILY_TRYON_LIMIT };
-    const snap = await getDoc(doc(db, "tryon_usage", phoneUsageDocId(normalized))).catch(() => null);
+  const getTryOnUsage = async (key: string) => {
+    if (!db || !key) return { used: 0, remaining: DAILY_TRYON_LIMIT };
+    const snap = await getDoc(doc(db, "tryon_usage", tryOnUsageDocId(key))).catch(() => null);
     const used = snap?.exists() ? Number((snap.data() as any).count) || 0 : 0;
     return { used, remaining: Math.max(0, DAILY_TRYON_LIMIT - used) };
   };
 
-  const reserveTryOnUsage = async (phone: string, amount: number) => {
-    const normalized = normalizePhone(phone);
-    if (!db || !normalized) return { ok: true, remaining: DAILY_TRYON_LIMIT };
-    const id = phoneUsageDocId(normalized);
+  const reserveTryOnUsage = async (key: string, amount: number) => {
+    if (!db || !key) return { ok: true, remaining: DAILY_TRYON_LIMIT };
+    const id = tryOnUsageDocId(key);
     const refDoc = doc(db, "tryon_usage", id);
     const snap = await getDoc(refDoc).catch(() => null);
     const used = snap?.exists() ? Number((snap.data() as any).count) || 0 : 0;
@@ -2768,7 +2766,7 @@ function startTelegramBot() {
     if (remaining < amount) return { ok: false, remaining };
     const nextCount = used + amount;
     await setDoc(refDoc, {
-      phone: normalized,
+      key,
       date: new Date().toISOString().slice(0, 10),
       count: nextCount,
       updatedAt: new Date().toISOString(),
@@ -2784,16 +2782,12 @@ function startTelegramBot() {
   const runTryOnGeneration = async (ctx: any, state: TryOnState, inputs: TryOnPhotoInput[], processingMessageId: number) => {
     const totalStartedAt = Date.now();
     const phone = normalizePhone(state.phone || await getSubscriberPhone(String(ctx.from.id)));
-    if (!phone) {
-      await ctx.telegram.deleteMessage(ctx.chat.id, processingMessageId).catch(() => {});
-      await requestPhone(ctx);
-      return;
-    }
-    const usage = await reserveTryOnUsage(phone, inputs.length);
+    const usageKey = tryOnUsageKey(String(ctx.from.id), phone);
+    const usage = await reserveTryOnUsage(usageKey, inputs.length);
     if (!usage.ok) {
       await ctx.telegram.deleteMessage(ctx.chat.id, processingMessageId).catch(() => {});
       await ctx.reply(
-        `Лимит онлайн-примерок на сегодня закончился. На один номер доступно ${DAILY_TRYON_LIMIT} примерок в сутки.`
+        `Лимит онлайн-примерок на сегодня закончился. На один Telegram-аккаунт доступно ${DAILY_TRYON_LIMIT} примерок в сутки.`
       );
       return;
     }
@@ -2817,7 +2811,8 @@ function startTelegramBot() {
     await setTryOnOrder(String(ctx.from.id), {
       costumeName: state.costumeName,
       views: results.map(r => r.label),
-      phone,
+      phone: phone || "",
+      usageKey,
       remainingToday: usage.remaining,
       firstName: ctx.from.first_name || "",
       username: ctx.from.username || "",
@@ -2908,13 +2903,9 @@ function startTelegramBot() {
       const userId = String(ctx.from!.id);
       const phone = await getSubscriberPhone(userId);
       await setTryOnState(userId, { costumeUrls: urls, costumeName: costume.name, phone });
-      if (!phone) {
-        await requestPhone(ctx);
-        return;
-      }
-      const usage = await getTryOnUsage(phone);
+      const usage = await getTryOnUsage(tryOnUsageKey(userId, phone));
       if (usage.remaining <= 0) {
-        await ctx.reply(`Лимит онлайн-примерок на сегодня закончился. На один номер доступно ${DAILY_TRYON_LIMIT} примерок в сутки.`);
+        await ctx.reply(`Лимит онлайн-примерок на сегодня закончился. На один Telegram-аккаунт доступно ${DAILY_TRYON_LIMIT} примерок в сутки.`);
         return;
       }
       await ctx.reply(
@@ -2935,12 +2926,12 @@ function startTelegramBot() {
       await saveSubscriberPhone(ctx, phone);
       const userId = String(ctx.from.id);
       const state = await getTryOnState(userId);
-      const usage = await getTryOnUsage(phone);
+      const usage = await getTryOnUsage(tryOnUsageKey(userId, phone));
 
       if (state) {
         await setTryOnState(userId, { ...state, phone });
         if (usage.remaining <= 0) {
-          await ctx.reply(`Лимит онлайн-примерок на сегодня закончился. На один номер доступно ${DAILY_TRYON_LIMIT} примерок в сутки.`, getMainMenu());
+          await ctx.reply(`Лимит онлайн-примерок на сегодня закончился. На один Telegram-аккаунт доступно ${DAILY_TRYON_LIMIT} примерок в сутки.`, getMainMenu());
           return;
         }
         await ctx.reply(
@@ -2964,10 +2955,6 @@ function startTelegramBot() {
       const state = await getTryOnState(userId);
       if (!state?.frontFileId) return ctx.reply("Сначала пришли фото спереди 👇").catch(() => {});
       const phone = normalizePhone(state.phone || await getSubscriberPhone(userId));
-      if (!phone) {
-        await requestPhone(ctx);
-        return;
-      }
       state.phone = phone;
       await deleteTryOnState(userId);
       const processing = await ctx.reply("⏳ Создаю примерку... Обычно это 20-40 секунд.");
@@ -3032,12 +3019,6 @@ function startTelegramBot() {
     const costumeName = state.costumeName;
     const phone = normalizePhone(state.phone || await getSubscriberPhone(userId));
 
-    if (!phone) {
-      await setTryOnState(userId, { ...state, costumeUrls, costumeName });
-      await requestPhone(ctx);
-      return;
-    }
-
     if (!state.frontFileId) {
       await setTryOnState(userId, { costumeUrls, costumeName, phone, frontFileId: fileId });
       await ctx.reply(
@@ -3085,10 +3066,10 @@ function startTelegramBot() {
       if (pendingTryOn && !pendingTryOn.phone && looksLikePhone(text)) {
         const phone = normalizePhone(text);
         await saveSubscriberPhone(ctx, phone);
-        const usage = await getTryOnUsage(phone);
+        const usage = await getTryOnUsage(tryOnUsageKey(String(ctx.from.id), phone));
         await setTryOnState(String(ctx.from.id), { ...pendingTryOn, phone });
         if (usage.remaining <= 0) {
-          await ctx.reply(`Лимит онлайн-примерок на сегодня закончился. На один номер доступно ${DAILY_TRYON_LIMIT} примерок в сутки.`, getMainMenu());
+          await ctx.reply(`Лимит онлайн-примерок на сегодня закончился. На один Telegram-аккаунт доступно ${DAILY_TRYON_LIMIT} примерок в сутки.`, getMainMenu());
           return;
         }
         await ctx.reply(
