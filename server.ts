@@ -175,6 +175,18 @@ function getCdekError(error: any) {
   };
 }
 
+function stripUndefined(value: any): any {
+  if (Array.isArray(value)) return value.map(stripUndefined);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(([, item]) => item !== undefined)
+        .map(([key, item]) => [key, stripUndefined(item)])
+    );
+  }
+  return value;
+}
+
 app.get("/api/cdek/status", async (_req, res) => {
   try {
     const settings = await getCdekSettings();
@@ -402,7 +414,8 @@ app.post("/api/cdek/create-order", async (req, res) => {
       payload.to_location = { code: toCityCode, address: toAddress };
     }
 
-    const response = await axios.post(`${settings.baseUrl}/orders`, payload, {
+    const cdekPayload = stripUndefined(payload);
+    const response = await axios.post(`${settings.baseUrl}/orders`, cdekPayload, {
       headers: { Authorization: `Bearer ${token}` },
     });
 
@@ -433,14 +446,18 @@ app.post("/api/cdek/create-order", async (req, res) => {
     }
 
     if (db) {
-      await addDoc(collection(db, "cdek_logs"), {
-        orderId: orderId || null,
-        cdekUuid,
-        cdekNumber,
-        request: payload,
-        response: response.data,
-        createdAt: serverTimestamp(),
-      }).catch(() => {});
+      try {
+        await addDoc(collection(db, "cdek_logs"), {
+          orderId: orderId || null,
+          cdekUuid,
+          cdekNumber,
+          request: cdekPayload,
+          response: stripUndefined(response.data),
+          createdAt: serverTimestamp(),
+        });
+      } catch (logError: any) {
+        console.warn("[cdek] log write skipped:", logError?.message || logError);
+      }
     }
 
     res.json({ success: true, cdekUuid, cdekNumber, data: response.data });
