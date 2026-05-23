@@ -4,7 +4,7 @@
   "version": "1.4.1",
   "type": "module",
   "scripts": {
-    "dev": "tsx server.ts",
+    "dev": "DISABLE_HMR=true tsx server.ts",
     "start": "node server.ts",
     "build": "vite build",
     "preview": "vite preview",
