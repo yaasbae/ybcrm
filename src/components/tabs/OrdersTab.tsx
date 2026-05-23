@@ -503,11 +503,11 @@ const CdekOrderBlock: React.FC<{
 
   const inputClass = mobile
     ? 'w-full rounded-lg border border-zinc-100 bg-white px-2 py-2 text-[10px] font-bold text-zinc-700 outline-none focus:border-blue-200'
-    : 'w-full rounded-lg border border-zinc-100 bg-white px-3 py-2 text-[10px] font-bold text-zinc-700 outline-none focus:border-blue-200';
+    : 'w-full h-9 rounded-lg border border-zinc-100 bg-white px-2.5 text-[10px] font-bold text-zinc-700 outline-none focus:border-blue-200';
 
   return (
     <div className={cn(
-      mobile ? 'rounded-xl border border-zinc-100 bg-zinc-50/60 p-2.5 space-y-2' : 'mt-2 w-full rounded-xl border border-zinc-100 bg-zinc-50/60 p-3 space-y-2'
+      mobile ? 'rounded-xl border border-zinc-100 bg-zinc-50/60 p-2.5 space-y-2' : 'mt-2 w-full rounded-xl border border-zinc-100 bg-white p-2.5 space-y-2 shadow-sm'
     )}>
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-1.5">
@@ -521,7 +521,7 @@ const CdekOrderBlock: React.FC<{
         )}
       </div>
 
-      <div className={cn('grid gap-1.5', mobile ? 'grid-cols-2' : 'grid-cols-[120px_1fr]')}>
+      <div className={cn('grid gap-1.5', mobile ? 'grid-cols-2' : 'grid-cols-[105px_140px_minmax(150px,1fr)_minmax(190px,1.3fr)]')}>
         <select
           value={deliveryType}
           onChange={(e) => {
@@ -539,51 +539,49 @@ const CdekOrderBlock: React.FC<{
             <option key={tariff.code} value={tariff.code}>{tariff.label}</option>
           ))}
         </select>
-      </div>
-
-      <div className="relative">
-        <input
-          value={cityQuery}
-          onChange={e => {
-            setCityQuery(e.target.value);
-            setToCityCode('');
-          }}
-          placeholder="Город получателя"
-          className={inputClass}
-        />
-        {(loadingCities || cities.length > 0) && (
-          <div className="absolute z-20 mt-1 w-full rounded-lg border border-zinc-100 bg-white shadow-xl overflow-hidden">
-            {loadingCities && <div className="px-2 py-1.5 text-[8px] font-bold text-zinc-400">Ищу город...</div>}
-            {cities.map(city => (
-              <button
-                key={city.code}
-                type="button"
-                onClick={() => selectCity(city)}
-              className="w-full text-left px-3 py-2 text-[10px] font-bold text-zinc-700 hover:bg-zinc-50"
-            >
-              {city.city}{city.region ? `, ${city.region}` : ''} <span className="text-zinc-300">#{city.code}</span>
-            </button>
-            ))}
-          </div>
+        <div className={cn('relative', mobile && 'col-span-2')}>
+          <input
+            value={cityQuery}
+            onChange={e => {
+              setCityQuery(e.target.value);
+              setToCityCode('');
+            }}
+            placeholder="Город получателя"
+            className={inputClass}
+          />
+          {(loadingCities || cities.length > 0) && (
+            <div className="absolute z-20 mt-1 w-full rounded-lg border border-zinc-100 bg-white shadow-xl overflow-hidden">
+              {loadingCities && <div className="px-2 py-1.5 text-[8px] font-bold text-zinc-400">Ищу город...</div>}
+              {cities.map(city => (
+                <button
+                  key={city.code}
+                  type="button"
+                  onClick={() => selectCity(city)}
+                  className="w-full text-left px-3 py-2 text-[10px] font-bold text-zinc-700 hover:bg-zinc-50"
+                >
+                  {city.city}{city.region ? `, ${city.region}` : ''} <span className="text-zinc-300">#{city.code}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        {deliveryType === 'pvz' ? (
+          toCityCode ? (
+            <select value={deliveryPoint} onChange={e => setDeliveryPoint(e.target.value)} disabled={loadingPoints} className={cn(inputClass, mobile && 'col-span-2')}>
+              <option value="">{loadingPoints ? 'Загружаю ПВЗ...' : 'ПВЗ СДЭК'}</option>
+              {points.map(point => (
+                <option key={point.code} value={point.code}>
+                  {point.name || point.code} · {point.address || point.location?.address || point.code}
+                </option>
+              ))}
+            </select>
+          ) : <div className={cn(!mobile && 'hidden')} />
+        ) : (
+          <input value={toAddress} onChange={e => setToAddress(e.target.value)} placeholder="Адрес доставки" className={cn(inputClass, mobile && 'col-span-2')} />
         )}
       </div>
 
-      {deliveryType === 'pvz' ? (
-        toCityCode ? (
-          <select value={deliveryPoint} onChange={e => setDeliveryPoint(e.target.value)} disabled={loadingPoints} className={inputClass}>
-            <option value="">{loadingPoints ? 'Загружаю ПВЗ...' : 'ПВЗ СДЭК'}</option>
-            {points.map(point => (
-              <option key={point.code} value={point.code}>
-                {point.name || point.code} · {point.address || point.location?.address || point.code}
-              </option>
-            ))}
-          </select>
-        ) : null
-      ) : (
-        <input value={toAddress} onChange={e => setToAddress(e.target.value)} placeholder="Адрес доставки" className={inputClass} />
-      )}
-
-      <div className={cn('grid gap-1.5', mobile ? 'grid-cols-2' : 'grid-cols-4')}>
+      <div className={cn('grid gap-1.5', mobile ? 'grid-cols-2' : 'grid-cols-[repeat(4,72px)_1fr] items-end')}>
         {[
           { label: 'Вес, г', value: weight, setValue: setWeight, placeholder: '700' },
           { label: 'Длина, см', value: length, setValue: setLength, placeholder: '30' },
@@ -596,24 +594,23 @@ const CdekOrderBlock: React.FC<{
               value={field.value}
               onChange={e => field.setValue(e.target.value)}
               placeholder={field.placeholder}
-              className={cn(inputClass, mobile ? 'min-h-[38px]' : 'min-h-[42px]')}
+              className={cn(inputClass, mobile ? 'min-h-[38px]' : 'h-10')}
             />
           </label>
         ))}
+        <button
+          type="button"
+          onClick={createCdekOrder}
+          disabled={submitting || !settingsChecked}
+          className={cn(
+            'rounded-lg border border-zinc-200 bg-zinc-900 font-black uppercase tracking-widest text-white hover:bg-black transition-all flex items-center justify-center gap-1.5 disabled:opacity-60',
+            mobile ? 'col-span-2 py-2.5 text-[8px]' : 'h-10 text-[7px]'
+          )}
+        >
+          {submitting ? <RefreshCcw className="w-3 h-3 animate-spin" /> : <Send className="w-3 h-3" />}
+          {submitting ? 'Создаю...' : 'Создать накладную'}
+        </button>
       </div>
-
-      <button
-        type="button"
-        onClick={createCdekOrder}
-        disabled={submitting || !settingsChecked}
-        className={cn(
-          'w-full rounded-lg border border-zinc-200 bg-white font-black uppercase tracking-widest text-zinc-700 hover:bg-zinc-900 hover:text-white transition-all flex items-center justify-center gap-1.5 disabled:opacity-60',
-          mobile ? 'py-2.5 text-[8px]' : 'py-1.5 text-[7px]'
-        )}
-      >
-        {submitting ? <RefreshCcw className="w-3 h-3 animate-spin" /> : <Send className="w-3 h-3" />}
-        {submitting ? 'Создаю...' : 'Создать накладную'}
-      </button>
       {order.cdekUuid && !order.cdekNumber && (
         <button
           type="button"
@@ -833,33 +830,42 @@ const OrderRow = React.memo(({
       </td>
 
       {/* Финансы */}
-      <td className="px-3 py-3 align-top w-[130px] text-right">
-        <div className="space-y-1.5">
-          <div>
-            <div className="text-[8px] font-bold text-zinc-300 uppercase tracking-widest mb-0.5">Стоимость 100%</div>
+      <td className="px-3 py-3 align-top w-[160px]">
+        <div className="rounded-xl border border-zinc-100 bg-white p-2.5 shadow-sm space-y-2">
+          <div className="rounded-lg bg-zinc-50 border border-zinc-100 p-2">
+            <div className="text-[7px] font-black text-zinc-400 uppercase tracking-widest mb-0.5">Стоимость 100%</div>
             <input
               type="number"
               value={order.revenue ?? ''}
               onChange={(e) => updateOrderData(order.orderId, 'revenue', parseFloat(e.target.value) || 0)}
-              className="w-full bg-transparent text-[13px] font-black text-zinc-900 text-right focus:bg-white focus:ring-1 focus:ring-blue-100 rounded px-1 outline-none"
+              className="w-full bg-transparent text-[14px] font-black text-zinc-900 text-right focus:bg-white focus:ring-1 focus:ring-blue-100 rounded px-1 outline-none"
             />
           </div>
-          <div>
-            <div className="text-[8px] font-bold text-zinc-300 uppercase tracking-widest mb-0.5">Доставка</div>
+          <div className="rounded-lg bg-zinc-50 border border-zinc-100 p-2">
+            <div className="text-[7px] font-black text-zinc-400 uppercase tracking-widest mb-0.5">Доставка</div>
             <input
               type="number"
               value={order.deliveryPrice ?? ''}
               onChange={(e) => updateOrderData(order.orderId, 'deliveryPrice', parseFloat(e.target.value) || 0)}
-              className="w-full bg-transparent text-[11px] font-semibold text-zinc-500 text-right focus:bg-white focus:ring-1 focus:ring-blue-100 rounded px-1 outline-none"
+              className="w-full bg-transparent text-[12px] font-black text-zinc-600 text-right focus:bg-white focus:ring-1 focus:ring-blue-100 rounded px-1 outline-none"
             />
           </div>
-          <div className="border-t border-zinc-100 pt-1.5">
-            <div className="text-[8px] font-bold text-emerald-400 uppercase tracking-widest mb-0.5">Предоплата 50%</div>
+          <div className={cn(
+            "rounded-lg border p-2",
+            (order.paidAmount || 0) > 0 ? "bg-emerald-50 border-emerald-100" : "bg-amber-50 border-amber-100"
+          )}>
+            <div className={cn(
+              "text-[7px] font-black uppercase tracking-widest mb-0.5",
+              (order.paidAmount || 0) > 0 ? "text-emerald-500" : "text-amber-500"
+            )}>Предоплата 50%</div>
             <input
               type="number"
               value={order.paidAmount ?? ''}
               onChange={(e) => updateOrderData(order.orderId, 'paidAmount', parseFloat(e.target.value) || 0)}
-              className="w-full bg-transparent text-[13px] font-black text-emerald-600 text-right focus:bg-white focus:ring-1 focus:ring-blue-100 rounded px-1 outline-none"
+              className={cn(
+                "w-full bg-transparent text-[14px] font-black text-right focus:bg-white focus:ring-1 focus:ring-blue-100 rounded px-1 outline-none",
+                (order.paidAmount || 0) > 0 ? "text-emerald-700" : "text-amber-700"
+              )}
             />
           </div>
         </div>
@@ -1376,6 +1382,17 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
       .sort((a, b) => a.localeCompare(b));
   }, [productCatalog, handbookProducts]);
 
+  const chartData2026 = useMemo(() => {
+    return (stats?.chartData || []).filter((d: any) => Number(d.year) === 2026);
+  }, [stats?.chartData]);
+
+  const totals2026 = useMemo(() => {
+    return chartData2026.reduce((acc: { orders: number; paid: number }, month: any) => ({
+      orders: acc.orders + (Number(month.orders) || 0),
+      paid: acc.paid + (Number(month.paid) || 0),
+    }), { orders: 0, paid: 0 });
+  }, [chartData2026]);
+
   const applyNewOrderProduct = (value: string) => {
     const product = productCatalog.find(p => normalizeProductName(p.name) === normalizeProductName(value));
     const rawRow = [...(newOrder.rawRow || Array(30).fill(''))];
@@ -1405,21 +1422,21 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
           </div>
           <div className="flex items-center gap-3">
             <div className="flex flex-col items-end">
-              <span className="text-[8px] font-bold text-zinc-400 uppercase tracking-tight">Всего заказов</span>
-              <span className="text-[11px] font-black text-zinc-900 tracking-tight">{stats.totalOrders}</span>
+              <span className="text-[8px] font-bold text-zinc-400 uppercase tracking-tight">Заказы 2026</span>
+              <span className="text-[11px] font-black text-zinc-900 tracking-tight">{totals2026.orders}</span>
             </div>
             <div className="w-[1px] h-6 bg-zinc-200" />
             <div className="flex flex-col items-end">
-              <span className="text-[8px] font-bold text-zinc-400 uppercase tracking-tight">Всего предоплат</span>
-              <span className="text-[11px] font-black text-emerald-600 tracking-tight">{formatCurrency(stats.totalActualPayments)}</span>
+              <span className="text-[8px] font-bold text-zinc-400 uppercase tracking-tight">Предоплата 2026</span>
+              <span className="text-[11px] font-black text-emerald-600 tracking-tight">{formatCurrency(totals2026.paid)}</span>
             </div>
           </div>
         </div>
 
         <div className="overflow-x-auto">
           <div className="flex p-3 gap-3 min-w-max">
-            {stats.chartData
-              .filter((d: any) => d.year === 2026)
+            {chartData2026
+              .slice()
               .reverse()
               .map((m: any, i: number) => (
               <div key={i} className="flex-shrink-0 w-44 p-3 bg-zinc-50 border border-zinc-100 rounded-xl relative group hover:border-zinc-300 transition-all">
@@ -1454,7 +1471,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                 </div>
               </div>
             ))}
-            {stats.chartData.filter((d: any) => d.year === 2026).length === 0 && (
+            {chartData2026.length === 0 && (
               <div className="w-full py-6 flex flex-col items-center justify-center text-zinc-400 gap-2">
                 <Calendar className="w-6 h-6 opacity-20" />
                 <p className="text-[9px] font-bold uppercase tracking-widest">Нет данных за 2026 год</p>
