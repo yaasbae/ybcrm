@@ -2598,13 +2598,13 @@ async function resizeToBase64(b64: string, maxPx = 768): Promise<string> {
 async function runGeminiTryOn(userPhotoBase64: string, costumeBase64: string, attempt = 1, allCostumeBase64s?: string[]): Promise<string | null> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error("GEMINI_API_KEY не задан");
-  const ai = new GoogleGenAI({ apiKey, httpOptions: { timeout: 600000 } });
+  const ai = new GoogleGenAI({ apiKey, httpOptions: { timeout: 75000 } });
 
   // Use only first costume photo — multiple photos don't improve quality but slow Gemini significantly
   const costumePhoto = (allCostumeBase64s?.length ? allCostumeBase64s[0] : costumeBase64) || costumeBase64;
   const [resizedUser, resizedCostume] = await Promise.all([
-    resizeToBase64(userPhotoBase64, 1024),
-    resizeToBase64(costumePhoto, 1024),
+    resizeToBase64(userPhotoBase64, 896),
+    resizeToBase64(costumePhoto, 896),
   ]);
   let response: any;
   try {
@@ -2622,9 +2622,9 @@ async function runGeminiTryOn(userPhotoBase64: string, costumeBase64: string, at
   });
   } catch (e: any) {
     const isRetryable = e.message?.includes("502") || e.message?.includes("503") || e.message?.includes("500") || e.message?.includes("429") || e.message?.includes("fetch failed") || e.message?.includes("aborted") || e.message?.includes("CANCELLED");
-    if (isRetryable && attempt < 3) {
-      const delay = attempt * 15000;
-      console.log(`Gemini error "${e.message?.slice(0, 50)}" — retry ${attempt}/3 через ${delay/1000}s`);
+    if (isRetryable && attempt < 2) {
+      const delay = 2500;
+      console.log(`Gemini error "${e.message?.slice(0, 50)}" — retry ${attempt}/2 через ${delay/1000}s`);
       await new Promise(r => setTimeout(r, delay));
       return runGeminiTryOn(userPhotoBase64, costumeBase64, attempt + 1, allCostumeBase64s);
     }
@@ -2635,8 +2635,8 @@ async function runGeminiTryOn(userPhotoBase64: string, costumeBase64: string, at
     if (part.inlineData?.data) {
       const imgBuf = Buffer.from(part.inlineData.data, "base64");
       const resized = await sharp(imgBuf)
-        .resize(1440, 2560, { fit: "cover", position: "center" })
-        .jpeg({ quality: 95 })
+        .resize(1080, 1350, { fit: "inside", withoutEnlargement: true })
+        .jpeg({ quality: 90 })
         .toBuffer();
       return resized.toString("base64");
     }
@@ -2750,25 +2750,28 @@ function startTelegramBot() {
 
     // Get file link BEFORE background task — ctx.telegram works here
     const fileLink = await ctx.telegram.getFileLink(fileId);
-    const processing = await ctx.reply("⏳ Создаю примерку... Это занимает 3-7 минут. Не уходи! 🙏");
+    const processing = await ctx.reply("⏳ Создаю примерку... Обычно это 20-40 секунд.");
 
     const downloadUrl = async (url: string): Promise<string> => {
-      const resp = await axios.get(url, { responseType: "arraybuffer", timeout: 30000 });
+      const resp = await axios.get(url, { responseType: "arraybuffer", timeout: 15000 });
       return Buffer.from(resp.data).toString("base64");
     };
 
     // Run Gemini in background — don't await so Telegraf handler returns immediately
     (async () => {
       try {
+        const totalStartedAt = Date.now();
         const t0 = Date.now();
-        const [userPhotoBase64, ...costumeBase64s] = await Promise.all([
+        const firstCostumeUrl = costumeUrls[0];
+        if (!firstCostumeUrl) throw new Error("У костюма нет фото");
+        const [userPhotoBase64, costumeBase64] = await Promise.all([
           downloadUrl(fileLink.href),
-          ...costumeUrls.map(downloadUrl),
+          downloadUrl(firstCostumeUrl),
         ]);
         console.log(`[tryon] download: ${Date.now() - t0}ms`);
 
         const t1 = Date.now();
-        const resultBase64 = await runGeminiTryOn(userPhotoBase64, costumeBase64s[0] || "", 1, costumeBase64s);
+        const resultBase64 = await runGeminiTryOn(userPhotoBase64, costumeBase64);
         console.log(`[tryon] gemini: ${Date.now() - t1}ms`);
         if (!resultBase64) throw new Error("Gemini не вернул изображение");
 
@@ -2781,6 +2784,7 @@ function startTelegramBot() {
             ...Markup.inlineKeyboard([Markup.button.url("🛍 Заказать", "https://t.me/YAASBAE_CLO_bot")])
           }
         );
+        console.log(`[tryon] total: ${Date.now() - totalStartedAt}ms`);
       } catch (e: any) {
         console.error("tryon photo error:", e.message, e.cause?.message || "");
         // Restore state so user can retry without reselecting costume
