@@ -2512,11 +2512,26 @@ const BOT_TOKEN = process.env.TG_BOT_TOKEN;
 let botInstance: any = null;
 
 // try-on state stored in Firestore — survives deploys and multiple instances
-async function setTryOnState(userId: string, data: { costumeUrls: string[]; costumeName: string }) {
+type TryOnState = {
+  costumeUrls: string[];
+  costumeName: string;
+  frontFileId?: string;
+  phone?: string;
+};
+
+type TryOnPhotoInput = {
+  label: string;
+  userFileId: string;
+  costumeUrl: string;
+};
+
+const DAILY_TRYON_LIMIT = 10;
+
+async function setTryOnState(userId: string, data: TryOnState) {
   if (!db) return;
   await setDoc(doc(db, "tryon_state", userId), { ...data, updatedAt: new Date().toISOString() });
 }
-async function getTryOnState(userId: string): Promise<{ costumeUrls: string[]; costumeName: string } | null> {
+async function getTryOnState(userId: string): Promise<TryOnState | null> {
   if (!db) return null;
   const snap = await getDoc(doc(db, "tryon_state", userId)).catch(() => null);
   if (!snap?.exists()) return null;
@@ -2525,6 +2540,35 @@ async function getTryOnState(userId: string): Promise<{ costumeUrls: string[]; c
 async function deleteTryOnState(userId: string) {
   if (!db) return;
   await deleteDoc(doc(db, "tryon_state", userId)).catch(() => {});
+}
+
+async function setTryOnOrder(userId: string, data: any) {
+  if (!db) return;
+  await setDoc(doc(db, "tryon_orders", userId), { ...data, updatedAt: new Date().toISOString() }, { merge: true });
+}
+
+async function getTryOnOrder(userId: string): Promise<any | null> {
+  if (!db) return null;
+  const snap = await getDoc(doc(db, "tryon_orders", userId)).catch(() => null);
+  if (!snap?.exists()) return null;
+  return snap.data();
+}
+
+function normalizePhone(value: string): string {
+  const digits = String(value || "").replace(/\D/g, "");
+  if (!digits) return "";
+  if (digits.length === 11 && digits.startsWith("8")) return `7${digits.slice(1)}`;
+  if (digits.length === 10) return `7${digits}`;
+  return digits;
+}
+
+function looksLikePhone(value: string): boolean {
+  const digits = normalizePhone(value);
+  return digits.length >= 10 && digits.length <= 15;
+}
+
+function phoneUsageDocId(phone: string, date = new Date()): string {
+  return `${date.toISOString().slice(0, 10)}_${normalizePhone(phone)}`;
 }
 
 // Costumes cache — refreshed every 5 minutes to avoid Firestore reads on every catalog open
@@ -2595,7 +2639,13 @@ async function resizeToBase64(b64: string, maxPx = 768): Promise<string> {
   } catch { return b64; }
 }
 
-async function runGeminiTryOn(userPhotoBase64: string, costumeBase64: string, attempt = 1, allCostumeBase64s?: string[]): Promise<string | null> {
+async function runGeminiTryOn(
+  userPhotoBase64: string,
+  costumeBase64: string,
+  attempt = 1,
+  allCostumeBase64s?: string[],
+  viewLabel = "front"
+): Promise<string | null> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error("GEMINI_API_KEY не задан");
   const ai = new GoogleGenAI({ apiKey, httpOptions: { timeout: 75000 } });
@@ -2613,7 +2663,7 @@ async function runGeminiTryOn(userPhotoBase64: string, costumeBase64: string, at
     contents: [{
       role: "user",
       parts: [
-        { text: `Virtual try-on: FIRST image is the garment, SECOND image is the person. Generate a photorealistic image of the person wearing the garment. Copy face, hair, skin, pose, background EXACTLY from the SECOND image. Only change the clothing. Photorealistic, same framing.` },
+        { text: `Virtual try-on (${viewLabel} view): FIRST image is the garment reference, SECOND image is the person. Generate a photorealistic image of the person wearing the garment. Copy face, hair, skin, pose, background and camera angle from the SECOND image. Only change the clothing. If this is a back view, preserve the back-facing pose and use the garment's back/reference details. Photorealistic, same framing.` },
         { inlineData: { mimeType: "image/jpeg", data: resizedCostume } },
         { inlineData: { mimeType: "image/jpeg", data: resizedUser } },
       ] as any
@@ -2626,7 +2676,7 @@ async function runGeminiTryOn(userPhotoBase64: string, costumeBase64: string, at
       const delay = 2500;
       console.log(`Gemini error "${e.message?.slice(0, 50)}" — retry ${attempt}/2 через ${delay/1000}s`);
       await new Promise(r => setTimeout(r, delay));
-      return runGeminiTryOn(userPhotoBase64, costumeBase64, attempt + 1, allCostumeBase64s);
+      return runGeminiTryOn(userPhotoBase64, costumeBase64, attempt + 1, allCostumeBase64s, viewLabel);
     }
     throw e;
   }
@@ -2670,6 +2720,137 @@ function startTelegramBot() {
         active: true,
       }, { merge: true });
     } catch {}
+  };
+
+  const getSubscriberPhone = async (userId: string): Promise<string> => {
+    if (!db) return "";
+    const snap = await getDoc(doc(db, "bot_subscribers", userId)).catch(() => null);
+    const rawPhone = snap?.exists() ? String((snap.data() as any).phone || "") : "";
+    return normalizePhone(rawPhone);
+  };
+
+  const saveSubscriberPhone = async (ctx: any, phone: string) => {
+    const normalized = normalizePhone(phone);
+    if (!db || !normalized) return;
+    await setDoc(doc(db, "bot_subscribers", String(ctx.from.id)), {
+      userId: String(ctx.from.id),
+      firstName: ctx.from.first_name || "",
+      lastName: ctx.from.last_name || "",
+      username: ctx.from.username || "",
+      phone: normalized,
+      phoneSavedAt: new Date().toISOString(),
+      subscribedAt: new Date().toISOString(),
+      active: true,
+    }, { merge: true }).catch(() => {});
+  };
+
+  const requestPhone = (ctx: any) => ctx.reply(
+    "Чтобы защититься от спама, перед примеркой нужно подтвердить номер. На один номер доступно 10 онлайн-примерок в сутки.",
+    Markup.keyboard([[Markup.button.contactRequest("📱 Отправить номер")]]).resize().oneTime()
+  );
+
+  const getTryOnUsage = async (phone: string) => {
+    const normalized = normalizePhone(phone);
+    if (!db || !normalized) return { used: 0, remaining: DAILY_TRYON_LIMIT };
+    const snap = await getDoc(doc(db, "tryon_usage", phoneUsageDocId(normalized))).catch(() => null);
+    const used = snap?.exists() ? Number((snap.data() as any).count) || 0 : 0;
+    return { used, remaining: Math.max(0, DAILY_TRYON_LIMIT - used) };
+  };
+
+  const reserveTryOnUsage = async (phone: string, amount: number) => {
+    const normalized = normalizePhone(phone);
+    if (!db || !normalized) return { ok: true, remaining: DAILY_TRYON_LIMIT };
+    const id = phoneUsageDocId(normalized);
+    const refDoc = doc(db, "tryon_usage", id);
+    const snap = await getDoc(refDoc).catch(() => null);
+    const used = snap?.exists() ? Number((snap.data() as any).count) || 0 : 0;
+    const remaining = Math.max(0, DAILY_TRYON_LIMIT - used);
+    if (remaining < amount) return { ok: false, remaining };
+    const nextCount = used + amount;
+    await setDoc(refDoc, {
+      phone: normalized,
+      date: new Date().toISOString().slice(0, 10),
+      count: nextCount,
+      updatedAt: new Date().toISOString(),
+    }, { merge: true });
+    return { ok: true, remaining: Math.max(0, DAILY_TRYON_LIMIT - nextCount) };
+  };
+
+  const downloadUrl = async (url: string): Promise<string> => {
+    const resp = await axios.get(url, { responseType: "arraybuffer", timeout: 15000 });
+    return Buffer.from(resp.data).toString("base64");
+  };
+
+  const runTryOnGeneration = async (ctx: any, state: TryOnState, inputs: TryOnPhotoInput[], processingMessageId: number) => {
+    const totalStartedAt = Date.now();
+    const phone = normalizePhone(state.phone || await getSubscriberPhone(String(ctx.from.id)));
+    if (!phone) {
+      await ctx.telegram.deleteMessage(ctx.chat.id, processingMessageId).catch(() => {});
+      await requestPhone(ctx);
+      return;
+    }
+    const usage = await reserveTryOnUsage(phone, inputs.length);
+    if (!usage.ok) {
+      await ctx.telegram.deleteMessage(ctx.chat.id, processingMessageId).catch(() => {});
+      await ctx.reply(
+        `Лимит онлайн-примерок на сегодня закончился. На один номер доступно ${DAILY_TRYON_LIMIT} примерок в сутки.`
+      );
+      return;
+    }
+
+    const results = await Promise.all(inputs.map(async (input) => {
+      const t0 = Date.now();
+      const [fileLink, costumeBase64] = await Promise.all([
+        ctx.telegram.getFileLink(input.userFileId),
+        downloadUrl(input.costumeUrl),
+      ]);
+      const userPhotoBase64 = await downloadUrl(fileLink.href);
+      console.log(`[tryon:${input.label}] download: ${Date.now() - t0}ms`);
+
+      const t1 = Date.now();
+      const resultBase64 = await runGeminiTryOn(userPhotoBase64, costumeBase64, 1, undefined, input.label);
+      console.log(`[tryon:${input.label}] gemini: ${Date.now() - t1}ms`);
+      if (!resultBase64) throw new Error(`Gemini не вернул изображение (${input.label})`);
+      return { label: input.label, base64: resultBase64 };
+    }));
+
+    await setTryOnOrder(String(ctx.from.id), {
+      costumeName: state.costumeName,
+      views: results.map(r => r.label),
+      phone,
+      remainingToday: usage.remaining,
+      firstName: ctx.from.first_name || "",
+      username: ctx.from.username || "",
+      createdAt: new Date().toISOString(),
+      status: "tryon_ready",
+    }).catch(() => {});
+
+    await ctx.telegram.deleteMessage(ctx.chat.id, processingMessageId).catch(() => {});
+
+    if (results.length > 1) {
+      await ctx.replyWithMediaGroup(
+        results.map((result, index) => ({
+          type: "photo" as const,
+          media: { source: Buffer.from(result.base64, "base64") },
+          ...(index === 0 ? { caption: `✨ Примерка *${state.costumeName}*: спереди и сзади`, parse_mode: "Markdown" as const } : {}),
+        }))
+      );
+      await ctx.reply(
+        `Понравилось? Оставь заявку — менеджер быстро оформит заказ 👇\n\nОсталось примерок сегодня: ${usage.remaining}`,
+        Markup.inlineKeyboard([Markup.button.callback("🛍 Заказать", "order_tryon")])
+      );
+    } else {
+      await ctx.replyWithPhoto(
+        { source: Buffer.from(results[0].base64, "base64") },
+        {
+          caption: `✨ Вот как ты выглядишь в *${state.costumeName}*!\n\nПонравилось? Оформи заказ 👇\n\nОсталось примерок сегодня: ${usage.remaining}`,
+          parse_mode: "Markdown",
+          ...Markup.inlineKeyboard([Markup.button.callback("🛍 Заказать", "order_tryon")])
+        }
+      );
+    }
+
+    console.log(`[tryon] total: ${Date.now() - totalStartedAt}ms, views=${results.map(r => r.label).join(",")}`);
   };
 
   bot.start(async (ctx) => {
@@ -2724,13 +2905,116 @@ function startTelegramBot() {
       const costume = await getCostumeById(costumeId);
       if (!costume) return ctx.reply("Костюм не найден, попробуй выбрать снова").catch(() => {});
       const urls: string[] = costume.imageUrls?.length ? costume.imageUrls : [costume.imageUrl];
-      await setTryOnState(String(ctx.from!.id), { costumeUrls: urls, costumeName: costume.name });
+      const userId = String(ctx.from!.id);
+      const phone = await getSubscriberPhone(userId);
+      await setTryOnState(userId, { costumeUrls: urls, costumeName: costume.name, phone });
+      if (!phone) {
+        await requestPhone(ctx);
+        return;
+      }
+      const usage = await getTryOnUsage(phone);
+      if (usage.remaining <= 0) {
+        await ctx.reply(`Лимит онлайн-примерок на сегодня закончился. На один номер доступно ${DAILY_TRYON_LIMIT} примерок в сутки.`);
+        return;
+      }
       await ctx.reply(
-        `Отлично! Ты выбрала *${costume.name}* 👗\n\nТеперь пришли *своё фото в полный рост* — и я сделаю примерку через ИИ!\n\n📸 Загрузи фотографию 👇`,
+        `Отлично! Ты выбрала *${costume.name}* 👗\n\nОсталось примерок сегодня: ${usage.remaining}/${DAILY_TRYON_LIMIT}\n\nПришли *фото спереди в полный рост*, потом *фото сзади* — я сделаю две примерки.\n\n📸 Сначала загрузи фото спереди 👇`,
         { parse_mode: "Markdown" }
       );
     } catch (e: any) {
       console.error("tryon action error:", e.message);
+    }
+  });
+
+  bot.on("contact", async (ctx) => {
+    try {
+      const contact = (ctx.message as any).contact;
+      const phone = normalizePhone(contact?.phone_number || "");
+      if (!phone) return ctx.reply("Не получилось прочитать номер. Нажми кнопку отправки номера ещё раз.").catch(() => {});
+
+      await saveSubscriberPhone(ctx, phone);
+      const userId = String(ctx.from.id);
+      const state = await getTryOnState(userId);
+      const usage = await getTryOnUsage(phone);
+
+      if (state) {
+        await setTryOnState(userId, { ...state, phone });
+        if (usage.remaining <= 0) {
+          await ctx.reply(`Лимит онлайн-примерок на сегодня закончился. На один номер доступно ${DAILY_TRYON_LIMIT} примерок в сутки.`, getMainMenu());
+          return;
+        }
+        await ctx.reply(
+          `Номер подтверждён ✅\n\nОсталось примерок сегодня: ${usage.remaining}/${DAILY_TRYON_LIMIT}\n\nТеперь пришли *фото спереди в полный рост* 👇`,
+          { parse_mode: "Markdown", ...getMainMenu() }
+        );
+        return;
+      }
+
+      await ctx.reply(`Номер подтверждён ✅\nСегодня доступно примерок: ${usage.remaining}/${DAILY_TRYON_LIMIT}`, getMainMenu());
+    } catch (e: any) {
+      console.error("contact handler error:", e.message);
+      await ctx.reply("Не получилось сохранить номер. Попробуй ещё раз.").catch(() => {});
+    }
+  });
+
+  bot.action("generate_one_tryon", async (ctx) => {
+    try {
+      await ctx.answerCbQuery().catch(() => {});
+      const userId = String(ctx.from!.id);
+      const state = await getTryOnState(userId);
+      if (!state?.frontFileId) return ctx.reply("Сначала пришли фото спереди 👇").catch(() => {});
+      const phone = normalizePhone(state.phone || await getSubscriberPhone(userId));
+      if (!phone) {
+        await requestPhone(ctx);
+        return;
+      }
+      state.phone = phone;
+      await deleteTryOnState(userId);
+      const processing = await ctx.reply("⏳ Создаю примерку... Обычно это 20-40 секунд.");
+      const firstCostumeUrl = state.costumeUrls[0];
+      if (!firstCostumeUrl) throw new Error("У костюма нет фото");
+      await runTryOnGeneration(ctx, state, [{ label: "front", userFileId: state.frontFileId, costumeUrl: firstCostumeUrl }], processing.message_id);
+    } catch (e: any) {
+      console.error("tryon one-photo action error:", e.message);
+      await ctx.reply("😔 Не удалось сделать примерку. Пришли фото ещё раз или выбери другой костюм.").catch(() => {});
+    }
+  });
+
+  bot.action("order_tryon", async (ctx) => {
+    try {
+      await ctx.answerCbQuery("Заявка отправлена менеджеру").catch(() => {});
+      const userId = String(ctx.from!.id);
+      const order = await getTryOnOrder(userId);
+      const costumeName = order?.costumeName || "костюм после примерки";
+      const requestText = [
+        "🛍 Заявка на заказ из бота",
+        `Костюм: ${costumeName}`,
+        `Клиент: ${ctx.from?.first_name || ""}${ctx.from?.username ? ` @${ctx.from.username}` : ""}`,
+        `Telegram ID: ${userId}`,
+        order?.views?.length ? `Примерки: ${order.views.join(", ")}` : "",
+      ].filter(Boolean).join("\n");
+
+      if (db) {
+        await addDoc(collection(db, "bot_messages"), {
+          userId,
+          username: ctx.from?.username || "",
+          firstName: ctx.from?.first_name || "",
+          text: requestText,
+          receivedAt: new Date().toISOString(),
+          replied: false,
+          type: "order_request",
+          costumeName,
+        }).catch(() => {});
+      }
+
+      await setTryOnOrder(userId, { ...order, status: "order_requested", requestedAt: new Date().toISOString() }).catch(() => {});
+      await ctx.reply(
+        `Готово! Заявка на *${costumeName}* отправлена менеджеру 🖤\n\nСкоро напишем тебе, уточним размер и оформим заказ.`,
+        { parse_mode: "Markdown", ...getMainMenu() }
+      );
+    } catch (e: any) {
+      console.error("order tryon error:", e.message);
+      await ctx.reply("Не получилось отправить заявку. Напиши сообщение менеджеру прямо сюда — мы увидим его в CRM.").catch(() => {});
     }
   });
 
@@ -2746,49 +3030,40 @@ function startTelegramBot() {
     const fileId = photos[photos.length - 1].file_id;
     const costumeUrls = state.costumeUrls || [];
     const costumeName = state.costumeName;
+    const phone = normalizePhone(state.phone || await getSubscriberPhone(userId));
+
+    if (!phone) {
+      await setTryOnState(userId, { ...state, costumeUrls, costumeName });
+      await requestPhone(ctx);
+      return;
+    }
+
+    if (!state.frontFileId) {
+      await setTryOnState(userId, { costumeUrls, costumeName, phone, frontFileId: fileId });
+      await ctx.reply(
+        "Фото спереди получил ✅\n\nТеперь пришли *фото сзади в полный рост* — сделаю вторую примерку. Если фото сзади нет, можно сделать по одному фото.",
+        { parse_mode: "Markdown", ...Markup.inlineKeyboard([Markup.button.callback("✨ Сделать по одному фото", "generate_one_tryon")]) }
+      );
+      return;
+    }
+
     await deleteTryOnState(userId);
-
-    // Get file link BEFORE background task — ctx.telegram works here
-    const fileLink = await ctx.telegram.getFileLink(fileId);
-    const processing = await ctx.reply("⏳ Создаю примерку... Обычно это 20-40 секунд.");
-
-    const downloadUrl = async (url: string): Promise<string> => {
-      const resp = await axios.get(url, { responseType: "arraybuffer", timeout: 15000 });
-      return Buffer.from(resp.data).toString("base64");
-    };
+    const processing = await ctx.reply("⏳ Создаю две примерки: спереди и сзади. Обычно это 30-50 секунд.");
 
     // Run Gemini in background — don't await so Telegraf handler returns immediately
     (async () => {
       try {
-        const totalStartedAt = Date.now();
-        const t0 = Date.now();
-        const firstCostumeUrl = costumeUrls[0];
-        if (!firstCostumeUrl) throw new Error("У костюма нет фото");
-        const [userPhotoBase64, costumeBase64] = await Promise.all([
-          downloadUrl(fileLink.href),
-          downloadUrl(firstCostumeUrl),
-        ]);
-        console.log(`[tryon] download: ${Date.now() - t0}ms`);
-
-        const t1 = Date.now();
-        const resultBase64 = await runGeminiTryOn(userPhotoBase64, costumeBase64);
-        console.log(`[tryon] gemini: ${Date.now() - t1}ms`);
-        if (!resultBase64) throw new Error("Gemini не вернул изображение");
-
-        await ctx.telegram.deleteMessage(ctx.chat.id, processing.message_id).catch(() => {});
-        await ctx.replyWithPhoto(
-          { source: Buffer.from(resultBase64, "base64") },
-          {
-            caption: `✨ Вот как ты выглядишь в *${costumeName}*!\n\nПонравилось? Оформи заказ 👇`,
-            parse_mode: "Markdown",
-            ...Markup.inlineKeyboard([Markup.button.url("🛍 Заказать", "https://t.me/YAASBAE_CLO_bot")])
-          }
-        );
-        console.log(`[tryon] total: ${Date.now() - totalStartedAt}ms`);
+        const frontCostumeUrl = costumeUrls[0];
+        const backCostumeUrl = costumeUrls[1] || costumeUrls[0];
+        if (!frontCostumeUrl || !backCostumeUrl) throw new Error("У костюма нет фото");
+        await runTryOnGeneration(ctx, state, [
+          { label: "front", userFileId: state.frontFileId!, costumeUrl: frontCostumeUrl },
+          { label: "back", userFileId: fileId, costumeUrl: backCostumeUrl },
+        ], processing.message_id);
       } catch (e: any) {
         console.error("tryon photo error:", e.message, e.cause?.message || "");
         // Restore state so user can retry without reselecting costume
-        await setTryOnState(userId, { costumeUrls, costumeName });
+        await setTryOnState(userId, { costumeUrls, costumeName, phone });
         await ctx.telegram.deleteMessage(ctx.chat.id, processing.message_id).catch(() => {});
         const isOverload = e.message?.includes("502") || e.message?.includes("503") || e.message?.includes("429") || e.message?.includes("fetch failed") || e.message?.includes("aborted") || e.message?.includes("CANCELLED");
         await ctx.reply(
@@ -2805,6 +3080,23 @@ function startTelegramBot() {
     try {
       const text = (ctx.message as any).text as string;
       if (text.startsWith("/")) return;
+
+      const pendingTryOn = await getTryOnState(String(ctx.from.id));
+      if (pendingTryOn && !pendingTryOn.phone && looksLikePhone(text)) {
+        const phone = normalizePhone(text);
+        await saveSubscriberPhone(ctx, phone);
+        const usage = await getTryOnUsage(phone);
+        await setTryOnState(String(ctx.from.id), { ...pendingTryOn, phone });
+        if (usage.remaining <= 0) {
+          await ctx.reply(`Лимит онлайн-примерок на сегодня закончился. На один номер доступно ${DAILY_TRYON_LIMIT} примерок в сутки.`, getMainMenu());
+          return;
+        }
+        await ctx.reply(
+          `Номер подтверждён ✅\n\nОсталось примерок сегодня: ${usage.remaining}/${DAILY_TRYON_LIMIT}\n\nТеперь пришли *фото спереди в полный рост* 👇`,
+          { parse_mode: "Markdown", ...getMainMenu() }
+        );
+        return;
+      }
 
       // Check if text matches any menu button label
       const btn = botCfg.buttons.find(b => b.label === text);
