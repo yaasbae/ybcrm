@@ -2658,8 +2658,8 @@ async function runGeminiTryOn(
   // Use only first costume photo — multiple photos don't improve quality but slow Gemini significantly
   const costumePhoto = (allCostumeBase64s?.length ? allCostumeBase64s[0] : costumeBase64) || costumeBase64;
   const [resizedUser, resizedCostume] = await Promise.all([
-    resizeToBase64(userPhotoBase64, 896),
-    resizeToBase64(costumePhoto, 896),
+    resizeToBase64(userPhotoBase64, 768),
+    resizeToBase64(costumePhoto, 768),
   ]);
   let response: any;
   try {
@@ -2668,7 +2668,13 @@ async function runGeminiTryOn(
     contents: [{
       role: "user",
       parts: [
-        { text: `Virtual try-on (${viewLabel} view): FIRST image is the garment reference, SECOND image is the person. Generate a photorealistic image of the person wearing the garment. Copy face, hair, skin, pose, background and camera angle from the SECOND image. Only change the clothing. If this is a back view, preserve the back-facing pose and use the garment's back/reference details. Photorealistic, same framing.` },
+        { text: `Virtual try-on, front view only.
+
+IMAGE 1 is the garment reference. Use ONLY the clothing from IMAGE 1: exact garment type, color, fabric texture, print, pattern, cut, seams, silhouette, proportions, details, logos, buttons, zippers, pockets, cuffs, waistline, collar and all design elements. Do not redesign, recolor, simplify, stylize, crop, replace, or alter the garment in any way.
+
+IMAGE 2 is the client/person reference. Keep everything from IMAGE 2 except the original clothing: the same face, hair, skin tone, body shape, body volume, height proportions, pose, hands, legs, camera angle, lighting, shadows, background, framing, image quality and realism.
+
+Generate a photorealistic image of the person from IMAGE 2 wearing the exact garment from IMAGE 1. Only replace the clothing. The final image must look like the original photo of the client, with the garment naturally fitted to her body.` },
         { inlineData: { mimeType: "image/jpeg", data: resizedCostume } },
         { inlineData: { mimeType: "image/jpeg", data: resizedUser } },
       ] as any
@@ -2909,7 +2915,7 @@ function startTelegramBot() {
         return;
       }
       await ctx.reply(
-        `Отлично! Ты выбрала *${costume.name}* 👗\n\nОсталось примерок сегодня: ${usage.remaining}/${DAILY_TRYON_LIMIT}\n\nПришли *фото спереди в полный рост*, потом *фото сзади* — я сделаю две примерки.\n\n📸 Сначала загрузи фото спереди 👇`,
+        `Отлично! Ты выбрала *${costume.name}* 👗\n\nОсталось примерок сегодня: ${usage.remaining}/${DAILY_TRYON_LIMIT}\n\nПришли *одно фото спереди в полный рост* — я сделаю примерку.\n\n📸 Загрузи фото 👇`,
         { parse_mode: "Markdown" }
       );
     } catch (e: any) {
@@ -3019,27 +3025,16 @@ function startTelegramBot() {
     const costumeName = state.costumeName;
     const phone = normalizePhone(state.phone || await getSubscriberPhone(userId));
 
-    if (!state.frontFileId) {
-      await setTryOnState(userId, { costumeUrls, costumeName, phone, frontFileId: fileId });
-      await ctx.reply(
-        "Фото спереди получил ✅\n\nТеперь пришли *фото сзади в полный рост* — сделаю вторую примерку. Если фото сзади нет, можно сделать по одному фото.",
-        { parse_mode: "Markdown", ...Markup.inlineKeyboard([Markup.button.callback("✨ Сделать по одному фото", "generate_one_tryon")]) }
-      );
-      return;
-    }
-
     await deleteTryOnState(userId);
-    const processing = await ctx.reply("⏳ Создаю две примерки: спереди и сзади. Обычно это 30-50 секунд.");
+    const processing = await ctx.reply("⏳ Создаю примерку... Обычно это 20-40 секунд.");
 
     // Run Gemini in background — don't await so Telegraf handler returns immediately
     (async () => {
       try {
         const frontCostumeUrl = costumeUrls[0];
-        const backCostumeUrl = costumeUrls[1] || costumeUrls[0];
-        if (!frontCostumeUrl || !backCostumeUrl) throw new Error("У костюма нет фото");
+        if (!frontCostumeUrl) throw new Error("У костюма нет фото");
         await runTryOnGeneration(ctx, state, [
-          { label: "front", userFileId: state.frontFileId!, costumeUrl: frontCostumeUrl },
-          { label: "back", userFileId: fileId, costumeUrl: backCostumeUrl },
+          { label: "front", userFileId: fileId, costumeUrl: frontCostumeUrl },
         ], processing.message_id);
       } catch (e: any) {
         console.error("tryon photo error:", e.message, e.cause?.message || "");
