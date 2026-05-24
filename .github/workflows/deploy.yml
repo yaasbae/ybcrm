@@ -25,5 +25,5 @@ jobs:
             --project gen-lang-client-0565901030 \
             --min-instances 1 \
             --no-cpu-throttling \
-            --set-env-vars WEBHOOK_URL=https://ybcrm.ru,SERVER_URL=https://ybcrm.ru \
+            --update-env-vars WEBHOOK_URL=https://ybcrm.ru,SERVER_URL=https://ybcrm.ru \
             --quiet
