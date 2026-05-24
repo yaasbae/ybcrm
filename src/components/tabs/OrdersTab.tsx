@@ -503,11 +503,13 @@ const CdekOrderBlock: React.FC<{
 
   const inputClass = mobile
     ? 'w-full rounded-lg border border-zinc-100 bg-white px-2 py-2 text-[10px] font-bold text-zinc-700 outline-none focus:border-blue-200'
-    : 'w-full h-9 rounded-lg border border-zinc-100 bg-white px-2.5 text-[10px] font-bold text-zinc-700 outline-none focus:border-blue-200';
+    : 'w-full h-10 rounded-lg border border-zinc-100 bg-white px-2.5 text-[10px] font-bold text-zinc-700 outline-none focus:border-blue-200';
 
   return (
     <div className={cn(
-      mobile ? 'rounded-xl border border-zinc-100 bg-zinc-50/60 p-2.5 space-y-2' : 'mt-2 w-full rounded-xl border border-zinc-100 bg-white p-2.5 space-y-2 shadow-sm'
+      mobile
+        ? 'rounded-xl border border-zinc-100 bg-zinc-50/60 p-2.5 space-y-2'
+        : 'w-full rounded-xl border border-zinc-100 bg-zinc-50/70 p-2.5 space-y-2'
     )}>
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-1.5">
@@ -521,7 +523,10 @@ const CdekOrderBlock: React.FC<{
         )}
       </div>
 
-      <div className={cn('grid gap-1.5', mobile ? 'grid-cols-2' : 'grid-cols-2')}>
+      <div className={cn(
+        'grid gap-1.5 items-end',
+        mobile ? 'grid-cols-2' : 'grid-cols-[130px_160px_minmax(190px,1fr)_minmax(240px,1.2fr)]'
+      )}>
         <select
           value={deliveryType}
           onChange={(e) => {
@@ -539,7 +544,7 @@ const CdekOrderBlock: React.FC<{
             <option key={tariff.code} value={tariff.code}>{tariff.label}</option>
           ))}
         </select>
-        <div className="relative col-span-2">
+        <div className={cn('relative', mobile && 'col-span-2')}>
           <input
             value={cityQuery}
             onChange={e => {
@@ -567,7 +572,7 @@ const CdekOrderBlock: React.FC<{
         </div>
         {deliveryType === 'pvz' ? (
           toCityCode ? (
-            <select value={deliveryPoint} onChange={e => setDeliveryPoint(e.target.value)} disabled={loadingPoints} className={cn(inputClass, 'col-span-2')}>
+            <select value={deliveryPoint} onChange={e => setDeliveryPoint(e.target.value)} disabled={loadingPoints} className={cn(inputClass, mobile && 'col-span-2')}>
               <option value="">{loadingPoints ? 'Загружаю ПВЗ...' : 'ПВЗ СДЭК'}</option>
               {points.map(point => (
                 <option key={point.code} value={point.code}>
@@ -577,11 +582,11 @@ const CdekOrderBlock: React.FC<{
             </select>
           ) : <div className={cn(!mobile && 'hidden')} />
         ) : (
-        <input value={toAddress} onChange={e => setToAddress(e.target.value)} placeholder="Адрес доставки" className={cn(inputClass, 'col-span-2')} />
+        <input value={toAddress} onChange={e => setToAddress(e.target.value)} placeholder="Адрес доставки" className={cn(inputClass, mobile && 'col-span-2')} />
         )}
       </div>
 
-      <div className={cn('grid gap-1.5', mobile ? 'grid-cols-2' : 'grid-cols-[repeat(4,1fr)] items-end')}>
+      <div className={cn('grid gap-1.5 items-end', mobile ? 'grid-cols-2' : 'grid-cols-[92px_92px_92px_92px_minmax(190px,1fr)]')}>
         {[
           { label: 'Вес, г', value: weight, setValue: setWeight, placeholder: '700' },
           { label: 'Длина, см', value: length, setValue: setLength, placeholder: '30' },
@@ -594,23 +599,23 @@ const CdekOrderBlock: React.FC<{
               value={field.value}
               onChange={e => field.setValue(e.target.value)}
               placeholder={field.placeholder}
-              className={cn(inputClass, mobile ? 'min-h-[38px]' : 'h-10')}
+              className={cn(inputClass, mobile ? 'min-h-[38px]' : 'h-11')}
             />
           </label>
         ))}
+        <button
+          type="button"
+          onClick={createCdekOrder}
+          disabled={submitting || !settingsChecked}
+          className={cn(
+            'rounded-lg border border-zinc-200 bg-zinc-900 font-black uppercase tracking-widest text-white hover:bg-black transition-all flex items-center justify-center gap-1.5 disabled:opacity-60',
+            mobile ? 'col-span-2 py-2.5 text-[8px]' : 'h-11 text-[7px]'
+          )}
+        >
+          {submitting ? <RefreshCcw className="w-3 h-3 animate-spin" /> : <Send className="w-3 h-3" />}
+          {submitting ? 'Создаю...' : 'Создать накладную'}
+        </button>
       </div>
-      <button
-        type="button"
-        onClick={createCdekOrder}
-        disabled={submitting || !settingsChecked}
-        className={cn(
-          'w-full rounded-lg border border-zinc-200 bg-zinc-900 font-black uppercase tracking-widest text-white hover:bg-black transition-all flex items-center justify-center gap-1.5 disabled:opacity-60',
-          mobile ? 'py-2.5 text-[8px]' : 'h-9 text-[7px]'
-        )}
-      >
-        {submitting ? <RefreshCcw className="w-3 h-3 animate-spin" /> : <Send className="w-3 h-3" />}
-        {submitting ? 'Создаю...' : 'Создать накладную'}
-      </button>
       {order.cdekUuid && !order.cdekNumber && (
         <button
           type="button"
@@ -710,214 +715,216 @@ const OrderRow = React.memo(({
     if (product.height) updateOrderData(order.orderId, 'height', product.height);
   };
 
+  const dueAmount = getOrderPaymentDue(order);
+  const financeTile = (
+    label: string,
+    value: number,
+    tone: 'plain' | 'paid' | 'due' = 'plain',
+    onChange?: (v: number) => void
+  ) => (
+    <label className={cn(
+      "min-w-0 rounded-lg border p-2",
+      tone === 'paid' ? "bg-emerald-50 border-emerald-100" :
+      tone === 'due' ? "bg-blue-50 border-blue-100" :
+      "bg-zinc-50 border-zinc-100"
+    )}>
+      <span className={cn(
+        "block text-[7px] font-black uppercase tracking-widest leading-none",
+        tone === 'paid' ? "text-emerald-500" :
+        tone === 'due' ? "text-blue-500" :
+        "text-zinc-400"
+      )}>{label}</span>
+      {onChange ? (
+        <input
+          type="number"
+          value={value ?? ''}
+          onChange={(e) => onChange(parseFloat(e.target.value) || 0)}
+          className={cn(
+            "mt-1 w-full bg-transparent text-[14px] font-black text-right tabular-nums focus:bg-white focus:ring-1 focus:ring-blue-100 rounded px-1 outline-none",
+            tone === 'paid' ? "text-emerald-700" : "text-zinc-900"
+          )}
+        />
+      ) : (
+        <span className={cn(
+          "mt-1 block text-right text-[14px] font-black tabular-nums truncate",
+          tone === 'due' ? "text-blue-700" : "text-zinc-900"
+        )}>{formatCurrency(value)}</span>
+      )}
+    </label>
+  );
+
   return (
     <tr className={cn(
       "group border-b border-zinc-100 transition-colors",
-      order.isOverdue && !order.isShipped ? "bg-red-50/40" : "hover:bg-zinc-50/60"
+      order.isOverdue && !order.isShipped ? "bg-red-50/30" : "hover:bg-zinc-50/40"
     )}>
-
-      {/* Дата / ID */}
-      <td className="px-3 py-3 align-top w-[90px]">
-        <input
-          type="text"
-          value={order.date.toLocaleDateString('ru-RU')}
-          onChange={(e) => {
-            const parts = e.target.value.split('.');
-            if (parts.length === 3) {
-              const d = new Date(parseInt(parts[2]), parseInt(parts[1]) - 1, parseInt(parts[0]));
-              if (!isNaN(d.getTime())) updateOrderData(order.orderId, 'date', d);
-            }
-          }}
-          className="bg-transparent text-[9px] text-zinc-400 font-semibold focus:bg-white focus:ring-1 focus:ring-blue-100 rounded px-1 outline-none w-full mb-1"
-        />
-        <div className="flex items-center gap-1.5">
-          {order.isFirebase && (
-            <div title="Заказ из CRM" className="w-1.5 h-1.5 rounded-full bg-blue-500 shrink-0" />
-          )}
-          <input
-            type="text"
-            value={order.orderId}
-            onChange={(e) => updateOrderData(order.orderId, 'orderId', e.target.value)}
-            className="bg-transparent text-[11px] font-black text-zinc-900 tracking-tight focus:bg-white focus:ring-1 focus:ring-blue-100 rounded px-1 outline-none w-full"
-          />
-        </div>
-      </td>
-
-      {/* Клиент */}
-      <td className="px-3 py-3 align-top w-[220px]">
-        <input
-          type="text"
-          value={order.clientName || ''}
-          onChange={(e) => updateOrderData(order.orderId, 'clientName', e.target.value)}
-          placeholder="ФИО клиента"
-          className="bg-transparent text-[11px] font-black text-zinc-900 uppercase tracking-tight focus:bg-white focus:ring-1 focus:ring-blue-100 rounded px-1 outline-none w-full leading-tight truncate"
-        />
-        <input
-          type="text"
-          value={order.clientPhone}
-          onChange={(e) => updateOrderData(order.orderId, 'clientPhone', e.target.value.replace(/[^0-9]/g, ''))}
-          placeholder="телефон"
-          className="bg-transparent font-mono text-[9px] text-zinc-400 focus:text-zinc-900 focus:bg-white focus:ring-1 focus:ring-blue-100 rounded px-1 outline-none w-full mt-1 truncate"
-        />
-      </td>
-
-      {/* Статус / Доставка */}
-      <td className="px-2 py-3 align-top w-[360px]">
-        <select
-          value={order.status}
-          onChange={(e) => updateOrderData(order.orderId, 'status', e.target.value)}
-          className={cn(
-            "w-full text-[10px] font-black px-2 py-1.5 rounded-lg border uppercase tracking-wide outline-none cursor-pointer mb-2",
-            statusColor
-          )}
-        >
-          {optionsWithCurrent(handbookStatuses, order.status, STATUS_OPTIONS).map(opt => <option key={opt} value={opt}>{opt}</option>)}
-        </select>
-        <div className="flex gap-1 mb-2">
-          <select
-            value={order.source}
-            onChange={(e) => updateOrderData(order.orderId, 'source', e.target.value)}
-            className="flex-1 bg-amber-50 border border-amber-100 text-[9px] font-bold text-amber-700 outline-none cursor-pointer rounded-md px-1 py-1 truncate"
-          >
-            <option value="">Источник</option>
-            {(handbookSources.length ? handbookSources : SOURCE_OPTIONS).map(opt => <option key={opt} value={opt}>{opt}</option>)}
-          </select>
-          <select
-            value={order.deliveryMethod}
-            onChange={(e) => updateOrderData(order.orderId, 'deliveryMethod', e.target.value)}
-            className="flex-1 bg-blue-50 border border-blue-100 text-[9px] font-bold text-blue-700 outline-none cursor-pointer rounded-md px-1 py-1 truncate"
-          >
-            <option value="">Доставка</option>
-            {(handbookDeliveries.length ? handbookDeliveries : DELIVERY_OPTIONS).map(opt => <option key={opt} value={opt}>{opt}</option>)}
-          </select>
-        </div>
-        <div className="flex gap-1">
-          <button
-            onClick={() => updateOrderData(order.orderId, 'isRecommended', order.isRecommended ? null : true)}
-            className={cn(
-              "flex-1 text-[8px] font-black py-1 rounded-md border transition-all uppercase tracking-tight",
-              order.isRecommended
-                ? "bg-zinc-800 border-zinc-800 text-white"
-                : "bg-white border-zinc-200 text-zinc-500 hover:bg-zinc-50"
-            )}
-          >
-            ★ Реком.
-          </button>
-        </div>
-
-        {/* QR / Отправить счёт */}
-        <PaymentRowBlock order={order} updateOrderData={updateOrderData} />
-        {String(order.deliveryMethod || '').toLowerCase().includes('сдэк') && (
-          <CdekOrderBlock order={order} updateOrderData={updateOrderData} productCatalog={productCatalog} />
-        )}
-      </td>
-
-      {/* Финансы + изделие */}
-      <td className="px-3 py-3 align-top min-w-[860px]" colSpan={2}>
-        <div className="rounded-xl border border-zinc-100 bg-white p-3 shadow-sm space-y-2.5">
-          <div className="grid grid-cols-[minmax(280px,1fr)_140px_120px_150px] gap-2 items-end">
-            <div className="min-w-0">
-              <span className="text-[8px] font-black text-zinc-300 uppercase tracking-wider leading-none px-1">Изделие</span>
+      <td colSpan={6} className="px-3 py-2">
+        <div className="rounded-2xl border border-zinc-100 bg-white p-3 shadow-sm">
+          <div className="grid grid-cols-[76px_minmax(190px,230px)_minmax(260px,320px)_minmax(430px,1fr)_minmax(230px,260px)_64px] gap-3 items-start">
+            <div className="space-y-1.5">
               <input
                 type="text"
-                list="product-list"
-                value={order.item}
-                onChange={(e) => applyProductCharacteristics(e.target.value)}
-                placeholder="Название изделия..."
-                className="mt-1 h-10 w-full bg-zinc-50 text-[13px] font-black text-zinc-900 focus:bg-white focus:ring-1 focus:ring-blue-100 rounded-lg px-3 outline-none border border-zinc-100 truncate"
+                value={order.date.toLocaleDateString('ru-RU')}
+                onChange={(e) => {
+                  const parts = e.target.value.split('.');
+                  if (parts.length === 3) {
+                    const d = new Date(parseInt(parts[2]), parseInt(parts[1]) - 1, parseInt(parts[0]));
+                    if (!isNaN(d.getTime())) updateOrderData(order.orderId, 'date', d);
+                  }
+                }}
+                className="w-full bg-transparent text-[9px] text-zinc-400 font-semibold focus:bg-zinc-50 focus:ring-1 focus:ring-blue-100 rounded px-1 outline-none"
               />
-            </div>
-            <label className="rounded-lg bg-zinc-50 border border-zinc-100 p-2">
-              <span className="block text-[7px] font-black text-zinc-400 uppercase tracking-widest leading-none">Стоимость 100%</span>
-              <input
-                type="number"
-                value={order.revenue ?? ''}
-                onChange={(e) => updateOrderData(order.orderId, 'revenue', parseFloat(e.target.value) || 0)}
-                className="mt-1 w-full bg-transparent text-[15px] font-black text-zinc-900 text-right tabular-nums focus:bg-white focus:ring-1 focus:ring-blue-100 rounded px-1 outline-none"
-              />
-            </label>
-            <label className="rounded-lg bg-zinc-50 border border-zinc-100 p-2">
-              <span className="block text-[7px] font-black text-zinc-400 uppercase tracking-widest leading-none">Доставка</span>
-              <input
-                type="number"
-                value={order.deliveryPrice ?? ''}
-                onChange={(e) => updateOrderData(order.orderId, 'deliveryPrice', parseFloat(e.target.value) || 0)}
-                className="mt-1 w-full bg-transparent text-[13px] font-black text-zinc-700 text-right tabular-nums focus:bg-white focus:ring-1 focus:ring-blue-100 rounded px-1 outline-none"
-              />
-            </label>
-            <label className={cn(
-              "rounded-lg border p-2",
-              (order.paidAmount || 0) > 0 ? "bg-emerald-50 border-emerald-100" : "bg-amber-50 border-amber-100"
-            )}>
-              <span className={cn(
-                "block text-[7px] font-black uppercase tracking-widest leading-none",
-                (order.paidAmount || 0) > 0 ? "text-emerald-500" : "text-amber-500"
-              )}>Предоплата 50%</span>
-              <input
-                type="number"
-                value={order.paidAmount ?? ''}
-                onChange={(e) => updateOrderData(order.orderId, 'paidAmount', parseFloat(e.target.value) || 0)}
-                className={cn(
-                  "mt-1 w-full bg-transparent text-[13px] font-black text-right tabular-nums focus:bg-white focus:ring-1 focus:ring-blue-100 rounded px-1 outline-none",
-                  (order.paidAmount || 0) > 0 ? "text-emerald-700" : "text-amber-700"
+              <div className="flex items-center gap-1.5">
+                {order.isFirebase && (
+                  <div title="Заказ из CRM" className="w-1.5 h-1.5 rounded-full bg-blue-500 shrink-0" />
                 )}
-              />
-            </label>
-          </div>
-
-          <div className="grid grid-cols-[repeat(7,minmax(82px,1fr))] gap-2">
-            {fieldSelect('Цвет',   order.rawRow?.[RAW_COLOR_INDEX] || '', optionsWithCurrent(handbookColors, order.rawRow?.[RAW_COLOR_INDEX] || ''),  (v) => updateOrderData(order.orderId, `rawRow[${RAW_COLOR_INDEX}]`, v))}
-            {fieldSelect('Размер', order.rawRow?.[RAW_SIZE_INDEX] || '', optionsWithCurrent(handbookSizes, order.rawRow?.[RAW_SIZE_INDEX] || ''),   (v) => updateOrderData(order.orderId, `rawRow[${RAW_SIZE_INDEX}]`, v))}
-            {fieldSelect('Рост',   order.height  || '', optionsWithCurrent(handbookHeights, order.height || ''), (v) => updateOrderData(order.orderId, 'height', v))}
-            {fieldSelect('Метка',    order.label   || '', optionsWithCurrent(handbookLabels, order.label || ''),   (v) => updateOrderData(order.orderId, 'label', v))}
-            {fieldSelect('Менеджер', order.manager || '', optionsWithCurrent(handbookManagers, order.manager || ''), (v) => updateOrderData(order.orderId, 'manager', v))}
-            {fieldSelect('Блогер',   order.blogger || '', optionsWithCurrent(handbookBloggers, order.blogger || ''), (v) => updateOrderData(order.orderId, 'blogger', v))}
-            {fieldSelect('Оплата',   order.paymentType || '', optionsWithCurrent(handbookPaymentTypes, order.paymentType || '', PAYMENT_TYPE_OPTIONS), (v) => updateOrderData(order.orderId, 'paymentType', v))}
+                <input
+                  type="text"
+                  value={order.orderId}
+                  onChange={(e) => updateOrderData(order.orderId, 'orderId', e.target.value)}
+                  className="min-w-0 w-full bg-transparent text-[12px] font-black text-zinc-900 tracking-tight focus:bg-zinc-50 focus:ring-1 focus:ring-blue-100 rounded px-1 outline-none"
+                />
+              </div>
             </div>
+
+            <div className="rounded-xl border border-zinc-100 bg-zinc-50/60 p-2.5 space-y-1.5 min-w-0">
+              <span className="block text-[7px] font-black text-zinc-300 uppercase tracking-widest">Клиент</span>
+              <input
+                type="text"
+                value={order.clientName || ''}
+                onChange={(e) => updateOrderData(order.orderId, 'clientName', e.target.value)}
+                placeholder="ФИО клиента"
+                className="w-full bg-transparent text-[11px] font-black text-zinc-900 uppercase tracking-tight focus:bg-white focus:ring-1 focus:ring-blue-100 rounded px-1 outline-none truncate"
+              />
+              <input
+                type="text"
+                value={order.clientPhone}
+                onChange={(e) => updateOrderData(order.orderId, 'clientPhone', e.target.value.replace(/[^0-9]/g, ''))}
+                placeholder="телефон"
+                className="w-full bg-transparent font-mono text-[10px] text-zinc-500 focus:text-zinc-900 focus:bg-white focus:ring-1 focus:ring-blue-100 rounded px-1 outline-none truncate"
+              />
+            </div>
+
+            <div className="space-y-2 min-w-0">
+              <select
+                value={order.status}
+                onChange={(e) => updateOrderData(order.orderId, 'status', e.target.value)}
+                className={cn(
+                  "w-full h-10 text-[10px] font-black px-3 rounded-lg border uppercase tracking-wide outline-none cursor-pointer",
+                  statusColor
+                )}
+              >
+                {optionsWithCurrent(handbookStatuses, order.status, STATUS_OPTIONS).map(opt => <option key={opt} value={opt}>{opt}</option>)}
+              </select>
+              <div className="grid grid-cols-2 gap-2">
+                <select
+                  value={order.source}
+                  onChange={(e) => updateOrderData(order.orderId, 'source', e.target.value)}
+                  className="h-9 bg-amber-50 border border-amber-100 text-[9px] font-bold text-amber-700 outline-none cursor-pointer rounded-lg px-2 truncate"
+                >
+                  <option value="">Источник</option>
+                  {(handbookSources.length ? handbookSources : SOURCE_OPTIONS).map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                </select>
+                <select
+                  value={order.deliveryMethod}
+                  onChange={(e) => updateOrderData(order.orderId, 'deliveryMethod', e.target.value)}
+                  className="h-9 bg-blue-50 border border-blue-100 text-[9px] font-bold text-blue-700 outline-none cursor-pointer rounded-lg px-2 truncate"
+                >
+                  <option value="">Доставка</option>
+                  {(handbookDeliveries.length ? handbookDeliveries : DELIVERY_OPTIONS).map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                </select>
+              </div>
+              <div className="grid grid-cols-[1fr_1fr] gap-2">
+                <button
+                  onClick={() => updateOrderData(order.orderId, 'isRecommended', order.isRecommended ? null : true)}
+                  className={cn(
+                    "h-8 text-[8px] font-black rounded-lg border transition-all uppercase tracking-tight",
+                    order.isRecommended
+                      ? "bg-zinc-800 border-zinc-800 text-white"
+                      : "bg-white border-zinc-200 text-zinc-500 hover:bg-zinc-50"
+                  )}
+                >
+                  ★ Реком.
+                </button>
+                <PaymentRowBlock order={order} updateOrderData={updateOrderData} />
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-zinc-100 bg-white p-2.5 space-y-2 min-w-0">
+              <div>
+                <span className="block text-[7px] font-black text-zinc-300 uppercase tracking-widest px-1">Изделие</span>
+                <input
+                  type="text"
+                  list="product-list"
+                  value={order.item}
+                  onChange={(e) => applyProductCharacteristics(e.target.value)}
+                  placeholder="Название изделия..."
+                  className="mt-1 h-10 w-full bg-zinc-50 text-[13px] font-black text-zinc-900 focus:bg-white focus:ring-1 focus:ring-blue-100 rounded-lg px-3 outline-none border border-zinc-100 truncate"
+                />
+              </div>
+              <div className="grid grid-cols-4 gap-2">
+                {fieldSelect('Цвет', order.rawRow?.[RAW_COLOR_INDEX] || '', optionsWithCurrent(handbookColors, order.rawRow?.[RAW_COLOR_INDEX] || ''), (v) => updateOrderData(order.orderId, `rawRow[${RAW_COLOR_INDEX}]`, v))}
+                {fieldSelect('Размер', order.rawRow?.[RAW_SIZE_INDEX] || '', optionsWithCurrent(handbookSizes, order.rawRow?.[RAW_SIZE_INDEX] || ''), (v) => updateOrderData(order.orderId, `rawRow[${RAW_SIZE_INDEX}]`, v))}
+                {fieldSelect('Рост', order.height || '', optionsWithCurrent(handbookHeights, order.height || ''), (v) => updateOrderData(order.orderId, 'height', v))}
+                {fieldSelect('Оплата', order.paymentType || '', optionsWithCurrent(handbookPaymentTypes, order.paymentType || '', PAYMENT_TYPE_OPTIONS), (v) => updateOrderData(order.orderId, 'paymentType', v))}
+              </div>
+              <div className="grid grid-cols-3 gap-2">
+                {fieldSelect('Метка', order.label || '', optionsWithCurrent(handbookLabels, order.label || ''), (v) => updateOrderData(order.orderId, 'label', v))}
+                {fieldSelect('Менеджер', order.manager || '', optionsWithCurrent(handbookManagers, order.manager || ''), (v) => updateOrderData(order.orderId, 'manager', v))}
+                {fieldSelect('Блогер', order.blogger || '', optionsWithCurrent(handbookBloggers, order.blogger || ''), (v) => updateOrderData(order.orderId, 'blogger', v))}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 gap-2">
+              {financeTile('Стоимость 100%', order.revenue || 0, 'plain', (v) => updateOrderData(order.orderId, 'revenue', v))}
+              {financeTile('Доставка', order.deliveryPrice || 0, 'plain', (v) => updateOrderData(order.orderId, 'deliveryPrice', v))}
+              {financeTile('Предоплата 50%', order.paidAmount || 0, 'paid', (v) => updateOrderData(order.orderId, 'paidAmount', v))}
+              {financeTile('К оплате', dueAmount, 'due')}
+            </div>
+
+            <div className="flex flex-col items-stretch gap-2">
+              <span className={cn(
+                "text-[10px] font-black px-2 py-2 rounded-lg w-full text-center",
+                order.isOverdue && !order.isShipped
+                  ? "bg-red-500 text-white animate-pulse shadow-sm shadow-red-200"
+                  : order.isShipped
+                    ? "bg-zinc-100 text-zinc-400"
+                    : "bg-blue-50 text-blue-600 border border-blue-100"
+              )}>
+                {order.deadlineDate.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' })}
+              </span>
+              {order.paymentUrl && (
+                <a
+                  href={order.paymentUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="w-full flex items-center justify-center py-2 rounded-lg border border-violet-200 bg-violet-50 text-violet-500 hover:bg-violet-500 hover:text-white hover:border-violet-500 transition-all"
+                  title="Открыть ссылку СБП"
+                >
+                  <QrCodeIcon size={12} />
+                </a>
+              )}
+              {order.isFirebase && (
+                <button
+                  onClick={() => {
+                    if (window.confirm(`Удалить заказ ${order.orderId}?`)) onDelete(order.orderId);
+                  }}
+                  className="w-full flex items-center justify-center py-2 rounded-lg border border-red-100 bg-red-50 text-red-400 hover:bg-red-500 hover:text-white hover:border-red-500 transition-all"
+                  title="Удалить заказ"
+                >
+                  <Trash2 size={12} />
+                </button>
+              )}
+            </div>
+
+            {String(order.deliveryMethod || '').toLowerCase().includes('сдэк') && (
+              <div className="col-start-3 col-span-3">
+                <CdekOrderBlock order={order} updateOrderData={updateOrderData} productCatalog={productCatalog} />
+              </div>
+            )}
+          </div>
         </div>
       </td>
-
-      {/* Срок / Удалить */}
-      <td className="px-3 py-3 align-top w-[60px]">
-        <div className="flex flex-col items-center gap-1">
-          <span className={cn(
-            "text-[10px] font-black px-2 py-1 rounded-lg w-full text-center",
-            order.isOverdue && !order.isShipped
-              ? "bg-red-500 text-white animate-pulse shadow-sm shadow-red-200"
-              : order.isShipped
-                ? "bg-zinc-100 text-zinc-400"
-                : "bg-blue-50 text-blue-600 border border-blue-100"
-          )}>
-            {order.deadlineDate.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' })}
-          </span>
-          {order.isOverdue && !order.isShipped && (
-            <span className="text-[7px] font-black text-red-500 uppercase tracking-tight">просрочен</span>
-          )}
-          {order.paymentUrl && (
-            <a
-              href={order.paymentUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="mt-1 w-full flex items-center justify-center gap-0.5 py-1 rounded-md border border-violet-200 bg-violet-50 text-violet-500 hover:bg-violet-500 hover:text-white hover:border-violet-500 transition-all"
-              title="Открыть ссылку СБП"
-            >
-              <QrCodeIcon size={10} />
-            </a>
-          )}
-          {order.isFirebase && (
-            <button
-              onClick={() => {
-                if (window.confirm(`Удалить заказ ${order.orderId}?`)) onDelete(order.orderId);
-              }}
-              className="mt-1 w-full flex items-center justify-center gap-0.5 py-1 rounded-md border border-red-100 bg-red-50 text-red-400 hover:bg-red-500 hover:text-white hover:border-red-500 transition-all"
-              title="Удалить заказ"
-            >
-              <Trash2 size={10} />
-            </button>
-          )}
-        </div>
-      </td>
-
     </tr>
   );
 });
