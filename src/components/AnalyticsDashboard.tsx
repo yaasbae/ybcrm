@@ -53,6 +53,7 @@ export interface OrderData {
   paymentUrl?: string;
   paymentStatus?: string;
   paymentType?: string;
+  notes?: string;
   cdekUuid?: string;
   cdekNumber?: string;
   cdekStatus?: string;

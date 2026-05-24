@@ -756,12 +756,46 @@ const OrderRow = React.memo(({
   return (
     <tr className={cn(
       "group border-b border-zinc-100 transition-colors",
-      order.isOverdue && !order.isShipped ? "bg-red-50/30" : "hover:bg-zinc-50/40"
+      order.isOverdue && !order.isShipped ? "bg-red-50/30" : "bg-zinc-50/40"
     )}>
-      <td colSpan={6} className="px-3 py-2">
-        <div className="rounded-2xl border border-zinc-100 bg-white p-3 shadow-sm">
-          <div className="grid grid-cols-[76px_minmax(190px,230px)_minmax(260px,320px)_minmax(430px,1fr)_minmax(230px,260px)_64px] gap-3 items-start">
-            <div className="space-y-1.5">
+      <td colSpan={6} className="px-5 py-4">
+        <div className="grid grid-cols-[320px_minmax(760px,1fr)] gap-5 items-stretch">
+          <aside className="rounded-2xl border border-zinc-100 bg-white p-5 shadow-sm space-y-5">
+            <div className="flex items-center justify-between gap-3">
+              <select
+                value={order.status}
+                onChange={(e) => updateOrderData(order.orderId, 'status', e.target.value)}
+                className={cn(
+                  "h-9 max-w-[145px] rounded-lg border px-3 text-[10px] font-black uppercase tracking-wide outline-none cursor-pointer",
+                  statusColor
+                )}
+              >
+                {optionsWithCurrent(handbookStatuses, order.status, STATUS_OPTIONS).map(opt => <option key={opt} value={opt}>{opt}</option>)}
+              </select>
+              {order.isFirebase && (
+                <button
+                  onClick={() => {
+                    if (window.confirm(`Удалить заказ ${order.orderId}?`)) onDelete(order.orderId);
+                  }}
+                  className="inline-flex items-center gap-2 rounded-lg px-2.5 py-2 text-[10px] font-black text-red-500 hover:bg-red-50 transition-colors"
+                  title="Удалить заказ"
+                >
+                  <Trash2 size={15} /> Удалить заказ
+                </button>
+              )}
+            </div>
+
+            <div>
+              <p className="text-[13px] font-bold text-zinc-500">Заказ</p>
+              <div className="mt-1 flex items-center gap-1">
+                <span className="text-[32px] font-black leading-none text-zinc-950">#</span>
+                <input
+                  type="text"
+                  value={order.orderId}
+                  onChange={(e) => updateOrderData(order.orderId, 'orderId', e.target.value)}
+                  className="min-w-0 w-full bg-transparent text-[32px] font-black leading-none text-zinc-950 tracking-tight outline-none focus:bg-zinc-50 rounded-lg"
+                />
+              </div>
               <input
                 type="text"
                 value={order.date.toLocaleDateString('ru-RU')}
@@ -772,157 +806,126 @@ const OrderRow = React.memo(({
                     if (!isNaN(d.getTime())) updateOrderData(order.orderId, 'date', d);
                   }
                 }}
-                className="w-full bg-transparent text-[9px] text-zinc-400 font-semibold focus:bg-zinc-50 focus:ring-1 focus:ring-blue-100 rounded px-1 outline-none"
+                className="mt-1 w-full bg-transparent text-[10px] font-semibold text-zinc-400 outline-none focus:bg-zinc-50 rounded px-1"
               />
-              <div className="flex items-center gap-1.5">
-                {order.isFirebase && (
-                  <div title="Заказ из CRM" className="w-1.5 h-1.5 rounded-full bg-blue-500 shrink-0" />
-                )}
+            </div>
+
+            <div className="rounded-xl border border-zinc-100 bg-white p-3 shadow-[0_8px_30px_rgba(15,23,42,0.04)]">
+              <div className="flex items-center gap-2">
+                <Users size={17} className="text-zinc-500 shrink-0" />
                 <input
                   type="text"
-                  value={order.orderId}
-                  onChange={(e) => updateOrderData(order.orderId, 'orderId', e.target.value)}
-                  className="min-w-0 w-full bg-transparent text-[12px] font-black text-zinc-900 tracking-tight focus:bg-zinc-50 focus:ring-1 focus:ring-blue-100 rounded px-1 outline-none"
+                  value={order.clientName || ''}
+                  onChange={(e) => updateOrderData(order.orderId, 'clientName', e.target.value)}
+                  placeholder="ФИО клиента"
+                  className="min-w-0 flex-1 bg-transparent text-[14px] font-black text-zinc-950 outline-none focus:bg-zinc-50 rounded px-1 truncate"
                 />
               </div>
-            </div>
-
-            <div className="rounded-xl border border-zinc-100 bg-zinc-50/60 p-2.5 space-y-1.5 min-w-0">
-              <span className="block text-[7px] font-black text-zinc-300 uppercase tracking-widest">Клиент</span>
-              <input
-                type="text"
-                value={order.clientName || ''}
-                onChange={(e) => updateOrderData(order.orderId, 'clientName', e.target.value)}
-                placeholder="ФИО клиента"
-                className="w-full bg-transparent text-[11px] font-black text-zinc-900 uppercase tracking-tight focus:bg-white focus:ring-1 focus:ring-blue-100 rounded px-1 outline-none truncate"
-              />
-              <input
-                type="text"
-                value={order.clientPhone}
-                onChange={(e) => updateOrderData(order.orderId, 'clientPhone', e.target.value.replace(/[^0-9]/g, ''))}
-                placeholder="телефон"
-                className="w-full bg-transparent font-mono text-[10px] text-zinc-500 focus:text-zinc-900 focus:bg-white focus:ring-1 focus:ring-blue-100 rounded px-1 outline-none truncate"
-              />
-            </div>
-
-            <div className="space-y-2 min-w-0">
-              <select
-                value={order.status}
-                onChange={(e) => updateOrderData(order.orderId, 'status', e.target.value)}
-                className={cn(
-                  "w-full h-10 text-[10px] font-black px-3 rounded-lg border uppercase tracking-wide outline-none cursor-pointer",
-                  statusColor
+              <div className="mt-3 flex items-center gap-2">
+                <Phone size={16} className="text-zinc-400 shrink-0" />
+                <input
+                  type="text"
+                  value={order.clientPhone}
+                  onChange={(e) => updateOrderData(order.orderId, 'clientPhone', e.target.value.replace(/[^0-9]/g, ''))}
+                  placeholder="телефон"
+                  className="min-w-0 flex-1 bg-transparent text-[13px] font-bold text-zinc-700 outline-none focus:bg-zinc-50 rounded px-1 truncate"
+                />
+                {order.clientPhone && (
+                  <a
+                    href={`tel:+${order.clientPhone}`}
+                    className="grid h-9 w-9 place-items-center rounded-full bg-blue-50 text-blue-600 hover:bg-blue-100"
+                    title="Позвонить"
+                  >
+                    <Phone size={16} />
+                  </a>
                 )}
-              >
-                {optionsWithCurrent(handbookStatuses, order.status, STATUS_OPTIONS).map(opt => <option key={opt} value={opt}>{opt}</option>)}
-              </select>
-              <div className="grid grid-cols-2 gap-2">
-                <select
-                  value={order.source}
-                  onChange={(e) => updateOrderData(order.orderId, 'source', e.target.value)}
-                  className="h-9 bg-amber-50 border border-amber-100 text-[9px] font-bold text-amber-700 outline-none cursor-pointer rounded-lg px-2 truncate"
-                >
-                  <option value="">Источник</option>
-                  {(handbookSources.length ? handbookSources : SOURCE_OPTIONS).map(opt => <option key={opt} value={opt}>{opt}</option>)}
-                </select>
-                <select
-                  value={order.deliveryMethod}
-                  onChange={(e) => updateOrderData(order.orderId, 'deliveryMethod', e.target.value)}
-                  className="h-9 bg-blue-50 border border-blue-100 text-[9px] font-bold text-blue-700 outline-none cursor-pointer rounded-lg px-2 truncate"
-                >
-                  <option value="">Доставка</option>
-                  {(handbookDeliveries.length ? handbookDeliveries : DELIVERY_OPTIONS).map(opt => <option key={opt} value={opt}>{opt}</option>)}
-                </select>
-              </div>
-              <div className="grid grid-cols-[1fr_1fr] gap-2">
                 <button
-                  onClick={() => updateOrderData(order.orderId, 'isRecommended', order.isRecommended ? null : true)}
-                  className={cn(
-                    "h-8 text-[8px] font-black rounded-lg border transition-all uppercase tracking-tight",
-                    order.isRecommended
-                      ? "bg-zinc-800 border-zinc-800 text-white"
-                      : "bg-white border-zinc-200 text-zinc-500 hover:bg-zinc-50"
-                  )}
+                  onClick={() => shareOrder(buildOrderShareText(order, order.paymentUrl || buildPaymentPageUrl(order.orderId)), order.paymentUrl || buildPaymentPageUrl(order.orderId)).catch(() => {})}
+                  className="grid h-9 w-9 place-items-center rounded-full bg-blue-50 text-blue-600 hover:bg-blue-100"
+                  title="Поделиться"
                 >
-                  ★ Реком.
+                  <Send size={16} />
                 </button>
-                <PaymentRowBlock order={order} updateOrderData={updateOrderData} />
               </div>
             </div>
 
-            <div className="rounded-xl border border-zinc-100 bg-white p-2.5 space-y-2 min-w-0">
-              <div>
-                <span className="block text-[7px] font-black text-zinc-300 uppercase tracking-widest px-1">Изделие</span>
-                <input
-                  type="text"
-                  list="product-list"
-                  value={order.item}
-                  onChange={(e) => applyProductCharacteristics(e.target.value)}
-                  placeholder="Название изделия..."
-                  className="mt-1 h-10 w-full bg-zinc-50 text-[13px] font-black text-zinc-900 focus:bg-white focus:ring-1 focus:ring-blue-100 rounded-lg px-3 outline-none border border-zinc-100 truncate"
-                />
+            <PaymentRowBlock order={order} updateOrderData={updateOrderData} />
+
+            {String(order.deliveryMethod || '').toLowerCase().includes('сдэк') && (
+              <CdekOrderBlock order={order} updateOrderData={updateOrderData} productCatalog={productCatalog} mobile />
+            )}
+          </aside>
+
+          <section className="space-y-5 min-w-0">
+            <div className="rounded-2xl border border-zinc-100 bg-white p-7 shadow-sm">
+              <div className="grid grid-cols-[minmax(320px,1fr)_repeat(3,minmax(150px,190px))] gap-4 items-start">
+                <div className="min-w-0">
+                  <span className="block text-[10px] font-black text-zinc-400 uppercase tracking-widest">Изделие</span>
+                  <input
+                    type="text"
+                    list="product-list"
+                    value={order.item}
+                    onChange={(e) => applyProductCharacteristics(e.target.value)}
+                    placeholder="Название изделия..."
+                    className="mt-5 w-full bg-transparent text-[28px] font-black leading-tight text-zinc-950 outline-none focus:bg-zinc-50 rounded-lg px-1 truncate"
+                  />
+                </div>
+                {financeTile('Стоимость 100%', order.revenue || 0, 'plain', (v) => updateOrderData(order.orderId, 'revenue', v))}
+                {financeTile('Доставка', order.deliveryPrice || 0, 'plain', (v) => updateOrderData(order.orderId, 'deliveryPrice', v))}
+                {financeTile('Предоплата 50%', order.paidAmount || 0, 'paid', (v) => updateOrderData(order.orderId, 'paidAmount', v))}
               </div>
-              <div className="grid grid-cols-4 gap-2">
+
+              <div className="my-7 h-px bg-zinc-100" />
+
+              <div className="grid grid-cols-4 gap-x-5 gap-y-5">
                 {fieldSelect('Цвет', order.rawRow?.[RAW_COLOR_INDEX] || '', optionsWithCurrent(handbookColors, order.rawRow?.[RAW_COLOR_INDEX] || ''), (v) => updateOrderData(order.orderId, `rawRow[${RAW_COLOR_INDEX}]`, v))}
                 {fieldSelect('Размер', order.rawRow?.[RAW_SIZE_INDEX] || '', optionsWithCurrent(handbookSizes, order.rawRow?.[RAW_SIZE_INDEX] || ''), (v) => updateOrderData(order.orderId, `rawRow[${RAW_SIZE_INDEX}]`, v))}
                 {fieldSelect('Рост', order.height || '', optionsWithCurrent(handbookHeights, order.height || ''), (v) => updateOrderData(order.orderId, 'height', v))}
-                {fieldSelect('Оплата', order.paymentType || '', optionsWithCurrent(handbookPaymentTypes, order.paymentType || '', PAYMENT_TYPE_OPTIONS), (v) => updateOrderData(order.orderId, 'paymentType', v))}
-              </div>
-              <div className="grid grid-cols-3 gap-2">
-                {fieldSelect('Метка', order.label || '', optionsWithCurrent(handbookLabels, order.label || ''), (v) => updateOrderData(order.orderId, 'label', v))}
+                {fieldSelect('Источник', order.source || '', optionsWithCurrent(handbookSources, order.source || '', SOURCE_OPTIONS), (v) => updateOrderData(order.orderId, 'source', v))}
                 {fieldSelect('Менеджер', order.manager || '', optionsWithCurrent(handbookManagers, order.manager || ''), (v) => updateOrderData(order.orderId, 'manager', v))}
                 {fieldSelect('Блогер', order.blogger || '', optionsWithCurrent(handbookBloggers, order.blogger || ''), (v) => updateOrderData(order.orderId, 'blogger', v))}
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 gap-2">
-              {financeTile('Стоимость 100%', order.revenue || 0, 'plain', (v) => updateOrderData(order.orderId, 'revenue', v))}
-              {financeTile('Доставка', order.deliveryPrice || 0, 'plain', (v) => updateOrderData(order.orderId, 'deliveryPrice', v))}
-              {financeTile('Предоплата 50%', order.paidAmount || 0, 'paid', (v) => updateOrderData(order.orderId, 'paidAmount', v))}
-              {financeTile('К оплате', dueAmount, 'due')}
-            </div>
-
-            <div className="flex flex-col items-stretch gap-2">
-              <span className={cn(
-                "text-[10px] font-black px-2 py-2 rounded-lg w-full text-center",
-                order.isOverdue && !order.isShipped
-                  ? "bg-red-500 text-white animate-pulse shadow-sm shadow-red-200"
-                  : order.isShipped
-                    ? "bg-zinc-100 text-zinc-400"
-                    : "bg-blue-50 text-blue-600 border border-blue-100"
-              )}>
-                {order.deadlineDate.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' })}
-              </span>
-              {order.paymentUrl && (
-                <a
-                  href={order.paymentUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="w-full flex items-center justify-center py-2 rounded-lg border border-violet-200 bg-violet-50 text-violet-500 hover:bg-violet-500 hover:text-white hover:border-violet-500 transition-all"
-                  title="Открыть ссылку СБП"
-                >
-                  <QrCodeIcon size={12} />
-                </a>
-              )}
-              {order.isFirebase && (
+                {fieldSelect('Оплата', order.paymentType || '', optionsWithCurrent(handbookPaymentTypes, order.paymentType || '', PAYMENT_TYPE_OPTIONS), (v) => updateOrderData(order.orderId, 'paymentType', v))}
+                {fieldSelect('Доставка', order.deliveryMethod || '', optionsWithCurrent(handbookDeliveries, order.deliveryMethod || '', DELIVERY_OPTIONS), (v) => updateOrderData(order.orderId, 'deliveryMethod', v))}
+                {fieldSelect('Метка', order.label || '', optionsWithCurrent(handbookLabels, order.label || ''), (v) => updateOrderData(order.orderId, 'label', v))}
+                {financeTile('К оплате', dueAmount, 'due')}
                 <button
-                  onClick={() => {
-                    if (window.confirm(`Удалить заказ ${order.orderId}?`)) onDelete(order.orderId);
-                  }}
-                  className="w-full flex items-center justify-center py-2 rounded-lg border border-red-100 bg-red-50 text-red-400 hover:bg-red-500 hover:text-white hover:border-red-500 transition-all"
-                  title="Удалить заказ"
+                  onClick={() => updateOrderData(order.orderId, 'isRecommended', order.isRecommended ? null : true)}
+                  className={cn(
+                    "self-end h-10 rounded-lg border text-[10px] font-black uppercase tracking-widest transition-all",
+                    order.isRecommended
+                      ? "bg-zinc-900 border-zinc-900 text-white"
+                      : "bg-white border-zinc-200 text-zinc-500 hover:bg-zinc-50"
+                  )}
                 >
-                  <Trash2 size={12} />
+                  ★ Рекомендация
                 </button>
-              )}
+                <span className={cn(
+                  "self-end h-10 rounded-lg border px-3 text-[12px] font-black flex items-center justify-center",
+                  order.isOverdue && !order.isShipped
+                    ? "bg-red-500 text-white border-red-500"
+                    : order.isShipped
+                      ? "bg-zinc-100 text-zinc-400 border-zinc-100"
+                      : "bg-blue-50 text-blue-600 border-blue-100"
+                )}>
+                  Срок {order.deadlineDate.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' })}
+                </span>
+              </div>
             </div>
 
-            {String(order.deliveryMethod || '').toLowerCase().includes('сдэк') && (
-              <div className="col-start-3 col-span-3">
-                <CdekOrderBlock order={order} updateOrderData={updateOrderData} productCatalog={productCatalog} />
+            <div className="rounded-2xl border border-zinc-100 bg-white p-6 shadow-sm">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">Заметки</span>
+                <span className="text-[10px] font-black text-zinc-300">{String(order.notes || '').length} / 500</span>
               </div>
-            )}
-          </div>
+              <textarea
+                value={order.notes || ''}
+                onChange={(e) => updateOrderData(order.orderId, 'notes', e.target.value.slice(0, 500))}
+                maxLength={500}
+                placeholder="Добавить заметку..."
+                className="mt-4 min-h-[130px] w-full resize-none rounded-xl border border-zinc-100 bg-zinc-50/70 p-4 text-[13px] font-semibold text-zinc-700 outline-none focus:bg-white focus:border-blue-200"
+              />
+            </div>
+          </section>
         </div>
       </td>
     </tr>
