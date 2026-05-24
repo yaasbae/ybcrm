@@ -2653,7 +2653,7 @@ async function runGeminiTryOn(
 ): Promise<string | null> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error("GEMINI_API_KEY не задан");
-  const ai = new GoogleGenAI({ apiKey, httpOptions: { timeout: 75000 } });
+  const ai = new GoogleGenAI({ apiKey, httpOptions: { timeout: 120000 } });
 
   // Use only first costume photo — multiple photos don't improve quality but slow Gemini significantly
   const costumePhoto = (allCostumeBase64s?.length ? allCostumeBase64s[0] : costumeBase64) || costumeBase64;
@@ -2682,7 +2682,15 @@ Generate a photorealistic image of the person from IMAGE 2 wearing the exact gar
     config: { responseModalities: [Modality.IMAGE, Modality.TEXT] },
   });
   } catch (e: any) {
-    const isRetryable = e.message?.includes("502") || e.message?.includes("503") || e.message?.includes("500") || e.message?.includes("429") || e.message?.includes("fetch failed") || e.message?.includes("aborted") || e.message?.includes("CANCELLED");
+    const message = e.message || "";
+    const isTimeoutLike = message.includes("aborted") || message.includes("CANCELLED") || message.includes("DEADLINE_EXCEEDED") || message.includes("Deadline expired") || message.includes("timeout");
+    const isRetryable = !isTimeoutLike && (
+      message.includes("502") ||
+      message.includes("503") ||
+      message.includes("500") ||
+      message.includes("429") ||
+      message.includes("fetch failed")
+    );
     if (isRetryable && attempt < 2) {
       const delay = 2500;
       console.log(`Gemini error "${e.message?.slice(0, 50)}" — retry ${attempt}/2 через ${delay/1000}s`);
@@ -3122,7 +3130,7 @@ function startTelegramBot() {
   });
 
   botInstance = bot;
-  const webhookUrl = process.env.WEBHOOK_URL;
+  const webhookUrl = process.env.WEBHOOK_URL || process.env.SERVER_URL;
 
   if (webhookUrl) {
     // Webhook mode for Cloud Run
@@ -3132,6 +3140,9 @@ function startTelegramBot() {
       .then(me => console.log(`Telegram бот запущен (webhook): @${me.username}`))
       .catch(e => console.error("Webhook setup error:", e.message));
     app.post(webhookPath, (req, res) => bot.handleUpdate(req.body, res));
+  } else if (process.env.K_SERVICE) {
+    console.warn("WEBHOOK_URL не задан в Cloud Run — polling основного бота отключён, чтобы не ловить Telegram 409");
+    return;
   } else {
     // Polling mode for local dev
     bot.telegram.deleteWebhook().catch(() => {});
@@ -3501,16 +3512,28 @@ function startContentBot() {
     return sendMenu(ctx);
   });
 
-  bot.launch().catch((e: any) => {
-    if (e.message?.includes('409')) {
-      console.log('[content-bot] 409 Conflict — другой инстанс уже опрашивает Telegram, polling пропущен');
-    } else {
-      console.error('[content-bot] launch error:', e.message);
-    }
-  });
-  process.once("SIGINT", () => bot.stop("SIGINT"));
-  process.once("SIGTERM", () => bot.stop("SIGTERM"));
-  console.log("[content-bot] запущен");
+  const webhookUrl = process.env.WEBHOOK_URL || process.env.SERVER_URL;
+  if (webhookUrl) {
+    const webhookPath = "/content-tg-webhook-" + CONTENT_BOT_TOKEN.split(":")[0];
+    bot.telegram.setWebhook(`${webhookUrl}${webhookPath}`)
+      .then(() => bot.telegram.getMe())
+      .then(me => console.log(`[content-bot] запущен (webhook): @${me.username}`))
+      .catch(e => console.error("[content-bot] webhook setup error:", e.message));
+    app.post(webhookPath, (req, res) => bot.handleUpdate(req.body, res));
+  } else if (process.env.K_SERVICE) {
+    console.warn("[content-bot] WEBHOOK_URL не задан в Cloud Run — polling отключён, чтобы не ловить Telegram 409");
+  } else {
+    bot.launch().catch((e: any) => {
+      if (e.message?.includes('409')) {
+        console.log('[content-bot] 409 Conflict — другой инстанс уже опрашивает Telegram, polling пропущен');
+      } else {
+        console.error('[content-bot] launch error:', e.message);
+      }
+    });
+    process.once("SIGINT", () => bot.stop("SIGINT"));
+    process.once("SIGTERM", () => bot.stop("SIGTERM"));
+    console.log("[content-bot] запущен (polling)");
+  }
 }
 
 startContentBot();
