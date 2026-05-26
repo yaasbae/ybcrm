@@ -1318,11 +1318,31 @@ const OrderCard = React.memo(({
   updateOrderData,
   onDelete,
   productCatalog,
+  handbookStatuses,
+  handbookSources,
+  handbookDeliveries,
+  handbookSizes,
+  handbookColors,
+  handbookHeights,
+  handbookLabels,
+  handbookPaymentTypes,
+  handbookManagers,
+  handbookBloggers,
 }: {
   order: OrderData;
   updateOrderData: (id: string, field: string, value: any) => void;
   onDelete: (id: string) => void;
   productCatalog: ProductCatalogItem[];
+  handbookStatuses: string[];
+  handbookSources: string[];
+  handbookDeliveries: string[];
+  handbookSizes: string[];
+  handbookColors: string[];
+  handbookHeights: string[];
+  handbookLabels: string[];
+  handbookPaymentTypes: string[];
+  handbookManagers: string[];
+  handbookBloggers: string[];
 }) => {
   const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -1332,14 +1352,23 @@ const OrderCard = React.memo(({
   const [showMobileQr, setShowMobileQr] = useState(false);
   const mobileQrRef = useRef<HTMLDivElement>(null);
   const paymentUrl = mobilePaymentUrl;
-  const dueAmount = getOrderPaymentDue(order);
   const shareText = paymentUrl ? buildOrderShareText(order, paymentUrl) : '';
   const orderItems = getOrderItems(order);
   const orderItemPrices = getOrderItemPrices(order);
-  const paidAmount = Number(order.paidAmount) || 0;
+  const [editItems, setEditItems] = useState<string[]>(orderItems.length ? orderItems : ['']);
+  const [editItemPrices, setEditItemPrices] = useState<number[]>(orderItemPrices.length ? orderItemPrices : [0]);
+  const liveItems = editItems.map(item => item.trim()).filter(Boolean);
+  const liveItemPrices = liveItems.map((_, index) => Number(editItemPrices[index]) || 0);
+  const liveRevenue = getItemPricesTotal(liveItemPrices);
   const deadlineDate = addBusinessDays(order.date, 7);
   const invoiceType = order.invoiceType || getInvoiceTypeFromPaymentType(order.paymentType);
-  const invoiceTone = paidAmount <= 0
+  const liveInvoiceAmount = getInvoiceAmount({
+    revenue: liveRevenue,
+    deliveryPrice: order.deliveryPrice || 0,
+    invoiceType,
+  });
+  const dueAmount = getOrderPaymentDue({ ...order, revenue: liveRevenue, paidAmount: liveInvoiceAmount });
+  const invoiceTone = liveInvoiceAmount <= 0
     ? 'text-zinc-300'
     : invoiceType === 'full'
       ? 'text-emerald-600'
@@ -1349,17 +1378,96 @@ const OrderCard = React.memo(({
     : invoiceType === 'fitting'
       ? 'примерка'
       : 'предоплата';
-  const chipItems = [
-    ['Цвет', order.rawRow?.[RAW_COLOR_INDEX]],
-    ['Размер', order.rawRow?.[RAW_SIZE_INDEX]],
-    ['Рост', order.height],
-    ['Доставка', order.deliveryMethod],
-    ['Оплата', order.paymentType],
-    ['Источник', order.source],
-    ['Метка', order.label],
-    ['Менеджер', order.manager],
-    ['Блогер', order.blogger],
-  ].filter(([, value]) => value);
+  useEffect(() => {
+    setEditItems(orderItems.length ? orderItems : ['']);
+    setEditItemPrices(orderItemPrices.length ? orderItemPrices : [0]);
+  }, [order.item, JSON.stringify(order.items || []), JSON.stringify(order.itemPrices || []), order.revenue]);
+
+  const saveMobileItems = (items: string[], prices = editItemPrices) => {
+    const cleaned = items.map(item => item.trim()).filter(Boolean);
+    const cleanedPrices = cleaned.map((_, index) => Number(prices[index]) || 0);
+    const revenue = getItemPricesTotal(cleanedPrices);
+    const invoiceAmount = getInvoiceAmount({
+      revenue,
+      deliveryPrice: order.deliveryPrice || 0,
+      invoiceType,
+    });
+    updateOrderData(order.orderId, 'items', cleaned);
+    updateOrderData(order.orderId, 'itemPrices', cleanedPrices);
+    updateOrderData(order.orderId, 'item', joinOrderItems(cleaned));
+    updateOrderData(order.orderId, 'revenue', revenue);
+    updateOrderData(order.orderId, 'paidAmount', invoiceAmount);
+  };
+
+  const applyMobileProduct = (value: string, index = 0) => {
+    const nextItems = [...editItems];
+    const nextPrices = [...editItemPrices];
+    nextItems[index] = value;
+    const product = productCatalog.find(p => normalizeProductName(p.name) === normalizeProductName(value));
+    if (product?.sellingPrice && !nextPrices[index]) nextPrices[index] = Number(product.sellingPrice) || 0;
+    setEditItems(nextItems);
+    setEditItemPrices(nextPrices);
+    saveMobileItems(nextItems, nextPrices);
+    if (!product) return;
+    if (product.color) updateOrderData(order.orderId, `rawRow[${RAW_COLOR_INDEX}]`, product.color);
+    if (product.sizeGrid) updateOrderData(order.orderId, `rawRow[${RAW_SIZE_INDEX}]`, product.sizeGrid);
+    if (product.height) updateOrderData(order.orderId, 'height', product.height);
+  };
+
+  const updateMobileItemPrice = (index: number, value: number) => {
+    const nextPrices = [...editItemPrices];
+    nextPrices[index] = value;
+    setEditItemPrices(nextPrices);
+    saveMobileItems(editItems, nextPrices);
+  };
+
+  const addMobileItem = () => {
+    setEditItems([...editItems, '']);
+    setEditItemPrices([...editItemPrices, 0]);
+  };
+
+  const removeMobileItem = (index: number) => {
+    if (editItems.length <= 1) return;
+    const nextItems = editItems.filter((_, i) => i !== index);
+    const nextPrices = editItemPrices.filter((_, i) => i !== index);
+    setEditItems(nextItems);
+    setEditItemPrices(nextPrices);
+    saveMobileItems(nextItems, nextPrices);
+  };
+
+  const updateMobileDeliveryPrice = (value: number) => {
+    updateOrderData(order.orderId, 'deliveryPrice', value);
+    updateOrderData(order.orderId, 'paidAmount', getInvoiceAmount({
+      revenue: liveRevenue,
+      deliveryPrice: value,
+      invoiceType,
+    }));
+  };
+
+  const updateMobileInvoiceType = (value: string) => {
+    const nextInvoiceType = getInvoiceTypeFromPaymentType(value);
+    updateOrderData(order.orderId, 'invoiceType', nextInvoiceType);
+    updateOrderData(order.orderId, 'paidAmount', getInvoiceAmount({
+      revenue: liveRevenue,
+      deliveryPrice: order.deliveryPrice || 0,
+      invoiceType: nextInvoiceType,
+    }));
+  };
+
+  const mobileInputClass = "h-11 w-full rounded-xl border border-zinc-100 bg-white px-3 text-[13px] font-bold text-zinc-900 outline-none focus:border-blue-300";
+  const mobileSelect = (label: string, value: string, options: string[], onChange: (value: string) => void) => (
+    <label className="space-y-1">
+      <span className="block text-[8px] font-black uppercase tracking-widest text-zinc-400">{label}</span>
+      <select
+        value={value || ''}
+        onChange={(e) => onChange(e.target.value)}
+        className={cn(mobileInputClass, "appearance-none text-zinc-800")}
+      >
+        <option value="">—</option>
+        {options.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+      </select>
+    </label>
+  );
 
   const copyPaymentText = () => {
     if (!shareText) return;
@@ -1376,7 +1484,7 @@ const OrderCard = React.memo(({
     setMobilePaymentLoading(true);
     setMobilePaymentError('');
     try {
-      const amount = getOrderPaymentDue(order);
+      const amount = dueAmount;
       if (amount <= 0) throw new Error('Сумма к оплате 0 ₽');
 
       const res = await fetch('/api/tochka/create-payment', {
@@ -1431,7 +1539,7 @@ const OrderCard = React.memo(({
             <div className="text-right">
               <p className="text-[12px] font-black text-zinc-950">{formatCurrency(order.revenue || 0)}</p>
               <p className="mt-1 text-[10px] font-bold text-zinc-400">доставка {formatCurrency(order.deliveryPrice || 0)}</p>
-              <p className={cn("mt-1 text-[11px] font-black", invoiceTone)}>{invoiceLabel} {formatCurrency(paidAmount)}</p>
+              <p className={cn("mt-1 text-[11px] font-black", invoiceTone)}>{invoiceLabel} {formatCurrency(liveInvoiceAmount)}</p>
             </div>
           </div>
           <div className="space-y-1">
@@ -1462,15 +1570,30 @@ const OrderCard = React.memo(({
       {expanded && (
         <>
       {/* Client Info Mobile */}
-      <div className="bg-zinc-50/60 p-3 rounded-xl border border-zinc-100 space-y-1.5">
-        <div className="flex items-center gap-2">
-          <Users className="w-3 h-3 text-zinc-400" />
-          <p className="text-[10px] font-black text-zinc-900 uppercase tracking-tight truncate flex-1">{order.clientName}</p>
-        </div>
-        <div className="flex items-center gap-2">
-          <Phone className="w-2.5 h-2.5 text-zinc-300" />
-          <p className="text-[9px] font-mono text-zinc-400">+{order.clientPhone}</p>
-        </div>
+      <div className="bg-zinc-50/60 p-3 rounded-xl border border-zinc-100 space-y-2">
+        <label className="space-y-1">
+          <span className="flex items-center gap-1.5 text-[8px] font-black uppercase tracking-widest text-zinc-400">
+            <Users className="w-3 h-3" /> Клиент
+          </span>
+          <input
+            value={order.clientName || ''}
+            onChange={(e) => updateOrderData(order.orderId, 'clientName', e.target.value)}
+            placeholder="ФИО клиента"
+            className={mobileInputClass}
+          />
+        </label>
+        <label className="space-y-1">
+          <span className="flex items-center gap-1.5 text-[8px] font-black uppercase tracking-widest text-zinc-400">
+            <Phone className="w-3 h-3" /> Телефон
+          </span>
+          <input
+            value={order.clientPhone || ''}
+            onChange={(e) => updateOrderData(order.orderId, 'clientPhone', e.target.value.replace(/[^0-9]/g, ''))}
+            placeholder="Телефон"
+            inputMode="numeric"
+            className={mobileInputClass}
+          />
+        </label>
       </div>
 
       {/* Product Details Mobile */}
@@ -1481,28 +1604,64 @@ const OrderCard = React.memo(({
               <ShoppingBag className="w-3 h-3 text-blue-500 shrink-0" />
               <span className="text-[8px] font-black text-zinc-400 uppercase tracking-widest">Модель</span>
             </div>
-            <div className="space-y-1">
-              {(orderItems.length ? orderItems : ['—']).map((item, index) => (
-                <div key={`${item}-${index}`} className="flex items-center justify-between gap-2">
-                  <p className="text-[12px] font-black text-zinc-900 leading-tight">{item}</p>
-                  {orderItemPrices[index] > 0 && (
-                    <p className="shrink-0 text-[10px] font-black text-zinc-500">{formatCurrency(orderItemPrices[index])}</p>
-                  )}
+            <div className="space-y-2">
+              {editItems.map((item, index) => (
+                <div key={index} className="grid grid-cols-[minmax(0,1fr)_92px_32px] gap-1.5">
+                  <input
+                    value={item}
+                    list="product-list"
+                    onChange={(e) => applyMobileProduct(e.target.value, index)}
+                    placeholder={index === 0 ? 'Наименование' : `Позиция ${index + 1}`}
+                    className={cn(mobileInputClass, "h-10 text-[12px]")}
+                  />
+                  <input
+                    type="number"
+                    value={editItemPrices[index] || ''}
+                    onChange={(e) => updateMobileItemPrice(index, parseFloat(e.target.value) || 0)}
+                    placeholder="Цена"
+                    className={cn(mobileInputClass, "h-10 px-2 text-right text-[12px]")}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => editItems.length > 1 ? removeMobileItem(index) : addMobileItem()}
+                    className={cn(
+                      "grid h-10 w-8 place-items-center rounded-xl border text-zinc-500",
+                      editItems.length > 1 ? "border-red-100 bg-red-50 text-red-500" : "border-zinc-100 bg-white"
+                    )}
+                    title={editItems.length > 1 ? 'Удалить позицию' : 'Добавить позицию'}
+                  >
+                    {editItems.length > 1 ? <X className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
+                  </button>
                 </div>
               ))}
+              {editItems.length > 1 && (
+                <button
+                  type="button"
+                  onClick={addMobileItem}
+                  className="inline-flex items-center gap-2 rounded-lg border border-zinc-100 bg-white px-3 py-2 text-[10px] font-black uppercase tracking-wider text-zinc-500"
+                >
+                  <Plus className="h-3 w-3" /> Добавить позицию
+                </button>
+              )}
             </div>
           </div>
           <div className="text-right shrink-0">
             <p className="text-[8px] font-black text-zinc-400 uppercase tracking-widest">Стоимость 100%</p>
-            <p className="text-[13px] font-black text-zinc-900">{formatCurrency(order.revenue)}</p>
+            <p className="text-[13px] font-black text-zinc-900">{formatCurrency(liveRevenue)}</p>
           </div>
         </div>
-        <div className="flex flex-wrap gap-1">
-          {chipItems.map(([label, value]) => (
-            <div key={label} className="px-2 py-1 bg-white border border-zinc-100 rounded-md text-[8px] font-black text-zinc-600 uppercase tracking-tight">
-              <span className="text-zinc-300">{label}: </span>{value}
-            </div>
-          ))}
+        <div className="grid grid-cols-2 gap-2">
+          {mobileSelect('Статус', order.status || '', optionsWithCurrent(handbookStatuses, order.status, STATUS_OPTIONS), (v) => updateOrderData(order.orderId, 'status', v))}
+          {mobileSelect('Цвет', order.rawRow?.[RAW_COLOR_INDEX] || '', optionsWithCurrent(handbookColors, order.rawRow?.[RAW_COLOR_INDEX] || ''), (v) => updateOrderData(order.orderId, `rawRow[${RAW_COLOR_INDEX}]`, v))}
+          {mobileSelect('Размер', order.rawRow?.[RAW_SIZE_INDEX] || '', optionsWithCurrent(handbookSizes, order.rawRow?.[RAW_SIZE_INDEX] || ''), (v) => updateOrderData(order.orderId, `rawRow[${RAW_SIZE_INDEX}]`, v))}
+          {mobileSelect('Рост', order.height || '', optionsWithCurrent(handbookHeights, order.height || ''), (v) => updateOrderData(order.orderId, 'height', v))}
+          {mobileSelect('Источник', order.source || '', optionsWithCurrent(handbookSources, order.source || '', SOURCE_OPTIONS), (v) => updateOrderData(order.orderId, 'source', v))}
+          {mobileSelect('Менеджер', order.manager || '', optionsWithCurrent(handbookManagers, order.manager || ''), (v) => updateOrderData(order.orderId, 'manager', v))}
+          {mobileSelect('Оплата', order.paymentType || '', optionsWithCurrent(handbookPaymentTypes, order.paymentType || '', PAYMENT_TYPE_OPTIONS), (v) => updateOrderData(order.orderId, 'paymentType', v))}
+          {mobileSelect('Тип оплаты', getInvoicePaymentLabel(invoiceType), INVOICE_PAYMENT_OPTIONS, updateMobileInvoiceType)}
+          {mobileSelect('Доставка', order.deliveryMethod || '', optionsWithCurrent(handbookDeliveries, order.deliveryMethod || '', DELIVERY_OPTIONS), (v) => updateOrderData(order.orderId, 'deliveryMethod', v))}
+          {mobileSelect('Метка', order.label || '', optionsWithCurrent(handbookLabels, order.label || ''), (v) => updateOrderData(order.orderId, 'label', v))}
+          {mobileSelect('Блогер', order.blogger || '', optionsWithCurrent(handbookBloggers, order.blogger || ''), (v) => updateOrderData(order.orderId, 'blogger', v))}
         </div>
       </div>
 
@@ -1510,7 +1669,13 @@ const OrderCard = React.memo(({
       <div className="grid grid-cols-3 gap-2">
         <div className="rounded-xl bg-zinc-50 border border-zinc-100 p-2">
           <p className="text-[7px] font-black text-zinc-400 uppercase tracking-tight">Доставка</p>
-          <p className="text-[10px] font-black text-zinc-800">{formatCurrency(order.deliveryPrice || 0)}</p>
+          <input
+            type="number"
+            value={order.deliveryPrice || ''}
+            onChange={(e) => updateMobileDeliveryPrice(parseFloat(e.target.value) || 0)}
+            placeholder="0"
+            className="mt-1 w-full bg-transparent text-[10px] font-black text-zinc-800 outline-none"
+          />
         </div>
         <div className={cn(
           "rounded-xl border p-2",
@@ -1520,7 +1685,7 @@ const OrderCard = React.memo(({
             "text-[7px] font-black uppercase tracking-tight",
             invoiceType === 'full' ? "text-emerald-500" : "text-orange-500"
           )}>{invoiceLabel}</p>
-          <p className={cn("text-[10px] font-black", invoiceTone)}>{formatCurrency(order.paidAmount || 0)}</p>
+          <p className={cn("text-[10px] font-black", invoiceTone)}>{formatCurrency(liveInvoiceAmount)}</p>
         </div>
         <div className="rounded-xl bg-blue-50 border border-blue-100 p-2">
           <p className="text-[7px] font-black text-blue-500 uppercase tracking-tight">К оплате</p>
@@ -2704,6 +2869,16 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
               updateOrderData={updateOrderData}
               onDelete={deleteOrder}
               productCatalog={productCatalog}
+              handbookStatuses={handbookStatuses}
+              handbookSources={handbookSources}
+              handbookDeliveries={handbookDeliveries}
+              handbookSizes={handbookSizes}
+              handbookColors={handbookColors}
+              handbookHeights={handbookHeights}
+              handbookLabels={handbookLabels}
+              handbookPaymentTypes={handbookPaymentTypes}
+              handbookManagers={handbookManagers}
+              handbookBloggers={handbookBloggers}
             />
           ))}
 
