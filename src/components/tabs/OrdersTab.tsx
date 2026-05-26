@@ -20,6 +20,7 @@ const STATUS_OPTIONS = ['Новый', 'В работе', 'Оплачен', 'От
 const DELIVERY_OPTIONS = ['СДЭК', 'Почта РФ', 'Боксберри', 'Самовывоз', 'Курьер', 'DBS'];
 const SOURCE_OPTIONS = ['Instagram', 'WhatsApp', 'ТГ', 'Блогер', 'Контент', 'Сарафан', 'Повторный'];
 const PAYMENT_TYPE_OPTIONS = ['QR код', 'Сплитами', 'Долями', 'Наличкой', 'Наложенный СДЭК'];
+const INVOICE_PAYMENT_OPTIONS = ['Предоплата 50%', 'Полная оплата', 'Оплата с примеркой'];
 const RAW_COLOR_INDEX = 1;
 const RAW_SIZE_INDEX = 8;
 const RAW_REVENUE_INDEX = 14;
@@ -49,6 +50,11 @@ type CdekDeliveryPoint = {
   location?: { address?: string };
 };
 
+let cdekStatusCache: { configured?: boolean; error?: string } | null = null;
+let cdekStatusPromise: Promise<{ configured?: boolean; error?: string }> | null = null;
+const cdekCitiesCache = new Map<string, CdekCityOption[]>();
+const cdekPointsCache = new Map<string, CdekDeliveryPoint[]>();
+
 const CDEK_TARIFFS = [
   { code: '136', label: 'Склад → ПВЗ' },
   { code: '137', label: 'Склад → дверь' },
@@ -58,6 +64,40 @@ const CDEK_TARIFFS = [
 
 const normalizeProductName = (value: string) => value.trim().toLowerCase();
 const shortCdekId = (value: string) => value ? `${value.slice(0, 8)}...${value.slice(-4)}` : '';
+
+const addBusinessDays = (date: Date, days: number) => {
+  const result = new Date(date);
+  let added = 0;
+  while (added < days) {
+    result.setDate(result.getDate() + 1);
+    const day = result.getDay();
+    if (day !== 0 && day !== 6) added += 1;
+  }
+  return result;
+};
+
+const getOrderItems = (order: Partial<Pick<OrderData, 'item' | 'items'>>): string[] => {
+  const savedItems = Array.isArray(order.items) ? order.items.map(item => String(item || '').trim()).filter(Boolean) : [];
+  if (savedItems.length) return savedItems;
+  return String(order.item || '')
+    .split(/\s*,\s*|\n/)
+    .map(item => item.trim())
+    .filter(Boolean);
+};
+
+const joinOrderItems = (items: string[]) => items.map(item => item.trim()).filter(Boolean).join(', ');
+
+const getOrderItemPrices = (order: Partial<Pick<OrderData, 'itemPrices' | 'items' | 'item' | 'revenue'>>): number[] => {
+  const items = getOrderItems(order);
+  const savedPrices = Array.isArray(order.itemPrices) ? order.itemPrices.map(price => Number(price) || 0) : [];
+  if (savedPrices.length) {
+    return items.map((_, index) => savedPrices[index] || 0);
+  }
+  if (items.length === 1 && Number(order.revenue)) return [Number(order.revenue) || 0];
+  return items.map(() => 0);
+};
+
+const getItemPricesTotal = (prices: number[]) => prices.reduce((sum, price) => sum + (Number(price) || 0), 0);
 
 const getProductForOrder = (products: ProductCatalogItem[], itemName: string) =>
   products.find(p => normalizeProductName(p.name) === normalizeProductName(itemName || ''));
@@ -116,6 +156,25 @@ function getOrderPaymentDue(order: Partial<Pick<OrderData, 'revenue' | 'delivery
   return fullAmount;
 }
 
+function getInvoiceAmount(order: Partial<Pick<OrderData, 'revenue' | 'deliveryPrice' | 'invoiceType'>>): number {
+  const total = Math.max(0, (Number(order.revenue) || 0) + (Number(order.deliveryPrice) || 0));
+  if (order.invoiceType === 'fitting') return 2000;
+  return order.invoiceType === 'full' ? total : total * 0.5;
+}
+
+function getInvoiceTypeFromPaymentType(paymentType?: string): 'prepayment' | 'full' | 'fitting' {
+  const value = String(paymentType || '').toLowerCase();
+  if (value.includes('пример')) return 'fitting';
+  if (value.includes('полн') || value.includes('100')) return 'full';
+  return 'prepayment';
+}
+
+function getInvoicePaymentLabel(invoiceType?: 'prepayment' | 'full' | 'fitting'): string {
+  if (invoiceType === 'fitting') return 'Оплата с примеркой';
+  if (invoiceType === 'full') return 'Полная оплата';
+  return 'Предоплата 50%';
+}
+
 function buildPaymentPageUrl(orderId: string): string {
   return `${window.location.origin}/pay/${orderId}`;
 }
@@ -128,10 +187,11 @@ function buildOrderShareText(order: Partial<OrderData>, paymentUrl: string): str
   });
   const color = order.rawRow?.[RAW_COLOR_INDEX] || '';
   const size = order.rawRow?.[RAW_SIZE_INDEX] || '';
+  const itemsText = joinOrderItems(getOrderItems(order));
   const lines = [
     `Здравствуйте! Счет на оплату заказа #${order.orderId || ''}`,
     '',
-    order.item ? `Модель: ${order.item}` : '',
+    itemsText ? `Модель: ${itemsText}` : '',
     color ? `Цвет: ${color}` : '',
     size ? `Размер: ${size}` : '',
     order.height ? `Рост: ${order.height}` : '',
@@ -322,7 +382,8 @@ const CdekOrderBlock: React.FC<{
   productCatalog: ProductCatalogItem[];
   mobile?: boolean;
 }> = ({ order, updateOrderData, productCatalog, mobile = false }) => {
-  const product = getProductForOrder(productCatalog, order.item);
+  const orderItems = getOrderItems(order);
+  const product = getProductForOrder(productCatalog, orderItems[0] || order.item);
   const saved = order.cdekPayload || {};
   const initialDeliveryType = String(saved.deliveryType || '').trim()
     || (String(order.deliveryMethod || '').toLowerCase().includes('курьер') ? 'door' : 'pvz');
@@ -330,6 +391,9 @@ const CdekOrderBlock: React.FC<{
   const [cityQuery, setCityQuery] = useState(String(saved.toCity || order.clientCity || ''));
   const [toCityCode, setToCityCode] = useState(String(saved.toCityCode || ''));
   const [deliveryPoint, setDeliveryPoint] = useState(String(saved.deliveryPoint || ''));
+  const [deliveryPointQuery, setDeliveryPointQuery] = useState(String(saved.deliveryPoint || ''));
+  const [pointsRequested, setPointsRequested] = useState(false);
+  const [showDeliveryPoints, setShowDeliveryPoints] = useState(false);
   const [toAddress, setToAddress] = useState(String(saved.toAddress || ''));
   const [weight, setWeight] = useState(String(saved.weight || parsePackageNumber(product?.weight, 700)));
   const [length, setLength] = useState(String(saved.length || 30));
@@ -347,14 +411,29 @@ const CdekOrderBlock: React.FC<{
   const [settingsChecked, setSettingsChecked] = useState(false);
 
   useEffect(() => {
-    fetch('/api/cdek/status')
-      .then(r => r.json())
+    const loadStatus = () => {
+      if (cdekStatusCache) return Promise.resolve(cdekStatusCache);
+      if (!cdekStatusPromise) {
+        cdekStatusPromise = fetch('/api/cdek/status')
+          .then(r => r.json())
+          .then(data => {
+            cdekStatusCache = data;
+            return data;
+          })
+          .catch(() => {
+            cdekStatusCache = { configured: false, error: 'Не удалось проверить настройки СДЭК' };
+            return cdekStatusCache;
+          });
+      }
+      return cdekStatusPromise;
+    };
+
+    loadStatus()
       .then(data => {
         if (!data.configured) {
-          setError('СДЭК API не настроен: нужны Account и Secure password в разделе СДЭК');
+          setError(data.error || 'СДЭК API не настроен: нужны Account и Secure password в разделе СДЭК');
         }
       })
-      .catch(() => setError('Не удалось проверить настройки СДЭК'))
       .finally(() => setSettingsChecked(true));
   }, []);
 
@@ -370,13 +449,21 @@ const CdekOrderBlock: React.FC<{
       return;
     }
     const timer = window.setTimeout(async () => {
+      const cacheKey = q.toLowerCase();
+      const cachedCities = cdekCitiesCache.get(cacheKey);
+      if (cachedCities) {
+        setCities(cachedCities.slice(0, 6));
+        return;
+      }
       setLoadingCities(true);
       setError('');
       try {
         const res = await fetch(`/api/cdek/cities?q=${encodeURIComponent(q)}`);
         const data = await res.json();
         if (!res.ok) throw new Error(getApiErrorMessage(data, 'СДЭК не вернул города'));
-        setCities(Array.isArray(data) ? data.slice(0, 6) : []);
+        const nextCities = Array.isArray(data) ? data.slice(0, 8) : [];
+        cdekCitiesCache.set(cacheKey, nextCities);
+        setCities(nextCities.slice(0, 6));
         if (Array.isArray(data) && data.length === 0) setError('СДЭК не нашел такой город');
       } catch (e: any) {
         setCities([]);
@@ -389,20 +476,32 @@ const CdekOrderBlock: React.FC<{
   }, [cityQuery]);
 
   useEffect(() => {
-    if (!toCityCode || deliveryType !== 'pvz') {
+    const shouldLoadPoints = pointsRequested || deliveryPointQuery.trim().length >= 2 || Boolean(deliveryPoint);
+    if (!toCityCode || deliveryType !== 'pvz' || !shouldLoadPoints) {
       setPoints([]);
       return;
     }
+    const cachedPoints = cdekPointsCache.get(String(toCityCode));
+    if (cachedPoints) {
+      setPoints(cachedPoints);
+      return;
+    }
+    const controller = new AbortController();
     const loadPoints = async () => {
       setLoadingPoints(true);
       setError('');
       try {
-        const res = await fetch(`/api/cdek/deliverypoints?city_code=${encodeURIComponent(toCityCode)}`);
+        const res = await fetch(`/api/cdek/deliverypoints?city_code=${encodeURIComponent(toCityCode)}`, {
+          signal: controller.signal,
+        });
         const data = await res.json();
         if (!res.ok) throw new Error(getApiErrorMessage(data, 'СДЭК не вернул ПВЗ'));
-        setPoints(Array.isArray(data) ? data.slice(0, 80) : []);
+        const nextPoints = Array.isArray(data) ? data.slice(0, 120) : [];
+        cdekPointsCache.set(String(toCityCode), nextPoints);
+        setPoints(nextPoints);
         if (Array.isArray(data) && data.length === 0) setError('В этом городе СДЭК не вернул ПВЗ');
       } catch (e: any) {
+        if (e?.name === 'AbortError') return;
         setPoints([]);
         setError(e.message || 'Ошибка загрузки ПВЗ СДЭК');
       } finally {
@@ -410,7 +509,8 @@ const CdekOrderBlock: React.FC<{
       }
     };
     loadPoints();
-  }, [toCityCode, deliveryType]);
+    return () => controller.abort();
+  }, [toCityCode, deliveryType, pointsRequested, deliveryPointQuery, deliveryPoint]);
 
   useEffect(() => {
     if (toCityCode || cities.length === 0) return;
@@ -423,7 +523,33 @@ const CdekOrderBlock: React.FC<{
     setToCityCode(String(city.code));
     setCityQuery(`${city.city}${city.region ? `, ${city.region}` : ''}`);
     setDeliveryPoint('');
+    setDeliveryPointQuery('');
+    setPointsRequested(false);
     setCities([]);
+  };
+
+  const getPointLabel = (point: CdekDeliveryPoint) => {
+    const address = point.address || point.location?.address || point.code;
+    return `${point.name || point.code} · ${address}`;
+  };
+
+  const selectedPointLabel = useMemo(() => {
+    const point = points.find(item => item.code === deliveryPoint);
+    return point ? getPointLabel(point) : deliveryPointQuery;
+  }, [points, deliveryPoint, deliveryPointQuery]);
+
+  const filteredPoints = useMemo(() => {
+    const query = deliveryPointQuery.trim().toLowerCase();
+    if (!query) return points.slice(0, 20);
+    return points
+      .filter(point => getPointLabel(point).toLowerCase().includes(query))
+      .slice(0, 20);
+  }, [points, deliveryPointQuery]);
+
+  const selectDeliveryPoint = (point: CdekDeliveryPoint) => {
+    setDeliveryPoint(point.code);
+    setDeliveryPointQuery(getPointLabel(point));
+    setShowDeliveryPoints(false);
   };
 
   const persistPayload = (patch: Record<string, any>) => {
@@ -439,7 +565,7 @@ const CdekOrderBlock: React.FC<{
         orderId: order.orderId,
         recipientName: order.clientName,
         recipientPhone: order.clientPhone,
-        itemName: order.item || `Заказ ${order.orderId}`,
+        itemName: joinOrderItems(orderItems) || `Заказ ${order.orderId}`,
         itemCost: Number(order.revenue) || 0,
         codAmount: String(order.paymentType || '').toLowerCase().includes('налож') ? getOrderPaymentDue(order) : 0,
         tariffCode,
@@ -502,29 +628,29 @@ const CdekOrderBlock: React.FC<{
   };
 
   const inputClass = mobile
-    ? 'w-full rounded-lg border border-zinc-100 bg-white px-2 py-2 text-[10px] font-bold text-zinc-700 outline-none focus:border-blue-200'
-    : 'w-full h-10 rounded-lg border border-zinc-100 bg-white px-2.5 text-[10px] font-bold text-zinc-700 outline-none focus:border-blue-200';
+    ? 'w-full min-h-[40px] rounded-lg border border-zinc-100 bg-white px-3 py-2 text-[13px] font-bold text-zinc-700 outline-none focus:border-blue-200'
+    : 'w-full h-10 rounded-lg border border-zinc-100 bg-white px-3 text-[13px] font-bold text-zinc-700 outline-none focus:border-blue-200';
 
   return (
     <div className={cn(
       mobile
-        ? 'rounded-xl border border-zinc-100 bg-zinc-50/60 p-2.5 space-y-2'
-        : 'w-full rounded-xl border border-zinc-100 bg-zinc-50/70 p-2.5 space-y-2'
+        ? 'rounded-xl border border-zinc-100 bg-zinc-50/60 p-3 space-y-3'
+        : 'w-full rounded-xl border border-zinc-100 bg-zinc-50/70 p-3 space-y-3'
     )}>
       <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-1.5">
-          <Truck className={cn(mobile ? 'w-3.5 h-3.5' : 'w-3 h-3', 'text-zinc-500')} />
-          <p className={cn(mobile ? 'text-[8px]' : 'text-[7px]', 'font-black uppercase tracking-widest text-zinc-500')}>СДЭК</p>
+        <div className="flex items-center gap-2">
+          <Truck className={cn(mobile ? 'w-4 h-4' : 'w-3.5 h-3.5', 'text-zinc-500')} />
+          <p className={cn(mobile ? 'text-[13px]' : 'text-[11px]', 'font-black uppercase tracking-widest text-zinc-500')}>СДЭК</p>
         </div>
         {(order.cdekNumber || order.cdekUuid || statusText) && (
-          <span className="text-[7px] font-black uppercase text-emerald-600 text-right">
+          <span className="text-[10px] font-black uppercase text-emerald-600 text-right">
             {order.cdekNumber ? `№ ${order.cdekNumber}` : statusText || `ID ${shortCdekId(order.cdekUuid || '')}`}
           </span>
         )}
       </div>
 
       <div className={cn(
-        'grid gap-1.5 items-end',
+        'grid gap-2 items-end',
         mobile ? 'grid-cols-2' : 'grid-cols-[130px_160px_minmax(190px,1fr)_minmax(240px,1.2fr)]'
       )}>
         <select
@@ -556,13 +682,13 @@ const CdekOrderBlock: React.FC<{
           />
           {(loadingCities || cities.length > 0) && (
             <div className="absolute z-20 mt-1 w-full rounded-lg border border-zinc-100 bg-white shadow-xl overflow-hidden">
-              {loadingCities && <div className="px-2 py-1.5 text-[8px] font-bold text-zinc-400">Ищу город...</div>}
+              {loadingCities && <div className="px-3 py-2 text-[12px] font-bold text-zinc-400">Ищу город...</div>}
               {cities.map(city => (
                 <button
                   key={city.code}
                   type="button"
                   onClick={() => selectCity(city)}
-                  className="w-full text-left px-3 py-2 text-[10px] font-bold text-zinc-700 hover:bg-zinc-50"
+                  className="w-full text-left px-3 py-2 text-[13px] font-bold text-zinc-700 hover:bg-zinc-50"
                 >
                   {city.city}{city.region ? `, ${city.region}` : ''} <span className="text-zinc-300">#{city.code}</span>
                 </button>
@@ -572,21 +698,53 @@ const CdekOrderBlock: React.FC<{
         </div>
         {deliveryType === 'pvz' ? (
           toCityCode ? (
-            <select value={deliveryPoint} onChange={e => setDeliveryPoint(e.target.value)} disabled={loadingPoints} className={cn(inputClass, mobile && 'col-span-2')}>
-              <option value="">{loadingPoints ? 'Загружаю ПВЗ...' : 'ПВЗ СДЭК'}</option>
-              {points.map(point => (
-                <option key={point.code} value={point.code}>
-                  {point.name || point.code} · {point.address || point.location?.address || point.code}
-                </option>
-              ))}
-            </select>
+            <div className={cn('relative', mobile && 'col-span-2')}>
+              <input
+                value={selectedPointLabel}
+                onChange={e => {
+                  setDeliveryPoint('');
+                  setDeliveryPointQuery(e.target.value);
+                  setPointsRequested(true);
+                  setShowDeliveryPoints(true);
+                }}
+                onFocus={() => {
+                  setPointsRequested(true);
+                  setShowDeliveryPoints(true);
+                }}
+                onBlur={() => window.setTimeout(() => setShowDeliveryPoints(false), 150)}
+                disabled={loadingPoints}
+                placeholder={loadingPoints ? 'Загружаю ПВЗ...' : 'ПВЗ или улица'}
+                className={inputClass}
+              />
+              {showDeliveryPoints && !loadingPoints && (
+                <div className="absolute z-30 mt-1 max-h-64 w-full overflow-y-auto rounded-lg border border-zinc-100 bg-white shadow-xl">
+                  {filteredPoints.length > 0 ? (
+                    filteredPoints.map(point => (
+                      <button
+                        key={point.code}
+                        type="button"
+                        onMouseDown={() => selectDeliveryPoint(point)}
+                        className={cn(
+                          'w-full px-3 py-2 text-left text-[13px] font-bold text-zinc-700 hover:bg-zinc-50',
+                          deliveryPoint === point.code && 'bg-blue-50 text-blue-700'
+                        )}
+                      >
+                        {getPointLabel(point)}
+                      </button>
+                    ))
+                  ) : (
+                    <div className="px-3 py-2 text-[13px] font-bold text-zinc-400">ПВЗ не найден</div>
+                  )}
+                </div>
+              )}
+            </div>
           ) : <div className={cn(!mobile && 'hidden')} />
         ) : (
         <input value={toAddress} onChange={e => setToAddress(e.target.value)} placeholder="Адрес доставки" className={cn(inputClass, mobile && 'col-span-2')} />
         )}
       </div>
 
-      <div className={cn('grid gap-1.5 items-end', mobile ? 'grid-cols-2' : 'grid-cols-[92px_92px_92px_92px_minmax(190px,1fr)]')}>
+      <div className={cn('grid gap-2 items-end', mobile ? 'grid-cols-2' : 'grid-cols-[92px_92px_92px_92px_minmax(190px,1fr)]')}>
         {[
           { label: 'Вес, г', value: weight, setValue: setWeight, placeholder: '700' },
           { label: 'Длина, см', value: length, setValue: setLength, placeholder: '30' },
@@ -594,12 +752,12 @@ const CdekOrderBlock: React.FC<{
           { label: 'Высота, см', value: height, setValue: setHeight, placeholder: '10' },
         ].map(field => (
           <label key={field.label} className="space-y-1">
-            <span className="block px-1 text-[7px] font-black uppercase tracking-widest text-zinc-400">{field.label}</span>
+            <span className="block px-1 text-[10px] font-black uppercase tracking-widest text-zinc-400">{field.label}</span>
             <input
               value={field.value}
               onChange={e => field.setValue(e.target.value)}
               placeholder={field.placeholder}
-              className={cn(inputClass, mobile ? 'min-h-[38px]' : 'h-11')}
+              className={cn(inputClass, mobile ? 'min-h-[42px]' : 'h-11')}
             />
           </label>
         ))}
@@ -609,7 +767,7 @@ const CdekOrderBlock: React.FC<{
           disabled={submitting || !settingsChecked}
           className={cn(
             'rounded-lg border border-zinc-200 bg-zinc-900 font-black uppercase tracking-widest text-white hover:bg-black transition-all flex items-center justify-center gap-1.5 disabled:opacity-60',
-            mobile ? 'col-span-2 py-2.5 text-[8px]' : 'h-11 text-[7px]'
+            mobile ? 'col-span-2 min-h-[44px] py-2.5 text-[11px]' : 'h-11 text-[11px]'
           )}
         >
           {submitting ? <RefreshCcw className="w-3 h-3 animate-spin" /> : <Send className="w-3 h-3" />}
@@ -623,21 +781,121 @@ const CdekOrderBlock: React.FC<{
           disabled={refreshingNumber}
           className={cn(
             'w-full rounded-lg border border-emerald-100 bg-emerald-50 font-black uppercase tracking-widest text-emerald-700 hover:bg-emerald-100 transition-all flex items-center justify-center gap-1.5 disabled:opacity-60',
-            mobile ? 'py-2.5 text-[8px]' : 'py-1.5 text-[7px]'
+            mobile ? 'py-2.5 text-[11px]' : 'py-1.5 text-[11px]'
           )}
         >
           {refreshingNumber ? <RefreshCcw className="w-3 h-3 animate-spin" /> : <Search className="w-3 h-3" />}
           Обновить номер СДЭК
         </button>
       )}
-      {error && <p className="text-[8px] font-bold text-red-500">{error}</p>}
-      {statusText && <p className="text-[8px] font-bold text-emerald-600">{statusText}</p>}
+      {error && <p className="text-[11px] font-bold text-red-500">{error}</p>}
+      {statusText && <p className="text-[11px] font-bold text-emerald-600">{statusText}</p>}
       {order.cdekUuid && !order.cdekNumber && (
-        <p className="text-[8px] font-bold text-zinc-400">ID СДЭК: {shortCdekId(order.cdekUuid)}</p>
+        <p className="text-[11px] font-bold text-zinc-400">ID СДЭК: {shortCdekId(order.cdekUuid)}</p>
       )}
     </div>
   );
 };
+
+const OrderSummaryRow = React.memo(({
+  order,
+  expanded,
+  onToggle,
+}: {
+  order: OrderData;
+  expanded: boolean;
+  onToggle: () => void;
+}) => {
+  const orderItems = getOrderItems(order);
+  const orderItemPrices = getOrderItemPrices(order);
+  const paidAmount = Number(order.paidAmount) || 0;
+  const deliveryAmount = Number(order.deliveryPrice) || 0;
+  const deadlineDate = addBusinessDays(order.date, 7);
+  const invoiceType = order.invoiceType || getInvoiceTypeFromPaymentType(order.paymentType);
+  const invoiceTone = paidAmount <= 0
+    ? 'text-zinc-300'
+    : invoiceType === 'full'
+      ? 'text-emerald-600'
+      : 'text-orange-500';
+  const invoiceLabel = invoiceType === 'full'
+    ? 'оплата'
+    : invoiceType === 'fitting'
+      ? 'примерка'
+      : 'предоплата';
+  const statusTone =
+    order.status?.toLowerCase().includes('оплачен') ? 'text-emerald-700' :
+    order.status?.toLowerCase().includes('отгружен') || order.status?.toLowerCase().includes('доставлен') ? 'text-blue-700' :
+    order.status?.toLowerCase().includes('возврат') || order.status?.toLowerCase().includes('отмена') ? 'text-red-600' :
+    'text-zinc-500';
+
+  return (
+    <tr className={cn(
+      "group border-b border-zinc-100 bg-white transition-colors hover:bg-zinc-50/60",
+      expanded && "bg-zinc-50/70",
+      order.isOverdue && !order.isShipped && "bg-red-50/20"
+    )}>
+      <td className="px-5 py-5 align-top">
+        <p className="text-[12px] font-semibold text-zinc-400 tabular-nums">{order.date.toLocaleDateString('ru-RU')}</p>
+        <p className="mt-2 text-[13px] font-black text-zinc-950">#{order.orderId}</p>
+      </td>
+      <td className="px-5 py-5 align-top">
+        <p className="max-w-[210px] truncate text-[13px] font-bold text-zinc-950">{order.clientName || '—'}</p>
+        <p className="mt-2 text-[12px] font-semibold text-zinc-400">{order.clientPhone ? `+${order.clientPhone}` : '—'}</p>
+      </td>
+      <td className="px-5 py-5 align-top">
+        <p className={cn("text-[11px] font-black uppercase tracking-widest", statusTone)}>{order.status || '—'}</p>
+        <p className="mt-2 max-w-[160px] truncate text-[12px] font-semibold text-zinc-500">{order.deliveryMethod || '—'}</p>
+      </td>
+      <td className="px-5 py-5 align-top">
+        <p className="text-[13px] font-black text-zinc-950 tabular-nums">{formatCurrency(order.revenue || 0)}</p>
+        <p className="mt-1.5 text-[11px] font-bold text-zinc-400 tabular-nums">
+          доставка {formatCurrency(deliveryAmount)}
+        </p>
+        <p className={cn("mt-1.5 text-[12px] font-black tabular-nums", invoiceTone)}>
+          {invoiceLabel} {formatCurrency(paidAmount)}
+        </p>
+      </td>
+      <td className="px-5 py-5 align-top">
+        <div className="max-w-[360px] space-y-1.5">
+          {(orderItems.length ? orderItems : ['—']).map((item, index) => (
+            <div key={`${item}-${index}`} className="grid grid-cols-[minmax(0,1fr)_auto] gap-3">
+              <p className="truncate text-[13px] font-bold text-zinc-950" title={item}>{item}</p>
+              <p className="whitespace-nowrap text-[12px] font-semibold text-zinc-400 tabular-nums">
+                {formatCurrency(orderItemPrices[index] || (orderItems.length === 1 ? order.revenue : 0))} × 1
+              </p>
+            </div>
+          ))}
+        </div>
+      </td>
+      <td className="px-5 py-5 align-top">
+        <p className="text-[11px] font-semibold text-zinc-300 tabular-nums">
+          старт {order.date.toLocaleDateString('ru-RU')}
+        </p>
+        <p className={cn(
+          "mt-2 text-[12px] font-bold tabular-nums",
+          order.isOverdue && !order.isShipped ? "text-red-500" : "text-zinc-400"
+        )}>
+          до {deadlineDate.toLocaleDateString('ru-RU')}
+        </p>
+      </td>
+      <td className="px-5 py-4 align-middle text-right">
+        <button
+          type="button"
+          onClick={onToggle}
+          className={cn(
+            "inline-grid h-9 w-9 place-items-center rounded-full border transition-all",
+            expanded
+              ? "border-zinc-900 bg-zinc-900 text-white"
+              : "border-zinc-200 bg-white text-zinc-500 hover:border-zinc-900 hover:text-zinc-950"
+          )}
+          title={expanded ? "Свернуть заказ" : "Раскрыть заказ"}
+        >
+          {expanded ? <X className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
+        </button>
+      </td>
+    </tr>
+  );
+});
 
 const OrderRow = React.memo(({
   order,
@@ -675,6 +933,24 @@ const OrderRow = React.memo(({
     order.status?.toLowerCase().includes('отгружен') || order.status?.toLowerCase().includes('доставлен') ? 'text-blue-700 bg-blue-50 border-blue-100' :
     order.status?.toLowerCase().includes('возврат') || order.status?.toLowerCase().includes('отмена') ? 'text-red-600 bg-red-50 border-red-100' :
     'text-zinc-500 bg-zinc-50 border-zinc-100';
+  const orderItems = getOrderItems(order);
+  const orderItemPrices = getOrderItemPrices(order);
+  const [editItems, setEditItems] = useState<string[]>(orderItems.length ? orderItems : ['']);
+  const [editItemPrices, setEditItemPrices] = useState<number[]>(orderItemPrices.length ? orderItemPrices : [0]);
+  const liveItems = editItems.map(item => item.trim()).filter(Boolean);
+  const liveItemPrices = liveItems.map((_, index) => Number(editItemPrices[index]) || 0);
+  const liveRevenue = getItemPricesTotal(liveItemPrices);
+  const liveInvoiceType = order.invoiceType || getInvoiceTypeFromPaymentType(order.paymentType);
+  const liveInvoiceAmount = getInvoiceAmount({
+    revenue: liveRevenue,
+    deliveryPrice: order.deliveryPrice || 0,
+    invoiceType: liveInvoiceType,
+  });
+
+  useEffect(() => {
+    setEditItems(orderItems.length ? orderItems : ['']);
+    setEditItemPrices(orderItemPrices.length ? orderItemPrices : [0]);
+  }, [order.item, JSON.stringify(order.items || []), JSON.stringify(order.itemPrices || []), order.revenue]);
 
   const fieldInput = (label: string, value: string, list: string, onChange: (v: string) => void) => (
     <div key={label} className="flex flex-col gap-0.5 min-w-[72px]">
@@ -692,11 +968,11 @@ const OrderRow = React.memo(({
 
   const fieldSelect = (label: string, value: string, options: string[], onChange: (v: string) => void) => (
     <div key={label} className="flex flex-col gap-1 min-w-0">
-      <span className="text-[8px] font-black text-zinc-300 uppercase tracking-wider leading-none px-1">{label}</span>
+      <span className="text-[9px] font-black text-zinc-400 uppercase tracking-widest leading-none">{label}</span>
       <select
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="h-9 bg-zinc-50 border border-zinc-100 rounded-lg px-2.5 text-[10px] text-zinc-700 font-bold focus:bg-white focus:border-blue-200 focus:ring-1 focus:ring-blue-100 outline-none w-full truncate"
+        className="h-10 w-full border-0 border-b border-zinc-200 bg-transparent px-0 text-[13px] font-bold text-zinc-800 outline-none transition-colors focus:border-blue-300"
       >
         <option value="">—</option>
         {options.map(opt => <option key={opt} value={opt}>{opt}</option>)}
@@ -704,10 +980,33 @@ const OrderRow = React.memo(({
     </div>
   );
 
-  const applyProductCharacteristics = (value: string) => {
-    updateOrderData(order.orderId, 'item', value);
+  const saveOrderItems = (items: string[], prices = editItemPrices) => {
+    const cleaned = items.map(item => item.trim()).filter(Boolean);
+    const cleanedPrices = cleaned.map((_, index) => Number(prices[index]) || 0);
+    const total = getItemPricesTotal(cleanedPrices);
+    const itemText = joinOrderItems(cleaned);
+    const invoiceAmount = getInvoiceAmount({
+      revenue: total,
+      deliveryPrice: order.deliveryPrice || 0,
+      invoiceType: order.invoiceType || getInvoiceTypeFromPaymentType(order.paymentType),
+    });
+    updateOrderData(order.orderId, 'items', cleaned);
+    updateOrderData(order.orderId, 'itemPrices', cleanedPrices);
+    updateOrderData(order.orderId, 'item', itemText);
+    updateOrderData(order.orderId, 'revenue', total);
+    updateOrderData(order.orderId, 'paidAmount', invoiceAmount);
+  };
+
+  const applyProductCharacteristics = (value: string, index = 0) => {
+    const nextItems = [...editItems];
+    const nextPrices = [...editItemPrices];
+    nextItems[index] = value;
 
     const product = productCatalog.find(p => normalizeProductName(p.name) === normalizeProductName(value));
+    if (product?.sellingPrice && !nextPrices[index]) nextPrices[index] = Number(product.sellingPrice) || 0;
+    setEditItems(nextItems);
+    setEditItemPrices(nextPrices);
+    saveOrderItems(nextItems, nextPrices);
     if (!product) return;
 
     if (product.color) updateOrderData(order.orderId, `rawRow[${RAW_COLOR_INDEX}]`, product.color);
@@ -715,22 +1014,66 @@ const OrderRow = React.memo(({
     if (product.height) updateOrderData(order.orderId, 'height', product.height);
   };
 
-  const dueAmount = getOrderPaymentDue(order);
+  const addOrderItem = () => {
+    setEditItems([...editItems, '']);
+    setEditItemPrices([...editItemPrices, 0]);
+  };
+
+  const removeOrderItem = (index: number) => {
+    if (editItems.length <= 1) return;
+    const nextItems = editItems.filter((_, i) => i !== index);
+    const nextPrices = editItemPrices.filter((_, i) => i !== index);
+    setEditItems(nextItems);
+    setEditItemPrices(nextPrices);
+    saveOrderItems(nextItems, nextPrices);
+  };
+
+  const updateOrderItemPrice = (index: number, value: number) => {
+    const nextPrices = [...editItemPrices];
+    nextPrices[index] = value;
+    setEditItemPrices(nextPrices);
+    saveOrderItems(editItems, nextPrices);
+  };
+
+  const updateOrderDeliveryPrice = (value: number) => {
+    const invoiceAmount = getInvoiceAmount({
+      revenue: liveRevenue,
+      deliveryPrice: value,
+      invoiceType: liveInvoiceType,
+    });
+    updateOrderData(order.orderId, 'deliveryPrice', value);
+    updateOrderData(order.orderId, 'paidAmount', invoiceAmount);
+  };
+
+  const updateOrderInvoiceType = (value: string) => {
+    const invoiceType = getInvoiceTypeFromPaymentType(value);
+    const invoiceAmount = getInvoiceAmount({
+      revenue: liveRevenue,
+      deliveryPrice: order.deliveryPrice || 0,
+      invoiceType,
+    });
+    updateOrderData(order.orderId, 'invoiceType', invoiceType);
+    updateOrderData(order.orderId, 'paidAmount', invoiceAmount);
+  };
+
+  const dueAmount = getOrderPaymentDue({
+    ...order,
+    revenue: liveRevenue,
+    paidAmount: liveInvoiceAmount,
+  });
   const financeTile = (
     label: string,
     value: number,
-    tone: 'plain' | 'paid' | 'due' = 'plain',
+    tone: 'plain' | 'paid' | 'due' | 'prepaid' = 'plain',
     onChange?: (v: number) => void
   ) => (
     <label className={cn(
-      "min-w-0 rounded-lg border p-2",
-      tone === 'paid' ? "bg-emerald-50 border-emerald-100" :
-      tone === 'due' ? "bg-blue-50 border-blue-100" :
-      "bg-zinc-50 border-zinc-100"
+      "min-w-0 border-0 bg-transparent p-0"
     )}>
       <span className={cn(
-        "block text-[7px] font-black uppercase tracking-widest leading-none",
+        "block text-[8px] 2xl:text-[9px] font-black uppercase tracking-wide leading-none whitespace-nowrap",
         tone === 'paid' ? "text-emerald-500" :
+        tone === 'prepaid' ? "text-orange-500" :
         tone === 'due' ? "text-blue-500" :
         "text-zinc-400"
       )}>{label}</span>
@@ -740,14 +1083,14 @@ const OrderRow = React.memo(({
           value={value ?? ''}
           onChange={(e) => onChange(parseFloat(e.target.value) || 0)}
           className={cn(
-            "mt-1 w-full bg-transparent text-[14px] font-black text-right tabular-nums focus:bg-white focus:ring-1 focus:ring-blue-100 rounded px-1 outline-none",
-            tone === 'paid' ? "text-emerald-700" : "text-zinc-900"
+            "mt-2.5 w-full border-0 border-b border-zinc-200 bg-transparent px-0 pb-2 text-[14px] 2xl:text-[16px] font-semibold tabular-nums outline-none focus:border-blue-300",
+            tone === 'paid' ? "text-emerald-700" : tone === 'prepaid' ? "text-orange-600" : "text-zinc-900"
           )}
         />
       ) : (
         <span className={cn(
-          "mt-1 block text-right text-[14px] font-black tabular-nums truncate",
-          tone === 'due' ? "text-blue-700" : "text-zinc-900"
+          "mt-2.5 block whitespace-nowrap text-[14px] 2xl:text-[16px] font-semibold tabular-nums",
+          tone === 'due' ? "text-blue-700" : tone === 'paid' ? "text-emerald-700" : tone === 'prepaid' ? "text-orange-600" : "text-zinc-900"
         )}>{formatCurrency(value)}</span>
       )}
     </label>
@@ -755,18 +1098,18 @@ const OrderRow = React.memo(({
 
   return (
     <tr className={cn(
-      "group border-b border-zinc-100 transition-colors",
-      order.isOverdue && !order.isShipped ? "bg-red-50/30" : "bg-zinc-50/40"
+      "group border-b border-zinc-100 bg-white transition-colors",
+      order.isOverdue && !order.isShipped && "bg-red-50/20"
     )}>
-      <td colSpan={6} className="px-5 py-4">
-        <div className="grid grid-cols-[320px_minmax(760px,1fr)] gap-5 items-stretch">
-          <aside className="rounded-2xl border border-zinc-100 bg-white p-5 shadow-sm space-y-5">
-            <div className="flex items-center justify-between gap-3">
+      <td colSpan={7} className="px-0 py-0">
+        <div className="grid min-w-[1060px] grid-cols-[300px_minmax(760px,1fr)] items-stretch border border-zinc-100 bg-white">
+          <aside className="border-r border-zinc-100 bg-white p-5 space-y-5">
+            <div className="flex items-center justify-between gap-3 border-b border-zinc-100 pb-6">
               <select
                 value={order.status}
                 onChange={(e) => updateOrderData(order.orderId, 'status', e.target.value)}
                 className={cn(
-                  "h-9 max-w-[145px] rounded-lg border px-3 text-[10px] font-black uppercase tracking-wide outline-none cursor-pointer",
+                  "h-10 max-w-[150px] rounded-md border px-3 text-[11px] font-black uppercase tracking-wide outline-none cursor-pointer",
                   statusColor
                 )}
               >
@@ -777,7 +1120,7 @@ const OrderRow = React.memo(({
                   onClick={() => {
                     if (window.confirm(`Удалить заказ ${order.orderId}?`)) onDelete(order.orderId);
                   }}
-                  className="inline-flex items-center gap-2 rounded-lg px-2.5 py-2 text-[10px] font-black text-red-500 hover:bg-red-50 transition-colors"
+                  className="inline-flex items-center gap-2 px-1 py-2 text-[11px] font-black text-red-500 hover:text-red-600 transition-colors"
                   title="Удалить заказ"
                 >
                   <Trash2 size={15} /> Удалить заказ
@@ -785,15 +1128,15 @@ const OrderRow = React.memo(({
               )}
             </div>
 
-            <div>
+            <div className="border-b border-zinc-100 pb-7">
               <p className="text-[13px] font-bold text-zinc-500">Заказ</p>
               <div className="mt-1 flex items-center gap-1">
-                <span className="text-[32px] font-black leading-none text-zinc-950">#</span>
+                <span className="text-[34px] font-black leading-none text-zinc-950">#</span>
                 <input
                   type="text"
                   value={order.orderId}
                   onChange={(e) => updateOrderData(order.orderId, 'orderId', e.target.value)}
-                  className="min-w-0 w-full bg-transparent text-[32px] font-black leading-none text-zinc-950 tracking-tight outline-none focus:bg-zinc-50 rounded-lg"
+                  className="min-w-0 w-full bg-transparent text-[34px] font-black leading-none text-zinc-950 tracking-tight outline-none"
                 />
               </div>
               <input
@@ -806,11 +1149,11 @@ const OrderRow = React.memo(({
                     if (!isNaN(d.getTime())) updateOrderData(order.orderId, 'date', d);
                   }
                 }}
-                className="mt-1 w-full bg-transparent text-[10px] font-semibold text-zinc-400 outline-none focus:bg-zinc-50 rounded px-1"
+                className="mt-3 w-full bg-transparent text-[12px] font-semibold text-zinc-400 outline-none"
               />
             </div>
 
-            <div className="rounded-xl border border-zinc-100 bg-white p-3 shadow-[0_8px_30px_rgba(15,23,42,0.04)]">
+            <div className="border-b border-zinc-100 pb-7 space-y-4">
               <div className="flex items-center gap-2">
                 <Users size={17} className="text-zinc-500 shrink-0" />
                 <input
@@ -818,17 +1161,17 @@ const OrderRow = React.memo(({
                   value={order.clientName || ''}
                   onChange={(e) => updateOrderData(order.orderId, 'clientName', e.target.value)}
                   placeholder="ФИО клиента"
-                  className="min-w-0 flex-1 bg-transparent text-[14px] font-black text-zinc-950 outline-none focus:bg-zinc-50 rounded px-1 truncate"
+                  className="min-w-0 flex-1 bg-transparent text-[15px] font-bold text-zinc-950 outline-none truncate"
                 />
               </div>
-              <div className="mt-3 flex items-center gap-2">
+              <div className="flex items-center gap-2">
                 <Phone size={16} className="text-zinc-400 shrink-0" />
                 <input
                   type="text"
                   value={order.clientPhone}
                   onChange={(e) => updateOrderData(order.orderId, 'clientPhone', e.target.value.replace(/[^0-9]/g, ''))}
                   placeholder="телефон"
-                  className="min-w-0 flex-1 bg-transparent text-[13px] font-bold text-zinc-700 outline-none focus:bg-zinc-50 rounded px-1 truncate"
+                  className="min-w-0 flex-1 bg-transparent text-[14px] font-semibold text-zinc-700 outline-none truncate"
                 />
                 {order.clientPhone && (
                   <a
@@ -856,28 +1199,76 @@ const OrderRow = React.memo(({
             )}
           </aside>
 
-          <section className="space-y-5 min-w-0">
-            <div className="rounded-2xl border border-zinc-100 bg-white p-7 shadow-sm">
-              <div className="grid grid-cols-[minmax(320px,1fr)_repeat(3,minmax(150px,190px))] gap-4 items-start">
+          <section className="min-w-0 bg-white px-6 py-6">
+            <div className="border-b border-zinc-100 pb-6">
+              <div className="grid grid-cols-1 xl:grid-cols-[minmax(330px,1fr)_minmax(330px,360px)] 2xl:grid-cols-[minmax(400px,1fr)_minmax(360px,390px)] gap-5 2xl:gap-6 items-start">
                 <div className="min-w-0">
-                  <span className="block text-[10px] font-black text-zinc-400 uppercase tracking-widest">Изделие</span>
-                  <input
-                    type="text"
-                    list="product-list"
-                    value={order.item}
-                    onChange={(e) => applyProductCharacteristics(e.target.value)}
-                    placeholder="Название изделия..."
-                    className="mt-5 w-full bg-transparent text-[28px] font-black leading-tight text-zinc-950 outline-none focus:bg-zinc-50 rounded-lg px-1 truncate"
-                  />
+                  <span className="block text-[11px] font-black text-zinc-500 uppercase tracking-widest">Изделие</span>
+                  <div className="mt-6 divide-y divide-zinc-100 border-y border-zinc-100">
+                    {editItems.map((item, index) => (
+                      <div key={index} className="grid grid-cols-[minmax(0,1fr)_82px_20px] 2xl:grid-cols-[minmax(0,1fr)_92px_24px] gap-3 items-center py-3.5">
+                        <input
+                          type="text"
+                          list="product-list"
+                          value={item}
+                          onChange={(e) => applyProductCharacteristics(e.target.value, index)}
+                          placeholder={index === 0 ? 'Название изделия...' : `Позиция ${index + 1}`}
+                          title={item}
+                          className="min-w-0 border-0 bg-transparent px-0 py-0 text-[clamp(12px,0.85vw,14px)] font-semibold leading-tight text-zinc-950 outline-none"
+                        />
+                        <label className="relative">
+                          <input
+                            type="number"
+                            value={editItemPrices[index] || ''}
+                            onChange={(e) => updateOrderItemPrice(index, parseFloat(e.target.value) || 0)}
+                            placeholder="Цена"
+                            className="w-full border-0 bg-transparent px-0 py-0 text-right text-[clamp(12px,0.85vw,14px)] font-semibold text-zinc-950 outline-none placeholder:text-zinc-300"
+                          />
+                        </label>
+                        <div className="flex justify-end">
+                          {editItems.length > 1 && (
+                            <button
+                              type="button"
+                              onClick={() => removeOrderItem(index)}
+                              className="grid h-6 w-6 place-items-center text-zinc-400 hover:text-red-500 transition-colors"
+                              title="Удалить позицию"
+                            >
+                              <X className="w-4 h-4" />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={addOrderItem}
+                    className="mt-4 inline-flex items-center gap-3 text-[13px] font-semibold text-zinc-500 hover:text-zinc-950 transition-colors"
+                  >
+                    <Plus className="w-4 h-4" />
+                    Добавить изделие
+                  </button>
                 </div>
-                {financeTile('Стоимость 100%', order.revenue || 0, 'plain', (v) => updateOrderData(order.orderId, 'revenue', v))}
-                {financeTile('Доставка', order.deliveryPrice || 0, 'plain', (v) => updateOrderData(order.orderId, 'deliveryPrice', v))}
-                {financeTile('Предоплата 50%', order.paidAmount || 0, 'paid', (v) => updateOrderData(order.orderId, 'paidAmount', v))}
+                <div className="min-w-0">
+                  <div className="grid grid-cols-[minmax(0,1fr)_74px_minmax(0,1fr)] 2xl:grid-cols-[minmax(0,1fr)_84px_minmax(0,1fr)] gap-3 2xl:gap-4">
+                    {financeTile('Стоимость 100%', liveRevenue)}
+                    {financeTile('Доставка', order.deliveryPrice || 0, 'plain', updateOrderDeliveryPrice)}
+                    {financeTile(
+                      liveInvoiceType === 'fitting'
+                        ? 'Примерка СДЭК'
+                        : liveInvoiceType === 'full'
+                          ? 'Полная оплата'
+                          : 'Предоплата 50%',
+                      liveInvoiceAmount,
+                      liveInvoiceType === 'full' ? 'paid' : 'prepaid'
+                    )}
+                  </div>
+                </div>
               </div>
 
               <div className="my-7 h-px bg-zinc-100" />
 
-              <div className="grid grid-cols-4 gap-x-5 gap-y-5">
+              <div className="grid grid-cols-4 gap-x-8 gap-y-7">
                 {fieldSelect('Цвет', order.rawRow?.[RAW_COLOR_INDEX] || '', optionsWithCurrent(handbookColors, order.rawRow?.[RAW_COLOR_INDEX] || ''), (v) => updateOrderData(order.orderId, `rawRow[${RAW_COLOR_INDEX}]`, v))}
                 {fieldSelect('Размер', order.rawRow?.[RAW_SIZE_INDEX] || '', optionsWithCurrent(handbookSizes, order.rawRow?.[RAW_SIZE_INDEX] || ''), (v) => updateOrderData(order.orderId, `rawRow[${RAW_SIZE_INDEX}]`, v))}
                 {fieldSelect('Рост', order.height || '', optionsWithCurrent(handbookHeights, order.height || ''), (v) => updateOrderData(order.orderId, 'height', v))}
@@ -887,34 +1278,24 @@ const OrderRow = React.memo(({
                 {fieldSelect('Оплата', order.paymentType || '', optionsWithCurrent(handbookPaymentTypes, order.paymentType || '', PAYMENT_TYPE_OPTIONS), (v) => updateOrderData(order.orderId, 'paymentType', v))}
                 {fieldSelect('Доставка', order.deliveryMethod || '', optionsWithCurrent(handbookDeliveries, order.deliveryMethod || '', DELIVERY_OPTIONS), (v) => updateOrderData(order.orderId, 'deliveryMethod', v))}
                 {fieldSelect('Метка', order.label || '', optionsWithCurrent(handbookLabels, order.label || ''), (v) => updateOrderData(order.orderId, 'label', v))}
+                {fieldSelect('Тип оплаты', getInvoicePaymentLabel(liveInvoiceType), INVOICE_PAYMENT_OPTIONS, updateOrderInvoiceType)}
                 {financeTile('К оплате', dueAmount, 'due')}
-                <button
-                  onClick={() => updateOrderData(order.orderId, 'isRecommended', order.isRecommended ? null : true)}
-                  className={cn(
-                    "self-end h-10 rounded-lg border text-[10px] font-black uppercase tracking-widest transition-all",
-                    order.isRecommended
-                      ? "bg-zinc-900 border-zinc-900 text-white"
-                      : "bg-white border-zinc-200 text-zinc-500 hover:bg-zinc-50"
-                  )}
-                >
-                  ★ Рекомендация
-                </button>
                 <span className={cn(
-                  "self-end h-10 rounded-lg border px-3 text-[12px] font-black flex items-center justify-center",
+                  "self-end border-b border-zinc-200 pb-2 text-[18px] font-semibold flex items-center",
                   order.isOverdue && !order.isShipped
-                    ? "bg-red-500 text-white border-red-500"
+                    ? "text-red-600"
                     : order.isShipped
-                      ? "bg-zinc-100 text-zinc-400 border-zinc-100"
-                      : "bg-blue-50 text-blue-600 border-blue-100"
+                      ? "text-zinc-400"
+                      : "text-blue-600"
                 )}>
-                  Срок {order.deadlineDate.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' })}
+                  {addBusinessDays(order.date, 7).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' })}
                 </span>
               </div>
             </div>
 
-            <div className="rounded-2xl border border-zinc-100 bg-white p-6 shadow-sm">
-              <div className="flex items-center justify-between">
-                <span className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">Заметки</span>
+            <div className="pt-8">
+              <div className="flex items-center justify-between border-b border-zinc-100 pb-6">
+                <span className="text-[11px] font-black text-zinc-500 uppercase tracking-widest">Заметки</span>
                 <span className="text-[10px] font-black text-zinc-300">{String(order.notes || '').length} / 500</span>
               </div>
               <textarea
@@ -922,7 +1303,7 @@ const OrderRow = React.memo(({
                 onChange={(e) => updateOrderData(order.orderId, 'notes', e.target.value.slice(0, 500))}
                 maxLength={500}
                 placeholder="Добавить заметку..."
-                className="mt-4 min-h-[130px] w-full resize-none rounded-xl border border-zinc-100 bg-zinc-50/70 p-4 text-[13px] font-semibold text-zinc-700 outline-none focus:bg-white focus:border-blue-200"
+                className="mt-4 min-h-[110px] w-full resize-none border-0 bg-transparent p-0 text-[14px] font-medium text-zinc-700 outline-none placeholder:text-zinc-400"
               />
             </div>
           </section>
@@ -943,6 +1324,7 @@ const OrderCard = React.memo(({
   onDelete: (id: string) => void;
   productCatalog: ProductCatalogItem[];
 }) => {
+  const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
   const [mobilePaymentUrl, setMobilePaymentUrl] = useState(order.paymentUrl || '');
   const [mobilePaymentLoading, setMobilePaymentLoading] = useState(false);
@@ -952,6 +1334,21 @@ const OrderCard = React.memo(({
   const paymentUrl = mobilePaymentUrl;
   const dueAmount = getOrderPaymentDue(order);
   const shareText = paymentUrl ? buildOrderShareText(order, paymentUrl) : '';
+  const orderItems = getOrderItems(order);
+  const orderItemPrices = getOrderItemPrices(order);
+  const paidAmount = Number(order.paidAmount) || 0;
+  const deadlineDate = addBusinessDays(order.date, 7);
+  const invoiceType = order.invoiceType || getInvoiceTypeFromPaymentType(order.paymentType);
+  const invoiceTone = paidAmount <= 0
+    ? 'text-zinc-300'
+    : invoiceType === 'full'
+      ? 'text-emerald-600'
+      : 'text-orange-500';
+  const invoiceLabel = invoiceType === 'full'
+    ? 'оплата'
+    : invoiceType === 'fitting'
+      ? 'примерка'
+      : 'предоплата';
   const chipItems = [
     ['Цвет', order.rawRow?.[RAW_COLOR_INDEX]],
     ['Размер', order.rawRow?.[RAW_SIZE_INDEX]],
@@ -1010,39 +1407,60 @@ const OrderCard = React.memo(({
       "p-4 flex flex-col gap-3 transition-colors",
       order.isOverdue && !order.isShipped ? "bg-red-50/30" : "bg-white"
     )}>
-      {/* Card Header */}
-      <div className="flex items-start justify-between">
-        <div className="flex flex-col">
-          <div className="flex items-center gap-2">
-            <span className="text-[12px] font-black text-zinc-900 tracking-tighter uppercase flex items-center gap-1.5">
-              {order.isFirebase && <div title="Заказ из БД" className="w-2 h-2 rounded-full bg-blue-500 animate-pulse shrink-0" />}
-              {order.orderId}
-            </span>
-            <span className={cn(
-              "text-[8px] font-black px-1.5 py-0.5 rounded uppercase",
-              order.status?.toLowerCase().includes('оплачен') ? "bg-emerald-500 text-white shadow-sm shadow-emerald-500/20" :
-              order.status?.toLowerCase().includes('возврат') ? "bg-red-500 text-white shadow-sm shadow-red-500/20" :
-              "bg-zinc-100 text-zinc-500"
-            )}>
-              {order.status}
-            </span>
+      <button
+        type="button"
+        onClick={() => setExpanded(v => !v)}
+        className="grid grid-cols-[minmax(0,1fr)_34px] gap-3 text-left"
+      >
+        <div className="min-w-0 space-y-3">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-[11px] font-semibold text-zinc-400">{order.date.toLocaleDateString('ru-RU')}</p>
+              <p className="mt-1 text-[14px] font-black text-zinc-950">#{order.orderId}</p>
+            </div>
+            <div className="min-w-0 text-right">
+              <p className="truncate text-[12px] font-black text-zinc-950">{order.clientName || '—'}</p>
+              <p className="mt-1 text-[11px] font-semibold text-zinc-400">{order.clientPhone ? `+${order.clientPhone}` : '—'}</p>
+            </div>
           </div>
-          <p className="text-[9px] font-medium text-zinc-400 mt-0.5">{order.date.toLocaleDateString('ru-RU')}</p>
-        </div>
-        <div className="flex flex-col items-end">
-          <p className="text-[11px] font-black text-zinc-900">{formatCurrency(order.revenue)}</p>
-          <div className="flex items-center gap-1.5 mt-0.5">
-            <p className="text-[8px] font-bold text-zinc-400 uppercase tracking-tighter">Срок:</p>
-            <p className={cn(
-              "text-[9px] font-black",
-              order.isOverdue && !order.isShipped ? "text-red-500" : "text-blue-500"
-            )}>
-              {order.deadlineDate.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' })}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">{order.status || '—'}</p>
+              <p className="mt-1 truncate text-[11px] font-semibold text-zinc-500">{order.deliveryMethod || '—'}</p>
+            </div>
+            <div className="text-right">
+              <p className="text-[12px] font-black text-zinc-950">{formatCurrency(order.revenue || 0)}</p>
+              <p className="mt-1 text-[10px] font-bold text-zinc-400">доставка {formatCurrency(order.deliveryPrice || 0)}</p>
+              <p className={cn("mt-1 text-[11px] font-black", invoiceTone)}>{invoiceLabel} {formatCurrency(paidAmount)}</p>
+            </div>
+          </div>
+          <div className="space-y-1">
+            {(orderItems.length ? orderItems : ['—']).map((item, index) => (
+              <div key={`${item}-${index}`} className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
+                <p className="truncate text-[12px] font-bold text-zinc-950">{item}</p>
+                <p className="text-[11px] font-semibold text-zinc-400">
+                  {formatCurrency(orderItemPrices[index] || (orderItems.length === 1 ? order.revenue : 0))} × 1
+                </p>
+              </div>
+            ))}
+          </div>
+          <div className="flex items-center justify-between">
+            <p className="text-[10px] font-semibold text-zinc-400">старт {order.date.toLocaleDateString('ru-RU')}</p>
+            <p className={cn("text-[10px] font-black", order.isOverdue && !order.isShipped ? "text-red-500" : "text-zinc-500")}>
+              до {deadlineDate.toLocaleDateString('ru-RU')}
             </p>
           </div>
         </div>
-      </div>
+        <span className={cn(
+          "grid h-9 w-9 place-items-center rounded-full border self-center justify-self-end transition-colors",
+          expanded ? "border-zinc-900 bg-zinc-900 text-white" : "border-blue-500 bg-white text-blue-600"
+        )}>
+          {expanded ? <X className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
+        </span>
+      </button>
 
+      {expanded && (
+        <>
       {/* Client Info Mobile */}
       <div className="bg-zinc-50/60 p-3 rounded-xl border border-zinc-100 space-y-1.5">
         <div className="flex items-center gap-2">
@@ -1063,7 +1481,16 @@ const OrderCard = React.memo(({
               <ShoppingBag className="w-3 h-3 text-blue-500 shrink-0" />
               <span className="text-[8px] font-black text-zinc-400 uppercase tracking-widest">Модель</span>
             </div>
-            <p className="text-[12px] font-black text-zinc-900 leading-tight">{order.item || '—'}</p>
+            <div className="space-y-1">
+              {(orderItems.length ? orderItems : ['—']).map((item, index) => (
+                <div key={`${item}-${index}`} className="flex items-center justify-between gap-2">
+                  <p className="text-[12px] font-black text-zinc-900 leading-tight">{item}</p>
+                  {orderItemPrices[index] > 0 && (
+                    <p className="shrink-0 text-[10px] font-black text-zinc-500">{formatCurrency(orderItemPrices[index])}</p>
+                  )}
+                </div>
+              ))}
+            </div>
           </div>
           <div className="text-right shrink-0">
             <p className="text-[8px] font-black text-zinc-400 uppercase tracking-widest">Стоимость 100%</p>
@@ -1085,9 +1512,15 @@ const OrderCard = React.memo(({
           <p className="text-[7px] font-black text-zinc-400 uppercase tracking-tight">Доставка</p>
           <p className="text-[10px] font-black text-zinc-800">{formatCurrency(order.deliveryPrice || 0)}</p>
         </div>
-        <div className="rounded-xl bg-emerald-50 border border-emerald-100 p-2">
-          <p className="text-[7px] font-black text-emerald-500 uppercase tracking-tight">Предоплата 50%</p>
-          <p className="text-[10px] font-black text-emerald-700">{formatCurrency(order.paidAmount || 0)}</p>
+        <div className={cn(
+          "rounded-xl border p-2",
+          invoiceType === 'full' ? "bg-emerald-50 border-emerald-100" : "bg-orange-50 border-orange-100"
+        )}>
+          <p className={cn(
+            "text-[7px] font-black uppercase tracking-tight",
+            invoiceType === 'full' ? "text-emerald-500" : "text-orange-500"
+          )}>{invoiceLabel}</p>
+          <p className={cn("text-[10px] font-black", invoiceTone)}>{formatCurrency(order.paidAmount || 0)}</p>
         </div>
         <div className="rounded-xl bg-blue-50 border border-blue-100 p-2">
           <p className="text-[7px] font-black text-blue-500 uppercase tracking-tight">К оплате</p>
@@ -1174,15 +1607,6 @@ const OrderCard = React.memo(({
         >
           Отгрузить
         </button>
-        <button
-          onClick={() => updateOrderData(order.orderId, 'isRecommended', order.isRecommended ? null : true)}
-          className={cn(
-            "flex-1 py-2 rounded-lg text-[8px] font-black uppercase tracking-widest border transition-all",
-            order.isRecommended ? "bg-zinc-800 border-black text-white" : "bg-white border-zinc-200 text-zinc-400"
-          )}
-        >
-          Реком.
-        </button>
         {order.isFirebase && (
           <button
             onClick={() => {
@@ -1195,6 +1619,8 @@ const OrderCard = React.memo(({
           </button>
         )}
       </div>
+        </>
+      )}
     </div>
   );
 });
@@ -1218,8 +1644,8 @@ interface OrdersTabProps {
   updateOrderData: (id: string, field: string, value: any) => void;
   deleteOrder: (id: string) => void;
   newOrder: Partial<OrderData>;
-  setNewOrder: (o: Partial<OrderData>) => void;
-  handleCreateOrder: () => Promise<string | null>;
+  setNewOrder: React.Dispatch<React.SetStateAction<Partial<OrderData>>>;
+  handleCreateOrder: (orderDraft?: Partial<OrderData>) => Promise<string | null>;
   handbookProducts: string[];
   handbookColors: string[];
   handbookSizes: string[];
@@ -1297,6 +1723,9 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
   const [qrCopied, setQrCopied] = useState(false);
   const [tochkaConfigured, setTochkaConfigured] = useState(false);
   const [productCatalog, setProductCatalog] = useState<ProductCatalogItem[]>([]);
+  const [newOrderItems, setNewOrderItems] = useState<string[]>(['']);
+  const [newOrderItemPrices, setNewOrderItemPrices] = useState<number[]>([0]);
+  const [expandedOrderId, setExpandedOrderId] = useState<string | null>(null);
   const createdQrRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -1384,7 +1813,27 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
     }), { orders: 0, paid: 0 });
   }, [chartData2026]);
 
-  const applyNewOrderProduct = (value: string) => {
+  const syncNewOrderItems = (items: string[], prices = newOrderItemPrices, patch: Partial<OrderData> = {}) => {
+    const cleanedItems = items.map(item => item.trim()).filter(Boolean);
+    const cleanedPrices = cleanedItems.map((_, index) => Number(prices[index]) || 0);
+    const revenue = getItemPricesTotal(cleanedPrices);
+    setNewOrder(prev => ({
+      ...prev,
+      ...patch,
+      items: cleanedItems,
+      itemPrices: cleanedPrices,
+      item: joinOrderItems(cleanedItems),
+      revenue,
+      invoiceType: patch.invoiceType || prev.invoiceType || getInvoiceTypeFromPaymentType(prev.paymentType),
+      paidAmount: getInvoiceAmount({
+        revenue,
+        deliveryPrice: Number(patch.deliveryPrice ?? prev.deliveryPrice) || 0,
+        invoiceType: patch.invoiceType || prev.invoiceType || getInvoiceTypeFromPaymentType(prev.paymentType),
+      }),
+    }));
+  };
+
+  const applyNewOrderProduct = (value: string, index = 0) => {
     const product = productCatalog.find(p => normalizeProductName(p.name) === normalizeProductName(value));
     const rawRow = [...(newOrder.rawRow || Array(30).fill(''))];
     while (rawRow.length < 30) rawRow.push('');
@@ -1392,76 +1841,129 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
     if (product?.color) rawRow[RAW_COLOR_INDEX] = product.color;
     if (product?.sizeGrid) rawRow[RAW_SIZE_INDEX] = product.sizeGrid;
 
-    setNewOrder({
-      ...newOrder,
-      item: value,
+    const nextItems = [...newOrderItems];
+    const nextPrices = [...newOrderItemPrices];
+    nextItems[index] = value;
+    if (product?.sellingPrice && !nextPrices[index]) nextPrices[index] = Number(product.sellingPrice) || 0;
+    setNewOrderItems(nextItems);
+    setNewOrderItemPrices(nextPrices);
+    syncNewOrderItems(nextItems, nextPrices, {
       rawRow,
       height: product?.height || newOrder.height || '',
-      revenue: !newOrder.revenue && product?.sellingPrice ? product.sellingPrice : newOrder.revenue,
+    });
+  };
+
+  const addNewOrderItem = () => {
+    setNewOrderItems([...newOrderItems, '']);
+    setNewOrderItemPrices([...newOrderItemPrices, 0]);
+  };
+
+  const removeNewOrderItem = (index: number) => {
+    if (newOrderItems.length <= 1) return;
+    const nextItems = newOrderItems.filter((_, i) => i !== index);
+    const nextPrices = newOrderItemPrices.filter((_, i) => i !== index);
+    setNewOrderItems(nextItems);
+    setNewOrderItemPrices(nextPrices);
+    syncNewOrderItems(nextItems, nextPrices);
+  };
+
+  const updateNewOrderItemPrice = (index: number, value: number) => {
+    const nextPrices = [...newOrderItemPrices];
+    nextPrices[index] = value;
+    setNewOrderItemPrices(nextPrices);
+    syncNewOrderItems(newOrderItems, nextPrices);
+  };
+
+  const updateNewOrderDeliveryPrice = (value: number) => {
+    setNewOrder(prev => {
+      const invoiceType = prev.invoiceType || getInvoiceTypeFromPaymentType(prev.paymentType);
+      const revenue = Number(prev.revenue) || 0;
+      return {
+        ...prev,
+        deliveryPrice: value,
+        paidAmount: getInvoiceAmount({ revenue, deliveryPrice: value, invoiceType }),
+      };
+    });
+  };
+
+  const updateNewOrderPaymentType = (value: string) => {
+    const invoiceType = getInvoiceTypeFromPaymentType(value);
+    setNewOrder(prev => {
+      const revenue = Number(prev.revenue) || 0;
+      const deliveryPrice = Number(prev.deliveryPrice) || 0;
+      return {
+        ...prev,
+        paymentType: value,
+        invoiceType,
+        paidAmount: getInvoiceAmount({ revenue, deliveryPrice, invoiceType }),
+      };
     });
   };
 
   return (
-    <div className="space-y-4">
-      <span className="text-[6px] font-bold text-zinc-300 block">[YB-VIEW-ORDERS]</span>
+    <div className="space-y-6">
       {/* Compact Unified Orders Summary with 2026 Monthly Breakdown */}
-      <div className="tg-card bg-white overflow-hidden">
-        <div className="p-3 border-b border-zinc-100 bg-zinc-50/50 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <ShoppingBag className="w-4 h-4 text-zinc-900" />
-            <h3 className="text-[10px] font-black text-zinc-900 uppercase tracking-widest">Аналитика по месяцам 2026</h3>
+      <div className="rounded-2xl border border-zinc-100 bg-white p-5 shadow-sm">
+        <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-center gap-4">
+            <h3 className="text-[22px] font-semibold tracking-tight text-zinc-950">Аналитика</h3>
+            <div className="rounded-xl border border-zinc-200 bg-white px-4 py-2">
+              <select
+                value={ordersFilterMonth}
+                onChange={(e) => setOrdersFilterMonth(parseInt(e.target.value))}
+                className="bg-transparent text-[13px] font-semibold text-zinc-700 outline-none"
+              >
+                <option value={-1}>Все месяцы</option>
+                {['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'].map((m, idx) => (
+                  <option key={m} value={idx}>{m} 2026</option>
+                ))}
+              </select>
+            </div>
           </div>
-          <div className="flex items-center gap-3">
-            <div className="flex flex-col items-end">
-              <span className="text-[8px] font-bold text-zinc-400 uppercase tracking-tight">Заказы 2026</span>
-              <span className="text-[11px] font-black text-zinc-900 tracking-tight">{totals2026.orders}</span>
-            </div>
-            <div className="w-[1px] h-6 bg-zinc-200" />
-            <div className="flex flex-col items-end">
-              <span className="text-[8px] font-bold text-zinc-400 uppercase tracking-tight">Предоплата 2026</span>
-              <span className="text-[11px] font-black text-emerald-600 tracking-tight">{formatCurrency(totals2026.paid)}</span>
-            </div>
+          <div className="flex items-center gap-2">
+            <button type="button" className="grid h-10 w-10 place-items-center rounded-xl border border-zinc-200 text-zinc-500 hover:bg-zinc-50" title="Календарь">
+              <Calendar className="h-4 w-4" />
+            </button>
+            <button type="button" onClick={exportToCsv} className="grid h-10 w-10 place-items-center rounded-xl border border-zinc-200 text-zinc-500 hover:bg-zinc-50" title="Скачать">
+              <Copy className="h-4 w-4" />
+            </button>
+            <button type="button" className="rounded-xl border border-zinc-200 px-4 py-2 text-[13px] font-semibold text-zinc-700 hover:bg-zinc-50">
+              Фильтры
+            </button>
           </div>
         </div>
 
         <div className="overflow-x-auto">
-          <div className="flex p-3 gap-3 min-w-max">
+          <div className="flex min-w-max overflow-hidden rounded-2xl border border-zinc-100">
             {chartData2026
               .slice()
-              .reverse()
-              .map((m: any, i: number) => (
-              <div key={i} className="flex-shrink-0 w-44 p-3 bg-zinc-50 border border-zinc-100 rounded-xl relative group hover:border-zinc-300 transition-all">
-                <div className="absolute top-2 right-2 px-1.5 py-0.5 bg-white border border-zinc-200 rounded text-[7px] font-black text-zinc-400 uppercase tracking-tighter">
-                  {m.year}
-                </div>
-                <p className="text-[10px] font-black text-zinc-900 uppercase mb-2 group-hover:text-blue-600 transition-colors">
+              .sort((a: any, b: any) => a.month - b.month)
+              .map((m: any, i: number) => {
+                const isActiveMonth = m.month === new Date().getMonth() + 1;
+                return (
+              <div key={i} className={cn(
+                "flex-shrink-0 w-48 border-r border-zinc-100 bg-white p-6 transition-all last:border-r-0",
+                isActiveMonth && "ring-1 ring-inset ring-zinc-900"
+              )}>
+                <p className="text-[14px] font-semibold text-zinc-900">
                   {m.monthName}
                 </p>
-                <div className="space-y-1.5">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[8px] font-medium text-zinc-500 uppercase">Заказы:</span>
-                    <span className="text-[9px] font-bold text-zinc-900">{m.orders}</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-[8px] font-medium text-zinc-500 uppercase">Выручка:</span>
-                    <span className="text-[9px] font-black text-zinc-900">{formatCurrency(m.revenue)}</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-[8px] font-medium text-emerald-600/70 uppercase">Предоплата:</span>
-                    <span className="text-[9px] font-black text-emerald-600">{formatCurrency(m.paid)}</span>
-                  </div>
-                  <div className="pt-1.5 border-t border-zinc-200/50 flex items-center justify-between">
-                    <span className="text-[8px] font-bold text-amber-600 uppercase">Доплата:</span>
-                    <span className={cn(
-                      "text-[9px] font-black",
-                      m.dueExtra > 0 ? "text-amber-600" : "text-zinc-300"
-                    )}>
-                      {formatCurrency(m.dueExtra)}
-                    </span>
-                  </div>
+                <div className="mt-4 space-y-3">
+                  <p className="text-[12px] font-semibold text-zinc-400">{m.orders} заказов</p>
+                  <p className="text-[15px] font-black text-emerald-600">{formatCurrency(m.paid)}</p>
+                  <p className={cn("text-[15px] font-black", m.dueExtra > 0 ? "text-orange-500" : m.dueExtra < 0 ? "text-red-500" : "text-zinc-300")}>{formatCurrency(m.dueExtra)}</p>
                 </div>
               </div>
-            ))}
+                );
+              })}
+            <div className="flex-shrink-0 w-48 bg-white p-6">
+              <p className="text-[14px] font-semibold text-zinc-900">За 2026 год</p>
+              <div className="mt-4 space-y-3">
+                <p className="text-[12px] font-semibold text-zinc-400">{totals2026.orders} заказов</p>
+                <p className="text-[15px] font-black text-emerald-600">{formatCurrency(totals2026.paid)}</p>
+                <p className="text-[15px] font-black text-orange-500">{formatCurrency(chartData2026.reduce((sum: number, m: any) => sum + (Number(m.dueExtra) || 0), 0))}</p>
+              </div>
+            </div>
             {chartData2026.length === 0 && (
               <div className="w-full py-6 flex flex-col items-center justify-center text-zinc-400 gap-2">
                 <Calendar className="w-6 h-6 opacity-20" />
@@ -1473,7 +1975,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
       </div>
 
       {/* SLA Deadline Tracking Card */}
-      <div className="tg-card p-3 bg-white border border-zinc-100 flex flex-col md:flex-row gap-6 items-center shadow-sm">
+      <div className="rounded-2xl border border-zinc-100 bg-white p-7 shadow-sm flex flex-col md:flex-row gap-8 items-center">
         <div className="flex-1 w-full space-y-4">
           <div className="flex items-center justify-between">
             <div>
@@ -1482,7 +1984,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                 Мониторинг исполнения заказов
               </h3>
               <div className="flex items-center gap-2">
-                <p className="text-[8px] text-zinc-400 font-medium uppercase tracking-tight">Целевой срок: 10 рабочих дней</p>
+                <p className="text-[12px] text-zinc-400 font-medium">Целевой срок: 7 рабочих дней</p>
                 <div className="w-[1px] h-2 bg-zinc-200" />
                 <select
                   value={slaFilterMonth}
@@ -1722,14 +2224,53 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                 <ShoppingBag className="w-3 h-3 text-zinc-500" /> Изделие
               </label>
               <div className="grid grid-cols-2 gap-2">
-                <input
-                  type="text"
-                  list="product-list"
-                  placeholder="Наименование"
-                  value={newOrder.item || ''}
-                  onChange={(e) => applyNewOrderProduct(e.target.value)}
-                  className="col-span-2 bg-zinc-50 border border-zinc-200 rounded-xl px-4 py-2.5 text-[11px] font-bold text-zinc-900 outline-none focus:bg-white focus:ring-2 focus:ring-zinc-500/10 focus:border-zinc-400 transition-all shadow-sm"
-                />
+                <div className="col-span-2 space-y-2">
+                  {newOrderItems.map((item, index) => (
+                    <div key={index} className="grid grid-cols-[minmax(0,1fr)_88px_auto] sm:grid-cols-[minmax(0,1fr)_104px_auto] gap-2">
+                      <input
+                        type="text"
+                        list="product-list"
+                        placeholder={index === 0 ? 'Наименование' : `Позиция ${index + 1}`}
+                        value={item}
+                        onChange={(e) => applyNewOrderProduct(e.target.value, index)}
+                        title={item}
+                        className="min-w-0 flex-1 bg-zinc-50 border border-zinc-200 rounded-xl px-3 sm:px-4 py-2.5 text-[10px] sm:text-[11px] font-bold text-zinc-900 outline-none focus:bg-white focus:ring-2 focus:ring-zinc-500/10 focus:border-zinc-400 transition-all shadow-sm"
+                      />
+                      <label className="relative">
+                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-[9px] font-black text-zinc-300">₽</span>
+                        <input
+                          type="number"
+                          placeholder="Цена"
+                          value={newOrderItemPrices[index] || ''}
+                          onChange={(e) => updateNewOrderItemPrice(index, parseFloat(e.target.value) || 0)}
+                          className="h-[39px] w-full bg-zinc-50 border border-zinc-200 rounded-xl pl-6 sm:pl-7 pr-2 text-right text-[10px] sm:text-[11px] font-black text-zinc-900 outline-none focus:bg-white focus:ring-2 focus:ring-zinc-500/10 focus:border-zinc-400 transition-all shadow-sm"
+                        />
+                      </label>
+                      <div className="flex shrink-0 gap-1">
+                        {newOrderItems.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={() => removeNewOrderItem(index)}
+                            className="grid h-[39px] w-[39px] place-items-center rounded-xl border border-red-100 bg-red-50 text-red-500 hover:bg-red-100 transition-colors"
+                            title="Удалить позицию"
+                          >
+                            <X className="w-4 h-4" />
+                          </button>
+                        )}
+                        {index === newOrderItems.length - 1 && (
+                          <button
+                            type="button"
+                            onClick={addNewOrderItem}
+                            className="grid h-[39px] w-[39px] place-items-center rounded-xl border border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-900 hover:text-white transition-colors shadow-sm"
+                            title="Добавить позицию"
+                          >
+                            <Plus className="w-4 h-4" />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
                 <div className="relative">
                   <select
                     value={newOrder.rawRow?.[RAW_COLOR_INDEX] || ''}
@@ -1792,14 +2333,14 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                 <div className="relative">
                   <select
                     value={newOrder.paymentType || ''}
-                    onChange={(e) => setNewOrder({...newOrder, paymentType: e.target.value})}
+                    onChange={(e) => updateNewOrderPaymentType(e.target.value)}
                     className={cn(
                       "w-full bg-zinc-50 border border-zinc-200 rounded-xl px-4 py-2.5 text-[11px] font-bold outline-none focus:bg-white focus:ring-2 focus:ring-zinc-500/10 focus:border-zinc-400 transition-all shadow-sm appearance-none cursor-pointer",
                       newOrder.paymentType ? "text-zinc-900" : "text-zinc-400"
                     )}
                   >
                     <option value="">Вид оплаты</option>
-                    {(handbookPaymentTypes.length ? handbookPaymentTypes : PAYMENT_TYPE_OPTIONS).map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                    {INVOICE_PAYMENT_OPTIONS.map(opt => <option key={opt} value={opt}>{opt}</option>)}
                   </select>
                   <ChevronRight className="absolute right-3 top-1/2 -translate-y-1/2 w-3 h-3 text-zinc-400 rotate-90 pointer-events-none" />
                 </div>
@@ -1854,35 +2395,55 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                 <label className="text-[9px] font-black text-zinc-400 uppercase tracking-widest pl-1">Стоимость 100%</label>
                 <div className="relative">
                   <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-[10px] font-black text-zinc-300">₽</span>
-                  <input
-                    type="number"
-                    placeholder="0.00"
-                    value={Number.isNaN(newOrder.revenue) ? "" : newOrder.revenue || ""}
-                    onChange={(e) => setNewOrder({...newOrder, revenue: parseFloat(e.target.value) || 0})}
-                    className="w-full sm:w-36 bg-zinc-50 border border-zinc-200 rounded-xl pl-8 pr-4 py-2.5 text-[11px] font-black text-zinc-900 outline-none focus:bg-white focus:ring-2 focus:ring-zinc-500/10 focus:border-zinc-400 transition-all shadow-sm"
-                  />
+                  <div className="w-full sm:w-36 bg-zinc-50 border border-zinc-200 rounded-xl pl-8 pr-4 py-2.5 text-right text-[11px] font-black text-zinc-900 shadow-sm">
+                    {Number(newOrder.revenue || 0).toLocaleString('ru-RU')}
+                  </div>
                 </div>
               </div>
               <div className="space-y-2">
-                <label className="text-[9px] font-black text-zinc-400 uppercase tracking-widest pl-1">Предоплата 50%</label>
+                <label className="text-[9px] font-black text-zinc-400 uppercase tracking-widest pl-1">Стоимость доставки</label>
                 <div className="relative">
                   <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-[10px] font-black text-zinc-300">₽</span>
                   <input
                     type="number"
                     placeholder="0.00"
-                    value={Number.isNaN(newOrder.paidAmount) ? "" : newOrder.paidAmount || ""}
-                    onChange={(e) => setNewOrder({...newOrder, paidAmount: parseFloat(e.target.value) || 0})}
+                    value={Number.isNaN(newOrder.deliveryPrice) ? "" : newOrder.deliveryPrice || ""}
+                    onChange={(e) => updateNewOrderDeliveryPrice(parseFloat(e.target.value) || 0)}
                     className="w-full sm:w-36 bg-zinc-50 border border-zinc-200 rounded-xl pl-8 pr-4 py-2.5 text-[11px] font-black text-zinc-900 outline-none focus:bg-white focus:ring-2 focus:ring-zinc-500/10 focus:border-zinc-400 transition-all shadow-sm"
                   />
+                </div>
+              </div>
+              <div className="space-y-2">
+                <label className="text-[9px] font-black text-zinc-400 uppercase tracking-widest pl-1">Счет к оплате</label>
+                <div className="relative">
+                  <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-[10px] font-black text-zinc-300">₽</span>
+                  <div className="w-full sm:w-36 bg-emerald-50 border border-emerald-100 rounded-xl pl-8 pr-4 py-2.5 text-right text-[11px] font-black text-emerald-700 shadow-sm">
+                    {Number(newOrder.paidAmount || 0).toLocaleString('ru-RU')}
+                  </div>
                 </div>
               </div>
             </div>
 
             <button
               onClick={async () => {
-                const orderSnapshot = { ...newOrder, rawRow: [...(newOrder.rawRow || [])] };
-                const orderId = await handleCreateOrder();
+                const itemPricesTotal = getItemPricesTotal(newOrderItemPrices);
+                const invoiceType = newOrder.invoiceType || getInvoiceTypeFromPaymentType(newOrder.paymentType);
+                const deliveryPrice = Number(newOrder.deliveryPrice) || 0;
+                const orderSnapshot = {
+                  ...newOrder,
+                  rawRow: [...(newOrder.rawRow || [])],
+                  items: newOrderItems.map(item => item.trim()).filter(Boolean),
+                  itemPrices: newOrderItems.map((item, index) => item.trim() ? (Number(newOrderItemPrices[index]) || 0) : 0).filter((_, index) => Boolean(newOrderItems[index]?.trim())),
+                  item: joinOrderItems(newOrderItems),
+                  revenue: itemPricesTotal,
+                  invoiceType,
+                  paymentType: newOrder.paymentType || 'Предоплата 50%',
+                  paidAmount: getInvoiceAmount({ revenue: itemPricesTotal, deliveryPrice, invoiceType }),
+                };
+                const orderId = await handleCreateOrder(orderSnapshot);
                 if (!orderId) return;
+                setNewOrderItems(['']);
+                setNewOrderItemPrices([0]);
                 const paymentPageUrl = buildPaymentPageUrl(orderId);
                 setCreatedOrderId(orderId);
                 setCreatedShareText(buildOrderShareText({ ...orderSnapshot, orderId }, paymentPageUrl));
@@ -1892,9 +2453,9 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                   setIsCreatingQr(true);
                   try {
                     const amount = getOrderPaymentDue({
-                      revenue: newOrder.revenue || 0,
-                      deliveryPrice: newOrder.deliveryPrice || 0,
-                      paidAmount: newOrder.paidAmount || 0,
+                      revenue: orderSnapshot.revenue || 0,
+                      deliveryPrice: orderSnapshot.deliveryPrice || 0,
+                      paidAmount: orderSnapshot.paidAmount || 0,
                     });
                     if (amount <= 0) throw new Error('Остаток к оплате 0 ₽');
                     const res = await fetch('/api/tochka/create-payment', {
@@ -2076,35 +2637,48 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
           {/* Desktop Table View */}
           <table className="w-full text-left border-collapse hidden md:table">
             <thead>
-              <tr className="text-[9px] font-bold text-zinc-400 uppercase tracking-widest bg-zinc-50/50">
-                <th className="px-2 py-2 border-none w-20">Дата/ID</th>
-                <th className="px-2 py-2 border-none w-48">Клиент / Контакт</th>
-                <th className="px-2 py-2 border-none w-[420px]">Статус / Доставка</th>
-                <th className="px-2 py-2 border-none w-40 text-right">Финансы</th>
-                <th className="px-3 py-2 border-none min-w-[560px]">Изделие и Доп. (A-X)</th>
-                <th className="px-2 py-2 border-none w-16">Срок</th>
+              <tr className="border-b border-zinc-100 bg-zinc-50/50 text-[9px] font-black uppercase tracking-widest text-zinc-400">
+                <th className="px-5 py-3 border-none w-[150px]">Дата / ID</th>
+                <th className="px-5 py-3 border-none w-[240px]">Клиент / Контакт</th>
+                <th className="px-5 py-3 border-none w-[220px]">Статус / Доставка</th>
+                <th className="px-5 py-3 border-none w-[170px]">Финансы</th>
+                <th className="px-5 py-3 border-none min-w-[320px]">Изделие</th>
+                <th className="px-5 py-3 border-none w-[150px]">Срок</th>
+                <th className="px-5 py-3 border-none w-[80px] text-right">Открыть</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-zinc-100">
-              {pagedOrders.map((order, i) => (
-                <OrderRow
-                  key={`${order.orderId}-${i}`}
-                  order={order}
-                  updateOrderData={updateOrderData}
-                  onDelete={deleteOrder}
-                  handbookStatuses={handbookStatuses}
-                  handbookSources={handbookSources}
-                  handbookDeliveries={handbookDeliveries}
-                  handbookSizes={handbookSizes}
-                  handbookColors={handbookColors}
-                  handbookHeights={handbookHeights}
-                  handbookLabels={handbookLabels}
-                  handbookPaymentTypes={handbookPaymentTypes}
-                  handbookManagers={handbookManagers}
-                  handbookBloggers={handbookBloggers}
-                  productCatalog={productCatalog}
-                />
-              ))}
+            <tbody>
+              {pagedOrders.map((order, i) => {
+                const rowKey = `${order.orderId}-${i}`;
+                const expanded = expandedOrderId === rowKey;
+                return (
+                  <React.Fragment key={rowKey}>
+                    <OrderSummaryRow
+                      order={order}
+                      expanded={expanded}
+                      onToggle={() => setExpandedOrderId(expanded ? null : rowKey)}
+                    />
+                    {expanded && (
+                      <OrderRow
+                        order={order}
+                        updateOrderData={updateOrderData}
+                        onDelete={deleteOrder}
+                        handbookStatuses={handbookStatuses}
+                        handbookSources={handbookSources}
+                        handbookDeliveries={handbookDeliveries}
+                        handbookSizes={handbookSizes}
+                        handbookColors={handbookColors}
+                        handbookHeights={handbookHeights}
+                        handbookLabels={handbookLabels}
+                        handbookPaymentTypes={handbookPaymentTypes}
+                        handbookManagers={handbookManagers}
+                        handbookBloggers={handbookBloggers}
+                        productCatalog={productCatalog}
+                      />
+                    )}
+                  </React.Fragment>
+                );
+              })}
             </tbody>
           </table>
 

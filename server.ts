@@ -104,7 +104,7 @@ app.get("/api/sheet/export", async (req, res) => {
 
     const response = await axios.get(url.toString(), {
       responseType: "text",
-      timeout: 20000,
+      timeout: 60000,
       headers: {
         "User-Agent": "Mozilla/5.0 YBCRM Sheet Loader",
       },
@@ -127,6 +127,7 @@ const CDEK_BASE_URL = IS_TEST ? "https://api.edu.cdek.ru/v2" : "https://api.cdek
 let cdekToken: string | null = null;
 let tokenExpiry: number = 0;
 let cdekTokenKey: string | null = null;
+const cdekDeliveryPointsCache = new Map<number, { expiresAt: number; points: any[] }>();
 
 async function getCdekSettings() {
   const snap = db ? await getDoc(doc(db, "settings", "cdek_api")).catch(() => null) : null;
@@ -321,11 +322,20 @@ app.get("/api/cdek/deliverypoints", async (req, res) => {
     const settings = await getCdekSettings();
     const cityCode = Number(req.query.city_code || 0);
     if (!cityCode) return res.status(400).json({ error: "Нужен city_code" });
+    const cached = cdekDeliveryPointsCache.get(cityCode);
+    if (cached && cached.expiresAt > Date.now()) {
+      return res.json(cached.points);
+    }
     const response = await axios.get(`${settings.baseUrl}/deliverypoints`, {
       headers: { Authorization: `Bearer ${token}` },
       params: { city_code: cityCode, type: "PVZ", size: 50 },
     });
-    res.json(response.data);
+    const points = Array.isArray(response.data) ? response.data : [];
+    cdekDeliveryPointsCache.set(cityCode, {
+      expiresAt: Date.now() + 1000 * 60 * 30,
+      points,
+    });
+    res.json(points);
   } catch (error: any) {
     const cdekError = getCdekError(error);
     res.status(cdekError.status).json({ error: "Ошибка поиска ПВЗ СДЭК", ...cdekError });

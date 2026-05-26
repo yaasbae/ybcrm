@@ -36,6 +36,8 @@ export interface OrderData {
   status: string;
   source: string;
   item: string;
+  items?: string[];
+  itemPrices?: number[];
   deliveryMethod: string;
   year: number;
   month: number;
@@ -53,6 +55,7 @@ export interface OrderData {
   paymentUrl?: string;
   paymentStatus?: string;
   paymentType?: string;
+  invoiceType?: 'prepayment' | 'full' | 'fitting';
   notes?: string;
   cdekUuid?: string;
   cdekNumber?: string;
@@ -102,6 +105,17 @@ class ErrorBoundary extends React.Component<{children: React.ReactNode}, {hasErr
   }
 }
 
+const addBusinessDays = (date: Date, days: number) => {
+  const result = new Date(date);
+  let added = 0;
+  while (added < days) {
+    result.setDate(result.getDate() + 1);
+    const day = result.getDay();
+    if (day !== 0 && day !== 6) added += 1;
+  }
+  return result;
+};
+
 const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
   sheetId: initialSheetId,
   initialTab = 'analytics',
@@ -119,6 +133,7 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
   const [loadingStep, setLoadingStep] = useState<string>('Инициализация...');
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [sheetWarning, setSheetWarning] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [ordersFilterMonth, setOrdersFilterMonth] = useState<number>(-1);
@@ -145,11 +160,14 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
     clientName: '',
     clientPhone: '',
     item: '',
+    items: [],
+    itemPrices: [],
     status: 'Новый',
     revenue: 0,
     paidAmount: 0,
     deliveryMethod: '',
-    paymentType: '',
+    paymentType: 'Предоплата 50%',
+    invoiceType: 'prepayment',
     source: '',
     height: '',
     label: '',
@@ -220,8 +238,11 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
             status: ['status'],
             source: ['saleSource'],
             item: ['products'],
+            items: ['items'],
+            itemPrices: ['itemPrices'],
             deliveryMethod: ['shipping'],
             paymentType: ['paymentType'],
+            invoiceType: ['invoiceType'],
             revenue: ['price', 'revenue'],
             deliveryPrice: ['shippingCost', 'deliveryPrice'],
             paidAmount: ['prepaymentAmount'],
@@ -271,46 +292,67 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
     }
   };
 
-  const handleCreateOrder = async (): Promise<string | null> => {
-    if (!newOrder.orderId || !newOrder.clientName) {
+  const handleCreateOrder = async (orderDraft: Partial<OrderData> = newOrder): Promise<string | null> => {
+    if (!orderDraft.orderId || !orderDraft.clientName) {
       alert('Укажите ID заказа и ФИО клиента');
       return null;
     }
 
-    const rawRow = [...(newOrder.rawRow || Array(30).fill(''))];
+    const rawRow = [...(orderDraft.rawRow || Array(30).fill(''))];
     while (rawRow.length < 30) rawRow.push('');
-    rawRow[14] = String(newOrder.revenue || '');
-    rawRow[15] = String(newOrder.deliveryPrice || '');
-    rawRow[16] = String(newOrder.paidAmount || '');
+    rawRow[14] = String(orderDraft.revenue || '');
+    rawRow[15] = String(orderDraft.deliveryPrice || '');
+    rawRow[16] = String(orderDraft.paidAmount || '');
 
+    const newOrderItems = Array.isArray(orderDraft.items)
+      ? orderDraft.items.map(item => String(item || '').trim()).filter(Boolean)
+      : String(orderDraft.item || '').split(',').map(item => item.trim()).filter(Boolean);
+    const newOrderItemText = newOrderItems.join(', ');
+    const newOrderItemPrices = Array.isArray(orderDraft.itemPrices)
+      ? orderDraft.itemPrices.map(price => Number(price) || 0)
+      : [];
+    const itemPricesTotal = newOrderItemPrices.reduce((sum, price) => sum + price, 0);
+    const totalRevenue = itemPricesTotal > 0 ? itemPricesTotal : (orderDraft.revenue || 0);
+    const invoiceType = orderDraft.invoiceType || 'prepayment';
+    const fullInvoiceAmount = totalRevenue + (orderDraft.deliveryPrice || 0);
+    const invoiceAmount = invoiceType === 'fitting'
+      ? 2000
+      : invoiceType === 'full'
+        ? fullInvoiceAmount
+        : fullInvoiceAmount * 0.5;
+
+    const orderDate = orderDraft.date || new Date();
     const orderToCreate: OrderData = {
-      orderId: newOrder.orderId || '',
-      date: newOrder.date || new Date(),
-      revenue: newOrder.revenue || 0,
-      deliveryPrice: newOrder.deliveryPrice || 0,
-      paidAmount: newOrder.paidAmount || 0,
-      clientPhone: newOrder.clientPhone || '',
-      clientName: newOrder.clientName || '',
+      orderId: orderDraft.orderId || '',
+      date: orderDate,
+      revenue: totalRevenue,
+      deliveryPrice: orderDraft.deliveryPrice || 0,
+      paidAmount: orderDraft.paidAmount || invoiceAmount,
+      clientPhone: orderDraft.clientPhone || '',
+      clientName: orderDraft.clientName || '',
       clientInsta: '',
       clientCity: '',
-      status: newOrder.status || 'Новый',
-      source: newOrder.source || '',
-      item: newOrder.item || '',
-      deliveryMethod: newOrder.deliveryMethod || '',
-      paymentType: newOrder.paymentType || '',
-      year: (newOrder.date || new Date()).getFullYear(),
-      month: (newOrder.date || new Date()).getMonth(),
+      status: orderDraft.status || 'Новый',
+      source: orderDraft.source || '',
+      item: orderDraft.item || newOrderItemText,
+      items: newOrderItems,
+      itemPrices: newOrderItemPrices,
+      deliveryMethod: orderDraft.deliveryMethod || '',
+      paymentType: orderDraft.paymentType || '',
+      invoiceType,
+      year: orderDate.getFullYear(),
+      month: orderDate.getMonth(),
       isBlogger: false,
       isRecommended: false,
-      deadlineDate: new Date(),
+      deadlineDate: addBusinessDays(orderDate, 7),
       isShipped: false,
       isLate: false,
       isOverdue: false,
       rawRow,
-      height: newOrder.height || '',
-      label: newOrder.label || '',
-      manager: newOrder.manager || '',
-      blogger: newOrder.blogger || '',
+      height: orderDraft.height || '',
+      label: orderDraft.label || '',
+      manager: orderDraft.manager || '',
+      blogger: orderDraft.blogger || '',
       isFirebase: true
     };
 
@@ -331,6 +373,8 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
         orderDate: orderToCreate.date.toISOString().slice(0, 10),
         date: new Date().toLocaleDateString('ru-RU'),
         products: orderToCreate.item,
+        items: orderToCreate.items || [],
+        itemPrices: orderToCreate.itemPrices || [],
         color,
         size,
         height: orderToCreate.height || '',
@@ -341,6 +385,7 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
         saleSource: orderToCreate.source,
         shipping: orderToCreate.deliveryMethod,
         paymentType: orderToCreate.paymentType || '',
+        invoiceType: orderToCreate.invoiceType || 'prepayment',
         price: orderToCreate.revenue,
         revenue: orderToCreate.revenue,
         shippingCost: orderToCreate.deliveryPrice,
@@ -358,11 +403,14 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
         clientName: '',
         clientPhone: '',
         item: '',
+        items: [],
+        itemPrices: [],
         status: 'Новый',
         revenue: 0,
         paidAmount: 0,
         deliveryMethod: '',
-        paymentType: '',
+        paymentType: 'Предоплата 50%',
+        invoiceType: 'prepayment',
         source: '',
         height: '',
         label: '',
@@ -397,7 +445,7 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
       const rows = parsed.data as string[][];
 
       if (rows.length < 1) {
-        setSheetOrders([]);
+        setSheetWarning("Google-таблица вернула пустой ответ. Старые данные оставлены на экране.");
         return;
       }
 
@@ -487,10 +535,10 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
         let cleanPayment = getVal(rawRow, ['фактические поступления', 'оплата'], 16).replace(/\s/g, '').replace(',', '.').replace('₽', '').replace('(', '-').replace(')', '');
         const paidAmount = Math.abs(parseFloat(cleanPayment) || 0);
 
-        let deadlineDate = new Date(lastDate);
-        deadlineDate.setDate(deadlineDate.getDate() + 14);
+        const deadlineDate = addBusinessDays(lastDate, 7);
 
-        const isShipped = lastStatus.toLowerCase() === 'отправлен' || lastStatus.toLowerCase() === 'готов';
+        const normalizedStatus = lastStatus.toLowerCase();
+        const isShipped = normalizedStatus === 'отправлен' || normalizedStatus === 'готов' || normalizedStatus.includes('отгруж') || normalizedStatus.includes('достав');
         const isOverdue = !isShipped && new Date() > deadlineDate;
         const isBlogger = lastSource.toLowerCase().includes('блогер') || lastSource.toLowerCase().includes('перезаказ');
 
@@ -525,9 +573,11 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
       parsedOrders.sort((a, b) => b.date.getTime() - a.date.getTime());
       setSheetOrders(parsedOrders);
       setError(null);
+      setSheetWarning(null);
     } catch (err: any) {
       console.error(err);
-      setError("Ошибка обработки данных: " + err.message);
+      setError(null);
+      setSheetWarning("Google-таблица сейчас не загрузилась. Старые данные оставлены на экране, попробуй обновить еще раз.");
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -550,11 +600,19 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
       const fbOrders: OrderData[] = [];
       snapshot.forEach(docSnap => {
         const d = docSnap.data();
+        const orderDate = d.date ? new Date(d.date) : new Date();
+        const deadlineDate = addBusinessDays(orderDate, 7);
+        const normalizedStatus = String(d.status || '').toLowerCase();
+        const isShipped = Boolean(d.isShipped) || normalizedStatus === 'отправлен' || normalizedStatus === 'готов' || normalizedStatus.includes('отгруж') || normalizedStatus.includes('достав');
+        const isOverdue = !isShipped && new Date() > deadlineDate;
         fbOrders.push({
           ...d,
           isFirebase: true,
-          date: d.date ? new Date(d.date) : new Date(),
-          deadlineDate: d.deadlineDate ? new Date(d.deadlineDate) : new Date()
+          date: orderDate,
+          deadlineDate,
+          isShipped,
+          isOverdue,
+          isLate: isOverdue
         } as OrderData);
       });
       setFirebaseOrders(fbOrders);
@@ -601,7 +659,44 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
   };
 
   const stats = useMemo(() => {
-    if (data.length === 0) return null;
+    if (data.length === 0) {
+      return {
+        totalOrders: 0,
+        uniqueClients: 0,
+        totalRevenue: 0,
+        topClients: [],
+        topProducts: [],
+        chartData: [],
+        bestMonths: [],
+        bloggersByMonth: [],
+        bloggersList: [],
+        ltvByYear: {},
+        growthText: "в процессе накопления данных",
+        bloggerOrdersCount: 0,
+        bloggerRevenue: 0,
+        uniqueOrders: [],
+        returnsCount: 0,
+        exchangesCount: 0,
+        totalActualPayments: 0,
+        totalDueExtraPayments: 0,
+        salesCount: 0,
+        uniqueSizes: [],
+        uniqueDeliveries: ['СДЭК', 'Почта РФ', 'Боксберри', 'Самовывоз', 'Курьер', 'DBS'],
+        uniquePromotions: [],
+        productsInTable: [],
+        uniqueColors: [],
+        uniqueSources: ['Instagram', 'WhatsApp', 'ТГ', 'Блогер', 'Контент', 'Сарафан', 'Повторный'],
+        uniqueCategories: [],
+        slaStats: {
+          totalOrders: 0,
+          shipped: 0,
+          inProgress: 0,
+          onTime: 0,
+          overdue: 0,
+          onTimeRate: 0
+        }
+      };
+    }
 
     const ordersMap = new Map<string, OrderData>();
     data.forEach(row => {
@@ -615,6 +710,7 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
         if (!existing.clientInsta && row.clientInsta) existing.clientInsta = row.clientInsta;
         if (!existing.status && row.status) existing.status = row.status;
         if (!existing.source && row.source) existing.source = row.source;
+        if ((!existing.items || existing.items.length === 0) && row.items?.length) existing.items = row.items;
       } else {
         ordersMap.set(row.orderId, { ...row });
       }
@@ -655,11 +751,16 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
 
     const productMap = new Map<string, { name: string, total: number, count: number }>();
     data.forEach(row => {
-      if (!row.item || row.item.length < 3) return;
-      const name = row.item.split('\n')[0].split('(')[0].trim();
+      const rowItems = (Array.isArray(row.items) && row.items.length ? row.items : String(row.item || '').split(/\s*,\s*|\n/))
+        .map(item => String(item || '').trim())
+        .filter(Boolean);
+      rowItems.forEach(item => {
+      if (!item || item.length < 3) return;
+      const name = item.split('(')[0].trim();
       if (name.length < 3) return;
       const current = productMap.get(name) || { name, total: 0, count: 0 };
       productMap.set(name, { name, total: current.total + row.revenue, count: current.count + 1 });
+      });
     });
 
     const topProducts = Array.from(productMap.values()).sort((a, b) => b.count - a.count).slice(0, 10);
@@ -733,7 +834,7 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
     const uniqueSizes = Array.from(new Set(data.map(o => String(o.rawRow?.[12] || '').trim()).filter(v => v !== ''))).sort();
     const uniqueDeliveries = Array.from(new Set(['СДЭК', 'Почта РФ', 'Боксберри', 'Самовывоз', 'Курьер', 'DBS', ...data.map(o => String(o.deliveryMethod || '').trim()).filter(v => v !== '')])).sort();
     const uniquePromotions = Array.from(new Set(data.map(o => String(o.rawRow?.[10] || '').trim()).filter(v => v !== ''))).sort();
-    const productsInTable = Array.from(new Set(data.map(o => String(o.item || '').trim()).filter(v => v !== ''))).sort();
+    const productsInTable = Array.from(new Set(data.flatMap(o => (Array.isArray(o.items) && o.items.length ? o.items : String(o.item || '').split(/\s*,\s*|\n/)).map(item => String(item || '').trim()).filter(v => v !== '')))).sort();
     const uniqueColors = Array.from(new Set(data.map(o => String(o.rawRow?.[1] || '').trim()).filter(v => v !== ''))).sort();
     const uniqueSources = Array.from(new Set(['Instagram', 'WhatsApp', 'ТГ', 'Блогер', 'Контент', 'Сарафан', 'Повторный', ...data.map(o => String(o.source || '').trim()).filter(v => v !== '')])).sort();
     const uniqueCategories = Array.from(new Set(data.map(o => String(o.rawRow?.[2] || '').trim()).filter(v => v !== ''))).sort();
@@ -787,6 +888,8 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
         const matchesSearch = !searchTerm ||
           o.orderId.toLowerCase().includes(search) ||
           o.clientName.toLowerCase().includes(search) ||
+          String(o.item || '').toLowerCase().includes(search) ||
+          (Array.isArray(o.items) && o.items.some(item => String(item || '').toLowerCase().includes(search))) ||
           (o.clientPhone && o.clientPhone.includes(search));
         return matchesMonth && matchesStatus && matchesSearch;
       });
@@ -852,6 +955,19 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
 
   return (
     <div className="max-w-7xl mx-auto px-4 py-4 space-y-4 font-sans text-zinc-900">
+      {sheetWarning && (
+        <div className="flex items-center justify-between gap-3 rounded-lg border border-amber-100 bg-amber-50 px-4 py-3 text-[12px] font-semibold text-amber-700">
+          <span>{sheetWarning}</span>
+          <button
+            type="button"
+            onClick={() => fetchData(true)}
+            className="shrink-0 rounded-md bg-white px-3 py-1.5 text-[11px] font-black uppercase tracking-wide text-amber-700 hover:bg-amber-100"
+          >
+            Повторить
+          </button>
+        </div>
+      )}
+
       {/* Toolbar */}
       <div className="flex items-center justify-end gap-2">
         <button

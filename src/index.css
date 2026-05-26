@@ -63,7 +63,7 @@
 .tg-card {
   background-color: var(--card-bg);
   border: 1px solid var(--card-border);
-  @apply shadow-sm rounded-xl overflow-hidden;
+  @apply shadow-none rounded-md overflow-hidden;
 }
 
 .tg-btn {
