@@ -3176,6 +3176,18 @@ function startTelegramBot() {
     }
   });
 
+  bot.action("contact_manager", async (ctx) => {
+    try {
+      await ctx.answerCbQuery().catch(() => {});
+      await ctx.reply(
+        "Напиши сообщение прямо сюда — менеджер получит его и ответит в этом чате 🙏",
+        getMainMenu()
+      );
+    } catch (e: any) {
+      console.error("contact manager action error:", e.message);
+    }
+  });
+
   // Photo handler — virtual try-on
   bot.on("photo", async (ctx) => {
     const userId = String(ctx.from.id);
@@ -3259,10 +3271,10 @@ function startTelegramBot() {
           );
         } else if (btn.id === "contact") {
           await ctx.reply(
-            "📞 *Связаться с нами*\n\nНажми кнопку ниже — откроется чат с менеджером 👇",
+            "📞 *Связаться с нами*\n\nНажми кнопку ниже и напиши сообщение — менеджер ответит в этом чате 👇",
             {
               parse_mode: "Markdown",
-              ...Markup.inlineKeyboard([[Markup.button.url("💬 Написать менеджеру", "https://t.me/YAASBAE_CLO_bot")]])
+              ...Markup.inlineKeyboard([[Markup.button.callback("💬 Написать менеджеру", "contact_manager")]])
             }
           );
         } else if (btn.response) {
