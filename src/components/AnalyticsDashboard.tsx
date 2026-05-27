@@ -38,6 +38,7 @@ export interface OrderData {
   item: string;
   items?: string[];
   itemPrices?: number[];
+  itemColors?: string[];
   deliveryMethod: string;
   year: number;
   month: number;
@@ -53,6 +54,9 @@ export interface OrderData {
   manager?: string;
   blogger?: string;
   paymentUrl?: string;
+  finalPaymentUrl?: string;
+  finalPaymentAmount?: number;
+  finalPaymentStatus?: string;
   paymentStatus?: string;
   paymentType?: string;
   invoiceType?: 'prepayment' | 'full' | 'fitting';
@@ -162,6 +166,7 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
     item: '',
     items: [],
     itemPrices: [],
+    itemColors: [],
     status: 'Новый',
     revenue: 0,
     paidAmount: 0,
@@ -240,6 +245,7 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
             item: ['products'],
             items: ['items'],
             itemPrices: ['itemPrices'],
+            itemColors: ['itemColors'],
             deliveryMethod: ['shipping'],
             paymentType: ['paymentType'],
             invoiceType: ['invoiceType'],
@@ -249,6 +255,9 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
             height: ['height'],
             manager: ['manager'],
             paymentUrl: ['paymentUrl'],
+            finalPaymentUrl: ['finalPaymentUrl'],
+            finalPaymentAmount: ['finalPaymentAmount'],
+            finalPaymentStatus: ['finalPaymentStatus'],
             paymentStatus: ['paymentStatus'],
           };
           (orderFieldMap[String(field)] || []).forEach(target => {
@@ -311,6 +320,10 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
     const newOrderItemPrices = Array.isArray(orderDraft.itemPrices)
       ? orderDraft.itemPrices.map(price => Number(price) || 0)
       : [];
+    const newOrderItemColors = Array.isArray(orderDraft.itemColors)
+      ? newOrderItems.map((_, index) => String(orderDraft.itemColors?.[index] || '').trim())
+      : newOrderItems.map((_, index) => index === 0 ? String(rawRow[1] || '').trim() : '');
+    if (newOrderItemColors[0]) rawRow[1] = newOrderItemColors[0];
     const itemPricesTotal = newOrderItemPrices.reduce((sum, price) => sum + price, 0);
     const totalRevenue = itemPricesTotal > 0 ? itemPricesTotal : (orderDraft.revenue || 0);
     const invoiceType = orderDraft.invoiceType || 'prepayment';
@@ -337,6 +350,7 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
       item: orderDraft.item || newOrderItemText,
       items: newOrderItems,
       itemPrices: newOrderItemPrices,
+      itemColors: newOrderItemColors,
       deliveryMethod: orderDraft.deliveryMethod || '',
       paymentType: orderDraft.paymentType || '',
       invoiceType,
@@ -375,6 +389,7 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
         products: orderToCreate.item,
         items: orderToCreate.items || [],
         itemPrices: orderToCreate.itemPrices || [],
+        itemColors: orderToCreate.itemColors || [],
         color,
         size,
         height: orderToCreate.height || '',
@@ -405,6 +420,7 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
         item: '',
         items: [],
         itemPrices: [],
+        itemColors: [],
         status: 'Новый',
         revenue: 0,
         paidAmount: 0,

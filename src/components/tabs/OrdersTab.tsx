@@ -97,6 +97,14 @@ const getOrderItemPrices = (order: Partial<Pick<OrderData, 'itemPrices' | 'items
   return items.map(() => 0);
 };
 
+const getOrderItemColors = (order: Partial<Pick<OrderData, 'itemColors' | 'items' | 'item' | 'rawRow'>>): string[] => {
+  const items = getOrderItems(order);
+  const savedColors = Array.isArray(order.itemColors) ? order.itemColors.map(color => String(color || '').trim()) : [];
+  if (savedColors.length) return items.map((_, index) => savedColors[index] || '');
+  const fallbackColor = String(order.rawRow?.[RAW_COLOR_INDEX] || '').trim();
+  return items.map((_, index) => index === 0 ? fallbackColor : '');
+};
+
 const getItemPricesTotal = (prices: number[]) => prices.reduce((sum, price) => sum + (Number(price) || 0), 0);
 
 const getProductForOrder = (products: ProductCatalogItem[], itemName: string) =>
@@ -156,6 +164,12 @@ function getOrderPaymentDue(order: Partial<Pick<OrderData, 'revenue' | 'delivery
   return fullAmount;
 }
 
+function getOrderFinalPaymentAmount(order: Partial<Pick<OrderData, 'revenue' | 'deliveryPrice' | 'paidAmount'>>): number {
+  const fullAmount = Math.max(0, (Number(order.revenue) || 0) + (Number(order.deliveryPrice) || 0));
+  const paidAmount = Math.max(0, Number(order.paidAmount) || 0);
+  return Math.max(0, fullAmount - paidAmount);
+}
+
 function getInvoiceAmount(order: Partial<Pick<OrderData, 'revenue' | 'deliveryPrice' | 'invoiceType'>>): number {
   const total = Math.max(0, (Number(order.revenue) || 0) + (Number(order.deliveryPrice) || 0));
   if (order.invoiceType === 'fitting') return 2000;
@@ -195,6 +209,23 @@ function buildOrderShareText(order: Partial<OrderData>, paymentUrl: string): str
     color ? `Цвет: ${color}` : '',
     size ? `Размер: ${size}` : '',
     order.height ? `Рост: ${order.height}` : '',
+    order.deliveryMethod ? `Доставка: ${order.deliveryMethod}` : '',
+    order.clientName ? `ФИО: ${order.clientName}` : '',
+    order.clientPhone ? `Телефон: ${order.clientPhone}` : '',
+    '',
+    `Сумма: ${formatCurrency(amount)}`,
+    `Ссылка на оплату СБП: ${paymentUrl}`,
+  ];
+
+  return lines.filter((line, index, arr) => line || arr[index - 1]).join('\n').trim();
+}
+
+function buildPaymentShareText(order: Partial<OrderData>, paymentUrl: string, amount: number, label = 'Счет на оплату'): string {
+  const itemsText = joinOrderItems(getOrderItems(order));
+  const lines = [
+    `Здравствуйте! ${label} заказа #${order.orderId || ''}`,
+    '',
+    itemsText ? `Модель: ${itemsText}` : '',
     order.deliveryMethod ? `Доставка: ${order.deliveryMethod}` : '',
     order.clientName ? `ФИО: ${order.clientName}` : '',
     order.clientPhone ? `Телефон: ${order.clientPhone}` : '',
@@ -286,15 +317,26 @@ async function shareQrImage(svg: SVGSVGElement | null, orderId: string, text: st
 
 const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string, field: string, value: any) => void }> = ({ order, updateOrderData }) => {
   const [loading, setLoading] = useState(false);
+  const [finalLoading, setFinalLoading] = useState(false);
   const [paymentUrl, setPaymentUrl] = useState<string | null>(order.paymentUrl || null);
+  const [finalPaymentUrl, setFinalPaymentUrl] = useState<string | null>(order.finalPaymentUrl || null);
   const [copied, setCopied] = useState(false);
   const [showQr, setShowQr] = useState(false);
+  const [showFinalQr, setShowFinalQr] = useState(false);
   const [error, setError] = useState('');
+  const [finalError, setFinalError] = useState('');
   const qrRef = useRef<HTMLDivElement>(null);
+  const finalQrRef = useRef<HTMLDivElement>(null);
 
   const pageUrl = buildPaymentPageUrl(order.orderId);
   const targetPaymentUrl = paymentUrl || pageUrl;
-  const shareText = buildOrderShareText(order, targetPaymentUrl);
+  const initialAmount = getOrderPaymentDue(order);
+  const finalAmount = getOrderFinalPaymentAmount(order);
+  const showFinalPayment = (order.invoiceType || getInvoiceTypeFromPaymentType(order.paymentType)) !== 'full' && finalAmount > 0;
+  const shareText = buildPaymentShareText(order, targetPaymentUrl, initialAmount, 'Счет на оплату');
+  const finalShareText = finalPaymentUrl
+    ? buildPaymentShareText(order, finalPaymentUrl, finalAmount, 'Счет на доплату')
+    : '';
 
   const handleCreate = async () => {
     setLoading(true);
@@ -323,15 +365,51 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
     finally { setLoading(false); }
   };
 
+  const handleCreateFinal = async () => {
+    setFinalLoading(true);
+    setFinalError('');
+    try {
+      if (finalAmount <= 0) throw new Error('Сумма доплаты 0 ₽');
+      const res = await fetch('/api/tochka/create-payment', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          orderId: `${order.orderId}-final`,
+          amount: finalAmount,
+          description: `Доплата заказа #${order.orderId} ${order.item || ''}`,
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Не удалось создать счёт на доплату');
+      if (data.paymentUrl) {
+        setFinalPaymentUrl(data.paymentUrl);
+        updateOrderData(order.orderId, 'finalPaymentUrl', data.paymentUrl);
+        updateOrderData(order.orderId, 'finalPaymentAmount', finalAmount);
+        updateOrderData(order.orderId, 'finalPaymentStatus', 'pending');
+      }
+    } catch (e: any) {
+      setFinalError(e.message || 'Не удалось создать счёт на доплату');
+    }
+    finally { setFinalLoading(false); }
+  };
+
   const handleCopy = (text = pageUrl) => {
     navigator.clipboard.writeText(text);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
 
+  useEffect(() => {
+    setPaymentUrl(order.paymentUrl || null);
+  }, [order.paymentUrl]);
+
+  useEffect(() => {
+    setFinalPaymentUrl(order.finalPaymentUrl || null);
+  }, [order.finalPaymentUrl]);
+
   if (!paymentUrl) {
     return (
-      <div className="mt-1.5">
+      <div className="mt-1.5 space-y-1.5">
         <button
           onClick={handleCreate}
           disabled={loading}
@@ -341,6 +419,9 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
           {loading ? 'Создаём...' : 'Создать счёт'}
         </button>
         {error && <p className="mt-1 text-[8px] font-bold text-red-500">{error}</p>}
+        {showFinalPayment && (
+          <p className="text-[8px] font-bold text-zinc-400">Доплата появится после создания основного счёта</p>
+        )}
       </div>
     );
   }
@@ -370,6 +451,49 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
           >
             Отправить QR
           </button>
+        </div>
+      )}
+      {showFinalPayment && (
+        <div className="border-t border-zinc-100 pt-1.5">
+          {finalPaymentUrl ? (
+            <div className="space-y-1">
+              <button
+                onClick={() => shareOrder(finalShareText, finalPaymentUrl).catch(() => navigator.clipboard.writeText(finalShareText))}
+                className="w-full text-[8px] font-black py-1.5 rounded-md border border-orange-200 bg-orange-50 text-orange-600 hover:bg-orange-500 hover:text-white hover:border-orange-500 transition-all flex items-center justify-center gap-1"
+              >
+                <Send size={8} /> Доплата {formatCurrency(finalAmount)}
+              </button>
+              <button
+                onClick={() => setShowFinalQr(v => !v)}
+                className="w-full text-[8px] font-black py-1 rounded-md border border-orange-200 bg-orange-50 text-orange-600 hover:bg-orange-100 transition-all flex items-center justify-center gap-1"
+              >
+                <QrCodeIcon size={8} /> {showFinalQr ? 'Скрыть QR доплаты' : 'QR доплаты'}
+              </button>
+              {showFinalQr && (
+                <div className="space-y-1">
+                  <div ref={finalQrRef} className="flex justify-center p-2 bg-white border border-zinc-100 rounded-lg">
+                    <QRCodeSVG value={finalPaymentUrl} size={100} />
+                  </div>
+                  <button
+                    onClick={() => shareQrImage(finalQrRef.current?.querySelector('svg') || null, `${order.orderId}-final`, finalShareText).catch(() => navigator.clipboard.writeText(finalShareText))}
+                    className="w-full text-[8px] font-black py-1 rounded-md border border-zinc-200 bg-white text-zinc-600 hover:bg-zinc-50 transition-all"
+                  >
+                    Отправить QR доплаты
+                  </button>
+                </div>
+              )}
+            </div>
+          ) : (
+            <button
+              onClick={handleCreateFinal}
+              disabled={finalLoading}
+              className="w-full text-[8px] font-black py-1 rounded-md border border-orange-200 bg-orange-50 text-orange-600 hover:bg-orange-500 hover:text-white hover:border-orange-500 transition-all flex items-center justify-center gap-1 disabled:opacity-50"
+            >
+              {finalLoading ? <RefreshCcw size={8} className="animate-spin" /> : <QrCodeIcon size={8} />}
+              {finalLoading ? 'Создаём...' : `Создать доплату ${formatCurrency(finalAmount)}`}
+            </button>
+          )}
+          {finalError && <p className="mt-1 text-[8px] font-bold text-red-500">{finalError}</p>}
         </div>
       )}
     </div>
@@ -808,6 +932,7 @@ const OrderSummaryRow = React.memo(({
 }) => {
   const orderItems = getOrderItems(order);
   const orderItemPrices = getOrderItemPrices(order);
+  const orderItemColors = getOrderItemColors(order);
   const paidAmount = Number(order.paidAmount) || 0;
   const deliveryAmount = Number(order.deliveryPrice) || 0;
   const deadlineDate = addBusinessDays(order.date, 7);
@@ -859,7 +984,14 @@ const OrderSummaryRow = React.memo(({
         <div className="max-w-[360px] space-y-1.5">
           {(orderItems.length ? orderItems : ['—']).map((item, index) => (
             <div key={`${item}-${index}`} className="grid grid-cols-[minmax(0,1fr)_auto] gap-3">
-              <p className="truncate text-[13px] font-bold text-zinc-950" title={item}>{item}</p>
+              <div className="min-w-0">
+                <p className="truncate text-[13px] font-bold text-zinc-950" title={item}>{item}</p>
+                {orderItemColors[index] && (
+                  <p className="mt-0.5 truncate text-[10px] font-semibold text-zinc-400" title={orderItemColors[index]}>
+                    {orderItemColors[index]}
+                  </p>
+                )}
+              </div>
               <p className="whitespace-nowrap text-[12px] font-semibold text-zinc-400 tabular-nums">
                 {formatCurrency(orderItemPrices[index] || (orderItems.length === 1 ? order.revenue : 0))} × 1
               </p>
@@ -935,8 +1067,10 @@ const OrderRow = React.memo(({
     'text-zinc-500 bg-zinc-50 border-zinc-100';
   const orderItems = getOrderItems(order);
   const orderItemPrices = getOrderItemPrices(order);
+  const orderItemColors = getOrderItemColors(order);
   const [editItems, setEditItems] = useState<string[]>(orderItems.length ? orderItems : ['']);
   const [editItemPrices, setEditItemPrices] = useState<number[]>(orderItemPrices.length ? orderItemPrices : [0]);
+  const [editItemColors, setEditItemColors] = useState<string[]>(orderItemColors.length ? orderItemColors : ['']);
   const liveItems = editItems.map(item => item.trim()).filter(Boolean);
   const liveItemPrices = liveItems.map((_, index) => Number(editItemPrices[index]) || 0);
   const liveRevenue = getItemPricesTotal(liveItemPrices);
@@ -950,7 +1084,8 @@ const OrderRow = React.memo(({
   useEffect(() => {
     setEditItems(orderItems.length ? orderItems : ['']);
     setEditItemPrices(orderItemPrices.length ? orderItemPrices : [0]);
-  }, [order.item, JSON.stringify(order.items || []), JSON.stringify(order.itemPrices || []), order.revenue]);
+    setEditItemColors(orderItemColors.length ? orderItemColors : ['']);
+  }, [order.item, JSON.stringify(order.items || []), JSON.stringify(order.itemPrices || []), JSON.stringify(order.itemColors || []), order.revenue]);
 
   const fieldInput = (label: string, value: string, list: string, onChange: (v: string) => void) => (
     <div key={label} className="flex flex-col gap-0.5 min-w-[72px]">
@@ -980,9 +1115,10 @@ const OrderRow = React.memo(({
     </div>
   );
 
-  const saveOrderItems = (items: string[], prices = editItemPrices) => {
+  const saveOrderItems = (items: string[], prices = editItemPrices, colors = editItemColors) => {
     const cleaned = items.map(item => item.trim()).filter(Boolean);
     const cleanedPrices = cleaned.map((_, index) => Number(prices[index]) || 0);
+    const cleanedColors = cleaned.map((_, index) => String(colors[index] || '').trim());
     const total = getItemPricesTotal(cleanedPrices);
     const itemText = joinOrderItems(cleaned);
     const invoiceAmount = getInvoiceAmount({
@@ -992,24 +1128,28 @@ const OrderRow = React.memo(({
     });
     updateOrderData(order.orderId, 'items', cleaned);
     updateOrderData(order.orderId, 'itemPrices', cleanedPrices);
+    updateOrderData(order.orderId, 'itemColors', cleanedColors);
     updateOrderData(order.orderId, 'item', itemText);
     updateOrderData(order.orderId, 'revenue', total);
     updateOrderData(order.orderId, 'paidAmount', invoiceAmount);
+    updateOrderData(order.orderId, `rawRow[${RAW_COLOR_INDEX}]`, cleanedColors[0] || '');
   };
 
   const applyProductCharacteristics = (value: string, index = 0) => {
     const nextItems = [...editItems];
     const nextPrices = [...editItemPrices];
+    const nextColors = [...editItemColors];
     nextItems[index] = value;
 
     const product = productCatalog.find(p => normalizeProductName(p.name) === normalizeProductName(value));
     if (product?.sellingPrice && !nextPrices[index]) nextPrices[index] = Number(product.sellingPrice) || 0;
+    if (product?.color && !nextColors[index]) nextColors[index] = product.color;
     setEditItems(nextItems);
     setEditItemPrices(nextPrices);
-    saveOrderItems(nextItems, nextPrices);
+    setEditItemColors(nextColors);
+    saveOrderItems(nextItems, nextPrices, nextColors);
     if (!product) return;
 
-    if (product.color) updateOrderData(order.orderId, `rawRow[${RAW_COLOR_INDEX}]`, product.color);
     if (product.sizeGrid) updateOrderData(order.orderId, `rawRow[${RAW_SIZE_INDEX}]`, product.sizeGrid);
     if (product.height) updateOrderData(order.orderId, 'height', product.height);
   };
@@ -1017,22 +1157,32 @@ const OrderRow = React.memo(({
   const addOrderItem = () => {
     setEditItems([...editItems, '']);
     setEditItemPrices([...editItemPrices, 0]);
+    setEditItemColors([...editItemColors, '']);
   };
 
   const removeOrderItem = (index: number) => {
     if (editItems.length <= 1) return;
     const nextItems = editItems.filter((_, i) => i !== index);
     const nextPrices = editItemPrices.filter((_, i) => i !== index);
+    const nextColors = editItemColors.filter((_, i) => i !== index);
     setEditItems(nextItems);
     setEditItemPrices(nextPrices);
-    saveOrderItems(nextItems, nextPrices);
+    setEditItemColors(nextColors);
+    saveOrderItems(nextItems, nextPrices, nextColors);
   };
 
   const updateOrderItemPrice = (index: number, value: number) => {
     const nextPrices = [...editItemPrices];
     nextPrices[index] = value;
     setEditItemPrices(nextPrices);
-    saveOrderItems(editItems, nextPrices);
+    saveOrderItems(editItems, nextPrices, editItemColors);
+  };
+
+  const updateOrderItemColor = (index: number, value: string) => {
+    const nextColors = [...editItemColors];
+    nextColors[index] = value;
+    setEditItemColors(nextColors);
+    saveOrderItems(editItems, editItemPrices, nextColors);
   };
 
   const updateOrderDeliveryPrice = (value: number) => {
@@ -1206,7 +1356,7 @@ const OrderRow = React.memo(({
                   <span className="block text-[11px] font-black text-zinc-500 uppercase tracking-widest">Изделие</span>
                   <div className="mt-6 divide-y divide-zinc-100 border-y border-zinc-100">
                     {editItems.map((item, index) => (
-                      <div key={index} className="grid grid-cols-[minmax(0,1fr)_82px_20px] 2xl:grid-cols-[minmax(0,1fr)_92px_24px] gap-3 items-center py-3.5">
+                      <div key={index} className="grid grid-cols-[minmax(0,1fr)_118px_82px_20px] 2xl:grid-cols-[minmax(0,1fr)_132px_92px_24px] gap-3 items-center py-3.5">
                         <input
                           type="text"
                           list="product-list"
@@ -1216,6 +1366,17 @@ const OrderRow = React.memo(({
                           title={item}
                           className="min-w-0 border-0 bg-transparent px-0 py-0 text-[clamp(12px,0.85vw,14px)] font-semibold leading-tight text-zinc-950 outline-none"
                         />
+                        <select
+                          value={editItemColors[index] || ''}
+                          onChange={(e) => updateOrderItemColor(index, e.target.value)}
+                          className="min-w-0 border-0 border-b border-zinc-100 bg-transparent px-0 py-1 text-[11px] font-semibold text-zinc-600 outline-none focus:border-blue-300"
+                          title="Цвет позиции"
+                        >
+                          <option value="">Цвет</option>
+                          {optionsWithCurrent(handbookColors, editItemColors[index] || '').map(opt => (
+                            <option key={opt} value={opt}>{opt}</option>
+                          ))}
+                        </select>
                         <label className="relative">
                           <input
                             type="number"
@@ -1269,7 +1430,6 @@ const OrderRow = React.memo(({
               <div className="my-7 h-px bg-zinc-100" />
 
               <div className="grid grid-cols-4 gap-x-8 gap-y-7">
-                {fieldSelect('Цвет', order.rawRow?.[RAW_COLOR_INDEX] || '', optionsWithCurrent(handbookColors, order.rawRow?.[RAW_COLOR_INDEX] || ''), (v) => updateOrderData(order.orderId, `rawRow[${RAW_COLOR_INDEX}]`, v))}
                 {fieldSelect('Размер', order.rawRow?.[RAW_SIZE_INDEX] || '', optionsWithCurrent(handbookSizes, order.rawRow?.[RAW_SIZE_INDEX] || ''), (v) => updateOrderData(order.orderId, `rawRow[${RAW_SIZE_INDEX}]`, v))}
                 {fieldSelect('Рост', order.height || '', optionsWithCurrent(handbookHeights, order.height || ''), (v) => updateOrderData(order.orderId, 'height', v))}
                 {fieldSelect('Источник', order.source || '', optionsWithCurrent(handbookSources, order.source || '', SOURCE_OPTIONS), (v) => updateOrderData(order.orderId, 'source', v))}
@@ -1347,16 +1507,22 @@ const OrderCard = React.memo(({
   const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
   const [mobilePaymentUrl, setMobilePaymentUrl] = useState(order.paymentUrl || '');
+  const [mobileFinalPaymentUrl, setMobileFinalPaymentUrl] = useState(order.finalPaymentUrl || '');
   const [mobilePaymentLoading, setMobilePaymentLoading] = useState(false);
+  const [mobileFinalPaymentLoading, setMobileFinalPaymentLoading] = useState(false);
   const [mobilePaymentError, setMobilePaymentError] = useState('');
+  const [mobileFinalPaymentError, setMobileFinalPaymentError] = useState('');
   const [showMobileQr, setShowMobileQr] = useState(false);
+  const [showMobileFinalQr, setShowMobileFinalQr] = useState(false);
   const mobileQrRef = useRef<HTMLDivElement>(null);
+  const mobileFinalQrRef = useRef<HTMLDivElement>(null);
   const paymentUrl = mobilePaymentUrl;
-  const shareText = paymentUrl ? buildOrderShareText(order, paymentUrl) : '';
   const orderItems = getOrderItems(order);
   const orderItemPrices = getOrderItemPrices(order);
+  const orderItemColors = getOrderItemColors(order);
   const [editItems, setEditItems] = useState<string[]>(orderItems.length ? orderItems : ['']);
   const [editItemPrices, setEditItemPrices] = useState<number[]>(orderItemPrices.length ? orderItemPrices : [0]);
+  const [editItemColors, setEditItemColors] = useState<string[]>(orderItemColors.length ? orderItemColors : ['']);
   const liveItems = editItems.map(item => item.trim()).filter(Boolean);
   const liveItemPrices = liveItems.map((_, index) => Number(editItemPrices[index]) || 0);
   const liveRevenue = getItemPricesTotal(liveItemPrices);
@@ -1368,6 +1534,10 @@ const OrderCard = React.memo(({
     invoiceType,
   });
   const dueAmount = getOrderPaymentDue({ ...order, revenue: liveRevenue, paidAmount: liveInvoiceAmount });
+  const finalPaymentAmount = getOrderFinalPaymentAmount({ ...order, revenue: liveRevenue, paidAmount: liveInvoiceAmount });
+  const showFinalPayment = invoiceType !== 'full' && finalPaymentAmount > 0;
+  const shareText = paymentUrl ? buildPaymentShareText(order, paymentUrl, liveInvoiceAmount, 'Счет на оплату') : '';
+  const finalShareText = mobileFinalPaymentUrl ? buildPaymentShareText(order, mobileFinalPaymentUrl, finalPaymentAmount, 'Счет на доплату') : '';
   const invoiceTone = liveInvoiceAmount <= 0
     ? 'text-zinc-300'
     : invoiceType === 'full'
@@ -1381,11 +1551,13 @@ const OrderCard = React.memo(({
   useEffect(() => {
     setEditItems(orderItems.length ? orderItems : ['']);
     setEditItemPrices(orderItemPrices.length ? orderItemPrices : [0]);
-  }, [order.item, JSON.stringify(order.items || []), JSON.stringify(order.itemPrices || []), order.revenue]);
+    setEditItemColors(orderItemColors.length ? orderItemColors : ['']);
+  }, [order.item, JSON.stringify(order.items || []), JSON.stringify(order.itemPrices || []), JSON.stringify(order.itemColors || []), order.revenue]);
 
-  const saveMobileItems = (items: string[], prices = editItemPrices) => {
+  const saveMobileItems = (items: string[], prices = editItemPrices, colors = editItemColors) => {
     const cleaned = items.map(item => item.trim()).filter(Boolean);
     const cleanedPrices = cleaned.map((_, index) => Number(prices[index]) || 0);
+    const cleanedColors = cleaned.map((_, index) => String(colors[index] || '').trim());
     const revenue = getItemPricesTotal(cleanedPrices);
     const invoiceAmount = getInvoiceAmount({
       revenue,
@@ -1394,22 +1566,26 @@ const OrderCard = React.memo(({
     });
     updateOrderData(order.orderId, 'items', cleaned);
     updateOrderData(order.orderId, 'itemPrices', cleanedPrices);
+    updateOrderData(order.orderId, 'itemColors', cleanedColors);
     updateOrderData(order.orderId, 'item', joinOrderItems(cleaned));
     updateOrderData(order.orderId, 'revenue', revenue);
     updateOrderData(order.orderId, 'paidAmount', invoiceAmount);
+    updateOrderData(order.orderId, `rawRow[${RAW_COLOR_INDEX}]`, cleanedColors[0] || '');
   };
 
   const applyMobileProduct = (value: string, index = 0) => {
     const nextItems = [...editItems];
     const nextPrices = [...editItemPrices];
+    const nextColors = [...editItemColors];
     nextItems[index] = value;
     const product = productCatalog.find(p => normalizeProductName(p.name) === normalizeProductName(value));
     if (product?.sellingPrice && !nextPrices[index]) nextPrices[index] = Number(product.sellingPrice) || 0;
+    if (product?.color && !nextColors[index]) nextColors[index] = product.color;
     setEditItems(nextItems);
     setEditItemPrices(nextPrices);
-    saveMobileItems(nextItems, nextPrices);
+    setEditItemColors(nextColors);
+    saveMobileItems(nextItems, nextPrices, nextColors);
     if (!product) return;
-    if (product.color) updateOrderData(order.orderId, `rawRow[${RAW_COLOR_INDEX}]`, product.color);
     if (product.sizeGrid) updateOrderData(order.orderId, `rawRow[${RAW_SIZE_INDEX}]`, product.sizeGrid);
     if (product.height) updateOrderData(order.orderId, 'height', product.height);
   };
@@ -1418,21 +1594,31 @@ const OrderCard = React.memo(({
     const nextPrices = [...editItemPrices];
     nextPrices[index] = value;
     setEditItemPrices(nextPrices);
-    saveMobileItems(editItems, nextPrices);
+    saveMobileItems(editItems, nextPrices, editItemColors);
+  };
+
+  const updateMobileItemColor = (index: number, value: string) => {
+    const nextColors = [...editItemColors];
+    nextColors[index] = value;
+    setEditItemColors(nextColors);
+    saveMobileItems(editItems, editItemPrices, nextColors);
   };
 
   const addMobileItem = () => {
     setEditItems([...editItems, '']);
     setEditItemPrices([...editItemPrices, 0]);
+    setEditItemColors([...editItemColors, '']);
   };
 
   const removeMobileItem = (index: number) => {
     if (editItems.length <= 1) return;
     const nextItems = editItems.filter((_, i) => i !== index);
     const nextPrices = editItemPrices.filter((_, i) => i !== index);
+    const nextColors = editItemColors.filter((_, i) => i !== index);
     setEditItems(nextItems);
     setEditItemPrices(nextPrices);
-    saveMobileItems(nextItems, nextPrices);
+    setEditItemColors(nextColors);
+    saveMobileItems(nextItems, nextPrices, nextColors);
   };
 
   const updateMobileDeliveryPrice = (value: number) => {
@@ -1480,6 +1666,10 @@ const OrderCard = React.memo(({
     setMobilePaymentUrl(order.paymentUrl || '');
   }, [order.paymentUrl]);
 
+  useEffect(() => {
+    setMobileFinalPaymentUrl(order.finalPaymentUrl || '');
+  }, [order.finalPaymentUrl]);
+
   const createMobilePayment = async () => {
     setMobilePaymentLoading(true);
     setMobilePaymentError('');
@@ -1507,6 +1697,37 @@ const OrderCard = React.memo(({
       setMobilePaymentError(e.message || 'Не удалось создать счёт');
     } finally {
       setMobilePaymentLoading(false);
+    }
+  };
+
+  const createMobileFinalPayment = async () => {
+    setMobileFinalPaymentLoading(true);
+    setMobileFinalPaymentError('');
+    try {
+      if (finalPaymentAmount <= 0) throw new Error('Сумма доплаты 0 ₽');
+
+      const res = await fetch('/api/tochka/create-payment', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          orderId: `${order.orderId}-final`,
+          amount: finalPaymentAmount,
+          description: `Доплата заказа #${order.orderId} ${order.item || ''}`,
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Не удалось создать счёт на доплату');
+      if (!data.paymentUrl) throw new Error('Точка не вернула ссылку оплаты');
+
+      setMobileFinalPaymentUrl(data.paymentUrl);
+      setShowMobileFinalQr(true);
+      updateOrderData(order.orderId, 'finalPaymentUrl', data.paymentUrl);
+      updateOrderData(order.orderId, 'finalPaymentAmount', finalPaymentAmount);
+      updateOrderData(order.orderId, 'finalPaymentStatus', 'pending');
+    } catch (e: any) {
+      setMobileFinalPaymentError(e.message || 'Не удалось создать счёт на доплату');
+    } finally {
+      setMobileFinalPaymentLoading(false);
     }
   };
 
@@ -1545,7 +1766,12 @@ const OrderCard = React.memo(({
           <div className="space-y-1">
             {(orderItems.length ? orderItems : ['—']).map((item, index) => (
               <div key={`${item}-${index}`} className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
-                <p className="truncate text-[12px] font-bold text-zinc-950">{item}</p>
+                <div className="min-w-0">
+                  <p className="truncate text-[12px] font-bold text-zinc-950">{item}</p>
+                  {orderItemColors[index] && (
+                    <p className="truncate text-[9px] font-semibold text-zinc-400">{orderItemColors[index]}</p>
+                  )}
+                </div>
                 <p className="text-[11px] font-semibold text-zinc-400">
                   {formatCurrency(orderItemPrices[index] || (orderItems.length === 1 ? order.revenue : 0))} × 1
                 </p>
@@ -1606,7 +1832,7 @@ const OrderCard = React.memo(({
             </div>
             <div className="space-y-2">
               {editItems.map((item, index) => (
-                <div key={index} className="grid grid-cols-[minmax(0,1fr)_92px_32px] gap-1.5">
+                <div key={index} className="grid grid-cols-[minmax(0,1fr)_78px_82px_32px] gap-1.5">
                   <input
                     value={item}
                     list="product-list"
@@ -1614,6 +1840,17 @@ const OrderCard = React.memo(({
                     placeholder={index === 0 ? 'Наименование' : `Позиция ${index + 1}`}
                     className={cn(mobileInputClass, "h-10 text-[12px]")}
                   />
+                  <select
+                    value={editItemColors[index] || ''}
+                    onChange={(e) => updateMobileItemColor(index, e.target.value)}
+                    className={cn(mobileInputClass, "h-10 px-2 text-[11px] appearance-none")}
+                    title="Цвет позиции"
+                  >
+                    <option value="">Цвет</option>
+                    {optionsWithCurrent(handbookColors, editItemColors[index] || '').map(opt => (
+                      <option key={opt} value={opt}>{opt}</option>
+                    ))}
+                  </select>
                   <input
                     type="number"
                     value={editItemPrices[index] || ''}
@@ -1652,7 +1889,6 @@ const OrderCard = React.memo(({
         </div>
         <div className="grid grid-cols-2 gap-2">
           {mobileSelect('Статус', order.status || '', optionsWithCurrent(handbookStatuses, order.status, STATUS_OPTIONS), (v) => updateOrderData(order.orderId, 'status', v))}
-          {mobileSelect('Цвет', order.rawRow?.[RAW_COLOR_INDEX] || '', optionsWithCurrent(handbookColors, order.rawRow?.[RAW_COLOR_INDEX] || ''), (v) => updateOrderData(order.orderId, `rawRow[${RAW_COLOR_INDEX}]`, v))}
           {mobileSelect('Размер', order.rawRow?.[RAW_SIZE_INDEX] || '', optionsWithCurrent(handbookSizes, order.rawRow?.[RAW_SIZE_INDEX] || ''), (v) => updateOrderData(order.orderId, `rawRow[${RAW_SIZE_INDEX}]`, v))}
           {mobileSelect('Рост', order.height || '', optionsWithCurrent(handbookHeights, order.height || ''), (v) => updateOrderData(order.orderId, 'height', v))}
           {mobileSelect('Источник', order.source || '', optionsWithCurrent(handbookSources, order.source || '', SOURCE_OPTIONS), (v) => updateOrderData(order.orderId, 'source', v))}
@@ -1752,6 +1988,51 @@ const OrderCard = React.memo(({
             </button>
             {mobilePaymentError && (
               <p className="text-[9px] font-bold text-red-500">{mobilePaymentError}</p>
+            )}
+          </div>
+        )}
+        {showFinalPayment && (
+          <div className="border-t border-violet-100 pt-2">
+            {mobileFinalPaymentUrl ? (
+              <div className="space-y-2">
+                <button
+                  onClick={() => shareOrder(finalShareText, mobileFinalPaymentUrl).catch(() => navigator.clipboard.writeText(finalShareText))}
+                  className="w-full py-2 rounded-lg bg-orange-500 border border-orange-500 text-[8px] font-black text-white uppercase flex items-center justify-center gap-1.5"
+                >
+                  <Send size={10} /> Доплата {formatCurrency(finalPaymentAmount)}
+                </button>
+                <button
+                  onClick={() => setShowMobileFinalQr(v => !v)}
+                  className="w-full py-2 rounded-lg bg-white border border-orange-100 text-[8px] font-black text-orange-600 uppercase"
+                >
+                  {showMobileFinalQr ? 'Скрыть QR доплаты' : 'Показать QR доплаты'}
+                </button>
+                {showMobileFinalQr && (
+                  <div className="space-y-2">
+                    <div ref={mobileFinalQrRef} className="flex justify-center p-3 bg-white border border-zinc-100 rounded-xl">
+                      <QRCodeSVG value={mobileFinalPaymentUrl} size={180} />
+                    </div>
+                    <button
+                      onClick={() => shareQrImage(mobileFinalQrRef.current?.querySelector('svg') || null, `${order.orderId}-final`, finalShareText).catch(() => navigator.clipboard.writeText(finalShareText))}
+                      className="w-full py-2 rounded-lg bg-zinc-900 text-white text-[8px] font-black uppercase tracking-wider"
+                    >
+                      Отправить QR доплаты
+                    </button>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <button
+                onClick={createMobileFinalPayment}
+                disabled={mobileFinalPaymentLoading}
+                className="w-full py-2 rounded-lg border border-orange-200 bg-orange-50 text-orange-600 text-[8px] font-black uppercase tracking-wider flex items-center justify-center gap-1.5 disabled:opacity-60"
+              >
+                {mobileFinalPaymentLoading ? <RefreshCcw size={11} className="animate-spin" /> : <QrCodeIcon size={11} />}
+                {mobileFinalPaymentLoading ? 'Создаём...' : `Создать доплату ${formatCurrency(finalPaymentAmount)}`}
+              </button>
+            )}
+            {mobileFinalPaymentError && (
+              <p className="mt-1 text-[9px] font-bold text-red-500">{mobileFinalPaymentError}</p>
             )}
           </div>
         )}
@@ -1890,6 +2171,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
   const [productCatalog, setProductCatalog] = useState<ProductCatalogItem[]>([]);
   const [newOrderItems, setNewOrderItems] = useState<string[]>(['']);
   const [newOrderItemPrices, setNewOrderItemPrices] = useState<number[]>([0]);
+  const [newOrderItemColors, setNewOrderItemColors] = useState<string[]>(['']);
   const [expandedOrderId, setExpandedOrderId] = useState<string | null>(null);
   const createdQrRef = useRef<HTMLDivElement>(null);
 
@@ -1978,15 +2260,17 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
     }), { orders: 0, paid: 0 });
   }, [chartData2026]);
 
-  const syncNewOrderItems = (items: string[], prices = newOrderItemPrices, patch: Partial<OrderData> = {}) => {
+  const syncNewOrderItems = (items: string[], prices = newOrderItemPrices, colors = newOrderItemColors, patch: Partial<OrderData> = {}) => {
     const cleanedItems = items.map(item => item.trim()).filter(Boolean);
     const cleanedPrices = cleanedItems.map((_, index) => Number(prices[index]) || 0);
+    const cleanedColors = cleanedItems.map((_, index) => String(colors[index] || '').trim());
     const revenue = getItemPricesTotal(cleanedPrices);
     setNewOrder(prev => ({
       ...prev,
       ...patch,
       items: cleanedItems,
       itemPrices: cleanedPrices,
+      itemColors: cleanedColors,
       item: joinOrderItems(cleanedItems),
       revenue,
       invoiceType: patch.invoiceType || prev.invoiceType || getInvoiceTypeFromPaymentType(prev.paymentType),
@@ -2003,16 +2287,19 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
     const rawRow = [...(newOrder.rawRow || Array(30).fill(''))];
     while (rawRow.length < 30) rawRow.push('');
 
-    if (product?.color) rawRow[RAW_COLOR_INDEX] = product.color;
     if (product?.sizeGrid) rawRow[RAW_SIZE_INDEX] = product.sizeGrid;
 
     const nextItems = [...newOrderItems];
     const nextPrices = [...newOrderItemPrices];
+    const nextColors = [...newOrderItemColors];
     nextItems[index] = value;
     if (product?.sellingPrice && !nextPrices[index]) nextPrices[index] = Number(product.sellingPrice) || 0;
+    if (product?.color && !nextColors[index]) nextColors[index] = product.color;
+    rawRow[RAW_COLOR_INDEX] = nextColors[0] || '';
     setNewOrderItems(nextItems);
     setNewOrderItemPrices(nextPrices);
-    syncNewOrderItems(nextItems, nextPrices, {
+    setNewOrderItemColors(nextColors);
+    syncNewOrderItems(nextItems, nextPrices, nextColors, {
       rawRow,
       height: product?.height || newOrder.height || '',
     });
@@ -2021,22 +2308,35 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
   const addNewOrderItem = () => {
     setNewOrderItems([...newOrderItems, '']);
     setNewOrderItemPrices([...newOrderItemPrices, 0]);
+    setNewOrderItemColors([...newOrderItemColors, '']);
   };
 
   const removeNewOrderItem = (index: number) => {
     if (newOrderItems.length <= 1) return;
     const nextItems = newOrderItems.filter((_, i) => i !== index);
     const nextPrices = newOrderItemPrices.filter((_, i) => i !== index);
+    const nextColors = newOrderItemColors.filter((_, i) => i !== index);
     setNewOrderItems(nextItems);
     setNewOrderItemPrices(nextPrices);
-    syncNewOrderItems(nextItems, nextPrices);
+    setNewOrderItemColors(nextColors);
+    syncNewOrderItems(nextItems, nextPrices, nextColors);
   };
 
   const updateNewOrderItemPrice = (index: number, value: number) => {
     const nextPrices = [...newOrderItemPrices];
     nextPrices[index] = value;
     setNewOrderItemPrices(nextPrices);
-    syncNewOrderItems(newOrderItems, nextPrices);
+    syncNewOrderItems(newOrderItems, nextPrices, newOrderItemColors);
+  };
+
+  const updateNewOrderItemColor = (index: number, value: string) => {
+    const nextColors = [...newOrderItemColors];
+    nextColors[index] = value;
+    const rawRow = [...(newOrder.rawRow || Array(30).fill(''))];
+    while (rawRow.length < 30) rawRow.push('');
+    rawRow[RAW_COLOR_INDEX] = nextColors[0] || '';
+    setNewOrderItemColors(nextColors);
+    syncNewOrderItems(newOrderItems, newOrderItemPrices, nextColors, { rawRow });
   };
 
   const updateNewOrderDeliveryPrice = (value: number) => {
@@ -2103,6 +2403,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
       item: '',
       items: [],
       itemPrices: [],
+      itemColors: [],
       revenue: 0,
       deliveryPrice: 0,
       paidAmount: 0,
@@ -2115,6 +2416,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
     });
     setNewOrderItems(['']);
     setNewOrderItemPrices([0]);
+    setNewOrderItemColors(['']);
     setClientQuery('');
     setPhoneQuery('');
     setCreatedOrderId(null);
@@ -2131,6 +2433,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
       rawRow: [...(newOrder.rawRow || [])],
       items: newOrderItems.map(item => item.trim()).filter(Boolean),
       itemPrices: newOrderItems.map((item, index) => item.trim() ? (Number(newOrderItemPrices[index]) || 0) : 0).filter((_, index) => Boolean(newOrderItems[index]?.trim())),
+      itemColors: newOrderItems.map((item, index) => item.trim() ? String(newOrderItemColors[index] || '').trim() : '').filter((_, index) => Boolean(newOrderItems[index]?.trim())),
       item: joinOrderItems(newOrderItems),
       revenue: itemPricesTotal,
       invoiceType,
@@ -2141,6 +2444,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
     if (!orderId) return;
     setNewOrderItems(['']);
     setNewOrderItemPrices([0]);
+    setNewOrderItemColors(['']);
     const paymentPageUrl = buildPaymentPageUrl(orderId);
     setCreatedOrderId(orderId);
     setCreatedShareText(buildOrderShareText({ ...orderSnapshot, orderId }, paymentPageUrl));
@@ -2525,7 +2829,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
             </div>
             <div className="space-y-4">
               {newOrderItems.map((item, index) => (
-                <div key={index} className="grid gap-3 lg:grid-cols-[minmax(0,1.5fr)_240px_52px]">
+                <div key={index} className="grid gap-3 lg:grid-cols-[minmax(0,1.5fr)_220px_220px_52px]">
                   <label className="block">
                     <span className={newOrderLabelClass}>Наименование</span>
                     <input
@@ -2538,6 +2842,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                       className={newOrderFieldClass}
                     />
                   </label>
+                  {renderNewOrderSelect('Цвет', newOrderItemColors[index] || '', handbookColors, (v) => updateNewOrderItemColor(index, v), 'Цвет')}
                   <label className="block">
                     <span className={newOrderLabelClass}>Цена</span>
                     <span className="relative block">
@@ -2575,12 +2880,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                   </div>
                 </div>
               ))}
-              <div className="grid gap-3 lg:grid-cols-4">
-                {renderNewOrderSelect('Цвет', newOrder.rawRow?.[RAW_COLOR_INDEX] || '', handbookColors, (v) => {
-                  const nr = [...(newOrder.rawRow || Array(30).fill(''))];
-                  nr[RAW_COLOR_INDEX] = v;
-                  setNewOrder({...newOrder, rawRow: nr});
-                }, 'Цвет')}
+              <div className="grid gap-3 lg:grid-cols-3">
                 {renderNewOrderSelect('Размер', newOrder.rawRow?.[RAW_SIZE_INDEX] || '', handbookSizes, (v) => {
                   const nr = [...(newOrder.rawRow || Array(30).fill(''))];
                   nr[RAW_SIZE_INDEX] = v;
