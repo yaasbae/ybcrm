@@ -702,6 +702,16 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
     data.forEach(row => {
       const existing = ordersMap.get(row.orderId);
       if (existing) {
+        if (existing.isFirebase || row.isFirebase) {
+          const firebaseOrder = row.isFirebase ? row : existing;
+          const sheetOrder = row.isFirebase ? existing : row;
+          ordersMap.set(row.orderId, {
+            ...sheetOrder,
+            ...firebaseOrder,
+            rawRow: firebaseOrder.rawRow?.length ? firebaseOrder.rawRow : sheetOrder.rawRow,
+          });
+          return;
+        }
         existing.revenue += row.revenue;
         existing.deliveryPrice += row.deliveryPrice;
         existing.paidAmount += row.paidAmount;
