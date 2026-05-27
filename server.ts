@@ -2101,10 +2101,22 @@ app.get("/api/bot/buttons", async (_req, res) => {
 });
 
 app.post("/api/bot/buttons", async (req, res) => {
-  const { buttons, welcomeText } = req.body;
+  const { buttons, welcomeText, managerChatIds } = req.body;
   if (buttons) botCfg.buttons = buttons;
   if (welcomeText !== undefined) botCfg.welcomeText = welcomeText;
-  if (db) await setDoc(doc(db, "settings", "bot_buttons"), { buttons: botCfg.buttons, welcomeText: botCfg.welcomeText }, { merge: true });
+  if (managerChatIds !== undefined) botCfg.managerChatIds = parseManagerChatIds(managerChatIds);
+  if (db) await setDoc(doc(db, "settings", "bot_buttons"), { buttons: botCfg.buttons, welcomeText: botCfg.welcomeText, managerChatIds: botCfg.managerChatIds }, { merge: true });
+  res.json({ success: true });
+});
+
+app.get("/api/bot/manager-config", async (_req, res) => {
+  res.json({ managerChatIds: botCfg.managerChatIds || [] });
+});
+
+app.post("/api/bot/manager-config", async (req, res) => {
+  const managerChatIds = parseManagerChatIds(req.body?.managerChatIds);
+  botCfg.managerChatIds = managerChatIds;
+  if (db) await setDoc(doc(db, "settings", "bot_manager_config"), { managerChatIds }, { merge: true });
   res.json({ success: true });
 });
 
@@ -2519,6 +2531,15 @@ app.get('/api/tochka/status', async (_req, res) => {
 // ─── Telegram Bot ───────────────────────────────────────────────────────────
 
 const BOT_TOKEN = process.env.TG_BOT_TOKEN;
+function parseManagerChatIds(value: unknown): string[] {
+  if (Array.isArray(value)) return value.map(String).map(id => id.trim()).filter(Boolean);
+  return String(value || "")
+    .split(/[,\s]+/)
+    .map(id => id.trim())
+    .filter(Boolean);
+}
+
+const DEFAULT_MANAGER_CHAT_IDS = parseManagerChatIds(process.env.MANAGER_CHAT_IDS || process.env.MANAGER_CHAT_ID || "");
 let botInstance: any = null;
 
 // try-on state stored in Firestore — survives deploys and multiple instances
@@ -2586,6 +2607,10 @@ function tryOnUsageDocId(key: string, date = new Date()): string {
   return `${date.toISOString().slice(0, 10)}_${key}`;
 }
 
+function managerThreadDocId(chatId: string, messageId: string | number): string {
+  return `${chatId.replace(/[^\w-]/g, "_")}_${messageId}`;
+}
+
 // Costumes cache — refreshed every 5 minutes to avoid Firestore reads on every catalog open
 let costumesCache: any[] | null = null;
 let costumesCacheAt = 0;
@@ -2617,7 +2642,7 @@ async function getCostumeById(costumeId: string): Promise<any | null> {
 
 // Bot button config — editable from CRM
 interface BotButton { id: string; label: string; response: string; }
-interface BotCfg { welcomeText: string; buttons: BotButton[]; }
+interface BotCfg { welcomeText: string; buttons: BotButton[]; managerChatIds: string[]; }
 
 const DEFAULT_BOT_CFG: BotCfg = {
   welcomeText: "Привет, {name}! 👋\n\nДобро пожаловать в *YB Studio* — твой личный стилист.\n\n✨ Здесь ты можешь:\n👗 Примерить любой костюм онлайн\n🎁 Получить персональную скидку\n🆕 Первым узнавать о новинках\n\n*Специально для тебя — скидка 10% на первый заказ!*\nВыбери что тебя интересует 👇",
@@ -2628,6 +2653,7 @@ const DEFAULT_BOT_CFG: BotCfg = {
     { id: "news",    label: "🆕 Новинки",             response: "🆕 *Новинки YB Studio*\n\nСледи за обновлениями — скоро здесь появятся новые коллекции!" },
     { id: "contact", label: "📞 Связаться с нами",    response: "📞 *Связь с нами*\n\nНапиши своё сообщение — менеджер ответит в течение нескольких минут 🙏" },
   ],
+  managerChatIds: DEFAULT_MANAGER_CHAT_IDS,
 };
 
 let botCfg: BotCfg = JSON.parse(JSON.stringify(DEFAULT_BOT_CFG));
@@ -2640,9 +2666,12 @@ async function loadBotCfg() {
       const data = snap.data() as any;
       if (data.buttons) botCfg.buttons = data.buttons;
       if (data.welcomeText) botCfg.welcomeText = data.welcomeText;
+      if (data.managerChatIds) botCfg.managerChatIds = parseManagerChatIds(data.managerChatIds);
     }
     const cfgSnap = await getDoc(doc(db, "settings", "bot_config"));
     if (cfgSnap.exists() && cfgSnap.data().welcomeText) botCfg.welcomeText = cfgSnap.data().welcomeText;
+    const managerSnap = await getDoc(doc(db, "settings", "bot_manager_config"));
+    if (managerSnap.exists()) botCfg.managerChatIds = parseManagerChatIds((managerSnap.data() as any).managerChatIds);
   } catch {}
 }
 
@@ -2736,6 +2765,119 @@ function startTelegramBot() {
     }
     return Markup.keyboard(rows).resize();
   };
+
+  const getManagerChatIds = () => botCfg.managerChatIds?.length ? botCfg.managerChatIds : DEFAULT_MANAGER_CHAT_IDS;
+
+  const isManagerChat = (ctx: any) => getManagerChatIds().includes(String(ctx.chat?.id || ""));
+
+  const formatClientName = (from: any) => {
+    const name = [from?.first_name, from?.last_name].filter(Boolean).join(" ").trim();
+    const username = from?.username ? `@${from.username}` : "";
+    return [name, username].filter(Boolean).join(" ") || "Клиент";
+  };
+
+  const notifyManagers = async (ctx: any, messageText: string, type = "message", messageDocId?: string) => {
+    const managerChatIds = getManagerChatIds();
+    if (!managerChatIds.length || !ctx.from) return;
+
+    const userId = String(ctx.from.id);
+    const title = type === "order_request" ? "Заявка из бота" : "Новое сообщение в боте";
+    const body = [
+      `📩 ${title}`,
+      `Клиент: ${formatClientName(ctx.from)}`,
+      `Telegram ID: ${userId}`,
+      "",
+      messageText,
+      "",
+      "Чтобы ответить клиенту, нажми Reply на это сообщение и отправь текст."
+    ].join("\n");
+
+    await Promise.all(managerChatIds.map(async managerChatId => {
+      try {
+        const sent = await bot.telegram.sendMessage(managerChatId, body);
+        if (db) {
+          await setDoc(doc(db, "bot_manager_threads", managerThreadDocId(managerChatId, sent.message_id)), {
+            managerChatId,
+            managerMessageId: sent.message_id,
+            userId,
+            messageDocId: messageDocId || "",
+            type,
+            createdAt: new Date().toISOString(),
+          });
+        }
+      } catch (e: any) {
+        console.error("manager notify error:", e.message);
+      }
+    }));
+  };
+
+  const handleManagerReply = async (ctx: any): Promise<boolean> => {
+    if (!isManagerChat(ctx)) return false;
+    const message = ctx.message as any;
+    const text = message?.text || "";
+    if (text.startsWith("/")) return false;
+
+    const replyToMessageId = message?.reply_to_message?.message_id;
+    if (!replyToMessageId) {
+      await ctx.reply("Чтобы ответить клиенту, нажми Reply на его сообщение из бота.");
+      return true;
+    }
+
+    if (!db) {
+      await ctx.reply("База данных недоступна, не могу найти клиента для ответа.");
+      return true;
+    }
+
+    const managerChatId = String(ctx.chat.id);
+    const snap = await getDoc(doc(db, "bot_manager_threads", managerThreadDocId(managerChatId, replyToMessageId))).catch(() => null);
+    if (!snap?.exists()) {
+      await ctx.reply("Не нашёл клиента для этого сообщения. Ответь именно на уведомление, которое прислал бот.");
+      return true;
+    }
+
+    const thread = snap.data() as any;
+    const userId = String(thread.userId || "");
+    if (!userId) {
+      await ctx.reply("В привязке нет Telegram ID клиента.");
+      return true;
+    }
+
+    try {
+      if (message.text) {
+        await bot.telegram.sendMessage(userId, message.text);
+      } else {
+        await (bot.telegram as any).copyMessage(userId, managerChatId, message.message_id);
+      }
+
+      if (thread.messageDocId) {
+        await updateDoc(doc(db, "bot_messages", thread.messageDocId), {
+          replied: true,
+          repliedAt: new Date().toISOString(),
+          repliedFromManagerChatId: managerChatId,
+        }).catch(() => {});
+      }
+
+      await ctx.reply("Отправлено клиенту ✅");
+    } catch (e: any) {
+      await ctx.reply(`Не получилось отправить клиенту: ${e.message}`);
+    }
+    return true;
+  };
+
+  bot.use(async (ctx: any, next: any) => {
+    if (ctx.message && await handleManagerReply(ctx)) return;
+    return next();
+  });
+
+  bot.command("myid", async (ctx) => {
+    await ctx.reply([
+      `chat_id: ${ctx.chat.id}`,
+      `user_id: ${ctx.from.id}`,
+      getManagerChatIds().includes(String(ctx.chat.id))
+        ? "Этот чат подключен как менеджерский."
+        : "Добавь chat_id на странице Бот -> Настройки, чтобы получать сообщения клиентов здесь."
+    ].join("\n"));
+  });
 
   const saveSubscriber = async (ctx: any) => {
     if (!db) return;
@@ -3005,18 +3147,23 @@ function startTelegramBot() {
         order?.views?.length ? `Примерки: ${order.views.join(", ")}` : "",
       ].filter(Boolean).join("\n");
 
+      let messageDocId = "";
       if (db) {
-        await addDoc(collection(db, "bot_messages"), {
-          userId,
-          username: ctx.from?.username || "",
-          firstName: ctx.from?.first_name || "",
-          text: requestText,
-          receivedAt: new Date().toISOString(),
-          replied: false,
-          type: "order_request",
-          costumeName,
-        }).catch(() => {});
+        try {
+          const messageRef = await addDoc(collection(db, "bot_messages"), {
+            userId,
+            username: ctx.from?.username || "",
+            firstName: ctx.from?.first_name || "",
+            text: requestText,
+            receivedAt: new Date().toISOString(),
+            replied: false,
+            type: "order_request",
+            costumeName,
+          });
+          messageDocId = messageRef.id;
+        } catch {}
       }
+      await notifyManagers(ctx, requestText, "order_request", messageDocId);
 
       await setTryOnOrder(userId, { ...order, status: "order_requested", requestedAt: new Date().toISOString() }).catch(() => {});
       await ctx.reply(
@@ -3126,16 +3273,21 @@ function startTelegramBot() {
 
       // Free text — save as message and reply
       await ctx.reply("Спасибо! Менеджер ответит в ближайшее время 🙏", getMainMenu());
+      let messageDocId = "";
       if (db) {
-        addDoc(collection(db, "bot_messages"), {
-          userId: String(ctx.from.id),
-          username: ctx.from.username || "",
-          firstName: ctx.from.first_name || "",
-          text,
-          receivedAt: new Date().toISOString(),
-          replied: false,
-        }).catch(() => {});
+        try {
+          const messageRef = await addDoc(collection(db, "bot_messages"), {
+            userId: String(ctx.from.id),
+            username: ctx.from.username || "",
+            firstName: ctx.from.first_name || "",
+            text,
+            receivedAt: new Date().toISOString(),
+            replied: false,
+          });
+          messageDocId = messageRef.id;
+        } catch {}
       }
+      await notifyManagers(ctx, text, "message", messageDocId);
     } catch (e: any) { console.error("text handler error:", e.message); }
   });
 

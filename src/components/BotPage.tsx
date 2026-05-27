@@ -39,6 +39,9 @@ export const BotPage: React.FC = () => {
   const [welcomeText, setWelcomeText] = useState('');
   const [isSaving, setIsSaving] = useState(false);
   const [savedOk, setSavedOk] = useState(false);
+  const [managerChatIds, setManagerChatIds] = useState('');
+  const [isSavingManagers, setIsSavingManagers] = useState(false);
+  const [managersSavedOk, setManagersSavedOk] = useState(false);
   const [broadcastMsg, setBroadcastMsg] = useState('');
   const [isBroadcasting, setIsBroadcasting] = useState(false);
   const [broadcastResult, setBroadcastResult] = useState<any>(null);
@@ -72,18 +75,20 @@ export const BotPage: React.FC = () => {
   const loadData = async () => {
     setIsLoading(true);
     try {
-      const [subSnap, msgSnap, cfgSnap, costumeRes, btnRes] = await Promise.all([
+      const [subSnap, msgSnap, cfgSnap, costumeRes, btnRes, managerRes] = await Promise.all([
         getDocs(query(collection(db, 'bot_subscribers'), orderBy('subscribedAt', 'desc'))),
         getDocs(query(collection(db, 'bot_messages'), orderBy('receivedAt', 'desc'), limit(50))),
         getDoc(doc(db, 'settings', 'bot_config')),
         fetch('/api/bot/costumes').then(r => r.json()),
         fetch('/api/bot/buttons').then(r => r.json()),
+        fetch('/api/bot/manager-config').then(r => r.json()),
       ]);
       setSubscribers(subSnap.docs.map(d => ({ userId: d.id, ...d.data() } as Subscriber)));
       setMessages(msgSnap.docs.map(d => ({ id: d.id, ...d.data() } as BotMessage)));
       if (cfgSnap.exists() && cfgSnap.data().welcomeText) setWelcomeText(cfgSnap.data().welcomeText);
       if (Array.isArray(costumeRes)) setCostumes(costumeRes);
       if (btnRes?.buttons) setBotButtons(btnRes.buttons);
+      if (Array.isArray(managerRes?.managerChatIds)) setManagerChatIds(managerRes.managerChatIds.join('\n'));
     } catch {}
     setIsLoading(false);
   };
@@ -231,6 +236,22 @@ export const BotPage: React.FC = () => {
       setTimeout(() => setButtonsSavedOk(false), 2000);
     } catch {}
     setIsSavingButtons(false);
+  };
+
+  const saveManagers = async () => {
+    setIsSavingManagers(true);
+    try {
+      const ids = managerChatIds.split(/[\s,]+/).map(id => id.trim()).filter(Boolean);
+      await fetch('/api/bot/manager-config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ managerChatIds: ids }),
+      });
+      setManagerChatIds(ids.join('\n'));
+      setManagersSavedOk(true);
+      setTimeout(() => setManagersSavedOk(false), 2000);
+    } catch {}
+    setIsSavingManagers(false);
   };
 
   const sendBotBroadcast = async () => {
@@ -548,6 +569,25 @@ export const BotPage: React.FC = () => {
                       className="w-full py-2.5 bg-zinc-900 text-white rounded-xl text-[10px] font-black hover:bg-zinc-800 transition-all disabled:opacity-40 flex items-center justify-center gap-2">
                       {isSaving ? <Loader2 size={12} className="animate-spin" /> : savedOk ? <CheckCircle2 size={12} /> : null}
                       {savedOk ? 'Сохранено!' : 'Сохранить приветствие'}
+                    </button>
+                  </div>
+
+                  <div className="space-y-2 p-3 bg-zinc-50 border border-zinc-100 rounded-xl">
+                    <label className="text-[9px] font-black text-zinc-400 uppercase tracking-widest">Чаты менеджеров для ответов</label>
+                    <p className="text-[9px] text-zinc-400">
+                      Менеджер пишет боту /myid, копируешь chat_id сюда. Можно несколько — каждый с новой строки.
+                    </p>
+                    <textarea
+                      value={managerChatIds}
+                      onChange={e => setManagerChatIds(e.target.value)}
+                      placeholder="123456789&#10;-1009876543210"
+                      rows={3}
+                      className="w-full bg-white border border-zinc-200 rounded-xl px-3 py-2.5 text-[12px] font-mono focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-400 transition-all resize-y"
+                    />
+                    <button onClick={saveManagers} disabled={isSavingManagers}
+                      className="w-full py-2.5 bg-violet-500 text-white rounded-xl text-[10px] font-black hover:bg-violet-600 transition-all disabled:opacity-40 flex items-center justify-center gap-2">
+                      {isSavingManagers ? <Loader2 size={12} className="animate-spin" /> : managersSavedOk ? <CheckCircle2 size={12} /> : <MessageSquare size={12} />}
+                      {managersSavedOk ? 'Менеджеры сохранены!' : 'Сохранить чаты менеджеров'}
                     </button>
                   </div>
 
