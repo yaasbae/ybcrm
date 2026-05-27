@@ -2065,6 +2065,118 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
     });
   };
 
+  const newOrderFieldClass = "h-12 w-full rounded-lg border border-zinc-200 bg-white px-4 text-[13px] font-bold text-zinc-900 shadow-[0_10px_24px_rgba(15,23,42,0.03)] outline-none transition-all placeholder:text-zinc-400 focus:border-zinc-400 focus:bg-white focus:ring-2 focus:ring-zinc-500/10";
+  const newOrderSelectClass = cn(newOrderFieldClass, "appearance-none cursor-pointer pr-10");
+  const newOrderLabelClass = "mb-2 flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.16em] text-zinc-400";
+  const renderNewOrderSelect = (
+    label: string,
+    value: string,
+    options: string[],
+    onChange: (value: string) => void,
+    placeholder = label
+  ) => (
+    <label className="block">
+      <span className={newOrderLabelClass}>{label}</span>
+      <span className="relative block">
+        <select
+          value={value || ''}
+          onChange={(e) => onChange(e.target.value)}
+          className={cn(newOrderSelectClass, value ? "text-zinc-900" : "text-zinc-400")}
+        >
+          <option value="">{placeholder}</option>
+          {options.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+        </select>
+        <ChevronRight className="pointer-events-none absolute right-4 top-1/2 h-4 w-4 -translate-y-1/2 rotate-90 text-zinc-400" />
+      </span>
+    </label>
+  );
+
+  const resetNewOrderForm = () => {
+    const rawRow = Array(30).fill('');
+    setNewOrder({
+      date: new Date(),
+      orderId: '',
+      clientName: '',
+      clientPhone: '',
+      clientInsta: '',
+      clientCity: '',
+      item: '',
+      items: [],
+      itemPrices: [],
+      revenue: 0,
+      deliveryPrice: 0,
+      paidAmount: 0,
+      paymentType: 'Предоплата 50%',
+      invoiceType: 'prepayment',
+      source: '',
+      deliveryMethod: '',
+      status: 'Новый',
+      rawRow,
+    });
+    setNewOrderItems(['']);
+    setNewOrderItemPrices([0]);
+    setClientQuery('');
+    setPhoneQuery('');
+    setCreatedOrderId(null);
+    setCreatedPaymentUrl(null);
+    setCreatedShareText('');
+  };
+
+  const createNewOrder = async () => {
+    const itemPricesTotal = getItemPricesTotal(newOrderItemPrices);
+    const invoiceType = newOrder.invoiceType || getInvoiceTypeFromPaymentType(newOrder.paymentType);
+    const deliveryPrice = Number(newOrder.deliveryPrice) || 0;
+    const orderSnapshot = {
+      ...newOrder,
+      rawRow: [...(newOrder.rawRow || [])],
+      items: newOrderItems.map(item => item.trim()).filter(Boolean),
+      itemPrices: newOrderItems.map((item, index) => item.trim() ? (Number(newOrderItemPrices[index]) || 0) : 0).filter((_, index) => Boolean(newOrderItems[index]?.trim())),
+      item: joinOrderItems(newOrderItems),
+      revenue: itemPricesTotal,
+      invoiceType,
+      paymentType: newOrder.paymentType || 'Предоплата 50%',
+      paidAmount: getInvoiceAmount({ revenue: itemPricesTotal, deliveryPrice, invoiceType }),
+    };
+    const orderId = await handleCreateOrder(orderSnapshot);
+    if (!orderId) return;
+    setNewOrderItems(['']);
+    setNewOrderItemPrices([0]);
+    const paymentPageUrl = buildPaymentPageUrl(orderId);
+    setCreatedOrderId(orderId);
+    setCreatedShareText(buildOrderShareText({ ...orderSnapshot, orderId }, paymentPageUrl));
+    setCreatedPaymentUrl(null);
+    setCreatedPaymentError('');
+    if (tochkaConfigured) {
+      setIsCreatingQr(true);
+      try {
+        const amount = getOrderPaymentDue({
+          revenue: orderSnapshot.revenue || 0,
+          deliveryPrice: orderSnapshot.deliveryPrice || 0,
+          paidAmount: orderSnapshot.paidAmount || 0,
+        });
+        if (amount <= 0) throw new Error('Остаток к оплате 0 ₽');
+        const res = await fetch('/api/tochka/create-payment', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            orderId,
+            amount,
+            description: `Заказ #${orderId} ${orderSnapshot.item || ''}`,
+          })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Не удалось создать счёт');
+        if (data.paymentUrl) {
+          setCreatedPaymentUrl(data.paymentUrl);
+          setCreatedShareText(buildOrderShareText({ ...orderSnapshot, orderId }, data.paymentUrl));
+        }
+      } catch (e: any) {
+        setCreatedPaymentError(e.message || 'Не удалось создать счёт');
+      }
+      finally { setIsCreatingQr(false); }
+    }
+  };
+
   return (
     <div className="space-y-6">
       {/* Compact Unified Orders Summary with 2026 Monthly Breakdown */}
@@ -2256,18 +2368,293 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
       </div>
 
       {/* New Order Form Block */}
-      <div className="tg-card p-4 sm:p-6 bg-white border border-zinc-200 text-zinc-900 shadow-sm">
-        <div className="flex items-center gap-3 mb-6">
-          <div className="p-2.5 bg-zinc-900 rounded-2xl shadow-lg shadow-zinc-200">
-            <Plus className="w-5 h-5 text-white" />
+      <div className="rounded-2xl border border-zinc-200 bg-white p-5 text-zinc-900 shadow-[0_18px_45px_rgba(15,23,42,0.04)] sm:p-7">
+        <div className="mb-6 flex items-center gap-4">
+          <div className="grid h-14 w-14 place-items-center rounded-xl bg-zinc-900 shadow-[0_18px_30px_rgba(15,23,42,0.18)]">
+            <Plus className="h-7 w-7 text-white" />
           </div>
           <div>
-            <h3 className="text-xs sm:text-sm font-black uppercase tracking-[0.2em] leading-none mb-1.5">Новый заказ</h3>
-            <p className="text-[8px] sm:text-[9px] font-bold text-zinc-400 uppercase tracking-widest">Добавить запись в список</p>
+            <h3 className="text-[19px] font-black uppercase leading-none tracking-[0.22em]">Новый заказ</h3>
+            <p className="mt-2 text-[10px] font-black uppercase tracking-[0.18em] text-zinc-400">Добавить запись в список</p>
           </div>
         </div>
 
-        <div className="space-y-6">
+        <div className="space-y-4">
+          <section className="rounded-xl border border-zinc-200 bg-white p-4 sm:p-6">
+            <div className="mb-5 flex items-center gap-4">
+              <div className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-violet-100 text-[17px] font-black text-violet-900">1</div>
+              <div>
+                <h4 className="text-[15px] font-black uppercase tracking-[0.22em] text-zinc-950">Клиент и заказ</h4>
+                <p className="mt-1 text-[11px] font-semibold text-zinc-400">Основная информация о клиенте и заказе</p>
+              </div>
+            </div>
+            <div className="grid gap-5 lg:grid-cols-4">
+              <div>
+                <label className={newOrderLabelClass}>
+                  <Calendar className="h-4 w-4" /> Дата и ID
+                </label>
+                <div className="space-y-3">
+                  <input
+                    type="date"
+                    value={newOrder.date ? newOrder.date.toISOString().split('T')[0] : ''}
+                    onChange={(e) => setNewOrder({...newOrder, date: new Date(e.target.value)})}
+                    className={newOrderFieldClass}
+                  />
+                  <label className="block">
+                    <span className={newOrderLabelClass}>ID заказа</span>
+                    <input
+                      type="text"
+                      placeholder="ID заказа"
+                      value={newOrder.orderId || ''}
+                      onChange={(e) => setNewOrder({...newOrder, orderId: e.target.value.toUpperCase()})}
+                      className={newOrderFieldClass}
+                    />
+                  </label>
+                </div>
+              </div>
+
+              <div>
+                <label className={newOrderLabelClass}>
+                  <Users className="h-4 w-4" /> Клиент
+                </label>
+                <div className="space-y-3">
+                  <div className="relative" ref={suggestionsRef}>
+                    <input
+                      type="text"
+                      placeholder="ФИО клиента"
+                      value={clientQuery || newOrder.clientName || ''}
+                      onChange={(e) => {
+                        setClientQuery(e.target.value);
+                        setNewOrder({...newOrder, clientName: e.target.value});
+                        setShowSuggestions(true);
+                      }}
+                      onFocus={() => setShowSuggestions(true)}
+                      className={newOrderFieldClass}
+                      autoComplete="off"
+                    />
+                    <AnimatePresence>
+                      {showSuggestions && clientSuggestions.length > 0 && (
+                        <motion.div
+                          initial={{ opacity: 0, y: -4 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0, y: -4 }}
+                          className="absolute left-0 right-0 top-full z-50 mt-1 overflow-hidden rounded-xl border border-zinc-200 bg-white shadow-lg"
+                        >
+                          {clientSuggestions.map((client, idx) => (
+                            <button
+                              key={idx}
+                              type="button"
+                              onMouseDown={() => selectClient(client)}
+                              className="flex w-full items-center gap-2 border-b border-zinc-50 px-3 py-2 text-left transition-colors last:border-b-0 hover:bg-zinc-50"
+                            >
+                              <UserCircle size={14} className="shrink-0 text-zinc-300" />
+                              <div className="min-w-0">
+                                <p className="truncate text-[11px] font-bold text-zinc-900">{client.fullName || client.name}</p>
+                                <p className="text-[9px] font-mono text-zinc-400">+{client.phone}</p>
+                              </div>
+                            </button>
+                          ))}
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </div>
+                  <div className="relative" ref={phoneSuggestionsRef}>
+                    <input
+                      type="text"
+                      placeholder="Телефон"
+                      value={phoneQuery || newOrder.clientPhone || ''}
+                      onChange={(e) => {
+                        const val = e.target.value.replace(/[^0-9]/g, '');
+                        setPhoneQuery(val);
+                        setNewOrder({...newOrder, clientPhone: val});
+                        setShowPhoneSuggestions(true);
+                      }}
+                      onFocus={() => setShowPhoneSuggestions(true)}
+                      className={newOrderFieldClass}
+                      autoComplete="off"
+                    />
+                    <AnimatePresence>
+                      {showPhoneSuggestions && phoneSuggestions.length > 0 && (
+                        <motion.div
+                          initial={{ opacity: 0, y: -4 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0, y: -4 }}
+                          className="absolute left-0 right-0 top-full z-50 mt-1 overflow-hidden rounded-xl border border-zinc-200 bg-white shadow-lg"
+                        >
+                          {phoneSuggestions.map((client, idx) => (
+                            <button
+                              key={idx}
+                              type="button"
+                              onMouseDown={() => selectClient(client)}
+                              className="flex w-full items-center gap-2 border-b border-zinc-50 px-3 py-2 text-left transition-colors last:border-b-0 hover:bg-zinc-50"
+                            >
+                              <UserCircle size={14} className="shrink-0 text-zinc-300" />
+                              <div className="min-w-0">
+                                <p className="truncate text-[11px] font-bold text-zinc-900">{client.fullName || client.name}</p>
+                                <p className="text-[9px] font-mono text-zinc-400">+{client.phone}</p>
+                              </div>
+                            </button>
+                          ))}
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                {renderNewOrderSelect('Логистика', newOrder.deliveryMethod || '', handbookDeliveries.length ? handbookDeliveries : DELIVERY_OPTIONS, (v) => setNewOrder({...newOrder, deliveryMethod: v}), 'Доставка')}
+                {renderNewOrderSelect(' ', newOrder.paymentType || '', INVOICE_PAYMENT_OPTIONS, updateNewOrderPaymentType, 'Предоплата 50%')}
+                {renderNewOrderSelect(' ', newOrder.source || '', handbookSources.length ? handbookSources : SOURCE_OPTIONS, (v) => setNewOrder({...newOrder, source: v}), 'Источник')}
+              </div>
+
+              <div className="space-y-3">
+                {renderNewOrderSelect('Менеджмент', newOrder.manager || '', handbookManagers, (v) => setNewOrder({...newOrder, manager: v}), 'Менеджер')}
+                {renderNewOrderSelect(' ', newOrder.blogger || '', handbookBloggers, (v) => setNewOrder({...newOrder, blogger: v}), 'Блогер')}
+              </div>
+            </div>
+          </section>
+
+          <section className="rounded-xl border border-zinc-200 bg-white p-4 sm:p-6">
+            <div className="mb-5 flex items-center gap-4">
+              <div className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-violet-100 text-[17px] font-black text-violet-900">2</div>
+              <div>
+                <h4 className="text-[15px] font-black uppercase tracking-[0.22em] text-zinc-950">Изделие</h4>
+                <p className="mt-1 text-[11px] font-semibold text-zinc-400">Информация об изделии</p>
+              </div>
+            </div>
+            <div className="space-y-4">
+              {newOrderItems.map((item, index) => (
+                <div key={index} className="grid gap-3 lg:grid-cols-[minmax(0,1.5fr)_240px_52px]">
+                  <label className="block">
+                    <span className={newOrderLabelClass}>Наименование</span>
+                    <input
+                      type="text"
+                      list="product-list"
+                      placeholder={index === 0 ? 'Наименование' : `Позиция ${index + 1}`}
+                      value={item}
+                      onChange={(e) => applyNewOrderProduct(e.target.value, index)}
+                      title={item}
+                      className={newOrderFieldClass}
+                    />
+                  </label>
+                  <label className="block">
+                    <span className={newOrderLabelClass}>Цена</span>
+                    <span className="relative block">
+                      <span className="absolute left-4 top-1/2 -translate-y-1/2 text-[13px] font-black text-zinc-300">₽</span>
+                      <input
+                        type="number"
+                        placeholder="Цена"
+                        value={newOrderItemPrices[index] || ''}
+                        onChange={(e) => updateNewOrderItemPrice(index, parseFloat(e.target.value) || 0)}
+                        className={cn(newOrderFieldClass, "pl-10 text-right")}
+                      />
+                    </span>
+                  </label>
+                  <div className="flex items-end gap-2">
+                    {newOrderItems.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={() => removeNewOrderItem(index)}
+                        className="grid h-12 w-12 place-items-center rounded-lg border border-red-100 bg-red-50 text-red-500 transition-colors hover:bg-red-100"
+                        title="Удалить позицию"
+                      >
+                        <X className="h-5 w-5" />
+                      </button>
+                    )}
+                    {index === newOrderItems.length - 1 && (
+                      <button
+                        type="button"
+                        onClick={addNewOrderItem}
+                        className="grid h-12 w-12 place-items-center rounded-lg border border-zinc-200 bg-white text-zinc-600 transition-colors hover:bg-zinc-900 hover:text-white"
+                        title="Добавить позицию"
+                      >
+                        <Plus className="h-5 w-5" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))}
+              <div className="grid gap-3 lg:grid-cols-4">
+                {renderNewOrderSelect('Цвет', newOrder.rawRow?.[RAW_COLOR_INDEX] || '', handbookColors, (v) => {
+                  const nr = [...(newOrder.rawRow || Array(30).fill(''))];
+                  nr[RAW_COLOR_INDEX] = v;
+                  setNewOrder({...newOrder, rawRow: nr});
+                }, 'Цвет')}
+                {renderNewOrderSelect('Размер', newOrder.rawRow?.[RAW_SIZE_INDEX] || '', handbookSizes, (v) => {
+                  const nr = [...(newOrder.rawRow || Array(30).fill(''))];
+                  nr[RAW_SIZE_INDEX] = v;
+                  setNewOrder({...newOrder, rawRow: nr});
+                }, 'Размер')}
+                {renderNewOrderSelect('Рост', newOrder.height || '', handbookHeights, (v) => setNewOrder({...newOrder, height: v}), 'Рост')}
+                {renderNewOrderSelect('Метка', newOrder.label || '', handbookLabels, (v) => setNewOrder({...newOrder, label: v}), 'Метка')}
+              </div>
+            </div>
+          </section>
+
+          <section className="rounded-xl border border-zinc-200 bg-white p-4 sm:p-6">
+            <div className="mb-5 flex items-center gap-4">
+              <div className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-violet-100 text-[17px] font-black text-violet-900">3</div>
+              <div>
+                <h4 className="text-[15px] font-black uppercase tracking-[0.22em] text-zinc-950">Расчет стоимости</h4>
+                <p className="mt-1 text-[11px] font-semibold text-zinc-400">Финальная сумма заказа</p>
+              </div>
+            </div>
+            <div className="grid items-end gap-4 lg:grid-cols-[minmax(0,1fr)_32px_minmax(0,1fr)_32px_minmax(0,1fr)]">
+              <div className="rounded-xl border border-violet-100 bg-violet-50/60 p-5">
+                <p className="text-[10px] font-black uppercase tracking-[0.16em] text-zinc-400">Стоимость 100%</p>
+                <div className="mt-5 flex items-center justify-between gap-4 text-[24px] font-black text-zinc-950">
+                  <span className="text-zinc-400">₽</span>
+                  <span>{Number(newOrder.revenue || 0).toLocaleString('ru-RU')}</span>
+                </div>
+              </div>
+              <div className="hidden pb-8 text-center text-3xl font-bold text-zinc-400 lg:block">+</div>
+              <div className="rounded-xl border border-blue-100 bg-blue-50/60 p-5">
+                <p className="text-[10px] font-black uppercase tracking-[0.16em] text-zinc-400">Стоимость доставки</p>
+                <label className="relative mt-5 block">
+                  <span className="absolute left-0 top-1/2 -translate-y-1/2 text-[24px] font-black text-zinc-400">₽</span>
+                  <input
+                    type="number"
+                    placeholder="0.00"
+                    value={Number.isNaN(newOrder.deliveryPrice) ? "" : newOrder.deliveryPrice || ""}
+                    onChange={(e) => updateNewOrderDeliveryPrice(parseFloat(e.target.value) || 0)}
+                    className="h-9 w-full bg-transparent pl-10 text-right text-[24px] font-black text-zinc-950 outline-none placeholder:text-zinc-300"
+                  />
+                </label>
+              </div>
+              <div className="hidden pb-8 text-center text-3xl font-bold text-zinc-400 lg:block">=</div>
+              <div className="rounded-xl border border-emerald-100 bg-emerald-50/70 p-5">
+                <p className="text-[10px] font-black uppercase tracking-[0.16em] text-emerald-600">Счет к оплате</p>
+                <div className="mt-5 flex items-center justify-between gap-4 text-[24px] font-black text-emerald-700">
+                  <span className="text-zinc-400">₽</span>
+                  <span>{Number(newOrder.paidAmount || 0).toLocaleString('ru-RU')}</span>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <div className="flex flex-col gap-4 pt-3 md:flex-row md:items-center md:justify-between">
+            <button
+              type="button"
+              onClick={resetNewOrderForm}
+              className="inline-flex h-14 items-center justify-center gap-3 rounded-lg border border-zinc-200 bg-white px-8 text-[12px] font-black text-zinc-400 transition-colors hover:bg-zinc-50"
+            >
+              Очистить форму
+              <RefreshCcw className="h-4 w-4" />
+            </button>
+            <button
+              type="button"
+              onClick={createNewOrder}
+              className="inline-flex h-14 w-full items-center justify-center gap-4 rounded-lg bg-zinc-900 px-10 text-[12px] font-black uppercase tracking-[0.22em] text-white shadow-[0_20px_35px_rgba(15,23,42,0.18)] transition-all hover:bg-black active:scale-[0.99] md:w-[390px]"
+            >
+              Создать заказ
+              <CheckCircle2 className="h-5 w-5" />
+            </button>
+          </div>
+        </div>
+
+        {false && (
+        <div className="hidden">
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6">
 
             {/* Group: Basic Info */}
@@ -2651,6 +3038,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
             </button>
           </div>
         </div>
+        )}
 
         {/* QR Panel — появляется после создания заказа */}
         <AnimatePresence>
