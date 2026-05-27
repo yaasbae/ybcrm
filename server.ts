@@ -2772,8 +2772,7 @@ function startTelegramBot() {
 
   const formatClientName = (from: any) => {
     const name = [from?.first_name, from?.last_name].filter(Boolean).join(" ").trim();
-    const username = from?.username ? `@${from.username}` : "";
-    return [name, username].filter(Boolean).join(" ") || "Клиент";
+    return name || "Клиент";
   };
 
   const notifyManagers = async (ctx: any, messageText: string, type = "message", messageDocId?: string) => {
@@ -2781,15 +2780,14 @@ function startTelegramBot() {
     if (!managerChatIds.length || !ctx.from) return;
 
     const userId = String(ctx.from.id);
-    const title = type === "order_request" ? "Заявка из бота" : "Новое сообщение в боте";
+    const title = type === "order_request" ? "Заявка от клиента" : "Сообщение от клиента";
     const body = [
-      `📩 ${title}`,
-      `Клиент: ${formatClientName(ctx.from)}`,
-      `Telegram ID: ${userId}`,
+      title,
+      formatClientName(ctx.from),
       "",
       messageText,
       "",
-      "Чтобы ответить клиенту, нажми Reply на это сообщение и отправь текст."
+      "Ответь Reply на это сообщение - клиент получит ответ от бота."
     ].join("\n");
 
     await Promise.all(managerChatIds.map(async managerChatId => {
