@@ -285,6 +285,21 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
     setIsAdding(true);
   };
 
+  const updateCostField = (section: string, field: string, value: number) => {
+    setNewProduct(prev => {
+      const ue: any = { ...(prev.unitEconomics || {}) };
+      if (field === '') {
+        ue[section] = value;
+      } else {
+        ue[section] = { ...(ue[section] || {}), [field]: value };
+      }
+      const fabricTotal = (ue.fabric?.main || 0) + (ue.fabric?.lining || 0) + (ue.fabric?.padding || 0);
+      const accessoriesTotal = Object.values(ue.accessories || {}).reduce((a: number, b: any) => a + Number(b || 0), 0) as number;
+      const sewingTotal = (ue.sewing || 0) + (ue.outsourcedSewing || 0);
+      return { ...prev, unitEconomics: ue, costPrice: fabricTotal + accessoriesTotal + sewingTotal };
+    });
+  };
+
   const applyScenario = (scenarioId: string) => {
     const scenario = scenarios.find(s => s.id === scenarioId);
     if (scenario) {
@@ -1000,44 +1015,109 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
                       />
                     </div>
 
-                    {/* Detailed Breakdown from Scenario */}
-                    {newProduct.unitEconomics && (
-                      <div className="md:col-span-2 p-6 bg-blue-50/50 rounded-[2rem] border border-blue-100/50 space-y-4">
-                        <div className="flex items-center gap-2 text-blue-600">
-                          <Info size={16} />
-                          <h4 className="text-xs font-bold uppercase tracking-widest">Детализация себестоимости из сценария</h4>
+                    {/* Cost Breakdown Block */}
+                    <div className="md:col-span-2 rounded-[2rem] border border-slate-100 overflow-hidden">
+                      {/* Header */}
+                      <div className="px-6 py-4 bg-slate-50 border-b border-slate-100 flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <Calculator size={15} className="text-blue-500" />
+                          <span className="text-[11px] font-black uppercase tracking-widest text-slate-600">Расчёт себестоимости</span>
                         </div>
-                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                          <div className="space-y-1">
-                            <p className="text-[9px] font-bold text-slate-400 uppercase">Ткань</p>
-                            <p className="text-sm font-semibold text-slate-700">
-                              {((newProduct.unitEconomics.fabric?.main || 0) + 
-                                (newProduct.unitEconomics.fabric?.lining || 0) + 
-                                (newProduct.unitEconomics.fabric?.padding || 0)).toLocaleString()} ₽
-                            </p>
+                        <span className="text-sm font-black text-rose-600">
+                          Итого: {(newProduct.costPrice || 0).toLocaleString()} ₽
+                        </span>
+                      </div>
+
+                      <div className="p-6 space-y-6">
+                        {/* Ткань */}
+                        <div className="space-y-3">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[10px] font-black text-indigo-600 uppercase tracking-widest">Ткань</span>
+                            <span className="text-[11px] font-bold text-indigo-600">
+                              {((newProduct.unitEconomics?.fabric?.main || 0) + (newProduct.unitEconomics?.fabric?.lining || 0) + (newProduct.unitEconomics?.fabric?.padding || 0)).toLocaleString()} ₽
+                            </span>
                           </div>
-                          <div className="space-y-1">
-                            <p className="text-[9px] font-bold text-slate-400 uppercase">Фурнитура</p>
-                            <p className="text-sm font-semibold text-slate-700">
-                              {Object.values(newProduct.unitEconomics.accessories || {}).reduce((a: any, b: any) => a + b, 0).toLocaleString()} ₽
-                            </p>
+                          <div className="grid grid-cols-3 gap-3">
+                            {([{id: 'main', label: 'Основная'}, {id: 'lining', label: 'Подкладка'}, {id: 'padding', label: 'Утеплитель'}] as const).map(f => (
+                              <div key={f.id} className="space-y-1">
+                                <label className="text-[9px] font-bold text-slate-400 uppercase">{f.label}</label>
+                                <input
+                                  type="number"
+                                  placeholder="0"
+                                  value={newProduct.unitEconomics?.fabric?.[f.id] || ''}
+                                  onChange={e => updateCostField('fabric', f.id, Number(e.target.value))}
+                                  className="w-full px-3 py-2.5 bg-slate-50 border border-slate-100 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-300 transition-all"
+                                />
+                              </div>
+                            ))}
                           </div>
-                          <div className="space-y-1">
-                            <p className="text-[9px] font-bold text-slate-400 uppercase">Упаковка</p>
-                            <p className="text-sm font-semibold text-slate-700">
-                              {Object.values(newProduct.unitEconomics.packagingDetails || {}).reduce((a: any, b: any) => a + b, 0).toLocaleString()} ₽
-                            </p>
+                        </div>
+
+                        {/* Фурнитура и нанесение */}
+                        <div className="space-y-3">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[10px] font-black text-amber-600 uppercase tracking-widest">Фурнитура и нанесение</span>
+                            <span className="text-[11px] font-bold text-amber-600">
+                              {(Object.values(newProduct.unitEconomics?.accessories || {}).reduce((a: number, b: any) => a + Number(b || 0), 0) as number).toLocaleString()} ₽
+                            </span>
                           </div>
-                          <div className="space-y-1">
-                            <p className="text-[9px] font-bold text-slate-400 uppercase">Пошив</p>
-                            <p className="text-sm font-semibold text-slate-700">
-                              {((newProduct.unitEconomics.sewing || 0) + 
-                                (newProduct.unitEconomics.outsourcedSewing || 0)).toLocaleString()} ₽
-                            </p>
+                          <div className="grid grid-cols-3 gap-3">
+                            {([
+                              {id: 'lock', label: 'Замок'},
+                              {id: 'application', label: 'Нанесение'},
+                              {id: 'embroidery', label: 'Вышивка'},
+                              {id: 'eyelets', label: 'Люверсы'},
+                              {id: 'fixators', label: 'Фиксаторы'},
+                              {id: 'waistElastic', label: 'Резинка пояс'},
+                              {id: 'hatElastic', label: 'Резинка шапка'},
+                            ] as const).map(f => (
+                              <div key={f.id} className="space-y-1">
+                                <label className="text-[9px] font-bold text-slate-400 uppercase">{f.label}</label>
+                                <input
+                                  type="number"
+                                  placeholder="0"
+                                  value={newProduct.unitEconomics?.accessories?.[f.id] || ''}
+                                  onChange={e => updateCostField('accessories', f.id, Number(e.target.value))}
+                                  className="w-full px-3 py-2.5 bg-slate-50 border border-slate-100 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-300 transition-all"
+                                />
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* Пошив */}
+                        <div className="space-y-3">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[10px] font-black text-emerald-600 uppercase tracking-widest">Пошив</span>
+                            <span className="text-[11px] font-bold text-emerald-600">
+                              {((newProduct.unitEconomics?.sewing || 0) + (newProduct.unitEconomics?.outsourcedSewing || 0)).toLocaleString()} ₽
+                            </span>
+                          </div>
+                          <div className="grid grid-cols-2 gap-3">
+                            <div className="space-y-1">
+                              <label className="text-[9px] font-bold text-slate-400 uppercase">Прямой пошив</label>
+                              <input
+                                type="number"
+                                placeholder="0"
+                                value={newProduct.unitEconomics?.sewing || ''}
+                                onChange={e => updateCostField('sewing', '', Number(e.target.value))}
+                                className="w-full px-3 py-2.5 bg-slate-50 border border-slate-100 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-300 transition-all"
+                              />
+                            </div>
+                            <div className="space-y-1">
+                              <label className="text-[9px] font-bold text-slate-400 uppercase">Аутсорс</label>
+                              <input
+                                type="number"
+                                placeholder="0"
+                                value={newProduct.unitEconomics?.outsourcedSewing || ''}
+                                onChange={e => updateCostField('outsourcedSewing', '', Number(e.target.value))}
+                                className="w-full px-3 py-2.5 bg-slate-50 border border-slate-100 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-300 transition-all"
+                              />
+                            </div>
                           </div>
                         </div>
                       </div>
-                    )}
+                    </div>
                   </div>
                 </div>
 
