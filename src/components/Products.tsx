@@ -127,6 +127,9 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
     return () => unsubscribe();
   }, []);
 
+  type PhotoUploadStatus = 'uploading' | 'done' | 'error';
+  const [pendingProductId, setPendingProductId] = useState<string | null>(null);
+  const [photoUploadStatus, setPhotoUploadStatus] = useState<Record<number, PhotoUploadStatus>>({});
   const [isAdding, setIsAdding] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [newProduct, setNewProduct] = useState<Partial<ProductItem>>({
@@ -152,60 +155,42 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
 
   const handleAddProduct = async () => {
     if (!newProduct.name) return;
-    
+
+    const stillUploading = Object.values(photoUploadStatus).some(s => s === 'uploading');
+    if (stillUploading) {
+      setError('Подождите, фото ещё загружаются...');
+      return;
+    }
+
     setLoading(true);
     try {
-      const id = editingId || Date.now().toString();
+      const id = pendingProductId || editingId || Date.now().toString();
 
-      // Find photos that were removed during editing to cleanup Storage
+      // Удаляем из Storage фото, которые убрали при редактировании
       if (editingId) {
         const oldProduct = products.find(p => p.id === editingId);
         if (oldProduct) {
           const removedPhotos = oldProduct.photos.filter(p => !newProduct.photos?.includes(p));
-          console.log(`Found ${removedPhotos.length} photos to remove from storage`);
-          
           await Promise.all(removedPhotos.map(async (photoUrl) => {
-            // More robust check for Firebase Storage URLs associated with this product
             const isStorageUrl = photoUrl.includes('firebasestorage.googleapis.com');
             const containsId = photoUrl.includes(id) || photoUrl.includes(encodeURIComponent(`products/${id}`));
-            
             if (isStorageUrl && containsId) {
               try {
-                const fileRef = ref(storage, photoUrl);
-                await deleteObject(fileRef);
-                console.log('Successfully deleted orphaned storage object:', photoUrl);
+                await deleteObject(ref(storage, photoUrl));
               } catch (delErr) {
-                // If it's already deleted or URL is invalid, just log and continue
                 console.warn('Storage cleanup info (safe to ignore if file already gone):', delErr);
               }
             }
           }));
         }
       }
-      
-      // Upload base64 photos to Firebase Storage
-      const uploadedPhotos = await Promise.all((newProduct.photos || []).map(async (photo, index) => {
-        if (photo.startsWith('data:image')) {
-          try {
-            // Convert base64 to blob
-            const response = await fetch(photo);
-            const blob = await response.blob();
-            
-            const fileName = `photo_${index}_${Date.now()}.jpg`;
-            const storageRef = ref(storage, `products/${id}/${fileName}`);
-            await uploadBytes(storageRef, blob, { contentType: 'image/jpeg' });
-            return await getDownloadURL(storageRef);
-          } catch (uploadErr) {
-            console.error('Upload error for photo', index, uploadErr);
-            return photo; // Fallback to base64 if upload fails (though we want to avoid this)
-          }
-        }
-        return photo; // Already a URL
-      }));
+
+      // Фото уже загружены в Storage, фильтруем возможные base64 фаллбэки
+      const finalPhotos = (newProduct.photos || []).filter(p => !p.startsWith('data:image'));
 
       const productData = {
         id,
-        photos: uploadedPhotos.length > 0 ? uploadedPhotos : ['https://picsum.photos/seed/product/400/400'],
+        photos: finalPhotos.length > 0 ? finalPhotos : ['https://picsum.photos/seed/product/400/400'],
         name: newProduct.name || '',
         color: newProduct.color || '',
         sizeGrid: newProduct.sizeGrid || '',
@@ -230,6 +215,8 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
 
       setIsAdding(false);
       setEditingId(null);
+      setPendingProductId(null);
+      setPhotoUploadStatus({});
       setNewProduct({
         name: '',
         color: '',
@@ -293,6 +280,8 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
       posts: product.posts || []
     });
     setEditingId(product.id);
+    setPendingProductId(product.id);
+    setPhotoUploadStatus({});
     setIsAdding(true);
   };
 
@@ -345,45 +334,118 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
-    if (files) {
-      const currentPhotos = newProduct.photos || [];
-      const remainingSlots = 5 - currentPhotos.length;
-      const filesToProcess = Array.from(files).slice(0, remainingSlots);
+    if (!files || !pendingProductId) return;
 
-      for (const file of filesToProcess) {
-        try {
-          // High quality JPEG options
-          const options = {
-            maxSizeMB: 5.0, // Back to 5MB for 0.95 quality
-            maxWidthOrHeight: 1920,
-            useWebWorker: true,
-            initialQuality: 0.95, // Back to 0.95 as requested
-            fileType: 'image/jpeg'
-          };
+    const currentPhotos = newProduct.photos || [];
+    const remainingSlots = 5 - currentPhotos.length;
+    const filesToProcess = Array.from(files).slice(0, remainingSlots);
 
-          const compressedFile = await imageCompression(file, options);
-          
-          const reader = new FileReader();
-          reader.onloadend = () => {
-            setNewProduct(prev => ({
-              ...prev,
-              photos: [...(prev.photos || []), reader.result as string].slice(0, 5)
-            }));
-          };
-          reader.readAsDataURL(compressedFile);
-        } catch (err) {
-          console.error('Compression error:', err);
-          setError(`Ошибка при обработке файла ${file.name}`);
-        }
+    let currentIndex = currentPhotos.length;
+
+    for (const file of filesToProcess) {
+      const thisIndex = currentIndex++;
+      try {
+        const options = {
+          maxSizeMB: 2.0,
+          maxWidthOrHeight: 1920,
+          useWebWorker: true,
+          initialQuality: 0.85,
+          fileType: 'image/jpeg' as const
+        };
+
+        const compressedFile = await imageCompression(file, options);
+
+        const reader = new FileReader();
+        reader.onloadend = async () => {
+          const base64 = reader.result as string;
+
+          // Немедленно показываем превью из base64
+          setNewProduct(prev => ({
+            ...prev,
+            photos: [...(prev.photos || []), base64].slice(0, 5)
+          }));
+          setPhotoUploadStatus(prev => ({ ...prev, [thisIndex]: 'uploading' }));
+
+          // Фоновая загрузка в Firebase Storage
+          try {
+            const blob = await fetch(base64).then(r => r.blob());
+            const storageRef = ref(storage, `products/${pendingProductId}/photo_${thisIndex}_${Date.now()}.jpg`);
+            await uploadBytes(storageRef, blob, { contentType: 'image/jpeg' });
+            const url = await getDownloadURL(storageRef);
+
+            // Заменяем base64 на Storage URL
+            setNewProduct(prev => {
+              const photos = [...(prev.photos || [])];
+              const idx = photos.indexOf(base64);
+              if (idx !== -1) photos[idx] = url;
+              return { ...prev, photos };
+            });
+            setPhotoUploadStatus(prev => ({ ...prev, [thisIndex]: 'done' }));
+          } catch (uploadErr) {
+            console.error('Background upload error:', uploadErr);
+            setPhotoUploadStatus(prev => ({ ...prev, [thisIndex]: 'error' }));
+          }
+        };
+        reader.readAsDataURL(compressedFile);
+      } catch (err) {
+        console.error('Compression error:', err);
+        setError(`Ошибка при обработке файла ${file.name}`);
       }
     }
   };
 
   const removePhoto = (index: number) => {
+    const url = (newProduct.photos || [])[index];
+    if (url?.includes('firebasestorage.googleapis.com')) {
+      deleteObject(ref(storage, url)).catch(() => {});
+    }
     setNewProduct(prev => ({
       ...prev,
       photos: (prev.photos || []).filter((_, i) => i !== index)
     }));
+    setPhotoUploadStatus(prev => {
+      const updated: Record<number, PhotoUploadStatus> = {};
+      Object.entries(prev).forEach(([k, v]) => {
+        const n = Number(k);
+        if (n < index) updated[n] = v;
+        else if (n > index) updated[n - 1] = v;
+      });
+      return updated;
+    });
+  };
+
+  const handleCancelForm = () => {
+    // Для новых товаров — удалить загруженные фото из Storage в фоне
+    if (!editingId && pendingProductId) {
+      const uploaded = (newProduct.photos || []).filter(p =>
+        p.includes('firebasestorage.googleapis.com') && p.includes(pendingProductId)
+      );
+      uploaded.forEach(url => deleteObject(ref(storage, url)).catch(() => {}));
+    }
+    setIsAdding(false);
+    setEditingId(null);
+    setPendingProductId(null);
+    setPhotoUploadStatus({});
+    setNewProduct({
+      name: '',
+      color: '',
+      sizeGrid: '',
+      girths: '',
+      height: '',
+      weight: '',
+      applicationType: '',
+      patternNumber: '',
+      releaseYear: new Date().getFullYear().toString(),
+      photos: [],
+      costPrice: 0,
+      sellingPrice: 0,
+      composition: '',
+      sizeDetails: '',
+      description: '',
+      countryOfOrigin: '',
+      postUrl: '',
+      posts: []
+    });
   };
 
   return (
@@ -423,7 +485,11 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
             <motion.button
               whileHover={{ scale: 1.02 }}
               whileTap={{ scale: 0.98 }}
-              onClick={() => setIsAdding(true)}
+              onClick={() => {
+                setPendingProductId(Date.now().toString());
+                setPhotoUploadStatus({});
+                setIsAdding(true);
+              }}
               className="bg-blue-600 text-white px-6 py-3 rounded-2xl font-bold text-xs uppercase tracking-widest flex items-center gap-2 shadow-lg shadow-blue-200"
             >
               <Plus className="w-4 h-4" /> Добавить товар
@@ -567,11 +633,8 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
                     </div>
                     <h2 className="text-xl font-semibold">{editingId ? 'Редактировать товар' : 'Новый товар'}</h2>
                   </div>
-                  <button 
-                    onClick={() => {
-                      setIsAdding(false);
-                      setEditingId(null);
-                    }}
+                  <button
+                    onClick={handleCancelForm}
                     className="p-2 hover:bg-slate-100 rounded-full transition-colors text-slate-400"
                   >
                     <X size={20} />
@@ -587,17 +650,35 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
                     </div>
                     
                     <div className="flex flex-wrap gap-4">
-                      {(newProduct.photos || []).map((photo, index) => (
-                        <div key={index} className="w-24 h-24 bg-slate-100 rounded-2xl relative overflow-hidden group">
-                          <img src={photo} alt={`Preview ${index}`} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
-                          <button 
-                            onClick={() => removePhoto(index)}
-                            className="absolute top-1 right-1 p-1 bg-red-500 text-white rounded-full opacity-0 group-hover:opacity-100 transition-opacity"
-                          >
-                            <X size={12} />
-                          </button>
-                        </div>
-                      ))}
+                      {(newProduct.photos || []).map((photo, index) => {
+                        const status = photoUploadStatus[index];
+                        return (
+                          <div key={index} className="w-24 h-24 bg-slate-100 rounded-2xl relative overflow-hidden group">
+                            <img
+                              src={photo}
+                              alt={`Preview ${index}`}
+                              className={cn("w-full h-full object-cover transition-opacity", status === 'uploading' ? "opacity-50" : "opacity-100")}
+                              referrerPolicy="no-referrer"
+                            />
+                            {status === 'uploading' && (
+                              <div className="absolute inset-0 flex items-center justify-center bg-black/10">
+                                <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                              </div>
+                            )}
+                            {status === 'error' && (
+                              <div className="absolute inset-0 flex items-center justify-center bg-red-500/20">
+                                <X size={14} className="text-red-500" />
+                              </div>
+                            )}
+                            <button
+                              onClick={() => removePhoto(index)}
+                              className="absolute top-1 right-1 p-1 bg-red-500 text-white rounded-full opacity-0 group-hover:opacity-100 transition-opacity"
+                            >
+                              <X size={12} />
+                            </button>
+                          </div>
+                        );
+                      })}
                       
                       {(newProduct.photos || []).length < 5 && (
                         <div className="w-24 h-24 bg-slate-100 rounded-2xl flex flex-col items-center justify-center border-2 border-dashed border-slate-200 relative overflow-hidden group hover:border-blue-400 transition-colors">
@@ -961,22 +1042,24 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
                 </div>
 
                 <div className="p-8 bg-slate-50/50 border-t border-slate-100 flex gap-3">
-                  <button 
-                    onClick={() => {
-                      setIsAdding(false);
-                      setEditingId(null);
-                    }}
+                  <button
+                    onClick={handleCancelForm}
                     className="flex-1 py-4 rounded-2xl font-bold text-xs uppercase tracking-widest text-slate-500 hover:bg-slate-100 transition-colors"
                   >
                     Отмена
                   </button>
-                  <button 
-                    onClick={handleAddProduct}
-                    disabled={!newProduct.name}
-                    className="flex-[2] py-4 bg-blue-600 text-white rounded-2xl font-bold text-xs uppercase tracking-widest shadow-lg shadow-blue-200 hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:shadow-none"
-                  >
-                    {editingId ? 'Обновить товар' : 'Сохранить товар'}
-                  </button>
+                  {(() => {
+                    const hasUploadingPhotos = Object.values(photoUploadStatus).some(s => s === 'uploading');
+                    return (
+                      <button
+                        onClick={handleAddProduct}
+                        disabled={!newProduct.name || hasUploadingPhotos}
+                        className="flex-[2] py-4 bg-blue-600 text-white rounded-2xl font-bold text-xs uppercase tracking-widest shadow-lg shadow-blue-200 hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:shadow-none"
+                      >
+                        {hasUploadingPhotos ? 'Загрузка фото...' : editingId ? 'Обновить товар' : 'Сохранить товар'}
+                      </button>
+                    );
+                  })()}
                 </div>
               </motion.div>
             </div>

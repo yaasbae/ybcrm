@@ -488,6 +488,8 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
               const month = parseInt(parts[1], 10) - 1;
               let year = parseInt(parts[2], 10);
               if (year < 100) year += 2000;
+              const orderNumber = parseInt(lastOrderId.replace(/\D/g, ''), 10);
+              if (year === 2025 && orderNumber >= 6800) year = 2026;
               if (!isNaN(day) && !isNaN(month) && !isNaN(year)) {
                 lastDate = new Date(year, month, day);
               }
@@ -757,7 +759,12 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
 
     const bloggersList = Array.from(bloggerMap.values());
     const uniqueClients = clientMap.size;
-    const totalRevenue = uniqueOrders.reduce((acc, curr) => acc + curr.revenue, 0);
+    const isSalesOrder = (o: OrderData) => {
+      const status = String(o.status || '').toLowerCase();
+      return (Number(o.revenue) || 0) > 0 && !status.includes('возврат') && !status.includes('отмена');
+    };
+    const salesOrders = uniqueOrders.filter(isSalesOrder);
+    const totalRevenue = salesOrders.reduce((acc, curr) => acc + curr.revenue, 0);
 
     const productMap = new Map<string, { name: string, total: number, count: number }>();
     data.forEach(row => {
@@ -782,15 +789,17 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
         revenue: 0, count: 0, returns: 0, bloggers: new Set(),
         paidAmount: 0, salesCount: 0, dueExtra: 0, delivery: 0
       };
-      salesByPeriod[key].revenue += o.revenue;
       salesByPeriod[key].count += 1;
-      salesByPeriod[key].paidAmount += o.paidAmount;
-      salesByPeriod[key].delivery += o.deliveryPrice;
       const isReturn = o.status?.toLowerCase().includes('возврат');
       const isCancelled = o.status?.toLowerCase().includes('отмена');
       if (isReturn) salesByPeriod[key].returns += 1;
-      if (!isReturn && !isCancelled) salesByPeriod[key].salesCount += 1;
-      salesByPeriod[key].dueExtra += Math.max(0, (o.revenue + o.deliveryPrice) - o.paidAmount);
+      if (isSalesOrder(o)) {
+        salesByPeriod[key].revenue += o.revenue;
+        salesByPeriod[key].paidAmount += o.paidAmount;
+        salesByPeriod[key].delivery += o.deliveryPrice;
+        salesByPeriod[key].salesCount += 1;
+        salesByPeriod[key].dueExtra += Math.max(0, (o.revenue + o.deliveryPrice) - o.paidAmount);
+      }
       if (o.source?.toLowerCase().includes('блогер')) salesByPeriod[key].bloggers.add(o.source);
     });
 
@@ -804,7 +813,8 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
         shortPeriod: `${monthName.substring(0, 3)} ${year.substring(2)}`,
         monthName,
         revenue: val.revenue,
-        orders: val.count,
+        orders: val.salesCount,
+        totalOrders: val.count,
         sales: val.salesCount,
         paid: val.paidAmount,
         dueExtra: val.dueExtra,
@@ -866,9 +876,9 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
       uniqueOrders: Array.from(ordersMap.values()),
       returnsCount: uniqueOrders.filter(o => o.status?.toLowerCase().includes('возврат')).length,
       exchangesCount: uniqueOrders.filter(o => o.status?.toLowerCase().includes('обмен')).length,
-      totalActualPayments: uniqueOrders.reduce((sum, o) => sum + o.paidAmount, 0),
-      totalDueExtraPayments: uniqueOrders.reduce((sum, o) => sum + Math.max(0, (o.revenue + o.deliveryPrice) - o.paidAmount), 0),
-      salesCount: uniqueOrders.filter(o => !o.status?.toLowerCase().includes('возврат') && !o.status?.toLowerCase().includes('отмена')).length,
+      totalActualPayments: salesOrders.reduce((sum, o) => sum + o.paidAmount, 0),
+      totalDueExtraPayments: salesOrders.reduce((sum, o) => sum + Math.max(0, (o.revenue + o.deliveryPrice) - o.paidAmount), 0),
+      salesCount: salesOrders.length,
       uniqueSizes,
       uniqueDeliveries,
       uniquePromotions,
