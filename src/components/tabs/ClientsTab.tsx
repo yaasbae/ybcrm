@@ -8,7 +8,7 @@ import {
 import { formatCurrency, cn } from '../../lib/utils';
 import { motion, AnimatePresence } from 'motion/react';
 import { db, auth } from '../../firebase';
-import { doc, updateDoc, onSnapshot, setDoc, writeBatch, collection, getDocs, orderBy, query, addDoc, where, serverTimestamp } from 'firebase/firestore';
+import { doc, updateDoc, onSnapshot, setDoc, writeBatch, collection, getDocs, orderBy, query, addDoc, where, serverTimestamp, limit } from 'firebase/firestore';
 import { OrderData } from '../AnalyticsDashboard';
 
 interface ClientsTabProps {
@@ -18,6 +18,13 @@ interface ClientsTabProps {
   setSearchTerm: (s: string) => void;
   onNavigate: (view: any, clientData?: any) => void;
   handbookLabels?: string[];
+}
+
+type BroadcastEntry = { sentAt: string; status: 'sent' | 'error' | 'no_tg'; message: string; broadcastId: string };
+
+function normalizePhone(value: string): string {
+  const digits = String(value || '').replace(/\D/g, '');
+  return digits.length === 11 && digits.startsWith('8') ? `7${digits.slice(1)}` : digits;
 }
 
 export const ClientsTab: React.FC<ClientsTabProps> = ({
@@ -67,6 +74,7 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
   const [inlineEmailPhone, setInlineEmailPhone] = useState<string | null>(null);
   const [inlineEmailValue, setInlineEmailValue] = useState('');
   const [inlineEmailSaving, setInlineEmailSaving] = useState(false);
+  const [broadcastMap, setBroadcastMap] = useState<Map<string, BroadcastEntry[]>>(new Map());
 
   const handleInlineSave = async (client: any) => {
     if (!inlineNote.trim()) return;
@@ -157,6 +165,31 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
   };
 
   const CLIENT_DB_SHEET_ID = '12saPOd88Lcc3VVIUP4hBdsuKX8p-nE6GKE02VcY6n2w';
+
+  useEffect(() => {
+    const q = query(collection(db, 'broadcasts'), orderBy('sentAt', 'desc'), limit(50));
+    const unsub = onSnapshot(q, (snap) => {
+      const map = new Map<string, BroadcastEntry[]>();
+      snap.docs.forEach(d => {
+        const b = d.data() as any;
+        if (!b.log?.length) return;
+        b.log.forEach((entry: any) => {
+          const phone = normalizePhone(entry.phone || '');
+          if (!phone) return;
+          const list = map.get(phone) || [];
+          list.push({
+            sentAt: b.sentAt || '',
+            status: entry.status || 'sent',
+            message: (b.message || b.messageVariants?.[0] || '').slice(0, 60),
+            broadcastId: d.id,
+          });
+          map.set(phone, list);
+        });
+      });
+      setBroadcastMap(map);
+    });
+    return () => unsub();
+  }, []);
 
   useEffect(() => {
     setFbLoading(true);
@@ -344,6 +377,11 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
     return () => unsubscribe();
   }, [selectedLoyaltyClient]);
 
+  const getClientBroadcasts = (client: any): BroadcastEntry[] => {
+    const phone = normalizePhone(client.phone || client.userId || '');
+    return (broadcastMap.get(phone) || []).sort((a, b) => b.sentAt.localeCompare(a.sentAt));
+  };
+
   return (
     <>
       <div className="tg-card overflow-hidden">
@@ -508,6 +546,20 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
                         {client.city && (
                           <span className="text-[9px] text-zinc-400 italic">{client.city}</span>
                         )}
+                        {(() => {
+                          const entries = getClientBroadcasts(client);
+                          if (!entries.length) return null;
+                          const last = entries[0];
+                          const icon = last.status === 'sent' ? '✓' : last.status === 'no_tg' ? '∅' : '✗';
+                          const color = last.status === 'sent' ? 'text-emerald-600 bg-emerald-50'
+                            : last.status === 'no_tg' ? 'text-slate-400 bg-slate-100'
+                            : 'text-red-500 bg-red-50';
+                          return (
+                            <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[9px] font-bold ${color}`}>
+                              <Send size={8} /> {icon} {last.sentAt ? new Date(last.sentAt).toLocaleDateString('ru', { day: 'numeric', month: 'short' }) : '—'}
+                            </span>
+                          );
+                        })()}
                       </div>
                     </div>
                   </div>
@@ -1025,7 +1077,7 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
                     </div>
 
                     {/* Orders List - High Density */}
-                    <div className="space-y-2 pb-6">
+                    <div className="space-y-2">
                       <h3 className="text-[9px] font-black text-zinc-400 uppercase tracking-widest ml-1">История заказов</h3>
                       <div className="space-y-1.5 font-sans">
                         {clientOrders.length > 0 ? (
@@ -1053,6 +1105,37 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
                         )}
                       </div>
                     </div>
+
+                    {/* Broadcast History */}
+                    {(() => {
+                      const broadcasts = getClientBroadcasts(selectedLoyaltyClient);
+                      if (!broadcasts.length) return null;
+                      return (
+                        <div className="space-y-2 pb-6">
+                          <h3 className="text-[9px] font-black text-zinc-400 uppercase tracking-widest ml-1">
+                            Рассылки ({broadcasts.length})
+                          </h3>
+                          <div className="space-y-1.5 max-h-48 overflow-y-auto">
+                            {broadcasts.map((entry, i) => (
+                              <div key={i} className="flex items-start gap-2 p-2 bg-white rounded-xl border border-zinc-100">
+                                <span className={`mt-0.5 shrink-0 w-4 h-4 rounded-full flex items-center justify-center text-[8px] font-black
+                                  ${entry.status === 'sent' ? 'bg-emerald-100 text-emerald-600'
+                                  : entry.status === 'no_tg' ? 'bg-slate-100 text-slate-400'
+                                  : 'bg-red-100 text-red-500'}`}>
+                                  {entry.status === 'sent' ? '✓' : entry.status === 'no_tg' ? '∅' : '✗'}
+                                </span>
+                                <div className="min-w-0 flex-1">
+                                  <p className="text-[9px] text-zinc-400 font-medium">
+                                    {entry.sentAt ? new Date(entry.sentAt).toLocaleDateString('ru', { day: 'numeric', month: 'long', year: 'numeric' }) : '—'}
+                                  </p>
+                                  <p className="text-[10px] text-zinc-600 truncate">{entry.message || '—'}</p>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })()}
                   </div>
                 ) : null}
               </div>
