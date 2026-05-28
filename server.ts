@@ -2362,9 +2362,46 @@ function getTochkaOperationAmount(operation: any) {
     || 0;
 }
 
+function normalizeTochkaAmount(value: any) {
+  const normalized = Number(value) || Number(String(value || '').replace(',', '.')) || 0;
+  return normalized > 100000 ? normalized / 100 : normalized;
+}
+
 function isTochkaPaidStatus(status: any) {
   const normalized = String(status || '').toLowerCase();
   return ['paid', 'approved', 'completed', 'succeeded', 'success', 'done'].some(item => normalized.includes(item));
+}
+
+function getTochkaPaymentTarget(orderId: any, kind?: any) {
+  const paymentLinkId = String(orderId || '').trim();
+  const explicitFinal = String(kind || '').toLowerCase() === 'final';
+  const suffixFinal = paymentLinkId.toLowerCase().endsWith('-final');
+  const isFinal = explicitFinal || suffixFinal;
+  const cleanOrderId = suffixFinal ? paymentLinkId.slice(0, -6) : paymentLinkId;
+  return { paymentLinkId, cleanOrderId, isFinal };
+}
+
+function buildTochkaPaymentFields(target: { isFinal: boolean }, paymentId: string, paymentStatus: string, paymentAmount: number, operation?: any) {
+  const paidAt = new Date().toISOString();
+  const isPaid = isTochkaPaidStatus(paymentStatus);
+  if (target.isFinal) {
+    return {
+      ...(paymentId ? { finalPaymentId: paymentId } : {}),
+      finalPaymentStatus: paymentStatus,
+      ...(paymentAmount > 0 ? { finalPaymentAmount: paymentAmount } : {}),
+      finalPaymentFoundAt: paidAt,
+      ...(operation ? { finalPaymentData: JSON.stringify(operation).slice(0, 2000) } : {}),
+      ...(isPaid ? { finalPaymentPaidAt: paidAt, status: 'Оплачен' } : {}),
+    };
+  }
+  return {
+    ...(paymentId ? { paymentId } : {}),
+    paymentStatus,
+    ...(paymentAmount > 0 ? { paymentAmount } : {}),
+    tochkaPaymentFoundAt: paidAt,
+    ...(operation ? { tochkaPaymentData: JSON.stringify(operation).slice(0, 2000) } : {}),
+    ...(isPaid ? { paymentPaidAt: paidAt, status: 'Оплачен' } : {}),
+  };
 }
 
 async function findTochkaOperation(token: string, customerCode: string, orderId: string, amount?: number) {
@@ -2379,8 +2416,7 @@ async function findTochkaOperation(token: string, customerCode: string, orderId:
   const expectedAmount = Number(amount) || 0;
   const isCloseAmount = (value: unknown) => {
     if (!expectedAmount) return true;
-    const normalized = Number(value) || Number(String(value || '').replace(',', '.')) || 0;
-    const normalizedRub = normalized > 100000 ? normalized / 100 : normalized;
+    const normalizedRub = normalizeTochkaAmount(value);
     return Math.abs(normalizedRub - expectedAmount) < 1;
   };
   const operation = operations.find((item: any) => {
@@ -2511,17 +2547,28 @@ app.post('/api/tochka/create-payment', async (req, res) => {
       return res.status(502).json({ error: 'Точка не вернула ссылку оплаты', details: paymentData });
     }
 
-    // Сохраняем ссылку оплаты в заказ (обе коллекции)
+    // Сохраняем ссылку оплаты в заказ (обе коллекции).
+    // orderId с суффиксом -final означает отдельный счет на доплату.
     if (orderId && paymentUrl) {
-      const paymentFields = {
-        paymentUrl,
-        paymentId,
-        paymentStatus: 'pending',
-        paymentCreatedAt: new Date().toISOString(),
-        paymentAmount,
-      };
-      await updateDoc(doc(db, 'orders', orderId), paymentFields).catch(() => {});
-      await updateDoc(doc(db, 'orders_new', orderId), paymentFields).catch(() => {});
+      const target = getTochkaPaymentTarget(orderId);
+      const createdAt = new Date().toISOString();
+      const paymentFields = target.isFinal
+        ? {
+            finalPaymentUrl: paymentUrl,
+            finalPaymentId: paymentId,
+            finalPaymentStatus: 'pending',
+            finalPaymentCreatedAt: createdAt,
+            finalPaymentAmount: paymentAmount,
+          }
+        : {
+            paymentUrl,
+            paymentId,
+            paymentStatus: 'pending',
+            paymentCreatedAt: createdAt,
+            paymentAmount,
+          };
+      await updateDoc(doc(db, 'orders', target.cleanOrderId), paymentFields).catch(() => {});
+      await updateDoc(doc(db, 'orders_new', target.cleanOrderId), paymentFields).catch(() => {});
     }
     console.log(`[tochka] create-payment success order=${orderId} paymentId=${paymentId || 'n/a'}`);
     await addDoc(collection(db, 'tochka_logs'), {
@@ -2552,6 +2599,7 @@ app.post('/api/tochka/create-payment', async (req, res) => {
 // Найти оплату в Точке по номеру заказа и привязать operationId к заказу.
 app.get('/api/tochka/find-payment', async (req, res) => {
   const orderId = String(req.query.orderId || '').trim();
+  const target = getTochkaPaymentTarget(orderId, req.query.kind);
   const amount = req.query.amount ? Number(req.query.amount) : undefined;
   if (!orderId) return res.status(400).json({ error: 'Нужен orderId' });
   if (!db) return res.status(503).json({ error: 'DB не подключена' });
@@ -2563,35 +2611,37 @@ app.get('/api/tochka/find-payment', async (req, res) => {
     const customerCode = snap?.data()?.customerCode;
     if (!customerCode) return res.status(400).json({ error: 'customerCode Точки не настроен' });
 
-    const operation = await findTochkaOperation(token, customerCode, orderId, amount);
+    const operation = await findTochkaOperation(token, customerCode, target.paymentLinkId, amount)
+      || (target.isFinal ? await findTochkaOperation(token, customerCode, target.cleanOrderId, amount) : null);
     const operationId = getTochkaOperationId(operation);
     if (!operation || !operationId) {
       return res.status(404).json({ error: `Оплата по заказу ${orderId} в Точке не найдена` });
     }
 
-    const paymentAmount = Number(getTochkaOperationAmount(operation)) || amount || 0;
+    const paymentAmount = normalizeTochkaAmount(getTochkaOperationAmount(operation)) || amount || 0;
     const paymentStatus = getTochkaOperationStatus(operation) || 'found';
-    const paymentFields = {
-      paymentId: operationId,
-      paymentStatus,
-      paymentAmount,
-      tochkaPaymentFoundAt: new Date().toISOString(),
-      tochkaPaymentData: JSON.stringify(operation).slice(0, 2000),
-      ...(isTochkaPaidStatus(paymentStatus) ? { status: 'Оплачен' } : {}),
-    };
+    const paymentFields = buildTochkaPaymentFields(target, operationId, paymentStatus, paymentAmount, operation);
 
-    await updateDoc(doc(db, 'orders', orderId), paymentFields).catch(() => {});
-    await updateDoc(doc(db, 'orders_new', orderId), paymentFields).catch(() => {});
+    await updateDoc(doc(db, 'orders', target.cleanOrderId), paymentFields).catch(() => {});
+    await updateDoc(doc(db, 'orders_new', target.cleanOrderId), paymentFields).catch(() => {});
     await addDoc(collection(db, 'tochka_logs'), {
       orderId,
       paymentId: operationId,
       amount: paymentAmount,
-      status: 'payment_found',
+      status: target.isFinal ? 'final_payment_found' : 'payment_found',
       response: JSON.stringify(operation).slice(0, 1000),
       createdAt: new Date().toISOString(),
     }).catch(() => {});
 
-    res.json({ success: true, paymentId: operationId, paymentStatus, paymentAmount, data: operation });
+    res.json({
+      success: true,
+      kind: target.isFinal ? 'final' : 'main',
+      paymentId: operationId,
+      paymentStatus,
+      paymentAmount,
+      paymentPaidAt: isTochkaPaidStatus(paymentStatus) ? new Date().toISOString() : undefined,
+      data: operation,
+    });
   } catch (e: any) {
     const errData = e.response?.data;
     console.error('[tochka] find-payment error:', errData || e.message);
@@ -2733,16 +2783,24 @@ app.post('/api/tochka/webhook', async (req, res) => {
     // Найти заказ по operationId и обновить статус
     if (db && (body.operationId || body.paymentLinkId)) {
       const status = ['Paid', 'paid', 'APPROVED'].includes(body.status) ? 'paid' : body.status;
-      const statusPatch = isTochkaPaidStatus(status) ? { status: 'Оплачен' } : {};
       if (body.paymentLinkId) {
-        await updateDoc(doc(db, 'orders', body.paymentLinkId), { paymentStatus: status, paymentPaidAt: new Date().toISOString(), ...statusPatch }).catch(() => {});
-        await updateDoc(doc(db, 'orders_new', body.paymentLinkId), { paymentStatus: status, paymentPaidAt: new Date().toISOString(), ...statusPatch }).catch(() => {});
+        const target = getTochkaPaymentTarget(body.paymentLinkId);
+        const patch = buildTochkaPaymentFields(target, body.operationId || '', status, normalizeTochkaAmount(body.amount));
+        await updateDoc(doc(db, 'orders', target.cleanOrderId), patch).catch(() => {});
+        await updateDoc(doc(db, 'orders_new', target.cleanOrderId), patch).catch(() => {});
       }
       if (body.operationId) {
         const ordersSnap = await getDocs(query(collection(db, 'orders'), where('paymentId', '==', body.operationId)));
         for (const d of ordersSnap.docs) {
-          await updateDoc(d.ref, { paymentStatus: status, paymentPaidAt: new Date().toISOString(), ...statusPatch });
-          await updateDoc(doc(db, 'orders_new', d.id), { paymentStatus: status, paymentPaidAt: new Date().toISOString(), ...statusPatch }).catch(() => {});
+          const patch = buildTochkaPaymentFields({ isFinal: false }, body.operationId, status, normalizeTochkaAmount(body.amount));
+          await updateDoc(d.ref, patch);
+          await updateDoc(doc(db, 'orders_new', d.id), patch).catch(() => {});
+        }
+        const finalSnap = await getDocs(query(collection(db, 'orders'), where('finalPaymentId', '==', body.operationId)));
+        for (const d of finalSnap.docs) {
+          const patch = buildTochkaPaymentFields({ isFinal: true }, body.operationId, status, normalizeTochkaAmount(body.amount));
+          await updateDoc(d.ref, patch);
+          await updateDoc(doc(db, 'orders_new', d.id), patch).catch(() => {});
         }
       }
     }

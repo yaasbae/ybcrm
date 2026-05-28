@@ -191,13 +191,6 @@ function getOrderFinalPaymentAmount(order: Partial<Pick<OrderData, 'revenue' | '
   return Math.max(0, fullAmount - paidAmount);
 }
 
-function getRefundableAmount(order: Partial<OrderData>): number {
-  const savedPaymentAmount = Number(order.paymentAmount) || 0;
-  const paidAmount = Number(order.paidAmount) || 0;
-  const totalAmount = (Number(order.revenue) || 0) + (Number(order.deliveryPrice) || 0);
-  return Math.max(0, savedPaymentAmount || paidAmount || totalAmount);
-}
-
 function getInvoiceAmount(order: Partial<Pick<OrderData, 'revenue' | 'deliveryPrice' | 'invoiceType'>>): number {
   const total = Math.max(0, (Number(order.revenue) || 0) + (Number(order.deliveryPrice) || 0));
   if (order.invoiceType === 'fitting') return 2000;
@@ -215,6 +208,12 @@ function getInvoicePaymentLabel(invoiceType?: 'prepayment' | 'full' | 'fitting')
   if (invoiceType === 'fitting') return 'Оплата с примеркой';
   if (invoiceType === 'full') return 'Полная оплата';
   return 'Предоплата 50%';
+}
+
+function getShortPaymentLabel(invoiceType?: 'prepayment' | 'full' | 'fitting'): string {
+  if (invoiceType === 'fitting') return 'Примерка СДЭК';
+  if (invoiceType === 'full') return 'Полная оплата';
+  return 'Предоплата';
 }
 
 function buildPaymentPageUrl(orderId: string): string {
@@ -346,9 +345,10 @@ async function shareQrImage(svg: SVGSVGElement | null, orderId: string, text: st
 const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string, field: string, value: any) => void }> = ({ order, updateOrderData }) => {
   const [loading, setLoading] = useState(false);
   const [finalLoading, setFinalLoading] = useState(false);
+  const [refreshingMain, setRefreshingMain] = useState(false);
+  const [refreshingFinal, setRefreshingFinal] = useState(false);
   const [paymentUrl, setPaymentUrl] = useState<string | null>(order.paymentUrl || null);
   const [finalPaymentUrl, setFinalPaymentUrl] = useState<string | null>(order.finalPaymentUrl || null);
-  const [copied, setCopied] = useState(false);
   const [showQr, setShowQr] = useState(false);
   const [showFinalQr, setShowFinalQr] = useState(false);
   const [error, setError] = useState('');
@@ -358,13 +358,79 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
 
   const pageUrl = buildPaymentPageUrl(order.orderId);
   const targetPaymentUrl = paymentUrl || pageUrl;
+  const invoiceType = order.invoiceType || getInvoiceTypeFromPaymentType(order.paymentType);
+  const mainPaymentPaid = isPaidTochkaStatus(order.paymentStatus || '');
+  const finalPaymentPaid = isPaidTochkaStatus(order.finalPaymentStatus || '');
   const initialAmount = getOrderPaymentDue(order);
   const finalAmount = getOrderFinalPaymentAmount(order);
-  const showFinalPayment = (order.invoiceType || getInvoiceTypeFromPaymentType(order.paymentType)) !== 'full' && finalAmount > 0;
+  const showFinalPayment = invoiceType !== 'full' && finalAmount > 0;
+  const mainPaymentLabel = getShortPaymentLabel(invoiceType);
+  const mainPaymentStatusText = mainPaymentPaid
+    ? `${mainPaymentLabel} оплачена`
+    : paymentUrl
+      ? `${mainPaymentLabel} ожидает оплаты`
+      : `${mainPaymentLabel} не создана`;
+  const finalPaymentStatusText = finalPaymentPaid
+    ? 'Доплата оплачена'
+    : finalPaymentUrl
+      ? 'Доплата ожидает оплаты'
+      : 'Доплата не создана';
   const shareText = buildPaymentShareText(order, targetPaymentUrl, initialAmount, 'Счет на оплату');
   const finalShareText = finalPaymentUrl
     ? buildPaymentShareText(order, finalPaymentUrl, finalAmount, 'Счет на доплату')
     : '';
+
+  const paymentStatusBadge = (text: string, paid: boolean, tone: 'main' | 'final') => (
+    <div className={cn(
+      "rounded-md border px-2 py-1 text-[8px] font-black uppercase tracking-wide",
+      paid
+        ? "border-emerald-200 bg-emerald-50 text-emerald-600"
+        : tone === 'final'
+          ? "border-orange-200 bg-orange-50 text-orange-600"
+          : "border-violet-200 bg-violet-50 text-violet-600"
+    )}>
+      {text}
+    </div>
+  );
+
+  const refreshPayment = async (kind: 'main' | 'final') => {
+    const isFinal = kind === 'final';
+    const amount = isFinal ? finalAmount : (Number(order.paymentAmount) || initialAmount);
+    if (isFinal) {
+      setRefreshingFinal(true);
+      setFinalError('');
+    } else {
+      setRefreshingMain(true);
+      setError('');
+    }
+    try {
+      const query = new URLSearchParams({
+        orderId: isFinal ? `${order.orderId}-final` : order.orderId,
+        kind,
+      });
+      if (amount > 0) query.set('amount', String(amount));
+      const res = await fetch(`/api/tochka/find-payment?${query.toString()}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Оплата в Точке не найдена');
+      if (isFinal) {
+        updateOrderData(order.orderId, 'finalPaymentStatus', data.paymentStatus || 'found');
+        updateOrderData(order.orderId, 'finalPaymentAmount', data.paymentAmount || amount);
+        if (data.paymentId) updateOrderData(order.orderId, 'finalPaymentId', data.paymentId);
+        if (data.paymentPaidAt) updateOrderData(order.orderId, 'finalPaymentPaidAt', data.paymentPaidAt);
+      } else {
+        updateOrderData(order.orderId, 'paymentStatus', data.paymentStatus || 'found');
+        updateOrderData(order.orderId, 'paymentAmount', data.paymentAmount || amount);
+        if (data.paymentId) updateOrderData(order.orderId, 'paymentId', data.paymentId);
+        if (data.paymentPaidAt) updateOrderData(order.orderId, 'paymentPaidAt', data.paymentPaidAt);
+      }
+    } catch (e: any) {
+      if (isFinal) setFinalError(e.message || 'Оплата в Точке не найдена');
+      else setError(e.message || 'Оплата в Точке не найдена');
+    } finally {
+      setRefreshingFinal(false);
+      setRefreshingMain(false);
+    }
+  };
 
   const handleCreate = async () => {
     setLoading(true);
@@ -424,12 +490,6 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
     finally { setFinalLoading(false); }
   };
 
-  const handleCopy = (text = pageUrl) => {
-    navigator.clipboard.writeText(text);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
-
   useEffect(() => {
     setPaymentUrl(order.paymentUrl || null);
   }, [order.paymentUrl]);
@@ -438,9 +498,10 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
     setFinalPaymentUrl(order.finalPaymentUrl || null);
   }, [order.finalPaymentUrl]);
 
-  if (!paymentUrl) {
+  if (!paymentUrl && !mainPaymentPaid) {
     return (
       <div className="mt-1.5 space-y-1.5">
+        {paymentStatusBadge(mainPaymentStatusText, false, 'main')}
         <button
           onClick={handleCreate}
           disabled={loading}
@@ -448,6 +509,14 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
         >
           {loading ? <RefreshCcw size={8} className="animate-spin" /> : <QrCodeIcon size={8} />}
           {loading ? 'Создаём...' : 'Создать счёт'}
+        </button>
+        <button
+          onClick={() => refreshPayment('main')}
+          disabled={refreshingMain}
+          className="w-full text-[8px] font-black py-1 rounded-md border border-zinc-200 bg-white text-zinc-500 hover:bg-zinc-50 transition-all flex items-center justify-center gap-1 disabled:opacity-50"
+        >
+          <RefreshCcw size={8} className={refreshingMain ? 'animate-spin' : ''} />
+          Проверить оплату
         </button>
         {error && <p className="mt-1 text-[8px] font-bold text-red-500">{error}</p>}
         {showFinalPayment && (
@@ -459,35 +528,57 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
 
   return (
     <div className="mt-1.5 space-y-1">
+      {paymentStatusBadge(mainPaymentStatusText, mainPaymentPaid, 'main')}
       <button
-        onClick={() => shareOrder(shareText, targetPaymentUrl).catch(() => navigator.clipboard.writeText(shareText))}
-        className="w-full text-[8px] font-black py-1.5 rounded-md border border-violet-200 bg-violet-50 text-violet-600 hover:bg-violet-500 hover:text-white hover:border-violet-500 transition-all flex items-center justify-center gap-1"
+        onClick={() => refreshPayment('main')}
+        disabled={refreshingMain}
+        className="w-full text-[8px] font-black py-1 rounded-md border border-zinc-200 bg-white text-zinc-500 hover:bg-zinc-50 transition-all flex items-center justify-center gap-1 disabled:opacity-50"
       >
-        <Send size={8} /> Поделиться
+        <RefreshCcw size={8} className={refreshingMain ? 'animate-spin' : ''} />
+        Проверить оплату
       </button>
-      <button
-        onClick={() => setShowQr(v => !v)}
-        className="w-full text-[8px] font-black py-1 rounded-md border border-violet-200 bg-violet-50 text-violet-600 hover:bg-violet-100 transition-all flex items-center justify-center gap-1"
-      >
-        <QrCodeIcon size={8} /> {showQr ? 'Скрыть QR' : 'QR код'}
-      </button>
-      {showQr && (
-        <div className="space-y-1">
-          <div ref={qrRef} className="flex justify-center p-2 bg-white border border-zinc-100 rounded-lg">
-            <QRCodeSVG value={targetPaymentUrl} size={100} />
-          </div>
+      {paymentUrl && (
+        <>
           <button
-            onClick={() => shareQrImage(qrRef.current?.querySelector('svg') || null, order.orderId, shareText).catch(() => navigator.clipboard.writeText(shareText))}
-            className="w-full text-[8px] font-black py-1 rounded-md border border-zinc-200 bg-white text-zinc-600 hover:bg-zinc-50 transition-all"
+            onClick={() => shareOrder(shareText, targetPaymentUrl).catch(() => navigator.clipboard.writeText(shareText))}
+            className="w-full text-[8px] font-black py-1.5 rounded-md border border-violet-200 bg-violet-50 text-violet-600 hover:bg-violet-500 hover:text-white hover:border-violet-500 transition-all flex items-center justify-center gap-1"
           >
-            Отправить QR
+            <Send size={8} /> Поделиться
           </button>
-        </div>
+          <button
+            onClick={() => setShowQr(v => !v)}
+            className="w-full text-[8px] font-black py-1 rounded-md border border-violet-200 bg-violet-50 text-violet-600 hover:bg-violet-100 transition-all flex items-center justify-center gap-1"
+          >
+            <QrCodeIcon size={8} /> {showQr ? 'Скрыть QR' : 'QR код'}
+          </button>
+          {showQr && (
+            <div className="space-y-1">
+              <div ref={qrRef} className="flex justify-center p-2 bg-white border border-zinc-100 rounded-lg">
+                <QRCodeSVG value={targetPaymentUrl} size={100} />
+              </div>
+              <button
+                onClick={() => shareQrImage(qrRef.current?.querySelector('svg') || null, order.orderId, shareText).catch(() => navigator.clipboard.writeText(shareText))}
+                className="w-full text-[8px] font-black py-1 rounded-md border border-zinc-200 bg-white text-zinc-600 hover:bg-zinc-50 transition-all"
+              >
+                Отправить QR
+              </button>
+            </div>
+          )}
+        </>
       )}
       {showFinalPayment && (
         <div className="border-t border-zinc-100 pt-1.5">
+          {paymentStatusBadge(finalPaymentStatusText, finalPaymentPaid, 'final')}
+          <button
+            onClick={() => refreshPayment('final')}
+            disabled={refreshingFinal}
+            className="mt-1 w-full text-[8px] font-black py-1 rounded-md border border-zinc-200 bg-white text-zinc-500 hover:bg-zinc-50 transition-all flex items-center justify-center gap-1 disabled:opacity-50"
+          >
+            <RefreshCcw size={8} className={refreshingFinal ? 'animate-spin' : ''} />
+            Проверить доплату
+          </button>
           {finalPaymentUrl ? (
-            <div className="space-y-1">
+            <div className="mt-1 space-y-1">
               <button
                 onClick={() => shareOrder(finalShareText, finalPaymentUrl).catch(() => navigator.clipboard.writeText(finalShareText))}
                 className="w-full text-[8px] font-black py-1.5 rounded-md border border-orange-200 bg-orange-50 text-orange-600 hover:bg-orange-500 hover:text-white hover:border-orange-500 transition-all flex items-center justify-center gap-1"
@@ -527,100 +618,6 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
           {finalError && <p className="mt-1 text-[8px] font-bold text-red-500">{finalError}</p>}
         </div>
       )}
-    </div>
-  );
-};
-
-const RefundBlock: React.FC<{ order: OrderData; updateOrderData: (id: string, field: string, value: any) => void; mobile?: boolean }> = ({ order, updateOrderData, mobile = false }) => {
-  const defaultAmount = getRefundableAmount(order);
-  const [amount, setAmount] = useState(defaultAmount ? String(defaultAmount) : '');
-  const [linkedPaymentId, setLinkedPaymentId] = useState(order.paymentId || order.refundPaymentId || '');
-  const [findLoading, setFindLoading] = useState(false);
-  const [error, setError] = useState('');
-  const [success, setSuccess] = useState('');
-  const paymentId = linkedPaymentId || order.paymentId || order.refundPaymentId || '';
-  const isReturned = String(order.status || '').toLowerCase().includes('возврат') || Boolean(order.refundStatus);
-
-  useEffect(() => {
-    setAmount(defaultAmount ? String(defaultAmount) : '');
-  }, [defaultAmount]);
-
-  useEffect(() => {
-    setLinkedPaymentId(order.paymentId || order.refundPaymentId || '');
-  }, [order.paymentId, order.refundPaymentId]);
-
-  const findPayment = async () => {
-    setError('');
-    setSuccess('');
-    const searchAmount = Number(String(amount).replace(',', '.')) || undefined;
-    setFindLoading(true);
-    try {
-      const params = new URLSearchParams({ orderId: order.orderId });
-      if (searchAmount) params.set('amount', String(searchAmount));
-      const res = await fetch(`/api/tochka/find-payment?${params.toString()}`);
-      const data = await res.json();
-      if (!res.ok) throw new Error(getApiErrorMessage(data, 'Не удалось найти оплату в Точке'));
-      if (!data.paymentId) throw new Error('Точка не вернула operationId платежа');
-      setLinkedPaymentId(data.paymentId);
-      updateOrderData(order.orderId, 'paymentId', data.paymentId);
-      updateOrderData(order.orderId, 'paymentStatus', data.paymentStatus || 'found');
-      updateOrderData(order.orderId, 'paymentAmount', Number(data.paymentAmount) || searchAmount || defaultAmount);
-      updateOrderData(order.orderId, 'tochkaPaymentFoundAt', new Date().toISOString());
-      if (data.data) updateOrderData(order.orderId, 'tochkaPaymentData', JSON.stringify(data.data).slice(0, 2000));
-      if (isPaidTochkaStatus(data.paymentStatus)) updateOrderData(order.orderId, 'status', 'Оплачен');
-      setSuccess(isPaidTochkaStatus(data.paymentStatus) ? 'Оплата найдена, заказ отмечен оплаченным' : 'Оплата найдена и привязана к заказу');
-    } catch (e: any) {
-      setError(e.message || 'Не удалось найти оплату в Точке');
-    } finally {
-      setFindLoading(false);
-    }
-  };
-
-  const submitRefund = async () => {
-    setError('');
-    setSuccess('Кнопку оставил, реальный возврат через Точку пока выключен');
-  };
-
-  return (
-    <div className={cn("rounded-xl border border-red-100 bg-red-50/40", mobile ? "p-2.5 space-y-2" : "mt-3 p-3 space-y-2")}>
-      <div className="flex items-center justify-between gap-2">
-        <div>
-          <p className={cn("font-black uppercase tracking-widest text-red-500", mobile ? "text-[8px]" : "text-[9px]")}>Возврат</p>
-          <p className={cn("font-bold text-zinc-400", mobile ? "text-[8px]" : "text-[9px]")}>
-            {isReturned ? `Статус: ${order.refundStatus || 'возврат'}` : paymentId ? 'Платеж привязан' : 'Нет paymentId'}
-          </p>
-        </div>
-        {order.refundAmount ? (
-          <span className={cn("font-black text-red-600", mobile ? "text-[10px]" : "text-[12px]")}>{formatCurrency(order.refundAmount)}</span>
-        ) : null}
-      </div>
-      <div className="grid gap-2">
-        <input
-          type="number"
-          value={amount}
-          onChange={(e) => setAmount(e.target.value)}
-          placeholder="Сумма возврата"
-          className="h-9 rounded-lg border border-red-100 bg-white px-3 text-[11px] font-bold text-zinc-900 outline-none focus:border-red-300"
-        />
-      </div>
-      <button
-        type="button"
-        onClick={findPayment}
-        disabled={findLoading}
-        className="w-full rounded-lg border border-zinc-200 bg-white py-2 text-[9px] font-black uppercase tracking-wider text-zinc-700 transition-all hover:bg-zinc-900 hover:text-white disabled:opacity-50"
-      >
-        {findLoading ? 'Ищем...' : paymentId ? 'Обновить оплату из Точки' : 'Найти оплату в Точке'}
-      </button>
-      <button
-        type="button"
-        onClick={submitRefund}
-        disabled={false}
-        className="w-full rounded-lg border border-red-200 bg-white py-2 text-[9px] font-black uppercase tracking-wider text-red-600 transition-all hover:bg-red-500 hover:text-white disabled:opacity-50"
-      >
-        Возврат
-      </button>
-      {error && <p className="text-[9px] font-bold text-red-500">{error}</p>}
-      {success && <p className="text-[9px] font-bold text-emerald-600">{success}</p>}
     </div>
   );
 };
@@ -1507,7 +1504,6 @@ const OrderRow = React.memo(({
             </div>
 
             <PaymentRowBlock order={order} updateOrderData={updateOrderData} />
-            <RefundBlock order={order} updateOrderData={updateOrderData} />
 
             {String(order.deliveryMethod || '').toLowerCase().includes('сдэк') && (
               <CdekOrderBlock order={order} updateOrderData={updateOrderData} productCatalog={productCatalog} mobile />
@@ -1694,11 +1690,12 @@ const OrderCard = React.memo(({
   handbookBloggers: string[];
 }) => {
   const [expanded, setExpanded] = useState(false);
-  const [copied, setCopied] = useState(false);
   const [mobilePaymentUrl, setMobilePaymentUrl] = useState(order.paymentUrl || '');
   const [mobileFinalPaymentUrl, setMobileFinalPaymentUrl] = useState(order.finalPaymentUrl || '');
   const [mobilePaymentLoading, setMobilePaymentLoading] = useState(false);
   const [mobileFinalPaymentLoading, setMobileFinalPaymentLoading] = useState(false);
+  const [mobilePaymentRefreshing, setMobilePaymentRefreshing] = useState(false);
+  const [mobileFinalPaymentRefreshing, setMobileFinalPaymentRefreshing] = useState(false);
   const [mobilePaymentError, setMobilePaymentError] = useState('');
   const [mobileFinalPaymentError, setMobileFinalPaymentError] = useState('');
   const [showMobileQr, setShowMobileQr] = useState(false);
@@ -1729,6 +1726,18 @@ const OrderCard = React.memo(({
   const dueAmount = getOrderPaymentDue({ ...order, revenue: liveRevenue, paidAmount: liveInvoiceAmount });
   const finalPaymentAmount = getOrderFinalPaymentAmount({ ...order, revenue: liveRevenue, paidAmount: liveInvoiceAmount });
   const showFinalPayment = invoiceType !== 'full' && finalPaymentAmount > 0;
+  const mainPaymentPaid = isPaidTochkaStatus(order.paymentStatus || '');
+  const finalPaymentPaid = isPaidTochkaStatus(order.finalPaymentStatus || '');
+  const mainPaymentStatusText = mainPaymentPaid
+    ? `${getShortPaymentLabel(invoiceType)} оплачена`
+    : paymentUrl
+      ? `${getShortPaymentLabel(invoiceType)} ожидает оплаты`
+      : `${getShortPaymentLabel(invoiceType)} не создана`;
+  const finalPaymentStatusText = finalPaymentPaid
+    ? 'Доплата оплачена'
+    : mobileFinalPaymentUrl
+      ? 'Доплата ожидает оплаты'
+      : 'Доплата не создана';
   const shareText = paymentUrl ? buildPaymentShareText(order, paymentUrl, liveInvoiceAmount, 'Счет на оплату') : '';
   const finalShareText = mobileFinalPaymentUrl ? buildPaymentShareText(order, mobileFinalPaymentUrl, finalPaymentAmount, 'Счет на доплату') : '';
   const invoiceTone = liveInvoiceAmount <= 0
@@ -1879,13 +1888,6 @@ const OrderCard = React.memo(({
     </label>
   );
 
-  const copyPaymentText = () => {
-    if (!shareText) return;
-    navigator.clipboard.writeText(shareText);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
-
   useEffect(() => {
     setMobilePaymentUrl(order.paymentUrl || '');
   }, [order.paymentUrl]);
@@ -1955,6 +1957,45 @@ const OrderCard = React.memo(({
       setMobileFinalPaymentError(e.message || 'Не удалось создать счёт на доплату');
     } finally {
       setMobileFinalPaymentLoading(false);
+    }
+  };
+
+  const refreshMobilePayment = async (kind: 'main' | 'final') => {
+    const isFinal = kind === 'final';
+    const amount = isFinal ? finalPaymentAmount : (Number(order.paymentAmount) || dueAmount);
+    if (isFinal) {
+      setMobileFinalPaymentRefreshing(true);
+      setMobileFinalPaymentError('');
+    } else {
+      setMobilePaymentRefreshing(true);
+      setMobilePaymentError('');
+    }
+    try {
+      const query = new URLSearchParams({
+        orderId: isFinal ? `${order.orderId}-final` : order.orderId,
+        kind,
+      });
+      if (amount > 0) query.set('amount', String(amount));
+      const res = await fetch(`/api/tochka/find-payment?${query.toString()}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Оплата в Точке не найдена');
+      if (isFinal) {
+        updateOrderData(order.orderId, 'finalPaymentStatus', data.paymentStatus || 'found');
+        updateOrderData(order.orderId, 'finalPaymentAmount', data.paymentAmount || amount);
+        if (data.paymentId) updateOrderData(order.orderId, 'finalPaymentId', data.paymentId);
+        if (data.paymentPaidAt) updateOrderData(order.orderId, 'finalPaymentPaidAt', data.paymentPaidAt);
+      } else {
+        updateOrderData(order.orderId, 'paymentStatus', data.paymentStatus || 'found');
+        updateOrderData(order.orderId, 'paymentAmount', data.paymentAmount || amount);
+        if (data.paymentId) updateOrderData(order.orderId, 'paymentId', data.paymentId);
+        if (data.paymentPaidAt) updateOrderData(order.orderId, 'paymentPaidAt', data.paymentPaidAt);
+      }
+    } catch (e: any) {
+      if (isFinal) setMobileFinalPaymentError(e.message || 'Оплата в Точке не найдена');
+      else setMobilePaymentError(e.message || 'Оплата в Точке не найдена');
+    } finally {
+      setMobilePaymentRefreshing(false);
+      setMobileFinalPaymentRefreshing(false);
     }
   };
 
@@ -2189,7 +2230,7 @@ const OrderCard = React.memo(({
         <div className="flex items-center justify-between gap-2">
           <div>
             <p className="text-[8px] font-black text-violet-500 uppercase tracking-widest">СБП оплата</p>
-            <p className="text-[8px] font-bold text-zinc-400">{paymentUrl ? 'Ссылка создана' : 'Ссылка еще не создана'}</p>
+            <p className={cn("text-[8px] font-bold", mainPaymentPaid ? "text-emerald-600" : "text-zinc-400")}>{mainPaymentStatusText}</p>
           </div>
           {paymentUrl && (
             <a
@@ -2202,6 +2243,14 @@ const OrderCard = React.memo(({
             </a>
           )}
         </div>
+        <button
+          onClick={() => refreshMobilePayment('main')}
+          disabled={mobilePaymentRefreshing}
+          className="w-full py-2 rounded-lg bg-white border border-violet-100 text-[8px] font-black text-violet-600 uppercase flex items-center justify-center gap-1.5 disabled:opacity-60"
+        >
+          <RefreshCcw size={10} className={mobilePaymentRefreshing ? 'animate-spin' : ''} />
+          Проверить оплату
+        </button>
 
         {paymentUrl ? (
           <div className="space-y-2">
@@ -2248,6 +2297,20 @@ const OrderCard = React.memo(({
         )}
         {showFinalPayment && (
           <div className="border-t border-violet-100 pt-2">
+            <div className={cn(
+              "mb-2 rounded-lg border px-2 py-1.5 text-[8px] font-black uppercase tracking-wider",
+              finalPaymentPaid ? "border-emerald-200 bg-emerald-50 text-emerald-600" : "border-orange-200 bg-orange-50 text-orange-600"
+            )}>
+              {finalPaymentStatusText}
+            </div>
+            <button
+              onClick={() => refreshMobilePayment('final')}
+              disabled={mobileFinalPaymentRefreshing}
+              className="mb-2 w-full py-2 rounded-lg bg-white border border-orange-100 text-[8px] font-black text-orange-600 uppercase flex items-center justify-center gap-1.5 disabled:opacity-60"
+            >
+              <RefreshCcw size={10} className={mobileFinalPaymentRefreshing ? 'animate-spin' : ''} />
+              Проверить доплату
+            </button>
             {mobileFinalPaymentUrl ? (
               <div className="space-y-2">
                 <button
@@ -2292,8 +2355,6 @@ const OrderCard = React.memo(({
           </div>
         )}
       </div>
-
-      <RefundBlock order={order} updateOrderData={updateOrderData} mobile />
 
       {String(order.deliveryMethod || '').toLowerCase().includes('сдэк') && (
         <CdekOrderBlock order={order} updateOrderData={updateOrderData} productCatalog={productCatalog} mobile />

@@ -60,8 +60,10 @@ export interface OrderData {
   finalPaymentId?: string;
   finalPaymentAmount?: number;
   finalPaymentStatus?: string;
+  finalPaymentPaidAt?: string;
   paymentAmount?: number;
   paymentId?: string;
+  paymentPaidAt?: string;
   refundAmount?: number;
   refundStatus?: string;
   refundId?: string;
@@ -286,8 +288,10 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
             finalPaymentId: ['finalPaymentId'],
             finalPaymentAmount: ['finalPaymentAmount'],
             finalPaymentStatus: ['finalPaymentStatus'],
+            finalPaymentPaidAt: ['finalPaymentPaidAt'],
             paymentAmount: ['paymentAmount'],
             paymentId: ['paymentId'],
+            paymentPaidAt: ['paymentPaidAt'],
             refundAmount: ['refundAmount'],
             refundStatus: ['refundStatus'],
             refundId: ['refundId'],
