@@ -105,6 +105,27 @@ const getOrderItemColors = (order: Partial<Pick<OrderData, 'itemColors' | 'items
   return items.map((_, index) => index === 0 ? fallbackColor : '');
 };
 
+const getOrderItemSizes = (order: Partial<Pick<OrderData, 'itemSizes' | 'items' | 'item' | 'rawRow'>>): string[] => {
+  const items = getOrderItems(order);
+  const savedSizes = Array.isArray(order.itemSizes) ? order.itemSizes.map(size => String(size || '').trim()) : [];
+  if (savedSizes.length) return items.map((_, index) => savedSizes[index] || '');
+  const fallbackSize = String(order.rawRow?.[RAW_SIZE_INDEX] || '').trim();
+  return items.map((_, index) => index === 0 ? fallbackSize : '');
+};
+
+const getOrderItemHeights = (order: Partial<Pick<OrderData, 'itemHeights' | 'items' | 'item' | 'height'>>): string[] => {
+  const items = getOrderItems(order);
+  const savedHeights = Array.isArray(order.itemHeights) ? order.itemHeights.map(height => String(height || '').trim()) : [];
+  if (savedHeights.length) return items.map((_, index) => savedHeights[index] || '');
+  const fallbackHeight = String(order.height || '').trim();
+  return items.map((_, index) => index === 0 ? fallbackHeight : '');
+};
+
+const isPaidTochkaStatus = (status: string) => {
+  const normalized = String(status || '').toLowerCase();
+  return ['paid', 'approved', 'completed', 'succeeded', 'success', 'done'].some(item => normalized.includes(item));
+};
+
 const getItemPricesTotal = (prices: number[]) => prices.reduce((sum, price) => sum + (Number(price) || 0), 0);
 
 const getProductForOrder = (products: ProductCatalogItem[], itemName: string) =>
@@ -513,10 +534,8 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
 const RefundBlock: React.FC<{ order: OrderData; updateOrderData: (id: string, field: string, value: any) => void; mobile?: boolean }> = ({ order, updateOrderData, mobile = false }) => {
   const defaultAmount = getRefundableAmount(order);
   const [amount, setAmount] = useState(defaultAmount ? String(defaultAmount) : '');
-  const [reason, setReason] = useState('Возврат по заказу');
   const [linkedPaymentId, setLinkedPaymentId] = useState(order.paymentId || order.refundPaymentId || '');
   const [findLoading, setFindLoading] = useState(false);
-  const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const paymentId = linkedPaymentId || order.paymentId || order.refundPaymentId || '';
@@ -548,7 +567,8 @@ const RefundBlock: React.FC<{ order: OrderData; updateOrderData: (id: string, fi
       updateOrderData(order.orderId, 'paymentAmount', Number(data.paymentAmount) || searchAmount || defaultAmount);
       updateOrderData(order.orderId, 'tochkaPaymentFoundAt', new Date().toISOString());
       if (data.data) updateOrderData(order.orderId, 'tochkaPaymentData', JSON.stringify(data.data).slice(0, 2000));
-      setSuccess('Оплата найдена и привязана к заказу');
+      if (isPaidTochkaStatus(data.paymentStatus)) updateOrderData(order.orderId, 'status', 'Оплачен');
+      setSuccess(isPaidTochkaStatus(data.paymentStatus) ? 'Оплата найдена, заказ отмечен оплаченным' : 'Оплата найдена и привязана к заказу');
     } catch (e: any) {
       setError(e.message || 'Не удалось найти оплату в Точке');
     } finally {
@@ -558,45 +578,7 @@ const RefundBlock: React.FC<{ order: OrderData; updateOrderData: (id: string, fi
 
   const submitRefund = async () => {
     setError('');
-    setSuccess('');
-    const refundAmount = Number(String(amount).replace(',', '.'));
-    if (!paymentId) {
-      setError('Сначала нажмите “Найти оплату в Точке”');
-      return;
-    }
-    if (!Number.isFinite(refundAmount) || refundAmount <= 0) {
-      setError('Введите сумму возврата');
-      return;
-    }
-    if (!window.confirm(`Оформить возврат ${formatCurrency(refundAmount)} по заказу #${order.orderId}?`)) return;
-
-    setLoading(true);
-    try {
-      const res = await fetch('/api/tochka/refund-payment', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          orderId: order.orderId,
-          operationId: paymentId,
-          amount: refundAmount,
-          reason,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(getApiErrorMessage(data, 'Не удалось оформить возврат'));
-      updateOrderData(order.orderId, 'status', 'Возврат');
-      updateOrderData(order.orderId, 'refundAmount', refundAmount);
-      updateOrderData(order.orderId, 'refundStatus', data.refundStatus || 'refund_requested');
-      if (data.refundId) updateOrderData(order.orderId, 'refundId', data.refundId);
-      updateOrderData(order.orderId, 'refundPaymentId', paymentId);
-      updateOrderData(order.orderId, 'refundReason', reason);
-      updateOrderData(order.orderId, 'refundedAt', new Date().toISOString());
-      setSuccess('Возврат отправлен в Точку');
-    } catch (e: any) {
-      setError(e.message || 'Не удалось оформить возврат');
-    } finally {
-      setLoading(false);
-    }
+    setSuccess('Кнопку оставил, реальный возврат через Точку пока выключен');
   };
 
   return (
@@ -605,7 +587,7 @@ const RefundBlock: React.FC<{ order: OrderData; updateOrderData: (id: string, fi
         <div>
           <p className={cn("font-black uppercase tracking-widest text-red-500", mobile ? "text-[8px]" : "text-[9px]")}>Возврат</p>
           <p className={cn("font-bold text-zinc-400", mobile ? "text-[8px]" : "text-[9px]")}>
-            {isReturned ? `Статус: ${order.refundStatus || 'возврат'}` : paymentId ? 'Готов к отправке в Точку' : 'Нет paymentId'}
+            {isReturned ? `Статус: ${order.refundStatus || 'возврат'}` : paymentId ? 'Платеж привязан' : 'Нет paymentId'}
           </p>
         </div>
         {order.refundAmount ? (
@@ -621,13 +603,6 @@ const RefundBlock: React.FC<{ order: OrderData; updateOrderData: (id: string, fi
           className="h-9 rounded-lg border border-red-100 bg-white px-3 text-[11px] font-bold text-zinc-900 outline-none focus:border-red-300"
         />
       </div>
-      <input
-        type="text"
-        value={reason}
-        onChange={(e) => setReason(e.target.value)}
-        placeholder="Причина возврата"
-        className="h-9 w-full rounded-lg border border-red-100 bg-white px-3 text-[11px] font-bold text-zinc-900 outline-none focus:border-red-300"
-      />
       <button
         type="button"
         onClick={findPayment}
@@ -639,10 +614,10 @@ const RefundBlock: React.FC<{ order: OrderData; updateOrderData: (id: string, fi
       <button
         type="button"
         onClick={submitRefund}
-        disabled={loading || !paymentId}
+        disabled={false}
         className="w-full rounded-lg border border-red-200 bg-white py-2 text-[9px] font-black uppercase tracking-wider text-red-600 transition-all hover:bg-red-500 hover:text-white disabled:opacity-50"
       >
-        {loading ? 'Отправляем...' : 'Оформить возврат'}
+        Возврат
       </button>
       {error && <p className="text-[9px] font-bold text-red-500">{error}</p>}
       {success && <p className="text-[9px] font-bold text-emerald-600">{success}</p>}
@@ -1083,6 +1058,8 @@ const OrderSummaryRow = React.memo(({
   const orderItems = getOrderItems(order);
   const orderItemPrices = getOrderItemPrices(order);
   const orderItemColors = getOrderItemColors(order);
+  const orderItemSizes = getOrderItemSizes(order);
+  const orderItemHeights = getOrderItemHeights(order);
   const paidAmount = Number(order.paidAmount) || 0;
   const deliveryAmount = Number(order.deliveryPrice) || 0;
   const deadlineDate = addBusinessDays(order.date, 7);
@@ -1136,9 +1113,12 @@ const OrderSummaryRow = React.memo(({
             <div key={`${item}-${index}`} className="grid grid-cols-[minmax(0,1fr)_auto] gap-3">
               <div className="min-w-0">
                 <p className="truncate text-[13px] font-bold text-zinc-950" title={item}>{item}</p>
-                {orderItemColors[index] && (
-                  <p className="mt-0.5 truncate text-[10px] font-semibold text-zinc-400" title={orderItemColors[index]}>
-                    {orderItemColors[index]}
+                {(orderItemColors[index] || orderItemSizes[index] || orderItemHeights[index]) && (
+                  <p
+                    className="mt-0.5 truncate text-[10px] font-semibold text-zinc-400"
+                    title={[orderItemColors[index], orderItemSizes[index], orderItemHeights[index]].filter(Boolean).join(' / ')}
+                  >
+                    {[orderItemColors[index], orderItemSizes[index], orderItemHeights[index]].filter(Boolean).join(' / ')}
                   </p>
                 )}
               </div>
@@ -1218,9 +1198,13 @@ const OrderRow = React.memo(({
   const orderItems = getOrderItems(order);
   const orderItemPrices = getOrderItemPrices(order);
   const orderItemColors = getOrderItemColors(order);
+  const orderItemSizes = getOrderItemSizes(order);
+  const orderItemHeights = getOrderItemHeights(order);
   const [editItems, setEditItems] = useState<string[]>(orderItems.length ? orderItems : ['']);
   const [editItemPrices, setEditItemPrices] = useState<number[]>(orderItemPrices.length ? orderItemPrices : [0]);
   const [editItemColors, setEditItemColors] = useState<string[]>(orderItemColors.length ? orderItemColors : ['']);
+  const [editItemSizes, setEditItemSizes] = useState<string[]>(orderItemSizes.length ? orderItemSizes : ['']);
+  const [editItemHeights, setEditItemHeights] = useState<string[]>(orderItemHeights.length ? orderItemHeights : ['']);
   const liveItems = editItems.map(item => item.trim()).filter(Boolean);
   const liveItemPrices = liveItems.map((_, index) => Number(editItemPrices[index]) || 0);
   const liveRevenue = getItemPricesTotal(liveItemPrices);
@@ -1235,7 +1219,9 @@ const OrderRow = React.memo(({
     setEditItems(orderItems.length ? orderItems : ['']);
     setEditItemPrices(orderItemPrices.length ? orderItemPrices : [0]);
     setEditItemColors(orderItemColors.length ? orderItemColors : ['']);
-  }, [order.item, JSON.stringify(order.items || []), JSON.stringify(order.itemPrices || []), JSON.stringify(order.itemColors || []), order.revenue]);
+    setEditItemSizes(orderItemSizes.length ? orderItemSizes : ['']);
+    setEditItemHeights(orderItemHeights.length ? orderItemHeights : ['']);
+  }, [order.item, JSON.stringify(order.items || []), JSON.stringify(order.itemPrices || []), JSON.stringify(order.itemColors || []), JSON.stringify(order.itemSizes || []), JSON.stringify(order.itemHeights || []), order.revenue]);
 
   const fieldInput = (label: string, value: string, list: string, onChange: (v: string) => void) => (
     <div key={label} className="flex flex-col gap-0.5 min-w-[72px]">
@@ -1265,10 +1251,12 @@ const OrderRow = React.memo(({
     </div>
   );
 
-  const saveOrderItems = (items: string[], prices = editItemPrices, colors = editItemColors) => {
+  const saveOrderItems = (items: string[], prices = editItemPrices, colors = editItemColors, sizes = editItemSizes, heights = editItemHeights) => {
     const cleaned = items.map(item => item.trim()).filter(Boolean);
     const cleanedPrices = cleaned.map((_, index) => Number(prices[index]) || 0);
     const cleanedColors = cleaned.map((_, index) => String(colors[index] || '').trim());
+    const cleanedSizes = cleaned.map((_, index) => String(sizes[index] || '').trim());
+    const cleanedHeights = cleaned.map((_, index) => String(heights[index] || '').trim());
     const total = getItemPricesTotal(cleanedPrices);
     const itemText = joinOrderItems(cleaned);
     const invoiceAmount = getInvoiceAmount({
@@ -1279,35 +1267,43 @@ const OrderRow = React.memo(({
     updateOrderData(order.orderId, 'items', cleaned);
     updateOrderData(order.orderId, 'itemPrices', cleanedPrices);
     updateOrderData(order.orderId, 'itemColors', cleanedColors);
+    updateOrderData(order.orderId, 'itemSizes', cleanedSizes);
+    updateOrderData(order.orderId, 'itemHeights', cleanedHeights);
     updateOrderData(order.orderId, 'item', itemText);
     updateOrderData(order.orderId, 'revenue', total);
     updateOrderData(order.orderId, 'paidAmount', invoiceAmount);
     updateOrderData(order.orderId, `rawRow[${RAW_COLOR_INDEX}]`, cleanedColors[0] || '');
+    updateOrderData(order.orderId, `rawRow[${RAW_SIZE_INDEX}]`, cleanedSizes[0] || '');
+    updateOrderData(order.orderId, 'height', cleanedHeights[0] || '');
   };
 
   const applyProductCharacteristics = (value: string, index = 0) => {
     const nextItems = [...editItems];
     const nextPrices = [...editItemPrices];
     const nextColors = [...editItemColors];
+    const nextSizes = [...editItemSizes];
+    const nextHeights = [...editItemHeights];
     nextItems[index] = value;
 
     const product = productCatalog.find(p => normalizeProductName(p.name) === normalizeProductName(value));
     if (product?.sellingPrice && !nextPrices[index]) nextPrices[index] = Number(product.sellingPrice) || 0;
     if (product?.color && !nextColors[index]) nextColors[index] = product.color;
+    if (product?.sizeGrid && !nextSizes[index]) nextSizes[index] = product.sizeGrid;
+    if (product?.height && !nextHeights[index]) nextHeights[index] = product.height;
     setEditItems(nextItems);
     setEditItemPrices(nextPrices);
     setEditItemColors(nextColors);
-    saveOrderItems(nextItems, nextPrices, nextColors);
-    if (!product) return;
-
-    if (product.sizeGrid) updateOrderData(order.orderId, `rawRow[${RAW_SIZE_INDEX}]`, product.sizeGrid);
-    if (product.height) updateOrderData(order.orderId, 'height', product.height);
+    setEditItemSizes(nextSizes);
+    setEditItemHeights(nextHeights);
+    saveOrderItems(nextItems, nextPrices, nextColors, nextSizes, nextHeights);
   };
 
   const addOrderItem = () => {
     setEditItems([...editItems, '']);
     setEditItemPrices([...editItemPrices, 0]);
     setEditItemColors([...editItemColors, '']);
+    setEditItemSizes([...editItemSizes, '']);
+    setEditItemHeights([...editItemHeights, '']);
   };
 
   const removeOrderItem = (index: number) => {
@@ -1315,24 +1311,42 @@ const OrderRow = React.memo(({
     const nextItems = editItems.filter((_, i) => i !== index);
     const nextPrices = editItemPrices.filter((_, i) => i !== index);
     const nextColors = editItemColors.filter((_, i) => i !== index);
+    const nextSizes = editItemSizes.filter((_, i) => i !== index);
+    const nextHeights = editItemHeights.filter((_, i) => i !== index);
     setEditItems(nextItems);
     setEditItemPrices(nextPrices);
     setEditItemColors(nextColors);
-    saveOrderItems(nextItems, nextPrices, nextColors);
+    setEditItemSizes(nextSizes);
+    setEditItemHeights(nextHeights);
+    saveOrderItems(nextItems, nextPrices, nextColors, nextSizes, nextHeights);
   };
 
   const updateOrderItemPrice = (index: number, value: number) => {
     const nextPrices = [...editItemPrices];
     nextPrices[index] = value;
     setEditItemPrices(nextPrices);
-    saveOrderItems(editItems, nextPrices, editItemColors);
+    saveOrderItems(editItems, nextPrices, editItemColors, editItemSizes, editItemHeights);
   };
 
   const updateOrderItemColor = (index: number, value: string) => {
     const nextColors = [...editItemColors];
     nextColors[index] = value;
     setEditItemColors(nextColors);
-    saveOrderItems(editItems, editItemPrices, nextColors);
+    saveOrderItems(editItems, editItemPrices, nextColors, editItemSizes, editItemHeights);
+  };
+
+  const updateOrderItemSize = (index: number, value: string) => {
+    const nextSizes = [...editItemSizes];
+    nextSizes[index] = value;
+    setEditItemSizes(nextSizes);
+    saveOrderItems(editItems, editItemPrices, editItemColors, nextSizes, editItemHeights);
+  };
+
+  const updateOrderItemHeight = (index: number, value: string) => {
+    const nextHeights = [...editItemHeights];
+    nextHeights[index] = value;
+    setEditItemHeights(nextHeights);
+    saveOrderItems(editItems, editItemPrices, editItemColors, editItemSizes, nextHeights);
   };
 
   const updateOrderDeliveryPrice = (value: number) => {
@@ -1507,28 +1521,17 @@ const OrderRow = React.memo(({
                   <span className="block text-[11px] font-black text-zinc-500 uppercase tracking-widest">Изделие</span>
                   <div className="mt-6 divide-y divide-zinc-100 border-y border-zinc-100">
                     {editItems.map((item, index) => (
-                      <div key={index} className="grid grid-cols-[minmax(0,1fr)_118px_82px_20px] 2xl:grid-cols-[minmax(0,1fr)_132px_92px_24px] gap-3 items-center py-3.5">
-                        <input
-                          type="text"
-                          list="product-list"
-                          value={item}
-                          onChange={(e) => applyProductCharacteristics(e.target.value, index)}
-                          placeholder={index === 0 ? 'Название изделия...' : `Позиция ${index + 1}`}
-                          title={item}
-                          className="min-w-0 border-0 bg-transparent px-0 py-0 text-[clamp(12px,0.85vw,14px)] font-semibold leading-tight text-zinc-950 outline-none"
-                        />
-                        <select
-                          value={editItemColors[index] || ''}
-                          onChange={(e) => updateOrderItemColor(index, e.target.value)}
-                          className="min-w-0 border-0 border-b border-zinc-100 bg-transparent px-0 py-1 text-[11px] font-semibold text-zinc-600 outline-none focus:border-blue-300"
-                          title="Цвет позиции"
-                        >
-                          <option value="">Цвет</option>
-                          {optionsWithCurrent(handbookColors, editItemColors[index] || '').map(opt => (
-                            <option key={opt} value={opt}>{opt}</option>
-                          ))}
-                        </select>
-                        <label className="relative">
+                      <div key={index} className="grid gap-2 py-3.5">
+                        <div className="grid grid-cols-[minmax(0,1fr)_92px_20px] 2xl:grid-cols-[minmax(0,1fr)_104px_24px] gap-3 items-center">
+                          <input
+                            type="text"
+                            list="product-list"
+                            value={item}
+                            onChange={(e) => applyProductCharacteristics(e.target.value, index)}
+                            placeholder={index === 0 ? 'Название изделия...' : `Позиция ${index + 1}`}
+                            title={item}
+                            className="min-w-0 border-0 bg-transparent px-0 py-0 text-[clamp(12px,0.85vw,14px)] font-semibold leading-tight text-zinc-950 outline-none"
+                          />
                           <input
                             type="number"
                             value={editItemPrices[index] || ''}
@@ -1536,18 +1539,53 @@ const OrderRow = React.memo(({
                             placeholder="Цена"
                             className="w-full border-0 bg-transparent px-0 py-0 text-right text-[clamp(12px,0.85vw,14px)] font-semibold text-zinc-950 outline-none placeholder:text-zinc-300"
                           />
-                        </label>
-                        <div className="flex justify-end">
-                          {editItems.length > 1 && (
-                            <button
-                              type="button"
-                              onClick={() => removeOrderItem(index)}
-                              className="grid h-6 w-6 place-items-center text-zinc-400 hover:text-red-500 transition-colors"
-                              title="Удалить позицию"
-                            >
-                              <X className="w-4 h-4" />
-                            </button>
-                          )}
+                          <div className="flex justify-end">
+                            {editItems.length > 1 && (
+                              <button
+                                type="button"
+                                onClick={() => removeOrderItem(index)}
+                                className="grid h-6 w-6 place-items-center text-zinc-400 hover:text-red-500 transition-colors"
+                                title="Удалить позицию"
+                              >
+                                <X className="w-4 h-4" />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-3 gap-3">
+                          <select
+                            value={editItemColors[index] || ''}
+                            onChange={(e) => updateOrderItemColor(index, e.target.value)}
+                            className="min-w-0 border-0 border-b border-zinc-100 bg-transparent px-0 py-1 text-[11px] font-semibold text-zinc-600 outline-none focus:border-blue-300"
+                            title="Цвет позиции"
+                          >
+                            <option value="">Цвет</option>
+                            {optionsWithCurrent(handbookColors, editItemColors[index] || '').map(opt => (
+                              <option key={opt} value={opt}>{opt}</option>
+                            ))}
+                          </select>
+                          <select
+                            value={editItemSizes[index] || ''}
+                            onChange={(e) => updateOrderItemSize(index, e.target.value)}
+                            className="min-w-0 border-0 border-b border-zinc-100 bg-transparent px-0 py-1 text-[11px] font-semibold text-zinc-600 outline-none focus:border-blue-300"
+                            title="Размер позиции"
+                          >
+                            <option value="">Размер</option>
+                            {optionsWithCurrent(handbookSizes, editItemSizes[index] || '').map(opt => (
+                              <option key={opt} value={opt}>{opt}</option>
+                            ))}
+                          </select>
+                          <select
+                            value={editItemHeights[index] || ''}
+                            onChange={(e) => updateOrderItemHeight(index, e.target.value)}
+                            className="min-w-0 border-0 border-b border-zinc-100 bg-transparent px-0 py-1 text-[11px] font-semibold text-zinc-600 outline-none focus:border-blue-300"
+                            title="Рост позиции"
+                          >
+                            <option value="">Рост</option>
+                            {optionsWithCurrent(handbookHeights, editItemHeights[index] || '').map(opt => (
+                              <option key={opt} value={opt}>{opt}</option>
+                            ))}
+                          </select>
                         </div>
                       </div>
                     ))}
@@ -1671,9 +1709,13 @@ const OrderCard = React.memo(({
   const orderItems = getOrderItems(order);
   const orderItemPrices = getOrderItemPrices(order);
   const orderItemColors = getOrderItemColors(order);
+  const orderItemSizes = getOrderItemSizes(order);
+  const orderItemHeights = getOrderItemHeights(order);
   const [editItems, setEditItems] = useState<string[]>(orderItems.length ? orderItems : ['']);
   const [editItemPrices, setEditItemPrices] = useState<number[]>(orderItemPrices.length ? orderItemPrices : [0]);
   const [editItemColors, setEditItemColors] = useState<string[]>(orderItemColors.length ? orderItemColors : ['']);
+  const [editItemSizes, setEditItemSizes] = useState<string[]>(orderItemSizes.length ? orderItemSizes : ['']);
+  const [editItemHeights, setEditItemHeights] = useState<string[]>(orderItemHeights.length ? orderItemHeights : ['']);
   const liveItems = editItems.map(item => item.trim()).filter(Boolean);
   const liveItemPrices = liveItems.map((_, index) => Number(editItemPrices[index]) || 0);
   const liveRevenue = getItemPricesTotal(liveItemPrices);
@@ -1703,12 +1745,16 @@ const OrderCard = React.memo(({
     setEditItems(orderItems.length ? orderItems : ['']);
     setEditItemPrices(orderItemPrices.length ? orderItemPrices : [0]);
     setEditItemColors(orderItemColors.length ? orderItemColors : ['']);
-  }, [order.item, JSON.stringify(order.items || []), JSON.stringify(order.itemPrices || []), JSON.stringify(order.itemColors || []), order.revenue]);
+    setEditItemSizes(orderItemSizes.length ? orderItemSizes : ['']);
+    setEditItemHeights(orderItemHeights.length ? orderItemHeights : ['']);
+  }, [order.item, JSON.stringify(order.items || []), JSON.stringify(order.itemPrices || []), JSON.stringify(order.itemColors || []), JSON.stringify(order.itemSizes || []), JSON.stringify(order.itemHeights || []), order.revenue]);
 
-  const saveMobileItems = (items: string[], prices = editItemPrices, colors = editItemColors) => {
+  const saveMobileItems = (items: string[], prices = editItemPrices, colors = editItemColors, sizes = editItemSizes, heights = editItemHeights) => {
     const cleaned = items.map(item => item.trim()).filter(Boolean);
     const cleanedPrices = cleaned.map((_, index) => Number(prices[index]) || 0);
     const cleanedColors = cleaned.map((_, index) => String(colors[index] || '').trim());
+    const cleanedSizes = cleaned.map((_, index) => String(sizes[index] || '').trim());
+    const cleanedHeights = cleaned.map((_, index) => String(heights[index] || '').trim());
     const revenue = getItemPricesTotal(cleanedPrices);
     const invoiceAmount = getInvoiceAmount({
       revenue,
@@ -1718,47 +1764,70 @@ const OrderCard = React.memo(({
     updateOrderData(order.orderId, 'items', cleaned);
     updateOrderData(order.orderId, 'itemPrices', cleanedPrices);
     updateOrderData(order.orderId, 'itemColors', cleanedColors);
+    updateOrderData(order.orderId, 'itemSizes', cleanedSizes);
+    updateOrderData(order.orderId, 'itemHeights', cleanedHeights);
     updateOrderData(order.orderId, 'item', joinOrderItems(cleaned));
     updateOrderData(order.orderId, 'revenue', revenue);
     updateOrderData(order.orderId, 'paidAmount', invoiceAmount);
     updateOrderData(order.orderId, `rawRow[${RAW_COLOR_INDEX}]`, cleanedColors[0] || '');
+    updateOrderData(order.orderId, `rawRow[${RAW_SIZE_INDEX}]`, cleanedSizes[0] || '');
+    updateOrderData(order.orderId, 'height', cleanedHeights[0] || '');
   };
 
   const applyMobileProduct = (value: string, index = 0) => {
     const nextItems = [...editItems];
     const nextPrices = [...editItemPrices];
     const nextColors = [...editItemColors];
+    const nextSizes = [...editItemSizes];
+    const nextHeights = [...editItemHeights];
     nextItems[index] = value;
     const product = productCatalog.find(p => normalizeProductName(p.name) === normalizeProductName(value));
     if (product?.sellingPrice && !nextPrices[index]) nextPrices[index] = Number(product.sellingPrice) || 0;
     if (product?.color && !nextColors[index]) nextColors[index] = product.color;
+    if (product?.sizeGrid && !nextSizes[index]) nextSizes[index] = product.sizeGrid;
+    if (product?.height && !nextHeights[index]) nextHeights[index] = product.height;
     setEditItems(nextItems);
     setEditItemPrices(nextPrices);
     setEditItemColors(nextColors);
-    saveMobileItems(nextItems, nextPrices, nextColors);
-    if (!product) return;
-    if (product.sizeGrid) updateOrderData(order.orderId, `rawRow[${RAW_SIZE_INDEX}]`, product.sizeGrid);
-    if (product.height) updateOrderData(order.orderId, 'height', product.height);
+    setEditItemSizes(nextSizes);
+    setEditItemHeights(nextHeights);
+    saveMobileItems(nextItems, nextPrices, nextColors, nextSizes, nextHeights);
   };
 
   const updateMobileItemPrice = (index: number, value: number) => {
     const nextPrices = [...editItemPrices];
     nextPrices[index] = value;
     setEditItemPrices(nextPrices);
-    saveMobileItems(editItems, nextPrices, editItemColors);
+    saveMobileItems(editItems, nextPrices, editItemColors, editItemSizes, editItemHeights);
   };
 
   const updateMobileItemColor = (index: number, value: string) => {
     const nextColors = [...editItemColors];
     nextColors[index] = value;
     setEditItemColors(nextColors);
-    saveMobileItems(editItems, editItemPrices, nextColors);
+    saveMobileItems(editItems, editItemPrices, nextColors, editItemSizes, editItemHeights);
+  };
+
+  const updateMobileItemSize = (index: number, value: string) => {
+    const nextSizes = [...editItemSizes];
+    nextSizes[index] = value;
+    setEditItemSizes(nextSizes);
+    saveMobileItems(editItems, editItemPrices, editItemColors, nextSizes, editItemHeights);
+  };
+
+  const updateMobileItemHeight = (index: number, value: string) => {
+    const nextHeights = [...editItemHeights];
+    nextHeights[index] = value;
+    setEditItemHeights(nextHeights);
+    saveMobileItems(editItems, editItemPrices, editItemColors, editItemSizes, nextHeights);
   };
 
   const addMobileItem = () => {
     setEditItems([...editItems, '']);
     setEditItemPrices([...editItemPrices, 0]);
     setEditItemColors([...editItemColors, '']);
+    setEditItemSizes([...editItemSizes, '']);
+    setEditItemHeights([...editItemHeights, '']);
   };
 
   const removeMobileItem = (index: number) => {
@@ -1766,10 +1835,14 @@ const OrderCard = React.memo(({
     const nextItems = editItems.filter((_, i) => i !== index);
     const nextPrices = editItemPrices.filter((_, i) => i !== index);
     const nextColors = editItemColors.filter((_, i) => i !== index);
+    const nextSizes = editItemSizes.filter((_, i) => i !== index);
+    const nextHeights = editItemHeights.filter((_, i) => i !== index);
     setEditItems(nextItems);
     setEditItemPrices(nextPrices);
     setEditItemColors(nextColors);
-    saveMobileItems(nextItems, nextPrices, nextColors);
+    setEditItemSizes(nextSizes);
+    setEditItemHeights(nextHeights);
+    saveMobileItems(nextItems, nextPrices, nextColors, nextSizes, nextHeights);
   };
 
   const updateMobileDeliveryPrice = (value: number) => {
@@ -1922,8 +1995,10 @@ const OrderCard = React.memo(({
               <div key={`${item}-${index}`} className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
                 <div className="min-w-0">
                   <p className="truncate text-[12px] font-bold text-zinc-950">{item}</p>
-                  {orderItemColors[index] && (
-                    <p className="truncate text-[9px] font-semibold text-zinc-400">{orderItemColors[index]}</p>
+                  {(orderItemColors[index] || orderItemSizes[index] || orderItemHeights[index]) && (
+                    <p className="truncate text-[9px] font-semibold text-zinc-400">
+                      {[orderItemColors[index], orderItemSizes[index], orderItemHeights[index]].filter(Boolean).join(' / ')}
+                    </p>
                   )}
                 </div>
                 <p className="text-[11px] font-semibold text-zinc-400">
@@ -1986,43 +2061,69 @@ const OrderCard = React.memo(({
             </div>
             <div className="space-y-2">
               {editItems.map((item, index) => (
-                <div key={index} className="grid grid-cols-[minmax(0,1fr)_78px_82px_32px] gap-1.5">
-                  <input
-                    value={item}
-                    list="product-list"
-                    onChange={(e) => applyMobileProduct(e.target.value, index)}
-                    placeholder={index === 0 ? 'Наименование' : `Позиция ${index + 1}`}
-                    className={cn(mobileInputClass, "h-10 text-[12px]")}
-                  />
-                  <select
-                    value={editItemColors[index] || ''}
-                    onChange={(e) => updateMobileItemColor(index, e.target.value)}
-                    className={cn(mobileInputClass, "h-10 px-2 text-[11px] appearance-none")}
-                    title="Цвет позиции"
-                  >
-                    <option value="">Цвет</option>
-                    {optionsWithCurrent(handbookColors, editItemColors[index] || '').map(opt => (
-                      <option key={opt} value={opt}>{opt}</option>
-                    ))}
-                  </select>
-                  <input
-                    type="number"
-                    value={editItemPrices[index] || ''}
-                    onChange={(e) => updateMobileItemPrice(index, parseFloat(e.target.value) || 0)}
-                    placeholder="Цена"
-                    className={cn(mobileInputClass, "h-10 px-2 text-right text-[12px]")}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => editItems.length > 1 ? removeMobileItem(index) : addMobileItem()}
-                    className={cn(
-                      "grid h-10 w-8 place-items-center rounded-xl border text-zinc-500",
-                      editItems.length > 1 ? "border-red-100 bg-red-50 text-red-500" : "border-zinc-100 bg-white"
-                    )}
-                    title={editItems.length > 1 ? 'Удалить позицию' : 'Добавить позицию'}
-                  >
-                    {editItems.length > 1 ? <X className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
-                  </button>
+                <div key={index} className="grid gap-1.5 rounded-xl border border-zinc-50 p-2">
+                  <div className="grid grid-cols-[minmax(0,1fr)_82px_32px] gap-1.5">
+                    <input
+                      value={item}
+                      list="product-list"
+                      onChange={(e) => applyMobileProduct(e.target.value, index)}
+                      placeholder={index === 0 ? 'Наименование' : `Позиция ${index + 1}`}
+                      className={cn(mobileInputClass, "h-10 text-[12px]")}
+                    />
+                    <input
+                      type="number"
+                      value={editItemPrices[index] || ''}
+                      onChange={(e) => updateMobileItemPrice(index, parseFloat(e.target.value) || 0)}
+                      placeholder="Цена"
+                      className={cn(mobileInputClass, "h-10 px-2 text-right text-[12px]")}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => editItems.length > 1 ? removeMobileItem(index) : addMobileItem()}
+                      className={cn(
+                        "grid h-10 w-8 place-items-center rounded-xl border text-zinc-500",
+                        editItems.length > 1 ? "border-red-100 bg-red-50 text-red-500" : "border-zinc-100 bg-white"
+                      )}
+                      title={editItems.length > 1 ? 'Удалить позицию' : 'Добавить позицию'}
+                    >
+                      {editItems.length > 1 ? <X className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-3 gap-1.5">
+                    <select
+                      value={editItemColors[index] || ''}
+                      onChange={(e) => updateMobileItemColor(index, e.target.value)}
+                      className={cn(mobileInputClass, "h-9 px-2 text-[10px] appearance-none")}
+                      title="Цвет позиции"
+                    >
+                      <option value="">Цвет</option>
+                      {optionsWithCurrent(handbookColors, editItemColors[index] || '').map(opt => (
+                        <option key={opt} value={opt}>{opt}</option>
+                      ))}
+                    </select>
+                    <select
+                      value={editItemSizes[index] || ''}
+                      onChange={(e) => updateMobileItemSize(index, e.target.value)}
+                      className={cn(mobileInputClass, "h-9 px-2 text-[10px] appearance-none")}
+                      title="Размер позиции"
+                    >
+                      <option value="">Размер</option>
+                      {optionsWithCurrent(handbookSizes, editItemSizes[index] || '').map(opt => (
+                        <option key={opt} value={opt}>{opt}</option>
+                      ))}
+                    </select>
+                    <select
+                      value={editItemHeights[index] || ''}
+                      onChange={(e) => updateMobileItemHeight(index, e.target.value)}
+                      className={cn(mobileInputClass, "h-9 px-2 text-[10px] appearance-none")}
+                      title="Рост позиции"
+                    >
+                      <option value="">Рост</option>
+                      {optionsWithCurrent(handbookHeights, editItemHeights[index] || '').map(opt => (
+                        <option key={opt} value={opt}>{opt}</option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
               ))}
               {editItems.length > 1 && (
@@ -2328,6 +2429,8 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
   const [newOrderItems, setNewOrderItems] = useState<string[]>(['']);
   const [newOrderItemPrices, setNewOrderItemPrices] = useState<number[]>([0]);
   const [newOrderItemColors, setNewOrderItemColors] = useState<string[]>(['']);
+  const [newOrderItemSizes, setNewOrderItemSizes] = useState<string[]>(['']);
+  const [newOrderItemHeights, setNewOrderItemHeights] = useState<string[]>(['']);
   const [expandedOrderId, setExpandedOrderId] = useState<string | null>(null);
   const createdQrRef = useRef<HTMLDivElement>(null);
 
@@ -2417,10 +2520,19 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
     }), { orders: 0, paid: 0, returnsAmount: 0 });
   }, [chartData2026]);
 
-  const syncNewOrderItems = (items: string[], prices = newOrderItemPrices, colors = newOrderItemColors, patch: Partial<OrderData> = {}) => {
+  const syncNewOrderItems = (
+    items: string[],
+    prices = newOrderItemPrices,
+    colors = newOrderItemColors,
+    sizes = newOrderItemSizes,
+    heights = newOrderItemHeights,
+    patch: Partial<OrderData> = {}
+  ) => {
     const cleanedItems = items.map(item => item.trim()).filter(Boolean);
     const cleanedPrices = cleanedItems.map((_, index) => Number(prices[index]) || 0);
     const cleanedColors = cleanedItems.map((_, index) => String(colors[index] || '').trim());
+    const cleanedSizes = cleanedItems.map((_, index) => String(sizes[index] || '').trim());
+    const cleanedHeights = cleanedItems.map((_, index) => String(heights[index] || '').trim());
     const revenue = getItemPricesTotal(cleanedPrices);
     setNewOrder(prev => ({
       ...prev,
@@ -2428,6 +2540,8 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
       items: cleanedItems,
       itemPrices: cleanedPrices,
       itemColors: cleanedColors,
+      itemSizes: cleanedSizes,
+      itemHeights: cleanedHeights,
       item: joinOrderItems(cleanedItems),
       revenue,
       invoiceType: patch.invoiceType || prev.invoiceType || getInvoiceTypeFromPaymentType(prev.paymentType),
@@ -2444,21 +2558,26 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
     const rawRow = [...(newOrder.rawRow || Array(30).fill(''))];
     while (rawRow.length < 30) rawRow.push('');
 
-    if (product?.sizeGrid) rawRow[RAW_SIZE_INDEX] = product.sizeGrid;
-
     const nextItems = [...newOrderItems];
     const nextPrices = [...newOrderItemPrices];
     const nextColors = [...newOrderItemColors];
+    const nextSizes = [...newOrderItemSizes];
+    const nextHeights = [...newOrderItemHeights];
     nextItems[index] = value;
     if (product?.sellingPrice && !nextPrices[index]) nextPrices[index] = Number(product.sellingPrice) || 0;
     if (product?.color && !nextColors[index]) nextColors[index] = product.color;
+    if (product?.sizeGrid && !nextSizes[index]) nextSizes[index] = product.sizeGrid;
+    if (product?.height && !nextHeights[index]) nextHeights[index] = product.height;
     rawRow[RAW_COLOR_INDEX] = nextColors[0] || '';
+    rawRow[RAW_SIZE_INDEX] = nextSizes[0] || '';
     setNewOrderItems(nextItems);
     setNewOrderItemPrices(nextPrices);
     setNewOrderItemColors(nextColors);
-    syncNewOrderItems(nextItems, nextPrices, nextColors, {
+    setNewOrderItemSizes(nextSizes);
+    setNewOrderItemHeights(nextHeights);
+    syncNewOrderItems(nextItems, nextPrices, nextColors, nextSizes, nextHeights, {
       rawRow,
-      height: product?.height || newOrder.height || '',
+      height: nextHeights[0] || newOrder.height || '',
     });
   };
 
@@ -2466,6 +2585,8 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
     setNewOrderItems([...newOrderItems, '']);
     setNewOrderItemPrices([...newOrderItemPrices, 0]);
     setNewOrderItemColors([...newOrderItemColors, '']);
+    setNewOrderItemSizes([...newOrderItemSizes, '']);
+    setNewOrderItemHeights([...newOrderItemHeights, '']);
   };
 
   const removeNewOrderItem = (index: number) => {
@@ -2473,17 +2594,21 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
     const nextItems = newOrderItems.filter((_, i) => i !== index);
     const nextPrices = newOrderItemPrices.filter((_, i) => i !== index);
     const nextColors = newOrderItemColors.filter((_, i) => i !== index);
+    const nextSizes = newOrderItemSizes.filter((_, i) => i !== index);
+    const nextHeights = newOrderItemHeights.filter((_, i) => i !== index);
     setNewOrderItems(nextItems);
     setNewOrderItemPrices(nextPrices);
     setNewOrderItemColors(nextColors);
-    syncNewOrderItems(nextItems, nextPrices, nextColors);
+    setNewOrderItemSizes(nextSizes);
+    setNewOrderItemHeights(nextHeights);
+    syncNewOrderItems(nextItems, nextPrices, nextColors, nextSizes, nextHeights);
   };
 
   const updateNewOrderItemPrice = (index: number, value: number) => {
     const nextPrices = [...newOrderItemPrices];
     nextPrices[index] = value;
     setNewOrderItemPrices(nextPrices);
-    syncNewOrderItems(newOrderItems, nextPrices, newOrderItemColors);
+    syncNewOrderItems(newOrderItems, nextPrices, newOrderItemColors, newOrderItemSizes, newOrderItemHeights);
   };
 
   const updateNewOrderItemColor = (index: number, value: string) => {
@@ -2493,7 +2618,24 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
     while (rawRow.length < 30) rawRow.push('');
     rawRow[RAW_COLOR_INDEX] = nextColors[0] || '';
     setNewOrderItemColors(nextColors);
-    syncNewOrderItems(newOrderItems, newOrderItemPrices, nextColors, { rawRow });
+    syncNewOrderItems(newOrderItems, newOrderItemPrices, nextColors, newOrderItemSizes, newOrderItemHeights, { rawRow });
+  };
+
+  const updateNewOrderItemSize = (index: number, value: string) => {
+    const nextSizes = [...newOrderItemSizes];
+    const rawRow = [...(newOrder.rawRow || Array(30).fill(''))];
+    while (rawRow.length < 30) rawRow.push('');
+    nextSizes[index] = value;
+    rawRow[RAW_SIZE_INDEX] = nextSizes[0] || '';
+    setNewOrderItemSizes(nextSizes);
+    syncNewOrderItems(newOrderItems, newOrderItemPrices, newOrderItemColors, nextSizes, newOrderItemHeights, { rawRow });
+  };
+
+  const updateNewOrderItemHeight = (index: number, value: string) => {
+    const nextHeights = [...newOrderItemHeights];
+    nextHeights[index] = value;
+    setNewOrderItemHeights(nextHeights);
+    syncNewOrderItems(newOrderItems, newOrderItemPrices, newOrderItemColors, newOrderItemSizes, nextHeights, { height: nextHeights[0] || '' });
   };
 
   const updateNewOrderDeliveryPrice = (value: number) => {
@@ -2561,6 +2703,8 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
       items: [],
       itemPrices: [],
       itemColors: [],
+      itemSizes: [],
+      itemHeights: [],
       revenue: 0,
       deliveryPrice: 0,
       paidAmount: 0,
@@ -2574,6 +2718,8 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
     setNewOrderItems(['']);
     setNewOrderItemPrices([0]);
     setNewOrderItemColors(['']);
+    setNewOrderItemSizes(['']);
+    setNewOrderItemHeights(['']);
     setClientQuery('');
     setPhoneQuery('');
     setCreatedOrderId(null);
@@ -2591,6 +2737,8 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
       items: newOrderItems.map(item => item.trim()).filter(Boolean),
       itemPrices: newOrderItems.map((item, index) => item.trim() ? (Number(newOrderItemPrices[index]) || 0) : 0).filter((_, index) => Boolean(newOrderItems[index]?.trim())),
       itemColors: newOrderItems.map((item, index) => item.trim() ? String(newOrderItemColors[index] || '').trim() : '').filter((_, index) => Boolean(newOrderItems[index]?.trim())),
+      itemSizes: newOrderItems.map((item, index) => item.trim() ? String(newOrderItemSizes[index] || '').trim() : '').filter((_, index) => Boolean(newOrderItems[index]?.trim())),
+      itemHeights: newOrderItems.map((item, index) => item.trim() ? String(newOrderItemHeights[index] || '').trim() : '').filter((_, index) => Boolean(newOrderItems[index]?.trim())),
       item: joinOrderItems(newOrderItems),
       revenue: itemPricesTotal,
       invoiceType,
@@ -2602,6 +2750,8 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
     setNewOrderItems(['']);
     setNewOrderItemPrices([0]);
     setNewOrderItemColors(['']);
+    setNewOrderItemSizes(['']);
+    setNewOrderItemHeights(['']);
     const paymentPageUrl = buildPaymentPageUrl(orderId);
     setCreatedOrderId(orderId);
     setCreatedShareText(buildOrderShareText({ ...orderSnapshot, orderId }, paymentPageUrl));
@@ -2994,7 +3144,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
             </div>
             <div className="space-y-4">
               {newOrderItems.map((item, index) => (
-                <div key={index} className="grid gap-3 lg:grid-cols-[minmax(0,1.5fr)_220px_220px_52px]">
+                <div key={index} className="grid gap-3 lg:grid-cols-[minmax(0,1.35fr)_170px_170px_170px_170px_52px]">
                   <label className="block">
                     <span className={newOrderLabelClass}>Наименование</span>
                     <input
@@ -3008,6 +3158,8 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                     />
                   </label>
                   {renderNewOrderSelect('Цвет', newOrderItemColors[index] || '', handbookColors, (v) => updateNewOrderItemColor(index, v), 'Цвет')}
+                  {renderNewOrderSelect('Размер', newOrderItemSizes[index] || '', handbookSizes, (v) => updateNewOrderItemSize(index, v), 'Размер')}
+                  {renderNewOrderSelect('Рост', newOrderItemHeights[index] || '', handbookHeights, (v) => updateNewOrderItemHeight(index, v), 'Рост')}
                   <label className="block">
                     <span className={newOrderLabelClass}>Цена</span>
                     <span className="relative block">
@@ -3045,13 +3197,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                   </div>
                 </div>
               ))}
-              <div className="grid gap-3 lg:grid-cols-3">
-                {renderNewOrderSelect('Размер', newOrder.rawRow?.[RAW_SIZE_INDEX] || '', handbookSizes, (v) => {
-                  const nr = [...(newOrder.rawRow || Array(30).fill(''))];
-                  nr[RAW_SIZE_INDEX] = v;
-                  setNewOrder({...newOrder, rawRow: nr});
-                }, 'Размер')}
-                {renderNewOrderSelect('Рост', newOrder.height || '', handbookHeights, (v) => setNewOrder({...newOrder, height: v}), 'Рост')}
+              <div className="grid gap-3 lg:grid-cols-1">
                 {renderNewOrderSelect('Метка', newOrder.label || '', handbookLabels, (v) => setNewOrder({...newOrder, label: v}), 'Метка')}
               </div>
             </div>
@@ -3451,6 +3597,9 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                   rawRow: [...(newOrder.rawRow || [])],
                   items: newOrderItems.map(item => item.trim()).filter(Boolean),
                   itemPrices: newOrderItems.map((item, index) => item.trim() ? (Number(newOrderItemPrices[index]) || 0) : 0).filter((_, index) => Boolean(newOrderItems[index]?.trim())),
+                  itemColors: newOrderItems.map((item, index) => item.trim() ? String(newOrderItemColors[index] || '').trim() : '').filter((_, index) => Boolean(newOrderItems[index]?.trim())),
+                  itemSizes: newOrderItems.map((item, index) => item.trim() ? String(newOrderItemSizes[index] || '').trim() : '').filter((_, index) => Boolean(newOrderItems[index]?.trim())),
+                  itemHeights: newOrderItems.map((item, index) => item.trim() ? String(newOrderItemHeights[index] || '').trim() : '').filter((_, index) => Boolean(newOrderItems[index]?.trim())),
                   item: joinOrderItems(newOrderItems),
                   revenue: itemPricesTotal,
                   invoiceType,
@@ -3461,6 +3610,9 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                 if (!orderId) return;
                 setNewOrderItems(['']);
                 setNewOrderItemPrices([0]);
+                setNewOrderItemColors(['']);
+                setNewOrderItemSizes(['']);
+                setNewOrderItemHeights(['']);
                 const paymentPageUrl = buildPaymentPageUrl(orderId);
                 setCreatedOrderId(orderId);
                 setCreatedShareText(buildOrderShareText({ ...orderSnapshot, orderId }, paymentPageUrl));

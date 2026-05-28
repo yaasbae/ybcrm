@@ -2362,6 +2362,11 @@ function getTochkaOperationAmount(operation: any) {
     || 0;
 }
 
+function isTochkaPaidStatus(status: any) {
+  const normalized = String(status || '').toLowerCase();
+  return ['paid', 'approved', 'completed', 'succeeded', 'success', 'done'].some(item => normalized.includes(item));
+}
+
 async function findTochkaOperation(token: string, customerCode: string, orderId: string, amount?: number) {
   if (!customerCode || !orderId) return null;
   const response = await axios.get(`${TOCHKA_API}/acquiring/v1.0/payments`, {
@@ -2572,6 +2577,7 @@ app.get('/api/tochka/find-payment', async (req, res) => {
       paymentAmount,
       tochkaPaymentFoundAt: new Date().toISOString(),
       tochkaPaymentData: JSON.stringify(operation).slice(0, 2000),
+      ...(isTochkaPaidStatus(paymentStatus) ? { status: 'Оплачен' } : {}),
     };
 
     await updateDoc(doc(db, 'orders', orderId), paymentFields).catch(() => {});
@@ -2727,15 +2733,16 @@ app.post('/api/tochka/webhook', async (req, res) => {
     // Найти заказ по operationId и обновить статус
     if (db && (body.operationId || body.paymentLinkId)) {
       const status = ['Paid', 'paid', 'APPROVED'].includes(body.status) ? 'paid' : body.status;
+      const statusPatch = isTochkaPaidStatus(status) ? { status: 'Оплачен' } : {};
       if (body.paymentLinkId) {
-        await updateDoc(doc(db, 'orders', body.paymentLinkId), { paymentStatus: status, paymentPaidAt: new Date().toISOString() }).catch(() => {});
-        await updateDoc(doc(db, 'orders_new', body.paymentLinkId), { paymentStatus: status, paymentPaidAt: new Date().toISOString() }).catch(() => {});
+        await updateDoc(doc(db, 'orders', body.paymentLinkId), { paymentStatus: status, paymentPaidAt: new Date().toISOString(), ...statusPatch }).catch(() => {});
+        await updateDoc(doc(db, 'orders_new', body.paymentLinkId), { paymentStatus: status, paymentPaidAt: new Date().toISOString(), ...statusPatch }).catch(() => {});
       }
       if (body.operationId) {
         const ordersSnap = await getDocs(query(collection(db, 'orders'), where('paymentId', '==', body.operationId)));
         for (const d of ordersSnap.docs) {
-          await updateDoc(d.ref, { paymentStatus: status, paymentPaidAt: new Date().toISOString() });
-          await updateDoc(doc(db, 'orders_new', d.id), { paymentStatus: status, paymentPaidAt: new Date().toISOString() }).catch(() => {});
+          await updateDoc(d.ref, { paymentStatus: status, paymentPaidAt: new Date().toISOString(), ...statusPatch });
+          await updateDoc(doc(db, 'orders_new', d.id), { paymentStatus: status, paymentPaidAt: new Date().toISOString(), ...statusPatch }).catch(() => {});
         }
       }
     }

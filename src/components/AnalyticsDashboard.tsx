@@ -39,6 +39,8 @@ export interface OrderData {
   items?: string[];
   itemPrices?: number[];
   itemColors?: string[];
+  itemSizes?: string[];
+  itemHeights?: string[];
   deliveryMethod: string;
   year: number;
   month: number;
@@ -269,6 +271,8 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
             items: ['items'],
             itemPrices: ['itemPrices'],
             itemColors: ['itemColors'],
+            itemSizes: ['itemSizes'],
+            itemHeights: ['itemHeights'],
             deliveryMethod: ['shipping'],
             paymentType: ['paymentType'],
             invoiceType: ['invoiceType'],
@@ -357,7 +361,14 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
     const newOrderItemColors = Array.isArray(orderDraft.itemColors)
       ? newOrderItems.map((_, index) => String(orderDraft.itemColors?.[index] || '').trim())
       : newOrderItems.map((_, index) => index === 0 ? String(rawRow[1] || '').trim() : '');
+    const newOrderItemSizes = Array.isArray(orderDraft.itemSizes)
+      ? newOrderItems.map((_, index) => String(orderDraft.itemSizes?.[index] || '').trim())
+      : newOrderItems.map((_, index) => index === 0 ? String(rawRow[8] || '').trim() : '');
+    const newOrderItemHeights = Array.isArray(orderDraft.itemHeights)
+      ? newOrderItems.map((_, index) => String(orderDraft.itemHeights?.[index] || '').trim())
+      : newOrderItems.map((_, index) => index === 0 ? String(orderDraft.height || '').trim() : '');
     if (newOrderItemColors[0]) rawRow[1] = newOrderItemColors[0];
+    if (newOrderItemSizes[0]) rawRow[8] = newOrderItemSizes[0];
     const itemPricesTotal = newOrderItemPrices.reduce((sum, price) => sum + price, 0);
     const totalRevenue = itemPricesTotal > 0 ? itemPricesTotal : (orderDraft.revenue || 0);
     const invoiceType = orderDraft.invoiceType || 'prepayment';
@@ -385,6 +396,8 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
       items: newOrderItems,
       itemPrices: newOrderItemPrices,
       itemColors: newOrderItemColors,
+      itemSizes: newOrderItemSizes,
+      itemHeights: newOrderItemHeights,
       deliveryMethod: orderDraft.deliveryMethod || '',
       paymentType: orderDraft.paymentType || '',
       invoiceType,
@@ -424,6 +437,8 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
         items: orderToCreate.items || [],
         itemPrices: orderToCreate.itemPrices || [],
         itemColors: orderToCreate.itemColors || [],
+        itemSizes: orderToCreate.itemSizes || [],
+        itemHeights: orderToCreate.itemHeights || [],
         color,
         size,
         height: orderToCreate.height || '',
