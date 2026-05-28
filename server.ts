@@ -2452,7 +2452,7 @@ app.post('/api/tochka/create-payment', async (req, res) => {
       createdAt: new Date().toISOString(),
     }).catch(() => {});
 
-    res.json({ success: true, paymentUrl, data: paymentData });
+    res.json({ success: true, paymentUrl, paymentId, data: paymentData });
   } catch (e: any) {
     const errData = e.response?.data;
     console.error('[tochka] create-payment error:', errData || e.message);
@@ -2465,6 +2465,106 @@ app.post('/api/tochka/create-payment', async (req, res) => {
       createdAt: new Date().toISOString(),
     }).catch(() => {});
     res.status(500).json({ error: e.message, details: errData });
+  }
+});
+
+// Возврат оплаты через Точку. Код подтверждения обязателен: возврат без ручного
+// подтверждения в CRM не отправляется в банк.
+app.post('/api/tochka/refund-payment', async (req, res) => {
+  const { orderId, operationId, amount, signatureCode, reason } = req.body || {};
+  const refundAmount = Number(amount);
+  const cleanOrderId = String(orderId || '').trim();
+  const cleanOperationId = String(operationId || '').trim();
+  const cleanSignatureCode = String(signatureCode || '').trim();
+
+  if (!cleanOrderId) return res.status(400).json({ error: 'Нужен orderId' });
+  if (!cleanOperationId) return res.status(400).json({ error: 'У заказа нет operationId/paymentId для возврата' });
+  if (!Number.isFinite(refundAmount) || refundAmount <= 0) return res.status(400).json({ error: 'Нужна сумма возврата больше 0' });
+  if (!cleanSignatureCode) return res.status(400).json({ error: 'Нужен код подтверждения с телефона' });
+  if (!db) return res.status(503).json({ error: 'DB не подключена' });
+
+  try {
+    const token = await getTochkaToken();
+    if (!token) return res.status(400).json({ error: 'Токен Точки не настроен' });
+
+    console.log(`[tochka] refund start order=${cleanOrderId} operation=${cleanOperationId} amount=${refundAmount}`);
+    await addDoc(collection(db, 'tochka_logs'), {
+      orderId: cleanOrderId,
+      paymentId: cleanOperationId,
+      amount: refundAmount,
+      status: 'refund_request',
+      reason: reason || '',
+      createdAt: new Date().toISOString(),
+    }).catch(() => {});
+
+    const response = await axios.post(
+      `${TOCHKA_API}/acquiring/v1.0/payments/${encodeURIComponent(cleanOperationId)}/refund`,
+      {
+        Data: {
+          amount: Math.round(refundAmount * 100) / 100,
+          reason: reason || `Возврат заказа ${cleanOrderId}`,
+          signatureCode: cleanSignatureCode,
+          smsCode: cleanSignatureCode,
+          confirmationCode: cleanSignatureCode,
+        },
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+          'X-Signature-Code': cleanSignatureCode,
+          'X-Confirmation-Code': cleanSignatureCode,
+          'X-SMS-Code': cleanSignatureCode,
+        },
+        timeout: 20000,
+      }
+    );
+
+    const refundData = response.data || {};
+    const refundId = refundData.operationId
+      || refundData.refundOperationId
+      || refundData.data?.operationId
+      || refundData.Data?.operationId
+      || refundData.Data?.refundOperationId
+      || null;
+    const refundStatus = refundData.status || refundData.data?.status || refundData.Data?.status || 'refund_requested';
+    const refundFields = {
+      status: 'Возврат',
+      refundAmount,
+      refundStatus,
+      refundId,
+      refundPaymentId: cleanOperationId,
+      refundReason: reason || '',
+      refundedAt: new Date().toISOString(),
+      refundResponse: JSON.stringify(refundData).slice(0, 2000),
+    };
+
+    await updateDoc(doc(db, 'orders', cleanOrderId), refundFields).catch(() => {});
+    await updateDoc(doc(db, 'orders_new', cleanOrderId), refundFields).catch(() => {});
+    await addDoc(collection(db, 'tochka_logs'), {
+      orderId: cleanOrderId,
+      paymentId: cleanOperationId,
+      refundId,
+      amount: refundAmount,
+      status: 'refund_success',
+      response: JSON.stringify(refundData).slice(0, 1000),
+      createdAt: new Date().toISOString(),
+    }).catch(() => {});
+
+    res.json({ success: true, refundId, refundStatus, data: refundData });
+  } catch (e: any) {
+    const errData = e.response?.data;
+    console.error('[tochka] refund error:', errData || e.message);
+    await addDoc(collection(db, 'tochka_logs'), {
+      orderId: cleanOrderId,
+      paymentId: cleanOperationId,
+      amount: refundAmount,
+      status: 'refund_error',
+      error: e.message,
+      details: errData ? JSON.stringify(errData).slice(0, 1000) : '',
+      createdAt: new Date().toISOString(),
+    }).catch(() => {});
+    res.status(e.response?.status || 500).json({ error: e.message, details: errData });
   }
 });
 

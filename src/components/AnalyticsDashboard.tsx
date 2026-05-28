@@ -55,8 +55,17 @@ export interface OrderData {
   blogger?: string;
   paymentUrl?: string;
   finalPaymentUrl?: string;
+  finalPaymentId?: string;
   finalPaymentAmount?: number;
   finalPaymentStatus?: string;
+  paymentAmount?: number;
+  paymentId?: string;
+  refundAmount?: number;
+  refundStatus?: string;
+  refundId?: string;
+  refundPaymentId?: string;
+  refundReason?: string;
+  refundedAt?: string;
   paymentStatus?: string;
   paymentType?: string;
   invoiceType?: 'prepayment' | 'full' | 'fitting';
@@ -256,8 +265,17 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
             manager: ['manager'],
             paymentUrl: ['paymentUrl'],
             finalPaymentUrl: ['finalPaymentUrl'],
+            finalPaymentId: ['finalPaymentId'],
             finalPaymentAmount: ['finalPaymentAmount'],
             finalPaymentStatus: ['finalPaymentStatus'],
+            paymentAmount: ['paymentAmount'],
+            paymentId: ['paymentId'],
+            refundAmount: ['refundAmount'],
+            refundStatus: ['refundStatus'],
+            refundId: ['refundId'],
+            refundPaymentId: ['refundPaymentId'],
+            refundReason: ['refundReason'],
+            refundedAt: ['refundedAt'],
             paymentStatus: ['paymentStatus'],
           };
           (orderFieldMap[String(field)] || []).forEach(target => {

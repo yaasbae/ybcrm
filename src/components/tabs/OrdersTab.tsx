@@ -170,6 +170,13 @@ function getOrderFinalPaymentAmount(order: Partial<Pick<OrderData, 'revenue' | '
   return Math.max(0, fullAmount - paidAmount);
 }
 
+function getRefundableAmount(order: Partial<OrderData>): number {
+  const savedPaymentAmount = Number(order.paymentAmount) || 0;
+  const paidAmount = Number(order.paidAmount) || 0;
+  const totalAmount = (Number(order.revenue) || 0) + (Number(order.deliveryPrice) || 0);
+  return Math.max(0, savedPaymentAmount || paidAmount || totalAmount);
+}
+
 function getInvoiceAmount(order: Partial<Pick<OrderData, 'revenue' | 'deliveryPrice' | 'invoiceType'>>): number {
   const total = Math.max(0, (Number(order.revenue) || 0) + (Number(order.deliveryPrice) || 0));
   if (order.invoiceType === 'fitting') return 2000;
@@ -358,6 +365,8 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
       if (data.paymentUrl) {
         setPaymentUrl(data.paymentUrl);
         updateOrderData(order.orderId, 'paymentUrl', data.paymentUrl);
+        updateOrderData(order.orderId, 'paymentAmount', amount);
+        if (data.paymentId) updateOrderData(order.orderId, 'paymentId', data.paymentId);
       }
     } catch (e: any) {
       setError(e.message || 'Не удалось создать счёт');
@@ -386,6 +395,7 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
         updateOrderData(order.orderId, 'finalPaymentUrl', data.paymentUrl);
         updateOrderData(order.orderId, 'finalPaymentAmount', finalAmount);
         updateOrderData(order.orderId, 'finalPaymentStatus', 'pending');
+        if (data.paymentId) updateOrderData(order.orderId, 'finalPaymentId', data.paymentId);
       }
     } catch (e: any) {
       setFinalError(e.message || 'Не удалось создать счёт на доплату');
@@ -496,6 +506,121 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
           {finalError && <p className="mt-1 text-[8px] font-bold text-red-500">{finalError}</p>}
         </div>
       )}
+    </div>
+  );
+};
+
+const RefundBlock: React.FC<{ order: OrderData; updateOrderData: (id: string, field: string, value: any) => void; mobile?: boolean }> = ({ order, updateOrderData, mobile = false }) => {
+  const defaultAmount = getRefundableAmount(order);
+  const [amount, setAmount] = useState(defaultAmount ? String(defaultAmount) : '');
+  const [signatureCode, setSignatureCode] = useState('');
+  const [reason, setReason] = useState('Возврат по заказу');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+  const paymentId = order.paymentId || order.refundPaymentId || '';
+  const isReturned = String(order.status || '').toLowerCase().includes('возврат') || Boolean(order.refundStatus);
+
+  useEffect(() => {
+    setAmount(defaultAmount ? String(defaultAmount) : '');
+  }, [defaultAmount]);
+
+  const submitRefund = async () => {
+    setError('');
+    setSuccess('');
+    const refundAmount = Number(String(amount).replace(',', '.'));
+    if (!paymentId) {
+      setError('У заказа нет paymentId. Для старых заказов надо сначала найти операцию в Точке.');
+      return;
+    }
+    if (!Number.isFinite(refundAmount) || refundAmount <= 0) {
+      setError('Введите сумму возврата');
+      return;
+    }
+    if (!signatureCode.trim()) {
+      setError('Введите код подтверждения с телефона');
+      return;
+    }
+    if (!window.confirm(`Оформить возврат ${formatCurrency(refundAmount)} по заказу #${order.orderId}?`)) return;
+
+    setLoading(true);
+    try {
+      const res = await fetch('/api/tochka/refund-payment', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          orderId: order.orderId,
+          operationId: paymentId,
+          amount: refundAmount,
+          signatureCode: signatureCode.trim(),
+          reason,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(getApiErrorMessage(data, 'Не удалось оформить возврат'));
+      updateOrderData(order.orderId, 'status', 'Возврат');
+      updateOrderData(order.orderId, 'refundAmount', refundAmount);
+      updateOrderData(order.orderId, 'refundStatus', data.refundStatus || 'refund_requested');
+      if (data.refundId) updateOrderData(order.orderId, 'refundId', data.refundId);
+      updateOrderData(order.orderId, 'refundPaymentId', paymentId);
+      updateOrderData(order.orderId, 'refundReason', reason);
+      updateOrderData(order.orderId, 'refundedAt', new Date().toISOString());
+      setSuccess('Возврат отправлен в Точку');
+      setSignatureCode('');
+    } catch (e: any) {
+      setError(e.message || 'Не удалось оформить возврат');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className={cn("rounded-xl border border-red-100 bg-red-50/40", mobile ? "p-2.5 space-y-2" : "mt-3 p-3 space-y-2")}>
+      <div className="flex items-center justify-between gap-2">
+        <div>
+          <p className={cn("font-black uppercase tracking-widest text-red-500", mobile ? "text-[8px]" : "text-[9px]")}>Возврат</p>
+          <p className={cn("font-bold text-zinc-400", mobile ? "text-[8px]" : "text-[9px]")}>
+            {isReturned ? `Статус: ${order.refundStatus || 'возврат'}` : paymentId ? 'Нужен код подтверждения' : 'Нет paymentId'}
+          </p>
+        </div>
+        {order.refundAmount ? (
+          <span className={cn("font-black text-red-600", mobile ? "text-[10px]" : "text-[12px]")}>{formatCurrency(order.refundAmount)}</span>
+        ) : null}
+      </div>
+      <div className={cn("grid gap-2", mobile ? "grid-cols-1" : "grid-cols-2")}>
+        <input
+          type="number"
+          value={amount}
+          onChange={(e) => setAmount(e.target.value)}
+          placeholder="Сумма возврата"
+          className="h-9 rounded-lg border border-red-100 bg-white px-3 text-[11px] font-bold text-zinc-900 outline-none focus:border-red-300"
+        />
+        <input
+          type="text"
+          inputMode="numeric"
+          value={signatureCode}
+          onChange={(e) => setSignatureCode(e.target.value.replace(/\D/g, '').slice(0, 8))}
+          placeholder="Код с телефона"
+          className="h-9 rounded-lg border border-red-100 bg-white px-3 text-[11px] font-bold text-zinc-900 outline-none focus:border-red-300"
+        />
+      </div>
+      <input
+        type="text"
+        value={reason}
+        onChange={(e) => setReason(e.target.value)}
+        placeholder="Причина возврата"
+        className="h-9 w-full rounded-lg border border-red-100 bg-white px-3 text-[11px] font-bold text-zinc-900 outline-none focus:border-red-300"
+      />
+      <button
+        type="button"
+        onClick={submitRefund}
+        disabled={loading || !paymentId}
+        className="w-full rounded-lg border border-red-200 bg-white py-2 text-[9px] font-black uppercase tracking-wider text-red-600 transition-all hover:bg-red-500 hover:text-white disabled:opacity-50"
+      >
+        {loading ? 'Отправляем...' : 'Оформить возврат'}
+      </button>
+      {error && <p className="text-[9px] font-bold text-red-500">{error}</p>}
+      {success && <p className="text-[9px] font-bold text-emerald-600">{success}</p>}
     </div>
   );
 };
@@ -1343,6 +1468,7 @@ const OrderRow = React.memo(({
             </div>
 
             <PaymentRowBlock order={order} updateOrderData={updateOrderData} />
+            <RefundBlock order={order} updateOrderData={updateOrderData} />
 
             {String(order.deliveryMethod || '').toLowerCase().includes('сдэк') && (
               <CdekOrderBlock order={order} updateOrderData={updateOrderData} productCatalog={productCatalog} mobile />
@@ -1693,6 +1819,8 @@ const OrderCard = React.memo(({
       setMobilePaymentUrl(data.paymentUrl);
       setShowMobileQr(true);
       updateOrderData(order.orderId, 'paymentUrl', data.paymentUrl);
+      updateOrderData(order.orderId, 'paymentAmount', amount);
+      if (data.paymentId) updateOrderData(order.orderId, 'paymentId', data.paymentId);
     } catch (e: any) {
       setMobilePaymentError(e.message || 'Не удалось создать счёт');
     } finally {
@@ -1724,6 +1852,7 @@ const OrderCard = React.memo(({
       updateOrderData(order.orderId, 'finalPaymentUrl', data.paymentUrl);
       updateOrderData(order.orderId, 'finalPaymentAmount', finalPaymentAmount);
       updateOrderData(order.orderId, 'finalPaymentStatus', 'pending');
+      if (data.paymentId) updateOrderData(order.orderId, 'finalPaymentId', data.paymentId);
     } catch (e: any) {
       setMobileFinalPaymentError(e.message || 'Не удалось создать счёт на доплату');
     } finally {
@@ -2037,6 +2166,8 @@ const OrderCard = React.memo(({
           </div>
         )}
       </div>
+
+      <RefundBlock order={order} updateOrderData={updateOrderData} mobile />
 
       {String(order.deliveryMethod || '').toLowerCase().includes('сдэк') && (
         <CdekOrderBlock order={order} updateOrderData={updateOrderData} productCatalog={productCatalog} mobile />
@@ -2473,6 +2604,8 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
         if (data.paymentUrl) {
           setCreatedPaymentUrl(data.paymentUrl);
           setCreatedShareText(buildOrderShareText({ ...orderSnapshot, orderId }, data.paymentUrl));
+          updateOrderData(orderId, 'paymentAmount', amount);
+          if (data.paymentId) updateOrderData(orderId, 'paymentId', data.paymentId);
         }
       } catch (e: any) {
         setCreatedPaymentError(e.message || 'Не удалось создать счёт');
@@ -3324,6 +3457,8 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                     if (data.paymentUrl) {
                       setCreatedPaymentUrl(data.paymentUrl);
                       setCreatedShareText(buildOrderShareText({ ...orderSnapshot, orderId }, data.paymentUrl));
+                      updateOrderData(orderId, 'paymentAmount', amount);
+                      if (data.paymentId) updateOrderData(orderId, 'paymentId', data.paymentId);
                     }
                   } catch (e: any) {
                     setCreatedPaymentError(e.message || 'Не удалось создать счёт');
