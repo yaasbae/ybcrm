@@ -514,22 +514,54 @@ const RefundBlock: React.FC<{ order: OrderData; updateOrderData: (id: string, fi
   const defaultAmount = getRefundableAmount(order);
   const [amount, setAmount] = useState(defaultAmount ? String(defaultAmount) : '');
   const [reason, setReason] = useState('Возврат по заказу');
+  const [linkedPaymentId, setLinkedPaymentId] = useState(order.paymentId || order.refundPaymentId || '');
+  const [findLoading, setFindLoading] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
-  const paymentId = order.paymentId || order.refundPaymentId || '';
+  const paymentId = linkedPaymentId || order.paymentId || order.refundPaymentId || '';
   const isReturned = String(order.status || '').toLowerCase().includes('возврат') || Boolean(order.refundStatus);
 
   useEffect(() => {
     setAmount(defaultAmount ? String(defaultAmount) : '');
   }, [defaultAmount]);
 
+  useEffect(() => {
+    setLinkedPaymentId(order.paymentId || order.refundPaymentId || '');
+  }, [order.paymentId, order.refundPaymentId]);
+
+  const findPayment = async () => {
+    setError('');
+    setSuccess('');
+    const searchAmount = Number(String(amount).replace(',', '.')) || undefined;
+    setFindLoading(true);
+    try {
+      const params = new URLSearchParams({ orderId: order.orderId });
+      if (searchAmount) params.set('amount', String(searchAmount));
+      const res = await fetch(`/api/tochka/find-payment?${params.toString()}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(getApiErrorMessage(data, 'Не удалось найти оплату в Точке'));
+      if (!data.paymentId) throw new Error('Точка не вернула operationId платежа');
+      setLinkedPaymentId(data.paymentId);
+      updateOrderData(order.orderId, 'paymentId', data.paymentId);
+      updateOrderData(order.orderId, 'paymentStatus', data.paymentStatus || 'found');
+      updateOrderData(order.orderId, 'paymentAmount', Number(data.paymentAmount) || searchAmount || defaultAmount);
+      updateOrderData(order.orderId, 'tochkaPaymentFoundAt', new Date().toISOString());
+      if (data.data) updateOrderData(order.orderId, 'tochkaPaymentData', JSON.stringify(data.data).slice(0, 2000));
+      setSuccess('Оплата найдена и привязана к заказу');
+    } catch (e: any) {
+      setError(e.message || 'Не удалось найти оплату в Точке');
+    } finally {
+      setFindLoading(false);
+    }
+  };
+
   const submitRefund = async () => {
     setError('');
     setSuccess('');
     const refundAmount = Number(String(amount).replace(',', '.'));
     if (!paymentId) {
-      setError('У заказа нет paymentId. Для старых заказов надо сначала найти операцию в Точке.');
+      setError('Сначала нажмите “Найти оплату в Точке”');
       return;
     }
     if (!Number.isFinite(refundAmount) || refundAmount <= 0) {
@@ -596,6 +628,14 @@ const RefundBlock: React.FC<{ order: OrderData; updateOrderData: (id: string, fi
         placeholder="Причина возврата"
         className="h-9 w-full rounded-lg border border-red-100 bg-white px-3 text-[11px] font-bold text-zinc-900 outline-none focus:border-red-300"
       />
+      <button
+        type="button"
+        onClick={findPayment}
+        disabled={findLoading}
+        className="w-full rounded-lg border border-zinc-200 bg-white py-2 text-[9px] font-black uppercase tracking-wider text-zinc-700 transition-all hover:bg-zinc-900 hover:text-white disabled:opacity-50"
+      >
+        {findLoading ? 'Ищем...' : paymentId ? 'Обновить оплату из Точки' : 'Найти оплату в Точке'}
+      </button>
       <button
         type="button"
         onClick={submitRefund}

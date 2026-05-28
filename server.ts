@@ -2321,19 +2321,49 @@ async function getTochkaToken(): Promise<string | null> {
 
 function normalizeTochkaList(data: any): any[] {
   const candidates = [
+    data?.Data,
+    data?.data,
     data?.Data?.payments,
     data?.Data?.operations,
+    data?.Data?.paymentOperations,
     data?.data?.payments,
     data?.data?.operations,
+    data?.data?.paymentOperations,
     data?.payments,
     data?.operations,
+    data?.paymentOperations,
     data?.result,
   ];
   return candidates.find(Array.isArray) || [];
 }
 
-async function findTochkaOperationId(token: string, customerCode: string, orderId: string, amount?: number) {
-  if (!customerCode || !orderId) return '';
+function getTochkaOperationId(operation: any) {
+  return operation?.operationId
+    || operation?.OperationId
+    || operation?.id
+    || operation?.paymentId
+    || '';
+}
+
+function getTochkaOperationStatus(operation: any) {
+  return operation?.status
+    || operation?.Status
+    || operation?.paymentStatus
+    || operation?.state
+    || '';
+}
+
+function getTochkaOperationAmount(operation: any) {
+  return operation?.amount
+    || operation?.Amount
+    || operation?.sum
+    || operation?.paymentAmount
+    || operation?.totalAmount
+    || 0;
+}
+
+async function findTochkaOperation(token: string, customerCode: string, orderId: string, amount?: number) {
+  if (!customerCode || !orderId) return null;
   const response = await axios.get(`${TOCHKA_API}/acquiring/v1.0/payments`, {
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     params: { customerCode },
@@ -2350,18 +2380,19 @@ async function findTochkaOperationId(token: string, customerCode: string, orderI
   };
   const operation = operations.find((item: any) => {
     const haystack = JSON.stringify(item || {}).toLowerCase();
-    const status = String(item?.status || item?.Status || item?.paymentStatus || '').toLowerCase();
-    const operationAmount = item?.amount || item?.Amount || item?.sum || item?.paymentAmount;
+    const status = String(getTochkaOperationStatus(item)).toLowerCase();
+    const operationAmount = getTochkaOperationAmount(item);
     return haystack.includes(cleanOrderId)
       && (!status || status.includes('approved') || status.includes('paid'))
       && isCloseAmount(operationAmount);
   }) || operations.find((item: any) => JSON.stringify(item || {}).toLowerCase().includes(cleanOrderId));
 
-  return operation?.operationId
-    || operation?.OperationId
-    || operation?.id
-    || operation?.paymentId
-    || '';
+  return operation || null;
+}
+
+async function findTochkaOperationId(token: string, customerCode: string, orderId: string, amount?: number) {
+  const operation = await findTochkaOperation(token, customerCode, orderId, amount);
+  return getTochkaOperationId(operation);
 }
 
 // Сохранить JWT токен Точки
@@ -2510,6 +2541,55 @@ app.post('/api/tochka/create-payment', async (req, res) => {
       createdAt: new Date().toISOString(),
     }).catch(() => {});
     res.status(500).json({ error: e.message, details: errData });
+  }
+});
+
+// Найти оплату в Точке по номеру заказа и привязать operationId к заказу.
+app.get('/api/tochka/find-payment', async (req, res) => {
+  const orderId = String(req.query.orderId || '').trim();
+  const amount = req.query.amount ? Number(req.query.amount) : undefined;
+  if (!orderId) return res.status(400).json({ error: 'Нужен orderId' });
+  if (!db) return res.status(503).json({ error: 'DB не подключена' });
+
+  try {
+    const token = await getTochkaToken();
+    if (!token) return res.status(400).json({ error: 'Токен Точки не настроен' });
+    const snap = await getDoc(doc(db, 'settings', 'tochka_api'));
+    const customerCode = snap?.data()?.customerCode;
+    if (!customerCode) return res.status(400).json({ error: 'customerCode Точки не настроен' });
+
+    const operation = await findTochkaOperation(token, customerCode, orderId, amount);
+    const operationId = getTochkaOperationId(operation);
+    if (!operation || !operationId) {
+      return res.status(404).json({ error: `Оплата по заказу ${orderId} в Точке не найдена` });
+    }
+
+    const paymentAmount = Number(getTochkaOperationAmount(operation)) || amount || 0;
+    const paymentStatus = getTochkaOperationStatus(operation) || 'found';
+    const paymentFields = {
+      paymentId: operationId,
+      paymentStatus,
+      paymentAmount,
+      tochkaPaymentFoundAt: new Date().toISOString(),
+      tochkaPaymentData: JSON.stringify(operation).slice(0, 2000),
+    };
+
+    await updateDoc(doc(db, 'orders', orderId), paymentFields).catch(() => {});
+    await updateDoc(doc(db, 'orders_new', orderId), paymentFields).catch(() => {});
+    await addDoc(collection(db, 'tochka_logs'), {
+      orderId,
+      paymentId: operationId,
+      amount: paymentAmount,
+      status: 'payment_found',
+      response: JSON.stringify(operation).slice(0, 1000),
+      createdAt: new Date().toISOString(),
+    }).catch(() => {});
+
+    res.json({ success: true, paymentId: operationId, paymentStatus, paymentAmount, data: operation });
+  } catch (e: any) {
+    const errData = e.response?.data;
+    console.error('[tochka] find-payment error:', errData || e.message);
+    res.status(e.response?.status || 500).json({ error: e.message, details: errData });
   }
 });
 

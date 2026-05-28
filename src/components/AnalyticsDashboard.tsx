@@ -66,6 +66,8 @@ export interface OrderData {
   refundPaymentId?: string;
   refundReason?: string;
   refundedAt?: string;
+  tochkaPaymentFoundAt?: string;
+  tochkaPaymentData?: string;
   paymentStatus?: string;
   paymentType?: string;
   invoiceType?: 'prepayment' | 'full' | 'fitting';
@@ -288,6 +290,8 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
             refundPaymentId: ['refundPaymentId'],
             refundReason: ['refundReason'],
             refundedAt: ['refundedAt'],
+            tochkaPaymentFoundAt: ['tochkaPaymentFoundAt'],
+            tochkaPaymentData: ['tochkaPaymentData'],
             paymentStatus: ['paymentStatus'],
           };
           (orderFieldMap[String(field)] || []).forEach(target => {
