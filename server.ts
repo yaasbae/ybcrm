@@ -2319,6 +2319,51 @@ async function getTochkaToken(): Promise<string | null> {
   return snap?.exists() ? snap.data().jwtToken : null;
 }
 
+function normalizeTochkaList(data: any): any[] {
+  const candidates = [
+    data?.Data?.payments,
+    data?.Data?.operations,
+    data?.data?.payments,
+    data?.data?.operations,
+    data?.payments,
+    data?.operations,
+    data?.result,
+  ];
+  return candidates.find(Array.isArray) || [];
+}
+
+async function findTochkaOperationId(token: string, customerCode: string, orderId: string, amount?: number) {
+  if (!customerCode || !orderId) return '';
+  const response = await axios.get(`${TOCHKA_API}/acquiring/v1.0/payments`, {
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    params: { customerCode },
+    timeout: 20000,
+  });
+  const operations = normalizeTochkaList(response.data);
+  const cleanOrderId = String(orderId).trim().toLowerCase();
+  const expectedAmount = Number(amount) || 0;
+  const isCloseAmount = (value: unknown) => {
+    if (!expectedAmount) return true;
+    const normalized = Number(value) || Number(String(value || '').replace(',', '.')) || 0;
+    const normalizedRub = normalized > 100000 ? normalized / 100 : normalized;
+    return Math.abs(normalizedRub - expectedAmount) < 1;
+  };
+  const operation = operations.find((item: any) => {
+    const haystack = JSON.stringify(item || {}).toLowerCase();
+    const status = String(item?.status || item?.Status || item?.paymentStatus || '').toLowerCase();
+    const operationAmount = item?.amount || item?.Amount || item?.sum || item?.paymentAmount;
+    return haystack.includes(cleanOrderId)
+      && (!status || status.includes('approved') || status.includes('paid'))
+      && isCloseAmount(operationAmount);
+  }) || operations.find((item: any) => JSON.stringify(item || {}).toLowerCase().includes(cleanOrderId));
+
+  return operation?.operationId
+    || operation?.OperationId
+    || operation?.id
+    || operation?.paymentId
+    || '';
+}
+
 // Сохранить JWT токен Точки
 app.post('/api/tochka/save-token', async (req, res) => {
   const { jwtToken, merchantId, accountId, paymentMode } = req.body;
@@ -2468,24 +2513,29 @@ app.post('/api/tochka/create-payment', async (req, res) => {
   }
 });
 
-// Возврат оплаты через Точку. Код подтверждения обязателен: возврат без ручного
-// подтверждения в CRM не отправляется в банк.
+// Возврат оплаты через Точку по operationId. Для этого метода в документации
+// Точки нет отдельного шага отправки SMS-кода: доступ контролируется токеном.
 app.post('/api/tochka/refund-payment', async (req, res) => {
-  const { orderId, operationId, amount, signatureCode, reason } = req.body || {};
+  const { orderId, operationId, amount, reason } = req.body || {};
   const refundAmount = Number(amount);
   const cleanOrderId = String(orderId || '').trim();
-  const cleanOperationId = String(operationId || '').trim();
-  const cleanSignatureCode = String(signatureCode || '').trim();
+  let cleanOperationId = String(operationId || '').trim();
 
   if (!cleanOrderId) return res.status(400).json({ error: 'Нужен orderId' });
-  if (!cleanOperationId) return res.status(400).json({ error: 'У заказа нет operationId/paymentId для возврата' });
   if (!Number.isFinite(refundAmount) || refundAmount <= 0) return res.status(400).json({ error: 'Нужна сумма возврата больше 0' });
-  if (!cleanSignatureCode) return res.status(400).json({ error: 'Нужен код подтверждения с телефона' });
   if (!db) return res.status(503).json({ error: 'DB не подключена' });
 
   try {
     const token = await getTochkaToken();
     if (!token) return res.status(400).json({ error: 'Токен Точки не настроен' });
+    const snap = await getDoc(doc(db, 'settings', 'tochka_api'));
+    const customerCode = snap?.data()?.customerCode;
+    if (!cleanOperationId) {
+      cleanOperationId = await findTochkaOperationId(token, customerCode, cleanOrderId, refundAmount);
+    }
+    if (!cleanOperationId) {
+      return res.status(400).json({ error: 'Не нашёл operationId платежа в Точке. У старого заказа нужно вручную привязать paymentId.' });
+    }
 
     console.log(`[tochka] refund start order=${cleanOrderId} operation=${cleanOperationId} amount=${refundAmount}`);
     await addDoc(collection(db, 'tochka_logs'), {
@@ -2503,18 +2553,12 @@ app.post('/api/tochka/refund-payment', async (req, res) => {
         Data: {
           amount: Math.round(refundAmount * 100) / 100,
           reason: reason || `Возврат заказа ${cleanOrderId}`,
-          signatureCode: cleanSignatureCode,
-          smsCode: cleanSignatureCode,
-          confirmationCode: cleanSignatureCode,
         },
       },
       {
         headers: {
           Authorization: `Bearer ${token}`,
           'Content-Type': 'application/json',
-          'X-Signature-Code': cleanSignatureCode,
-          'X-Confirmation-Code': cleanSignatureCode,
-          'X-SMS-Code': cleanSignatureCode,
         },
         timeout: 20000,
       }

@@ -513,7 +513,6 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
 const RefundBlock: React.FC<{ order: OrderData; updateOrderData: (id: string, field: string, value: any) => void; mobile?: boolean }> = ({ order, updateOrderData, mobile = false }) => {
   const defaultAmount = getRefundableAmount(order);
   const [amount, setAmount] = useState(defaultAmount ? String(defaultAmount) : '');
-  const [signatureCode, setSignatureCode] = useState('');
   const [reason, setReason] = useState('Возврат по заказу');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -537,10 +536,6 @@ const RefundBlock: React.FC<{ order: OrderData; updateOrderData: (id: string, fi
       setError('Введите сумму возврата');
       return;
     }
-    if (!signatureCode.trim()) {
-      setError('Введите код подтверждения с телефона');
-      return;
-    }
     if (!window.confirm(`Оформить возврат ${formatCurrency(refundAmount)} по заказу #${order.orderId}?`)) return;
 
     setLoading(true);
@@ -552,7 +547,6 @@ const RefundBlock: React.FC<{ order: OrderData; updateOrderData: (id: string, fi
           orderId: order.orderId,
           operationId: paymentId,
           amount: refundAmount,
-          signatureCode: signatureCode.trim(),
           reason,
         }),
       });
@@ -566,7 +560,6 @@ const RefundBlock: React.FC<{ order: OrderData; updateOrderData: (id: string, fi
       updateOrderData(order.orderId, 'refundReason', reason);
       updateOrderData(order.orderId, 'refundedAt', new Date().toISOString());
       setSuccess('Возврат отправлен в Точку');
-      setSignatureCode('');
     } catch (e: any) {
       setError(e.message || 'Не удалось оформить возврат');
     } finally {
@@ -580,27 +573,19 @@ const RefundBlock: React.FC<{ order: OrderData; updateOrderData: (id: string, fi
         <div>
           <p className={cn("font-black uppercase tracking-widest text-red-500", mobile ? "text-[8px]" : "text-[9px]")}>Возврат</p>
           <p className={cn("font-bold text-zinc-400", mobile ? "text-[8px]" : "text-[9px]")}>
-            {isReturned ? `Статус: ${order.refundStatus || 'возврат'}` : paymentId ? 'Нужен код подтверждения' : 'Нет paymentId'}
+            {isReturned ? `Статус: ${order.refundStatus || 'возврат'}` : paymentId ? 'Готов к отправке в Точку' : 'Нет paymentId'}
           </p>
         </div>
         {order.refundAmount ? (
           <span className={cn("font-black text-red-600", mobile ? "text-[10px]" : "text-[12px]")}>{formatCurrency(order.refundAmount)}</span>
         ) : null}
       </div>
-      <div className={cn("grid gap-2", mobile ? "grid-cols-1" : "grid-cols-2")}>
+      <div className="grid gap-2">
         <input
           type="number"
           value={amount}
           onChange={(e) => setAmount(e.target.value)}
           placeholder="Сумма возврата"
-          className="h-9 rounded-lg border border-red-100 bg-white px-3 text-[11px] font-bold text-zinc-900 outline-none focus:border-red-300"
-        />
-        <input
-          type="text"
-          inputMode="numeric"
-          value={signatureCode}
-          onChange={(e) => setSignatureCode(e.target.value.replace(/\D/g, '').slice(0, 8))}
-          placeholder="Код с телефона"
           className="h-9 rounded-lg border border-red-100 bg-white px-3 text-[11px] font-bold text-zinc-900 outline-none focus:border-red-300"
         />
       </div>
@@ -2385,10 +2370,11 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
   }, [stats?.chartData]);
 
   const totals2026 = useMemo(() => {
-    return chartData2026.reduce((acc: { orders: number; paid: number }, month: any) => ({
+    return chartData2026.reduce((acc: { orders: number; paid: number; returnsAmount: number }, month: any) => ({
       orders: acc.orders + (Number(month.orders) || 0),
       paid: acc.paid + (Number(month.paid) || 0),
-    }), { orders: 0, paid: 0 });
+      returnsAmount: acc.returnsAmount + (Number(month.returnsAmount) || 0),
+    }), { orders: 0, paid: 0, returnsAmount: 0 });
   }, [chartData2026]);
 
   const syncNewOrderItems = (items: string[], prices = newOrderItemPrices, colors = newOrderItemColors, patch: Partial<OrderData> = {}) => {
@@ -2666,6 +2652,9 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                   <p className="text-[12px] font-semibold text-zinc-400">{m.orders} заказов</p>
                   <p className="text-[15px] font-black text-emerald-600">{formatCurrency(m.paid)}</p>
                   <p className={cn("text-[15px] font-black", m.dueExtra > 0 ? "text-orange-500" : m.dueExtra < 0 ? "text-red-500" : "text-zinc-300")}>{formatCurrency(m.dueExtra)}</p>
+                  {Number(m.returnsAmount) > 0 && (
+                    <p className="text-[11px] font-black text-red-500">− {formatCurrency(m.returnsAmount)}</p>
+                  )}
                 </div>
               </div>
                 );
@@ -2676,6 +2665,9 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                 <p className="text-[12px] font-semibold text-zinc-400">{totals2026.orders} заказов</p>
                 <p className="text-[15px] font-black text-emerald-600">{formatCurrency(totals2026.paid)}</p>
                 <p className="text-[15px] font-black text-orange-500">{formatCurrency(chartData2026.reduce((sum: number, m: any) => sum + (Number(m.dueExtra) || 0), 0))}</p>
+                {totals2026.returnsAmount > 0 && (
+                  <p className="text-[11px] font-black text-red-500">− {formatCurrency(totals2026.returnsAmount)}</p>
+                )}
               </div>
             </div>
             {chartData2026.length === 0 && (

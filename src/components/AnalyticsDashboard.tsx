@@ -129,6 +129,18 @@ const addBusinessDays = (date: Date, days: number) => {
   return result;
 };
 
+const manualReturnOperations = [
+  { date: new Date(2026, 4, 27), amount: 16250, description: 'Ольга Захарова Д.' },
+  { date: new Date(2026, 4, 22), amount: 9950, description: 'Виктория Сергеевна Г.' },
+  { date: new Date(2026, 4, 15), amount: 20550, description: 'Эльвира Махмуджановна П.' },
+  { date: new Date(2026, 4, 12), amount: 6000, description: 'Екатерина Николаевна Ф.' },
+  { date: new Date(2026, 4, 12), amount: 4400, description: 'Екатерина Николаевна Ф.' },
+  { date: new Date(2026, 4, 11), amount: 15600, description: 'Светлана Николаевна Ч.' },
+  { date: new Date(2026, 4, 9), amount: 18900, description: 'Зиля Вазиховна Г.' },
+];
+
+const getManualReturnKey = (date: Date) => `${date.getFullYear()}-${date.getMonth() + 1}`;
+
 const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
   sheetId: initialSheetId,
   initialTab = 'analytics',
@@ -798,7 +810,8 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
       return (Number(o.revenue) || 0) > 0 && !status.includes('возврат') && !status.includes('отмена');
     };
     const salesOrders = uniqueOrders.filter(isSalesOrder);
-    const totalRevenue = salesOrders.reduce((acc, curr) => acc + curr.revenue, 0);
+    const manualReturnAmount = manualReturnOperations.reduce((sum, item) => sum + item.amount, 0);
+    const totalRevenue = salesOrders.reduce((acc, curr) => acc + curr.revenue, 0) - manualReturnAmount;
 
     const productMap = new Map<string, { name: string, total: number, count: number }>();
     data.forEach(row => {
@@ -837,22 +850,37 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
       if (o.source?.toLowerCase().includes('блогер')) salesByPeriod[key].bloggers.add(o.source);
     });
 
+    manualReturnOperations.forEach(operation => {
+      const key = getManualReturnKey(operation.date);
+      if (!salesByPeriod[key]) salesByPeriod[key] = {
+        revenue: 0, count: 0, returns: 0, bloggers: new Set(),
+        paidAmount: 0, salesCount: 0, dueExtra: 0, delivery: 0,
+        manualReturnsAmount: 0, manualReturnsCount: 0
+      };
+      salesByPeriod[key].returns += 1;
+      salesByPeriod[key].manualReturnsAmount = (salesByPeriod[key].manualReturnsAmount || 0) + operation.amount;
+      salesByPeriod[key].manualReturnsCount = (salesByPeriod[key].manualReturnsCount || 0) + 1;
+    });
+
     const chartData = Object.entries(salesByPeriod).map(([key, val]: any) => {
       const [year, month] = key.split('-');
       const monthNames = ['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'];
       const monthIndex = parseInt(month, 10) - 1;
       const monthName = monthNames[monthIndex] || '???';
+      const manualReturnsAmount = Number(val.manualReturnsAmount) || 0;
       return {
         period: `${monthName} ${year}`,
         shortPeriod: `${monthName.substring(0, 3)} ${year.substring(2)}`,
         monthName,
-        revenue: val.revenue,
+        revenue: val.revenue - manualReturnsAmount,
         orders: val.salesCount,
         totalOrders: val.count,
         sales: val.salesCount,
-        paid: val.paidAmount,
+        paid: val.paidAmount - manualReturnsAmount,
         dueExtra: val.dueExtra,
         returns: val.returns,
+        returnsAmount: manualReturnsAmount,
+        manualReturnsCount: Number(val.manualReturnsCount) || 0,
         bloggers: val.bloggers.size,
         year: parseInt(year, 10),
         month: parseInt(month, 10)
@@ -908,9 +936,9 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
       bloggerOrdersCount,
       bloggerRevenue,
       uniqueOrders: Array.from(ordersMap.values()),
-      returnsCount: uniqueOrders.filter(o => o.status?.toLowerCase().includes('возврат')).length,
+      returnsCount: uniqueOrders.filter(o => o.status?.toLowerCase().includes('возврат')).length + manualReturnOperations.length,
       exchangesCount: uniqueOrders.filter(o => o.status?.toLowerCase().includes('обмен')).length,
-      totalActualPayments: salesOrders.reduce((sum, o) => sum + o.paidAmount, 0),
+      totalActualPayments: salesOrders.reduce((sum, o) => sum + o.paidAmount, 0) - manualReturnAmount,
       totalDueExtraPayments: salesOrders.reduce((sum, o) => sum + Math.max(0, (o.revenue + o.deliveryPrice) - o.paidAmount), 0),
       salesCount: salesOrders.length,
       uniqueSizes,
