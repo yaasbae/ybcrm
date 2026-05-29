@@ -136,6 +136,19 @@ const addBusinessDays = (date: Date, days: number) => {
 };
 
 const manualReturnOperations = [
+  { date: new Date(2026, 0, 26), amount: 17900, description: 'Екатерина Сергеевна А.' },
+  { date: new Date(2026, 0, 26), amount: 15000, description: 'Екатерина Сергеевна А.' },
+  { date: new Date(2026, 0, 13), amount: 5900, description: 'Кристина Валерьевна О.' },
+  { date: new Date(2026, 2, 31), amount: 13550, description: 'Галия Гафуровна Н.' },
+  { date: new Date(2026, 2, 11), amount: 11250, description: 'Олеся Владимировна Н.' },
+  { date: new Date(2026, 2, 6), amount: 11900, description: 'Кристина Сергеевна А.' },
+  { date: new Date(2026, 2, 6), amount: 10000, description: 'Кристина Сергеевна А.' },
+  { date: new Date(2026, 3, 29), amount: 8450, description: 'Екатерина Владимировна К.' },
+  { date: new Date(2026, 3, 20), amount: 11900, description: 'Мария Васильевна А.' },
+  { date: new Date(2026, 3, 15), amount: 11900, description: 'Динара Рауфовна А.' },
+  { date: new Date(2026, 3, 13), amount: 10900, description: 'Наиля Рашитовна А.' },
+  { date: new Date(2026, 3, 13), amount: 10000, description: 'Наиля Рашитовна А.' },
+  { date: new Date(2026, 3, 2), amount: 17250, description: 'Нарина Минасовна В.' },
   { date: new Date(2026, 4, 27), amount: 16250, description: 'Ольга Захарова Д.' },
   { date: new Date(2026, 4, 22), amount: 9950, description: 'Виктория Сергеевна Г.' },
   { date: new Date(2026, 4, 15), amount: 20550, description: 'Эльвира Махмуджановна П.' },
