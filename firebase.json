@@ -7,10 +7,18 @@
       "**/node_modules/**"
     ],
     "rewrites": [
-      {
-        "source": "**",
-        "destination": "/index.html"
-      }
+      { "source": "/api/tochka/status",        "function": "tochkaStatus" },
+      { "source": "/api/tochka/save-token",     "function": "tochkaSaveToken" },
+      { "source": "/api/tochka/create-payment", "function": "tochkaCreatePayment" },
+      { "source": "/api/tochka/find-payment",   "function": "tochkaFindPayment" },
+      { "source": "**",                         "destination": "/index.html" }
     ]
-  }
+  },
+  "functions": [
+    {
+      "source": "functions",
+      "codebase": "default",
+      "ignore": ["node_modules", ".git", "firebase-debug.log"]
+    }
+  ]
 }
