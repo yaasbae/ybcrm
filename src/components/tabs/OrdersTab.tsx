@@ -2574,11 +2574,12 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
   }, [stats?.chartData]);
 
   const totals2026 = useMemo(() => {
-    return chartData2026.reduce((acc: { orders: number; paid: number; returnsAmount: number }, month: any) => ({
+    return chartData2026.reduce((acc: { orders: number; paid: number; dueExtra: number; returnsAmount: number }, month: any) => ({
       orders: acc.orders + (Number(month.orders) || 0),
       paid: acc.paid + (Number(month.paid) || 0),
+      dueExtra: acc.dueExtra + (Number(month.dueExtra) || 0),
       returnsAmount: acc.returnsAmount + (Number(month.returnsAmount) || 0),
-    }), { orders: 0, paid: 0, returnsAmount: 0 });
+    }), { orders: 0, paid: 0, dueExtra: 0, returnsAmount: 0 });
   }, [chartData2026]);
 
   const syncNewOrderItems = (
@@ -2884,41 +2885,91 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
           </div>
         </div>
 
+        <div className="mb-4 flex flex-wrap gap-3 text-[11px] font-bold text-zinc-400">
+          <span className="inline-flex items-center gap-2">
+            <span className="h-2 w-2 rounded-full bg-emerald-500" />
+            Оплачено
+          </span>
+          <span className="inline-flex items-center gap-2">
+            <span className="h-2 w-2 rounded-full bg-orange-500" />
+            К доплате
+          </span>
+          <span className="inline-flex items-center gap-2">
+            <span className="h-2 w-2 rounded-full bg-red-500" />
+            Возвраты
+          </span>
+          <span className="inline-flex items-center gap-2">
+            <span className="h-2 w-2 rounded-full bg-zinc-900" />
+            Чистыми
+          </span>
+        </div>
+
         <div className="overflow-x-auto">
-          <div className="flex min-w-max overflow-hidden rounded-2xl border border-zinc-100">
+          <div className="grid min-w-[980px] grid-cols-[repeat(6,minmax(0,1fr))] overflow-hidden rounded-2xl border border-zinc-100 bg-white">
             {chartData2026
               .slice()
               .sort((a: any, b: any) => a.month - b.month)
               .map((m: any, i: number) => {
                 const isActiveMonth = m.month === new Date().getMonth() + 1;
+                const paid = Number(m.paid) || 0;
+                const dueExtra = Number(m.dueExtra) || 0;
+                const returnsAmount = Number(m.returnsAmount) || 0;
+                const net = Math.max(0, paid - returnsAmount);
                 return (
               <div key={i} className={cn(
-                "flex-shrink-0 w-48 border-r border-zinc-100 bg-white p-6 transition-all last:border-r-0",
+                "min-h-[220px] border-r border-zinc-100 bg-white p-5 transition-all last:border-r-0",
                 isActiveMonth && "ring-1 ring-inset ring-zinc-900"
               )}>
-                <p className="text-[14px] font-semibold text-zinc-900">
-                  {m.monthName}
-                </p>
-                <div className="mt-4 space-y-3">
-                  <p className="text-[12px] font-semibold text-zinc-400">{m.orders} заказов</p>
-                  <p className="text-[15px] font-black text-emerald-600">{formatCurrency(m.paid)}</p>
-                  <p className={cn("text-[15px] font-black", m.dueExtra > 0 ? "text-orange-500" : m.dueExtra < 0 ? "text-red-500" : "text-zinc-300")}>{formatCurrency(m.dueExtra)}</p>
-                  {Number(m.returnsAmount) > 0 && (
-                    <p className="text-[11px] font-black text-red-500">− {formatCurrency(m.returnsAmount)}</p>
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <p className="text-[14px] font-semibold text-zinc-900">{m.monthName}</p>
+                    <p className="mt-2 text-[12px] font-semibold text-zinc-400">{m.orders} заказов</p>
+                  </div>
+                  {isActiveMonth && (
+                    <span className="rounded-full bg-zinc-950 px-2 py-1 text-[9px] font-black uppercase tracking-wider text-white">текущий</span>
                   )}
+                </div>
+                <div className="mt-5 space-y-3">
+                  <div>
+                    <p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">оплачено</p>
+                    <p className="text-[15px] font-black text-emerald-600">{formatCurrency(paid)}</p>
+                  </div>
+                  <div>
+                    <p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">к доплате</p>
+                    <p className={cn("text-[15px] font-black", dueExtra > 0 ? "text-orange-500" : "text-zinc-300")}>{formatCurrency(dueExtra)}</p>
+                  </div>
+                  <div>
+                    <p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">возвраты</p>
+                    <p className={cn("text-[13px] font-black", returnsAmount > 0 ? "text-red-500" : "text-zinc-300")}>− {formatCurrency(returnsAmount)}</p>
+                  </div>
+                  <div className="border-t border-zinc-100 pt-3">
+                    <p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">чистыми</p>
+                    <p className="text-[15px] font-black text-zinc-950">{formatCurrency(net)}</p>
+                  </div>
                 </div>
               </div>
                 );
               })}
-            <div className="flex-shrink-0 w-48 bg-white p-6">
+            <div className="min-h-[220px] bg-zinc-50/70 p-5">
               <p className="text-[14px] font-semibold text-zinc-900">За 2026 год</p>
-              <div className="mt-4 space-y-3">
-                <p className="text-[12px] font-semibold text-zinc-400">{totals2026.orders} заказов</p>
-                <p className="text-[15px] font-black text-emerald-600">{formatCurrency(totals2026.paid)}</p>
-                <p className="text-[15px] font-black text-orange-500">{formatCurrency(chartData2026.reduce((sum: number, m: any) => sum + (Number(m.dueExtra) || 0), 0))}</p>
-                {totals2026.returnsAmount > 0 && (
-                  <p className="text-[11px] font-black text-red-500">− {formatCurrency(totals2026.returnsAmount)}</p>
-                )}
+              <p className="mt-2 text-[12px] font-semibold text-zinc-400">{totals2026.orders} заказов</p>
+              <div className="mt-5 space-y-3">
+                <div>
+                  <p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">оплачено</p>
+                  <p className="text-[15px] font-black text-emerald-600">{formatCurrency(totals2026.paid)}</p>
+                </div>
+                <div>
+                  <p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">к доплате</p>
+                  <p className={cn("text-[15px] font-black", totals2026.dueExtra > 0 ? "text-orange-500" : "text-zinc-300")}>{formatCurrency(totals2026.dueExtra)}</p>
+                </div>
+                <div>
+                  <p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">возвраты</p>
+                  <p className={cn("text-[13px] font-black", totals2026.returnsAmount > 0 ? "text-red-500" : "text-zinc-300")}>− {formatCurrency(totals2026.returnsAmount)}</p>
+                </div>
+                <div className="border-t border-zinc-200 pt-3">
+                  <p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">чистыми</p>
+                  <p className="text-[15px] font-black text-zinc-950">{formatCurrency(Math.max(0, totals2026.paid - totals2026.returnsAmount))}</p>
+                </div>
               </div>
             </div>
             {chartData2026.length === 0 && (
