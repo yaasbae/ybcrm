@@ -156,32 +156,6 @@ export const HandbookPage: React.FC = () => {
             <ListSection icon={Star} iconColor="text-purple-500" title="Блогеры" items={handbookBloggers} setItems={setHandbookBloggers} saveKey="bloggers" placeholder="Блогер..." />
           </div>
 
-          <div className="pt-4 border-t border-zinc-100 flex justify-end">
-            <button
-              onClick={() => {
-                if (window.confirm('Инициализировать справочники стандартными значениями?')) {
-                  const dc = ["Лаванда свет.", "Бежевый", "Бежевый меланж", "Белый", "Брауни", "Вери Пери", "Голубой", "Голубой с молочным", "Графит", "Графит меланж", "Джинсовый", "Зеленый", "Какао", "Капучино с молочным", "Карамель", "Карибу", "Красный", "Лаванда", "Лиловый", "Меланж", "Молочный", "Пудра", "Розовый", "Розовый меланж", "Светло-розовый", "Серый", "Серый меланж", "Синий", "Темный хаки", "Фисташковый", "Хаки", "Цветной", "Черный", "Черный с белым", "Капучино", "Желтый", "Оливковый с молочным", "Барби"];
-                  const ds = ["XS", "S", "M", "L", "XL", "XXL", "OVER", "OVER 100", "OVER 200", "OVER XS/S", "OVER M/L"];
-                  const dh = ["150-155", "160-165", "170-175", "180-185"];
-                  const dcomp = ["Хлопок 100%", "Хлопок 95%, Лайкра 5%", "Лен", "Шерсть", "Футер"];
-                  const dst = DEFAULT_STATUSES;
-                  const dsrc = ["Instagram", "WhatsApp", "Telegram", "Повторный заказ", "Блогер"];
-                  const dlbl = ["Приоритет", "VIP", "Скидка", "Оптовик"];
-                  const ddel = ["СДЭК", "Почта РФ", "Курьер", "Самовывоз"];
-                  const dpay = DEFAULT_PAYMENT_TYPES;
-
-                  setHandbookColors(dc); setHandbookSizes(ds); setHandbookHeights(dh);
-                  setHandbookCompositions(dcomp); setHandbookStatuses(dst); setHandbookSources(dsrc); setHandbookLabels(dlbl); setHandbookDeliveries(ddel); setHandbookPaymentTypes(dpay);
-
-                  saveHandbook('colors', dc); saveHandbook('sizes', ds); saveHandbook('heights', dh);
-                  saveHandbook('compositions', dcomp); saveHandbook('statuses', dst); saveHandbook('sources', dsrc); saveHandbook('labels', dlbl); saveHandbook('deliveries', ddel); saveHandbook('paymentTypes', dpay);
-                }
-              }}
-              className="text-[9px] font-black uppercase tracking-widest text-blue-500 hover:text-blue-600 transition-colors bg-blue-50 px-3 py-2 rounded-lg"
-            >
-              Загрузить стандарты
-            </button>
-          </div>
         </div>
       </motion.div>
     </div>

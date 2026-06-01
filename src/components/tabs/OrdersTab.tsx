@@ -134,6 +134,11 @@ const getProductForOrder = (products: ProductCatalogItem[], itemName: string) =>
 const optionList = (items: string[], fallback: string[] = []) =>
   Array.from(new Set([...(items.length ? items : fallback)].map(item => String(item || '').trim()).filter(Boolean)));
 
+// Объединяет несколько источников (справочник, значения из заказов, дефолты) в один
+// дедуплицированный список — чтобы выпадашка не пустела, если один источник недоступен.
+const mergeOptions = (...lists: (string[] | undefined)[]) =>
+  Array.from(new Set(lists.flatMap(list => (list || []).map(item => String(item || '').trim())).filter(Boolean)));
+
 const optionsWithCurrent = (items: string[], current: string, fallback: string[] = []) => {
   const options = optionList(items, fallback);
   const value = String(current || '').trim();
@@ -2558,7 +2563,8 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
 
   const productOptions = useMemo(() => {
     const seen = new Set<string>();
-    return [...productCatalog.map(p => p.name), ...handbookProducts]
+    const fromOrders = data.flatMap(o => getOrderItems(o));
+    return [...productCatalog.map(p => p.name), ...handbookProducts, ...fromOrders]
       .filter(Boolean)
       .filter(name => {
         const key = normalizeProductName(name);
@@ -2567,7 +2573,29 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
         return true;
       })
       .sort((a, b) => a.localeCompare(b));
-  }, [productCatalog, handbookProducts]);
+  }, [productCatalog, handbookProducts, data]);
+
+  // Уникальные значения полей из уже загруженных заказов — запасной источник для
+  // выпадашек, если справочник из Firestore не подгрузился.
+  const orderFieldOptions = useMemo(() => {
+    const collect = (getter: (o: OrderData) => unknown) =>
+      Array.from(new Set(data.map(o => String(getter(o) || '').trim()).filter(Boolean)));
+    const collectArr = (getter: (o: OrderData) => unknown) =>
+      Array.from(new Set(data.flatMap(o => {
+        const v = getter(o);
+        return Array.isArray(v) ? v.map(x => String(x || '').trim()) : [String(v || '').trim()];
+      }).filter(Boolean)));
+    return {
+      managers: collect(o => o.manager),
+      bloggers: collect(o => (o as any).blogger),
+      heights: mergeOptions(collect(o => (o as any).height), collectArr(o => o.itemHeights)),
+      labels: collect(o => (o as any).label),
+      colors: collectArr(o => o.itemColors),
+      sizes: collectArr(o => o.itemSizes),
+      sources: collect(o => o.source),
+      deliveries: collect(o => o.deliveryMethod),
+    };
+  }, [data]);
 
   const chartData2026 = useMemo(() => {
     return (stats?.chartData || []).filter((d: any) => Number(d.year) === 2026);
@@ -3234,14 +3262,14 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
               </div>
 
               <div className="space-y-3">
-                {renderNewOrderSelect('Логистика', newOrder.deliveryMethod || '', handbookDeliveries.length ? handbookDeliveries : DELIVERY_OPTIONS, (v) => setNewOrder({...newOrder, deliveryMethod: v}), 'Доставка')}
+                {renderNewOrderSelect('Логистика', newOrder.deliveryMethod || '', mergeOptions(handbookDeliveries, orderFieldOptions.deliveries, DELIVERY_OPTIONS), (v) => setNewOrder({...newOrder, deliveryMethod: v}), 'Доставка')}
                 {renderNewOrderSelect(' ', newOrder.paymentType || '', INVOICE_PAYMENT_OPTIONS, updateNewOrderPaymentType, 'Предоплата 50%')}
-                {renderNewOrderSelect(' ', newOrder.source || '', handbookSources.length ? handbookSources : SOURCE_OPTIONS, (v) => setNewOrder({...newOrder, source: v}), 'Источник')}
+                {renderNewOrderSelect(' ', newOrder.source || '', mergeOptions(handbookSources, orderFieldOptions.sources, SOURCE_OPTIONS), (v) => setNewOrder({...newOrder, source: v}), 'Источник')}
               </div>
 
               <div className="space-y-3">
-                {renderNewOrderSelect('Менеджмент', newOrder.manager || '', handbookManagers, (v) => setNewOrder({...newOrder, manager: v}), 'Менеджер')}
-                {renderNewOrderSelect(' ', newOrder.blogger || '', handbookBloggers, (v) => setNewOrder({...newOrder, blogger: v}), 'Блогер')}
+                {renderNewOrderSelect('Менеджмент', newOrder.manager || '', mergeOptions(handbookManagers, orderFieldOptions.managers), (v) => setNewOrder({...newOrder, manager: v}), 'Менеджер')}
+                {renderNewOrderSelect(' ', newOrder.blogger || '', mergeOptions(handbookBloggers, orderFieldOptions.bloggers), (v) => setNewOrder({...newOrder, blogger: v}), 'Блогер')}
               </div>
             </div>
           </section>
@@ -3269,9 +3297,9 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                       className={newOrderFieldClass}
                     />
                   </label>
-                  {renderNewOrderSelect('Цвет', newOrderItemColors[index] || '', handbookColors, (v) => updateNewOrderItemColor(index, v), 'Цвет')}
-                  {renderNewOrderSelect('Размер', newOrderItemSizes[index] || '', handbookSizes, (v) => updateNewOrderItemSize(index, v), 'Размер')}
-                  {renderNewOrderSelect('Рост', newOrderItemHeights[index] || '', handbookHeights, (v) => updateNewOrderItemHeight(index, v), 'Рост')}
+                  {renderNewOrderSelect('Цвет', newOrderItemColors[index] || '', mergeOptions(handbookColors, stats?.uniqueColors, orderFieldOptions.colors), (v) => updateNewOrderItemColor(index, v), 'Цвет')}
+                  {renderNewOrderSelect('Размер', newOrderItemSizes[index] || '', mergeOptions(handbookSizes, stats?.uniqueSizes, orderFieldOptions.sizes), (v) => updateNewOrderItemSize(index, v), 'Размер')}
+                  {renderNewOrderSelect('Рост', newOrderItemHeights[index] || '', mergeOptions(handbookHeights, orderFieldOptions.heights), (v) => updateNewOrderItemHeight(index, v), 'Рост')}
                   <label className="block">
                     <span className={newOrderLabelClass}>Цена</span>
                     <span className="relative block">
@@ -3310,7 +3338,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                 </div>
               ))}
               <div className="grid gap-3 lg:grid-cols-1">
-                {renderNewOrderSelect('Метка', newOrder.label || '', handbookLabels, (v) => setNewOrder({...newOrder, label: v}), 'Метка')}
+                {renderNewOrderSelect('Метка', newOrder.label || '', mergeOptions(handbookLabels, orderFieldOptions.labels), (v) => setNewOrder({...newOrder, label: v}), 'Метка')}
               </div>
             </div>
           </section>
