@@ -587,18 +587,26 @@ export default function UnitCalculator({ onNavigateToAnalytics, onBack }: UnitCa
                             { id: 'eyelets', label: 'Люверсы' },
                             { id: 'fixators', label: 'Фиксаторы' },
                             { id: 'application', label: 'Нанесение' },
-                            { id: 'waistElastic', label: 'Резинка пояс' },
+                            { id: 'waistElastic', label: 'Резинка пояс', unit: 'м' },
                             { id: 'embroidery', label: 'Вышивка' },
-                            { id: 'hatElastic', label: 'Резинка шляпная' }
+                            { id: 'hatElastic', label: 'Резинка шляпная', unit: 'м' }
                           ].map(field => (
                             <div key={field.id} className="flex items-center justify-between gap-4">
                               <Label className="text-[9px] uppercase text-zinc-500 font-semibold">{field.label}</Label>
-                              <Input 
-                                type="number"
-                                value={Number.isNaN(selectedProduct.accessories?.[field.id as keyof typeof selectedProduct.accessories]) ? "" : selectedProduct.accessories?.[field.id as keyof typeof selectedProduct.accessories] ?? ""}
-                                onChange={e => updateNestedField('accessories', field.id, Number(e.target.value))}
-                                className="w-20 h-7 text-[11px] bg-zinc-50 border-none"
-                              />
+                              <div className="relative">
+                                <Input 
+                                  type="number"
+                                  step={field.unit === 'м' ? '0.01' : undefined}
+                                  value={Number.isNaN(selectedProduct.accessories?.[field.id as keyof typeof selectedProduct.accessories]) ? "" : selectedProduct.accessories?.[field.id as keyof typeof selectedProduct.accessories] ?? ""}
+                                  onChange={e => updateNestedField('accessories', field.id, Number(e.target.value))}
+                                  className={cn("w-20 h-7 text-[11px] bg-zinc-50 border-none", field.unit && "pr-6")}
+                                />
+                                {field.unit && (
+                                  <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[9px] font-semibold text-zinc-400 pointer-events-none">
+                                    {field.unit}
+                                  </span>
+                                )}
+                              </div>
                             </div>
                           ))}
                         </CardContent>
@@ -1314,4 +1322,3 @@ export default function UnitCalculator({ onNavigateToAnalytics, onBack }: UnitCa
     </div>
   );
 }
-

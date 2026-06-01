@@ -2900,7 +2900,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
           </span>
           <span className="inline-flex items-center gap-2">
             <span className="h-2 w-2 rounded-full bg-zinc-900" />
-            Чистыми
+            После возвратов
           </span>
         </div>
 
@@ -2943,7 +2943,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                     <p className={cn("text-[13px] font-black", returnsAmount > 0 ? "text-red-500" : "text-zinc-300")}>− {formatCurrency(returnsAmount)}</p>
                   </div>
                   <div className="border-t border-zinc-100 pt-3">
-                    <p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">чистыми</p>
+                    <p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">после возвратов</p>
                     <p className="text-[15px] font-black text-zinc-950">{formatCurrency(net)}</p>
                   </div>
                 </div>
@@ -2967,7 +2967,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                   <p className={cn("text-[13px] font-black", totals2026.returnsAmount > 0 ? "text-red-500" : "text-zinc-300")}>− {formatCurrency(totals2026.returnsAmount)}</p>
                 </div>
                 <div className="border-t border-zinc-200 pt-3">
-                  <p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">чистыми</p>
+                  <p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">после возвратов</p>
                   <p className="text-[15px] font-black text-zinc-950">{formatCurrency(Math.max(0, totals2026.paid - totals2026.returnsAmount))}</p>
                 </div>
               </div>

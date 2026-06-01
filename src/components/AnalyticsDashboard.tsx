@@ -242,7 +242,11 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
         if (d.paymentTypes) setHandbookPaymentTypes(d.paymentTypes);
         if (d.managers) setHandbookManagers(d.managers);
         if (d.bloggers) setHandbookBloggers(d.bloggers);
+      } else {
+        console.warn('[handbook] Документ settings/handbook не найден — выпадающие списки будут пустыми');
       }
+    }, (error) => {
+      console.error('[handbook] Не удалось прочитать справочник settings/handbook:', error);
     });
 
     return () => unsub();
@@ -659,9 +663,10 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
       setError(null);
       setSheetWarning(null);
     } catch (err: any) {
-      console.error(err);
+      console.error('[sheet] Не удалось загрузить/разобрать Google-таблицу:', err);
       setError(null);
-      setSheetWarning("Google-таблица сейчас не загрузилась. Старые данные оставлены на экране, попробуй обновить еще раз.");
+      const reason = err?.message ? ` (${err.message})` : '';
+      setSheetWarning(`Google-таблица сейчас не загрузилась${reason}. Старые данные оставлены на экране, попробуй обновить еще раз.`);
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -700,6 +705,8 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
         } as OrderData);
       });
       setFirebaseOrders(fbOrders);
+    }, (error) => {
+      console.error('[orders_new] Не удалось прочитать заказы из Firestore:', error);
     });
     return () => unsub();
   }, []);
