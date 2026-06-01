@@ -24,9 +24,11 @@ export const HandbookPage: React.FC = () => {
   const [handbookPaymentTypes, setHandbookPaymentTypes] = useState<string[]>(DEFAULT_PAYMENT_TYPES);
   const [handbookManagers, setHandbookManagers] = useState<string[]>([]);
   const [handbookBloggers, setHandbookBloggers] = useState<string[]>([]);
+  const [saveError, setSaveError] = useState('');
 
   useEffect(() => {
     const unsub = onSnapshot(doc(db, 'settings', 'handbook'), (snap) => {
+      setSaveError('');
       if (snap.exists()) {
         const d = snap.data();
         if (d.productNames) setHandbookProducts(d.productNames);
@@ -42,6 +44,9 @@ export const HandbookPage: React.FC = () => {
         if (d.managers) setHandbookManagers(d.managers);
         if (d.bloggers) setHandbookBloggers(d.bloggers);
       }
+    }, (error) => {
+      console.error(error);
+      setSaveError('Не удалось загрузить справочник. Проверьте вход в CRM.');
     });
     return () => unsub();
   }, []);
@@ -49,8 +54,10 @@ export const HandbookPage: React.FC = () => {
   const saveHandbook = async (key: string, list: string[]) => {
     try {
       await setDoc(doc(db, 'settings', 'handbook'), { [key]: list }, { merge: true });
+      setSaveError('');
     } catch (err) {
       console.error(err);
+      setSaveError('Справочник не сохранился. Проверьте, что вы вошли в CRM.');
     }
   };
 
@@ -139,6 +146,11 @@ export const HandbookPage: React.FC = () => {
             <p className="text-[8px] font-bold text-zinc-400 uppercase tracking-widest">Номенклатура, Цвета, Размеры, Рост, Состав, Источники, Метки, Доставка, Оплата</p>
           </div>
         </div>
+        {saveError && (
+          <div className="border-b border-red-100 bg-red-50 px-4 py-3 text-[11px] font-bold text-red-600">
+            {saveError}
+          </div>
+        )}
 
         <div className="p-4 overflow-x-auto bg-zinc-50/30">
           <div className="flex gap-6 min-w-max pb-4">

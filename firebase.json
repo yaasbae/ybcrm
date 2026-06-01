@@ -1,4 +1,8 @@
 {
+  "firestore": {
+    "database": "production",
+    "rules": "firestore.rules"
+  },
   "hosting": {
     "public": "dist",
     "ignore": [

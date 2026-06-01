@@ -43,7 +43,13 @@ service cloud.firestore {
       allow read, write: if isAuthenticated();
     }
 
-    // Settings collection
+    // Handbook must be editable from the CRM UI by signed-in staff.
+    match /settings/handbook {
+      allow read: if true;
+      allow write: if isAuthenticated();
+    }
+
+    // Other settings stay admin-only because they may contain integration config.
     match /settings/{document=**} {
       allow read: if true;
       allow write: if isAdmin();

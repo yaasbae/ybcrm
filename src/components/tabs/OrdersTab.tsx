@@ -64,6 +64,8 @@ const CDEK_TARIFFS = [
 
 const normalizeProductName = (value: string) => value.trim().toLowerCase();
 const shortCdekId = (value: string) => value ? `${value.slice(0, 8)}...${value.slice(-4)}` : '';
+const getContactName = (contact: any) => String(contact?.fullName || contact?.name || contact?.clientName || '').trim();
+const getContactPhone = (contact: any) => String(contact?.phone || contact?.userId || contact?.clientPhone || '').replace(/[^0-9]/g, '');
 
 const addBusinessDays = (date: Date, days: number) => {
   const result = new Date(date);
@@ -2515,24 +2517,34 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
   }, []);
 
   useEffect(() => {
-    getDocs(query(collection(db, 'contacts'), orderBy('totalSpent', 'desc')))
-      .then(snap => setContacts(snap.docs.map(d => d.data())))
-      .catch(() => {});
+    getDocs(collection(db, 'contacts'))
+      .then(snap => {
+        const loadedContacts = snap.docs
+          .map(d => ({ id: d.id, ...d.data() }))
+          .sort((a: any, b: any) => (Number(b.totalSpent) || 0) - (Number(a.totalSpent) || 0));
+        setContacts(loadedContacts);
+      })
+      .catch(error => {
+        console.error('Не удалось загрузить клиентов для заказа:', error);
+        setContacts([]);
+      });
   }, []);
 
   const clientSuggestions = useMemo(() => {
     if (!clientQuery || clientQuery.length < 2) return [];
     const q = clientQuery.toLowerCase();
+    const digits = clientQuery.replace(/[^0-9]/g, '');
     return contacts.filter(c =>
-      (c.fullName || '').toLowerCase().includes(q) ||
-      (c.phone || '').includes(q)
+      getContactName(c).toLowerCase().includes(q) ||
+      (digits.length >= 2 && getContactPhone(c).includes(digits))
     ).slice(0, 8);
   }, [contacts, clientQuery]);
 
   const phoneSuggestions = useMemo(() => {
     if (!phoneQuery || phoneQuery.length < 2) return [];
+    const digits = phoneQuery.replace(/[^0-9]/g, '');
     return contacts.filter(c =>
-      (c.phone || '').includes(phoneQuery)
+      getContactPhone(c).includes(digits)
     ).slice(0, 8);
   }, [contacts, phoneQuery]);
 
@@ -2550,13 +2562,15 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
   }, []);
 
   const selectClient = (client: any) => {
+    const contactName = getContactName(client);
+    const contactPhone = getContactPhone(client);
     setNewOrder({
       ...newOrder,
-      clientName: client.fullName || client.name || '',
-      clientPhone: client.phone || '',
+      clientName: contactName,
+      clientPhone: contactPhone,
     });
-    setClientQuery(client.fullName || client.name || '');
-    setPhoneQuery(client.phone || '');
+    setClientQuery(contactName);
+    setPhoneQuery(contactPhone);
     setShowSuggestions(false);
     setShowPhoneSuggestions(false);
   };
@@ -3185,8 +3199,8 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                             >
                               <UserCircle size={14} className="shrink-0 text-zinc-300" />
                               <div className="min-w-0">
-                                <p className="truncate text-[11px] font-bold text-zinc-900">{client.fullName || client.name}</p>
-                                <p className="text-[9px] font-mono text-zinc-400">+{client.phone}</p>
+                                <p className="truncate text-[11px] font-bold text-zinc-900">{getContactName(client)}</p>
+                                <p className="text-[9px] font-mono text-zinc-400">+{getContactPhone(client)}</p>
                               </div>
                             </button>
                           ))}
@@ -3226,8 +3240,8 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                             >
                               <UserCircle size={14} className="shrink-0 text-zinc-300" />
                               <div className="min-w-0">
-                                <p className="truncate text-[11px] font-bold text-zinc-900">{client.fullName || client.name}</p>
-                                <p className="text-[9px] font-mono text-zinc-400">+{client.phone}</p>
+                                <p className="truncate text-[11px] font-bold text-zinc-900">{getContactName(client)}</p>
+                                <p className="text-[9px] font-mono text-zinc-400">+{getContactPhone(client)}</p>
                               </div>
                             </button>
                           ))}
@@ -3445,8 +3459,8 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                         >
                           <UserCircle size={14} className="text-zinc-300 shrink-0" />
                           <div className="min-w-0">
-                            <p className="text-[11px] font-bold text-zinc-900 truncate">{client.fullName || client.name}</p>
-                            <p className="text-[9px] text-zinc-400 font-mono">+{client.phone}</p>
+                            <p className="text-[11px] font-bold text-zinc-900 truncate">{getContactName(client)}</p>
+                            <p className="text-[9px] text-zinc-400 font-mono">+{getContactPhone(client)}</p>
                           </div>
                         </button>
                       ))}
@@ -3486,8 +3500,8 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                           >
                             <UserCircle size={14} className="text-zinc-300 shrink-0" />
                             <div className="min-w-0">
-                              <p className="text-[11px] font-bold text-zinc-900 truncate">{client.fullName || client.name}</p>
-                              <p className="text-[9px] text-zinc-400 font-mono">+{client.phone}</p>
+                              <p className="text-[11px] font-bold text-zinc-900 truncate">{getContactName(client)}</p>
+                              <p className="text-[9px] text-zinc-400 font-mono">+{getContactPhone(client)}</p>
                             </div>
                           </button>
                         ))}
