@@ -881,7 +881,7 @@ const CdekOrderBlock: React.FC<{
   };
 
   const inputClass = mobile
-    ? 'w-full min-h-[40px] rounded-lg border border-zinc-100 bg-white px-3 py-2 text-[13px] font-bold text-zinc-700 outline-none focus:border-blue-200'
+    ? 'w-full min-w-0 min-h-[38px] rounded-lg border border-zinc-100 bg-white px-2.5 py-2 text-[12px] font-bold text-zinc-700 outline-none focus:border-blue-200'
     : 'w-full h-10 rounded-lg border border-zinc-100 bg-white px-3 text-[13px] font-bold text-zinc-700 outline-none focus:border-blue-200';
 
   return (
@@ -1880,14 +1880,14 @@ const OrderCard = React.memo(({
     }));
   };
 
-  const mobileInputClass = "h-11 w-full rounded-xl border border-zinc-100 bg-white px-3 text-[13px] font-bold text-zinc-900 outline-none focus:border-blue-300";
+  const mobileInputClass = "h-10 min-w-0 w-full rounded-xl border border-zinc-100 bg-white px-3 text-[12px] font-bold text-zinc-900 outline-none focus:border-blue-300";
   const mobileSelect = (label: string, value: string, options: string[], onChange: (value: string) => void) => (
-    <label className="space-y-1">
+    <label className="min-w-0 space-y-1">
       <span className="block text-[8px] font-black uppercase tracking-widest text-zinc-400">{label}</span>
       <select
         value={value || ''}
         onChange={(e) => onChange(e.target.value)}
-        className={cn(mobileInputClass, "appearance-none text-zinc-800")}
+        className={cn(mobileInputClass, "appearance-none truncate text-zinc-800")}
       >
         <option value="">—</option>
         {options.map(opt => <option key={opt} value={opt}>{opt}</option>)}
@@ -2100,36 +2100,31 @@ const OrderCard = React.memo(({
       </div>
 
       {/* Product Details Mobile */}
-      <div className="rounded-xl border border-zinc-100 p-3 space-y-2">
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2 mb-1">
-              <ShoppingBag className="w-3 h-3 text-blue-500 shrink-0" />
-              <span className="text-[8px] font-black text-zinc-400 uppercase tracking-widest">Модель</span>
-            </div>
-            <div className="space-y-2">
+      <div className="rounded-xl border border-zinc-100 p-3 space-y-3">
+        <div className="flex items-center gap-2">
+          <ShoppingBag className="w-3 h-3 text-blue-500 shrink-0" />
+          <span className="text-[8px] font-black text-zinc-400 uppercase tracking-widest">Модель</span>
+        </div>
+        <div className="flex items-center justify-between rounded-xl border border-zinc-100 bg-zinc-50/70 px-3 py-2">
+          <p className="text-[8px] font-black text-zinc-400 uppercase tracking-widest">Стоимость 100%</p>
+          <p className="text-[13px] font-black text-zinc-900">{formatCurrency(liveRevenue)}</p>
+        </div>
+        <div className="space-y-2">
               {editItems.map((item, index) => (
-                <div key={index} className="grid gap-1.5 rounded-xl border border-zinc-50 p-2">
-                  <div className="grid grid-cols-[minmax(0,1fr)_82px_32px] gap-1.5">
+                <div key={index} className="grid gap-2 rounded-xl border border-zinc-100 p-2.5">
+                  <div className="grid grid-cols-[minmax(0,1fr)_38px] gap-2">
                     <input
                       value={item}
                       list="product-list"
                       onChange={(e) => applyMobileProduct(e.target.value, index)}
                       placeholder={index === 0 ? 'Наименование' : `Позиция ${index + 1}`}
-                      className={cn(mobileInputClass, "h-10 text-[12px]")}
-                    />
-                    <input
-                      type="number"
-                      value={editItemPrices[index] || ''}
-                      onChange={(e) => updateMobileItemPrice(index, parseFloat(e.target.value) || 0)}
-                      placeholder="Цена"
-                      className={cn(mobileInputClass, "h-10 px-2 text-right text-[12px]")}
+                      className={cn(mobileInputClass, "text-[12px]")}
                     />
                     <button
                       type="button"
                       onClick={() => editItems.length > 1 ? removeMobileItem(index) : addMobileItem()}
                       className={cn(
-                        "grid h-10 w-8 place-items-center rounded-xl border text-zinc-500",
+                        "grid h-10 w-10 place-items-center rounded-xl border text-zinc-500",
                         editItems.length > 1 ? "border-red-100 bg-red-50 text-red-500" : "border-zinc-100 bg-white"
                       )}
                       title={editItems.length > 1 ? 'Удалить позицию' : 'Добавить позицию'}
@@ -2137,6 +2132,13 @@ const OrderCard = React.memo(({
                       {editItems.length > 1 ? <X className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
                     </button>
                   </div>
+                  <input
+                    type="number"
+                    value={editItemPrices[index] || ''}
+                    onChange={(e) => updateMobileItemPrice(index, parseFloat(e.target.value) || 0)}
+                    placeholder="Цена позиции"
+                    className={cn(mobileInputClass, "text-right text-[12px]")}
+                  />
                   <div className="grid grid-cols-3 gap-1.5">
                     <select
                       value={editItemColors[index] || ''}
@@ -2183,12 +2185,6 @@ const OrderCard = React.memo(({
                   <Plus className="h-3 w-3" /> Добавить позицию
                 </button>
               )}
-            </div>
-          </div>
-          <div className="text-right shrink-0">
-            <p className="text-[8px] font-black text-zinc-400 uppercase tracking-widest">Стоимость 100%</p>
-            <p className="text-[13px] font-black text-zinc-900">{formatCurrency(liveRevenue)}</p>
-          </div>
         </div>
         <div className="grid grid-cols-2 gap-2">
           {mobileSelect('Статус', order.status || '', optionsWithCurrent(handbookStatuses, order.status, STATUS_OPTIONS), (v) => updateOrderData(order.orderId, 'status', v))}
@@ -2206,7 +2202,7 @@ const OrderCard = React.memo(({
 
       {/* Finance Mobile */}
       <div className="grid grid-cols-3 gap-2">
-        <div className="rounded-xl bg-zinc-50 border border-zinc-100 p-2">
+        <div className="min-w-0 rounded-xl bg-zinc-50 border border-zinc-100 p-2">
           <p className="text-[7px] font-black text-zinc-400 uppercase tracking-tight">Доставка</p>
           <input
             type="number"
@@ -2217,25 +2213,25 @@ const OrderCard = React.memo(({
           />
         </div>
         <div className={cn(
-          "rounded-xl border p-2",
+          "min-w-0 rounded-xl border p-2",
           invoiceType === 'full' ? "bg-emerald-50 border-emerald-100" : "bg-orange-50 border-orange-100"
         )}>
           <p className={cn(
-            "text-[7px] font-black uppercase tracking-tight",
+            "truncate text-[7px] font-black uppercase tracking-tight",
             invoiceType === 'full' ? "text-emerald-500" : "text-orange-500"
           )}>{invoiceLabel}</p>
-          <p className={cn("text-[10px] font-black", invoiceTone)}>{formatCurrency(liveInvoiceAmount)}</p>
+          <p className={cn("truncate text-[10px] font-black", invoiceTone)}>{formatCurrency(liveInvoiceAmount)}</p>
         </div>
-        <div className="rounded-xl bg-blue-50 border border-blue-100 p-2">
+        <div className="min-w-0 rounded-xl bg-blue-50 border border-blue-100 p-2">
           <p className="text-[7px] font-black text-blue-500 uppercase tracking-tight">К оплате</p>
-          <p className="text-[10px] font-black text-blue-700">{formatCurrency(dueAmount)}</p>
+          <p className="truncate text-[10px] font-black text-blue-700">{formatCurrency(dueAmount)}</p>
         </div>
       </div>
 
       {/* Payment Mobile */}
       <div className="rounded-xl border border-violet-100 bg-violet-50/40 p-2.5 space-y-2">
         <div className="flex items-center justify-between gap-2">
-          <div>
+          <div className="flex items-center gap-2">
             <p className="text-[8px] font-black text-violet-500 uppercase tracking-widest">СБП оплата</p>
             <p className={cn("text-[8px] font-bold", mainPaymentPaid ? "text-emerald-600" : "text-zinc-400")}>{mainPaymentStatusText}</p>
           </div>
@@ -2250,23 +2246,24 @@ const OrderCard = React.memo(({
             </a>
           )}
         </div>
-        <button
-          onClick={() => refreshMobilePayment('main')}
-          disabled={mobilePaymentRefreshing}
-          className="w-full py-2 rounded-lg bg-white border border-violet-100 text-[8px] font-black text-violet-600 uppercase flex items-center justify-center gap-1.5 disabled:opacity-60"
-        >
-          <RefreshCcw size={10} className={mobilePaymentRefreshing ? 'animate-spin' : ''} />
-          Проверить оплату
-        </button>
-
         {paymentUrl ? (
           <div className="space-y-2">
-            <button
-              onClick={() => shareOrder(shareText, paymentUrl).catch(() => navigator.clipboard.writeText(shareText))}
-              className="w-full py-2 rounded-lg bg-violet-600 border border-violet-600 text-[8px] font-black text-white uppercase flex items-center justify-center gap-1.5"
-            >
-              <Send size={10} /> Поделиться
-            </button>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                onClick={() => refreshMobilePayment('main')}
+                disabled={mobilePaymentRefreshing}
+                className="py-2 rounded-lg bg-white border border-violet-100 text-[8px] font-black text-violet-600 uppercase flex items-center justify-center gap-1.5 disabled:opacity-60"
+              >
+                <RefreshCcw size={10} className={mobilePaymentRefreshing ? 'animate-spin' : ''} />
+                Проверить
+              </button>
+              <button
+                onClick={() => shareOrder(shareText, paymentUrl).catch(() => navigator.clipboard.writeText(shareText))}
+                className="py-2 rounded-lg bg-violet-600 border border-violet-600 text-[8px] font-black text-white uppercase flex items-center justify-center gap-1.5"
+              >
+                <Send size={10} /> Поделиться
+              </button>
+            </div>
             <button
               onClick={() => setShowMobileQr(v => !v)}
               className="w-full py-2 rounded-lg bg-white border border-violet-100 text-[8px] font-black text-violet-600 uppercase"
@@ -2303,29 +2300,39 @@ const OrderCard = React.memo(({
           </div>
         )}
         {showFinalPayment && (
-          <div className="border-t border-violet-100 pt-2">
+          <div className="space-y-2 border-t border-violet-100 pt-2">
             <div className={cn(
-              "mb-2 rounded-lg border px-2 py-1.5 text-[8px] font-black uppercase tracking-wider",
-              finalPaymentPaid ? "border-emerald-200 bg-emerald-50 text-emerald-600" : "border-orange-200 bg-orange-50 text-orange-600"
+              "flex items-center justify-between rounded-lg border px-2.5 py-2",
+              finalPaymentPaid ? "border-emerald-200 bg-emerald-50" : "border-orange-200 bg-orange-50"
             )}>
-              {finalPaymentStatusText}
+              <div className="min-w-0">
+                <p className={cn(
+                  "truncate text-[8px] font-black uppercase tracking-wider",
+                  finalPaymentPaid ? "text-emerald-600" : "text-orange-600"
+                )}>
+                  {finalPaymentStatusText}
+                </p>
+                <p className="mt-0.5 text-[8px] font-bold text-zinc-400">остаток {formatCurrency(finalPaymentAmount)}</p>
+              </div>
             </div>
-            <button
-              onClick={() => refreshMobilePayment('final')}
-              disabled={mobileFinalPaymentRefreshing}
-              className="mb-2 w-full py-2 rounded-lg bg-white border border-orange-100 text-[8px] font-black text-orange-600 uppercase flex items-center justify-center gap-1.5 disabled:opacity-60"
-            >
-              <RefreshCcw size={10} className={mobileFinalPaymentRefreshing ? 'animate-spin' : ''} />
-              Проверить доплату
-            </button>
             {mobileFinalPaymentUrl ? (
               <div className="space-y-2">
-                <button
-                  onClick={() => shareOrder(finalShareText, mobileFinalPaymentUrl).catch(() => navigator.clipboard.writeText(finalShareText))}
-                  className="w-full py-2 rounded-lg bg-orange-500 border border-orange-500 text-[8px] font-black text-white uppercase flex items-center justify-center gap-1.5"
-                >
-                  <Send size={10} /> Доплата {formatCurrency(finalPaymentAmount)}
-                </button>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    onClick={() => refreshMobilePayment('final')}
+                    disabled={mobileFinalPaymentRefreshing}
+                    className="py-2 rounded-lg bg-white border border-orange-100 text-[8px] font-black text-orange-600 uppercase flex items-center justify-center gap-1.5 disabled:opacity-60"
+                  >
+                    <RefreshCcw size={10} className={mobileFinalPaymentRefreshing ? 'animate-spin' : ''} />
+                    Проверить
+                  </button>
+                  <button
+                    onClick={() => shareOrder(finalShareText, mobileFinalPaymentUrl).catch(() => navigator.clipboard.writeText(finalShareText))}
+                    className="py-2 rounded-lg bg-orange-500 border border-orange-500 text-[8px] font-black text-white uppercase flex items-center justify-center gap-1.5"
+                  >
+                    <Send size={10} /> Доплата
+                  </button>
+                </div>
                 <button
                   onClick={() => setShowMobileFinalQr(v => !v)}
                   className="w-full py-2 rounded-lg bg-white border border-orange-100 text-[8px] font-black text-orange-600 uppercase"
@@ -2746,9 +2753,9 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
     });
   };
 
-  const newOrderFieldClass = "h-12 w-full rounded-lg border border-zinc-200 bg-white px-4 text-[13px] font-bold text-zinc-900 shadow-[0_10px_24px_rgba(15,23,42,0.03)] outline-none transition-all placeholder:text-zinc-400 focus:border-zinc-400 focus:bg-white focus:ring-2 focus:ring-zinc-500/10";
+  const newOrderFieldClass = "h-11 min-w-0 w-full rounded-lg border border-zinc-200 bg-white px-3 text-[12px] font-bold text-zinc-900 shadow-[0_10px_24px_rgba(15,23,42,0.03)] outline-none transition-all placeholder:text-zinc-400 focus:border-zinc-400 focus:bg-white focus:ring-2 focus:ring-zinc-500/10 sm:h-12 sm:px-4 sm:text-[13px]";
   const newOrderSelectClass = cn(newOrderFieldClass, "appearance-none cursor-pointer pr-10");
-  const newOrderLabelClass = "mb-2 flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.16em] text-zinc-400";
+  const newOrderLabelClass = "mb-2 flex min-w-0 items-center gap-2 text-[9px] font-black uppercase tracking-[0.14em] text-zinc-400 sm:text-[10px] sm:tracking-[0.16em]";
   const renderNewOrderSelect = (
     label: string,
     value: string,
@@ -3121,52 +3128,49 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
       </div>
 
       {/* New Order Form Block */}
-      <div className="rounded-2xl border border-zinc-200 bg-white p-5 text-zinc-900 shadow-[0_18px_45px_rgba(15,23,42,0.04)] sm:p-7">
-        <div className="mb-6 flex items-center gap-4">
-          <div className="grid h-14 w-14 place-items-center rounded-xl bg-zinc-900 shadow-[0_18px_30px_rgba(15,23,42,0.18)]">
-            <Plus className="h-7 w-7 text-white" />
+      <div className="overflow-hidden rounded-2xl border border-zinc-200 bg-white p-4 text-zinc-900 shadow-[0_18px_45px_rgba(15,23,42,0.04)] sm:p-7">
+        <div className="mb-6 flex min-w-0 items-center gap-3 sm:gap-4">
+          <div className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-zinc-900 shadow-[0_18px_30px_rgba(15,23,42,0.18)] sm:h-14 sm:w-14">
+            <Plus className="h-5 w-5 text-white sm:h-7 sm:w-7" />
           </div>
-          <div>
-            <h3 className="text-[19px] font-black uppercase leading-none tracking-[0.22em]">Новый заказ</h3>
-            <p className="mt-2 text-[10px] font-black uppercase tracking-[0.18em] text-zinc-400">Добавить запись в список</p>
+          <div className="min-w-0">
+            <h3 className="text-[15px] font-black uppercase leading-tight tracking-[0.18em] sm:text-[19px] sm:leading-none sm:tracking-[0.22em]">Новый заказ</h3>
+            <p className="mt-1 text-[8px] font-black uppercase tracking-[0.14em] text-zinc-400 sm:mt-2 sm:text-[10px] sm:tracking-[0.18em]">Добавить запись в список</p>
           </div>
         </div>
 
         <div className="space-y-4">
-          <section className="rounded-xl border border-zinc-200 bg-white p-4 sm:p-6">
-            <div className="mb-5 flex items-center gap-4">
-              <div className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-violet-100 text-[17px] font-black text-violet-900">1</div>
-              <div>
-                <h4 className="text-[15px] font-black uppercase tracking-[0.22em] text-zinc-950">Клиент и заказ</h4>
-                <p className="mt-1 text-[11px] font-semibold text-zinc-400">Основная информация о клиенте и заказе</p>
+          <section className="overflow-hidden rounded-xl border border-zinc-200 bg-white p-3 sm:p-6">
+            <div className="mb-5 flex min-w-0 items-center gap-3 sm:gap-4">
+              <div className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-violet-100 text-[15px] font-black text-violet-900 sm:h-10 sm:w-10 sm:text-[17px]">1</div>
+              <div className="min-w-0">
+                <h4 className="text-[13px] font-black uppercase tracking-[0.18em] text-zinc-950 sm:text-[15px] sm:tracking-[0.22em]">Клиент и заказ</h4>
+                <p className="mt-1 text-[10px] font-semibold text-zinc-400 sm:text-[11px]">Основная информация о клиенте и заказе</p>
               </div>
             </div>
-            <div className="grid gap-5 lg:grid-cols-4">
-              <div>
+            <div className="grid min-w-0 gap-4 sm:gap-5 lg:grid-cols-4">
+              <div className="min-w-0">
                 <label className={newOrderLabelClass}>
                   <Calendar className="h-4 w-4" /> Дата и ID
                 </label>
-                <div className="space-y-3">
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                   <input
                     type="date"
                     value={newOrder.date ? newOrder.date.toISOString().split('T')[0] : ''}
                     onChange={(e) => setNewOrder({...newOrder, date: new Date(e.target.value)})}
                     className={newOrderFieldClass}
                   />
-                  <label className="block">
-                    <span className={newOrderLabelClass}>ID заказа</span>
-                    <input
-                      type="text"
-                      placeholder="ID заказа"
-                      value={newOrder.orderId || ''}
-                      onChange={(e) => setNewOrder({...newOrder, orderId: e.target.value.toUpperCase()})}
-                      className={newOrderFieldClass}
-                    />
-                  </label>
+                  <input
+                    type="text"
+                    placeholder="ID заказа"
+                    value={newOrder.orderId || ''}
+                    onChange={(e) => setNewOrder({...newOrder, orderId: e.target.value.toUpperCase()})}
+                    className={newOrderFieldClass}
+                  />
                 </div>
               </div>
 
-              <div>
+              <div className="min-w-0">
                 <label className={newOrderLabelClass}>
                   <Users className="h-4 w-4" /> Клиент
                 </label>
@@ -3255,31 +3259,31 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                 </div>
               </div>
 
-              <div className="space-y-3">
+              <div className="min-w-0 space-y-3">
                 {renderNewOrderSelect('Логистика', newOrder.deliveryMethod || '', mergeOptions(handbookDeliveries, DELIVERY_OPTIONS), (v) => setNewOrder({...newOrder, deliveryMethod: v}), 'Доставка')}
                 {renderNewOrderSelect(' ', newOrder.paymentType || '', INVOICE_PAYMENT_OPTIONS, updateNewOrderPaymentType, 'Предоплата 50%')}
                 {renderNewOrderSelect(' ', newOrder.source || '', mergeOptions(handbookSources, SOURCE_OPTIONS), (v) => setNewOrder({...newOrder, source: v}), 'Источник')}
               </div>
 
-              <div className="space-y-3">
+              <div className="min-w-0 space-y-3">
                 {renderNewOrderSelect('Менеджмент', newOrder.manager || '', handbookManagers, (v) => setNewOrder({...newOrder, manager: v}), 'Менеджер')}
                 {renderNewOrderSelect(' ', newOrder.blogger || '', handbookBloggers, (v) => setNewOrder({...newOrder, blogger: v}), 'Блогер')}
               </div>
             </div>
           </section>
 
-          <section className="rounded-xl border border-zinc-200 bg-white p-4 sm:p-6">
-            <div className="mb-5 flex items-center gap-4">
-              <div className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-violet-100 text-[17px] font-black text-violet-900">2</div>
-              <div>
-                <h4 className="text-[15px] font-black uppercase tracking-[0.22em] text-zinc-950">Изделие</h4>
+          <section className="overflow-hidden rounded-xl border border-zinc-200 bg-white p-3 sm:p-6">
+            <div className="mb-5 flex min-w-0 items-center gap-3 sm:gap-4">
+              <div className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-violet-100 text-[15px] font-black text-violet-900 sm:h-10 sm:w-10 sm:text-[17px]">2</div>
+              <div className="min-w-0">
+                <h4 className="text-[13px] font-black uppercase tracking-[0.18em] text-zinc-950 sm:text-[15px] sm:tracking-[0.22em]">Изделие</h4>
                 <p className="mt-1 text-[11px] font-semibold text-zinc-400">Информация об изделии</p>
               </div>
             </div>
             <div className="space-y-4">
               {newOrderItems.map((item, index) => (
-                <div key={index} className="grid gap-3 lg:grid-cols-[minmax(0,1.35fr)_170px_170px_170px_170px_52px]">
-                  <label className="block">
+                <div key={index} className="grid min-w-0 gap-3 lg:grid-cols-[minmax(0,1.35fr)_170px_170px_170px_170px_52px]">
+                  <label className="block min-w-0">
                     <span className={newOrderLabelClass}>Наименование</span>
                     <input
                       type="text"
@@ -3294,9 +3298,9 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                   {renderNewOrderSelect('Цвет', newOrderItemColors[index] || '', handbookColors, (v) => updateNewOrderItemColor(index, v), 'Цвет')}
                   {renderNewOrderSelect('Размер', newOrderItemSizes[index] || '', handbookSizes, (v) => updateNewOrderItemSize(index, v), 'Размер')}
                   {renderNewOrderSelect('Рост', newOrderItemHeights[index] || '', handbookHeights, (v) => updateNewOrderItemHeight(index, v), 'Рост')}
-                  <label className="block">
+                  <label className="block min-w-0">
                     <span className={newOrderLabelClass}>Цена</span>
-                    <span className="relative block">
+                    <span className="relative block min-w-0">
                       <span className="absolute left-4 top-1/2 -translate-y-1/2 text-[13px] font-black text-zinc-300">₽</span>
                       <input
                         type="number"
@@ -3307,12 +3311,12 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                       />
                     </span>
                   </label>
-                  <div className="flex items-end gap-2">
+                  <div className="flex min-w-0 items-end gap-2">
                     {newOrderItems.length > 1 && (
                       <button
                         type="button"
                         onClick={() => removeNewOrderItem(index)}
-                        className="grid h-12 w-12 place-items-center rounded-lg border border-red-100 bg-red-50 text-red-500 transition-colors hover:bg-red-100"
+                        className="grid h-11 w-11 place-items-center rounded-lg border border-red-100 bg-red-50 text-red-500 transition-colors hover:bg-red-100 sm:h-12 sm:w-12"
                         title="Удалить позицию"
                       >
                         <X className="h-5 w-5" />
@@ -3322,7 +3326,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                       <button
                         type="button"
                         onClick={addNewOrderItem}
-                        className="grid h-12 w-12 place-items-center rounded-lg border border-zinc-200 bg-white text-zinc-600 transition-colors hover:bg-zinc-900 hover:text-white"
+                        className="grid h-11 w-11 place-items-center rounded-lg border border-zinc-200 bg-white text-zinc-600 transition-colors hover:bg-zinc-900 hover:text-white sm:h-12 sm:w-12"
                         title="Добавить позицию"
                       >
                         <Plus className="h-5 w-5" />
