@@ -2754,6 +2754,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
   };
 
   const newOrderFieldClass = "h-11 min-w-0 w-full rounded-lg border border-zinc-200 bg-white px-3 text-[12px] font-bold text-zinc-900 shadow-[0_10px_24px_rgba(15,23,42,0.03)] outline-none transition-all placeholder:text-zinc-400 focus:border-zinc-400 focus:bg-white focus:ring-2 focus:ring-zinc-500/10 sm:h-12 sm:px-4 sm:text-[13px]";
+  const newOrderDateIdFieldClass = cn(newOrderFieldClass, "px-2 text-[10px] leading-none sm:px-4 sm:text-[13px]");
   const newOrderSelectClass = cn(newOrderFieldClass, "appearance-none cursor-pointer pr-10");
   const newOrderLabelClass = "mb-2 flex min-w-0 items-center gap-2 text-[9px] font-black uppercase tracking-[0.14em] text-zinc-400 sm:text-[10px] sm:tracking-[0.16em]";
   const renderNewOrderSelect = (
@@ -3153,19 +3154,19 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                 <label className={newOrderLabelClass}>
                   <Calendar className="h-4 w-4" /> Дата и ID
                 </label>
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div className="grid min-w-0 grid-cols-2 gap-2 sm:gap-3">
                   <input
                     type="date"
                     value={newOrder.date ? newOrder.date.toISOString().split('T')[0] : ''}
                     onChange={(e) => setNewOrder({...newOrder, date: new Date(e.target.value)})}
-                    className={newOrderFieldClass}
+                    className={newOrderDateIdFieldClass}
                   />
                   <input
                     type="text"
                     placeholder="ID заказа"
                     value={newOrder.orderId || ''}
                     onChange={(e) => setNewOrder({...newOrder, orderId: e.target.value.toUpperCase()})}
-                    className={newOrderFieldClass}
+                    className={newOrderDateIdFieldClass}
                   />
                 </div>
               </div>
