@@ -2509,6 +2509,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
   const [newOrderItemSizes, setNewOrderItemSizes] = useState<string[]>(['']);
   const [newOrderItemHeights, setNewOrderItemHeights] = useState<string[]>(['']);
   const [expandedOrderId, setExpandedOrderId] = useState<string | null>(null);
+  const [analyticsDetailsOpen, setAnalyticsDetailsOpen] = useState(false);
   const createdQrRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -3024,7 +3025,18 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
           })}
         </div>
 
-        <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
+        <div className="mb-4 md:hidden">
+          <button
+            type="button"
+            onClick={() => setAnalyticsDetailsOpen((value) => !value)}
+            className="flex h-12 w-full items-center justify-between rounded-2xl border border-zinc-200 bg-white px-4 text-[12px] font-black uppercase tracking-[0.16em] text-zinc-800 shadow-sm"
+          >
+            {analyticsDetailsOpen ? 'Свернуть аналитику' : 'Показать график и месяцы'}
+            <ChevronRight className={cn("h-4 w-4 text-zinc-500 transition-transform", analyticsDetailsOpen ? "-rotate-90" : "rotate-90")} />
+          </button>
+        </div>
+
+        <div className={cn("grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]", !analyticsDetailsOpen && "hidden md:grid")}>
           <div className="space-y-4">
             <div className="rounded-2xl border border-zinc-100 bg-white p-3 shadow-sm sm:p-5">
               <div className="mb-4 flex items-center justify-between gap-3 sm:mb-5">
