@@ -9,7 +9,7 @@ import {
   X, MapPin, Star, RefreshCcw,
   Tag, Trash2, Phone, UserCircle, ChevronRight, QrCode as QrCodeIcon,
   CheckCircle2, Copy, Send, Truck, Wallet, CreditCard, Database, Filter,
-  ArrowUpRight, ArrowDownRight
+  ArrowUpRight, ArrowDownRight, Printer
 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { formatCurrency, cn } from '../../lib/utils';
@@ -218,6 +218,117 @@ function getInvoicePaymentLabel(invoiceType?: 'prepayment' | 'full' | 'fitting')
   if (invoiceType === 'full') return 'Полная оплата';
   return 'Предоплата 50%';
 }
+
+const getOrderSelectionKey = (order: OrderData, index: number) => `${order.orderId || 'order'}-${index}`;
+
+const escapePrintHtml = (value: unknown) =>
+  String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+
+const buildOrdersPrintHtml = (orders: OrderData[]) => {
+  const generatedAt = new Date().toLocaleString('ru-RU');
+  const rows = orders.map(order => {
+    const items = getOrderItems(order);
+    const prices = getOrderItemPrices(order);
+    const colors = getOrderItemColors(order);
+    const sizes = getOrderItemSizes(order);
+    const heights = getOrderItemHeights(order);
+    const invoiceType = order.invoiceType || getInvoiceTypeFromPaymentType(order.paymentType);
+    const invoiceLabel = getInvoicePaymentLabel(invoiceType);
+    const deadlineDate = addBusinessDays(order.date, 7);
+    const itemLines = (items.length ? items : ['-']).map((item, index) => {
+      const meta = [colors[index], sizes[index], heights[index]].filter(Boolean).join(' / ');
+      return `
+        <div class="item-line">
+          <div>
+            <strong>${escapePrintHtml(item)}</strong>
+            ${meta ? `<span>${escapePrintHtml(meta)}</span>` : ''}
+          </div>
+          <b>${escapePrintHtml(formatCurrency(prices[index] || (items.length === 1 ? order.revenue : 0)))} x 1</b>
+        </div>
+      `;
+    }).join('');
+
+    return `
+      <tr>
+        <td>
+          <strong>${escapePrintHtml(order.date.toLocaleDateString('ru-RU'))}</strong>
+          <span>#${escapePrintHtml(order.orderId)}</span>
+        </td>
+        <td>
+          <strong>${escapePrintHtml(order.clientName || '-')}</strong>
+          <span>${order.clientPhone ? `+${escapePrintHtml(order.clientPhone)}` : '-'}</span>
+        </td>
+        <td>
+          <strong>${escapePrintHtml(order.status || '-')}</strong>
+          <span>${escapePrintHtml(order.deliveryMethod || '-')}</span>
+        </td>
+        <td>
+          <strong>${escapePrintHtml(formatCurrency(order.revenue || 0))}</strong>
+          <span>доставка ${escapePrintHtml(formatCurrency(order.deliveryPrice || 0))}</span>
+          <em>${escapePrintHtml(invoiceLabel)}: ${escapePrintHtml(formatCurrency(order.paidAmount || 0))}</em>
+        </td>
+        <td>${itemLines}</td>
+        <td>
+          <span>старт ${escapePrintHtml(order.date.toLocaleDateString('ru-RU'))}</span>
+          <strong>до ${escapePrintHtml(deadlineDate.toLocaleDateString('ru-RU'))}</strong>
+        </td>
+      </tr>
+    `;
+  }).join('');
+
+  return `<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <title>Печать заказов</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 24px; color: #18181b; font-family: Inter, Arial, sans-serif; background: #fff; }
+    header { display: flex; justify-content: space-between; gap: 24px; align-items: flex-end; margin-bottom: 22px; border-bottom: 1px solid #e5e7eb; padding-bottom: 16px; }
+    h1 { margin: 0; font-size: 22px; letter-spacing: .16em; text-transform: uppercase; }
+    header p { margin: 6px 0 0; color: #71717a; font-size: 12px; font-weight: 700; }
+    table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+    th { padding: 10px 8px; border-bottom: 1px solid #d4d4d8; color: #71717a; font-size: 9px; text-align: left; text-transform: uppercase; letter-spacing: .14em; }
+    td { padding: 13px 8px; border-bottom: 1px solid #e5e7eb; vertical-align: top; font-size: 12px; line-height: 1.35; }
+    td strong { display: block; font-size: 12px; font-weight: 800; color: #09090b; }
+    td span { display: block; margin-top: 5px; color: #71717a; font-weight: 650; }
+    td em { display: block; margin-top: 5px; color: #ea580c; font-style: normal; font-weight: 800; }
+    .item-line { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; margin-bottom: 8px; }
+    .item-line:last-child { margin-bottom: 0; }
+    .item-line b { white-space: nowrap; color: #71717a; font-size: 11px; }
+    @page { size: A4 landscape; margin: 12mm; }
+    @media print { body { padding: 0; } }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Список заказов</h1>
+      <p>Выбрано строк: ${orders.length}</p>
+    </div>
+    <p>Сформировано: ${escapePrintHtml(generatedAt)}</p>
+  </header>
+  <table>
+    <thead>
+      <tr>
+        <th style="width: 11%">Дата / ID</th>
+        <th style="width: 17%">Клиент / Контакт</th>
+        <th style="width: 14%">Статус / Доставка</th>
+        <th style="width: 15%">Финансы</th>
+        <th style="width: 32%">Изделие</th>
+        <th style="width: 11%">Срок</th>
+      </tr>
+    </thead>
+    <tbody>${rows}</tbody>
+  </table>
+</body>
+</html>`;
+};
 
 function getShortPaymentLabel(invoiceType?: 'prepayment' | 'full' | 'fitting'): string {
   if (invoiceType === 'fitting') return 'Примерка СДЭК';
@@ -1055,11 +1166,15 @@ const CdekOrderBlock: React.FC<{
 const OrderSummaryRow = React.memo(({
   order,
   expanded,
+  selected,
   onToggle,
+  onSelectChange,
 }: {
   order: OrderData;
   expanded: boolean;
+  selected: boolean;
   onToggle: () => void;
+  onSelectChange: (checked: boolean) => void;
 }) => {
   const orderItems = getOrderItems(order);
   const orderItemPrices = getOrderItemPrices(order);
@@ -1090,8 +1205,19 @@ const OrderSummaryRow = React.memo(({
     <tr className={cn(
       "group border-b border-zinc-100 bg-white transition-colors hover:bg-zinc-50/60",
       expanded && "bg-zinc-50/70",
+      selected && "bg-blue-50/30",
       order.isOverdue && !order.isShipped && "bg-red-50/20"
     )}>
+      <td className="px-4 py-5 align-top">
+        <input
+          type="checkbox"
+          checked={selected}
+          onChange={(event) => onSelectChange(event.target.checked)}
+          onClick={(event) => event.stopPropagation()}
+          className="h-4 w-4 rounded border-zinc-300 text-zinc-900 accent-zinc-900"
+          title="Выбрать для печати"
+        />
+      </td>
       <td className="px-5 py-5 align-top">
         <p className="text-[12px] font-semibold text-zinc-400 tabular-nums">{order.date.toLocaleDateString('ru-RU')}</p>
         <p className="mt-2 text-[13px] font-black text-zinc-950">#{order.orderId}</p>
@@ -1421,7 +1547,7 @@ const OrderRow = React.memo(({
       "group border-b border-zinc-100 bg-white transition-colors",
       order.isOverdue && !order.isShipped && "bg-red-50/20"
     )}>
-      <td colSpan={7} className="px-0 py-0">
+      <td colSpan={8} className="px-0 py-0">
         <div className="grid min-w-[1060px] grid-cols-[300px_minmax(760px,1fr)] items-stretch border border-zinc-100 bg-white">
           <aside className="border-r border-zinc-100 bg-white p-5 space-y-5">
             <div className="flex items-center justify-between gap-3 border-b border-zinc-100 pb-6">
@@ -2510,11 +2636,27 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
   const [newOrderItemHeights, setNewOrderItemHeights] = useState<string[]>(['']);
   const [expandedOrderId, setExpandedOrderId] = useState<string | null>(null);
   const [analyticsDetailsOpen, setAnalyticsDetailsOpen] = useState(false);
+  const [selectedOrderKeys, setSelectedOrderKeys] = useState<Set<string>>(() => new Set());
   const createdQrRef = useRef<HTMLDivElement>(null);
+
+  const visibleOrderKeys = useMemo(
+    () => pagedOrders.map((order, index) => getOrderSelectionKey(order, index)),
+    [pagedOrders]
+  );
+  const selectedVisibleCount = visibleOrderKeys.filter(key => selectedOrderKeys.has(key)).length;
+  const allVisibleOrdersSelected = visibleOrderKeys.length > 0 && selectedVisibleCount === visibleOrderKeys.length;
+  const selectedPrintOrders = useMemo(
+    () => pagedOrders.filter((order, index) => selectedOrderKeys.has(getOrderSelectionKey(order, index))),
+    [pagedOrders, selectedOrderKeys]
+  );
 
   useEffect(() => {
     fetch('/api/tochka/status').then(r => r.json()).then(d => setTochkaConfigured(!!d.configured)).catch(() => {});
   }, []);
+
+  useEffect(() => {
+    setSelectedOrderKeys(new Set());
+  }, [ordersFilterMonth, orderStatusFilter, searchTerm]);
 
   useEffect(() => {
     const unsubscribe = onSnapshot(
@@ -2950,6 +3092,45 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
       }
       finally { setIsCreatingQr(false); }
     }
+  };
+
+  const toggleOrderSelection = (key: string, checked: boolean) => {
+    setSelectedOrderKeys(prev => {
+      const next = new Set(prev);
+      if (checked) next.add(key);
+      else next.delete(key);
+      return next;
+    });
+  };
+
+  const toggleAllVisibleOrders = () => {
+    setSelectedOrderKeys(prev => {
+      const next = new Set(prev);
+      if (allVisibleOrdersSelected) {
+        visibleOrderKeys.forEach(key => next.delete(key));
+      } else {
+        visibleOrderKeys.forEach(key => next.add(key));
+      }
+      return next;
+    });
+  };
+
+  const printSelectedOrders = () => {
+    if (!selectedPrintOrders.length) return;
+    const html = buildOrdersPrintHtml(selectedPrintOrders);
+    const printWindow = window.open('', '_blank', 'width=1200,height=800');
+    if (!printWindow) {
+      window.print();
+      return;
+    }
+
+    printWindow.document.open();
+    printWindow.document.write(html);
+    printWindow.document.close();
+    printWindow.focus();
+    window.setTimeout(() => {
+      printWindow.print();
+    }, 250);
   };
 
   return (
@@ -4140,11 +4321,61 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
             );
           })}
         </div>
+        <div className="hidden items-center justify-between gap-3 border-b border-zinc-100 bg-zinc-50/40 px-3 py-2 md:flex">
+          <div className="flex items-center gap-3">
+            <label className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-zinc-200 bg-white px-3 py-2 text-[9px] font-black uppercase tracking-widest text-zinc-600">
+              <input
+                type="checkbox"
+                checked={allVisibleOrdersSelected}
+                onChange={toggleAllVisibleOrders}
+                className="h-4 w-4 rounded border-zinc-300 accent-zinc-900"
+              />
+              Все видимые
+            </label>
+            <span className="text-[10px] font-bold text-zinc-400">
+              выбрано: <b className="text-zinc-900">{selectedPrintOrders.length}</b>
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            {selectedPrintOrders.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setSelectedOrderKeys(new Set())}
+                className="h-9 rounded-lg border border-zinc-200 bg-white px-4 text-[9px] font-black uppercase tracking-widest text-zinc-500 transition-colors hover:bg-zinc-50"
+              >
+                Очистить
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={printSelectedOrders}
+              disabled={!selectedPrintOrders.length}
+              className={cn(
+                "inline-flex h-9 items-center gap-2 rounded-lg px-4 text-[9px] font-black uppercase tracking-widest transition-all",
+                selectedPrintOrders.length
+                  ? "bg-zinc-900 text-white hover:bg-black"
+                  : "cursor-not-allowed bg-zinc-100 text-zinc-300"
+              )}
+            >
+              <Printer className="h-3.5 w-3.5" />
+              Печать выбранных
+            </button>
+          </div>
+        </div>
         <div className="overflow-x-auto print:overflow-visible">
           {/* Desktop Table View */}
           <table className="w-full text-left border-collapse hidden md:table">
             <thead>
               <tr className="border-b border-zinc-100 bg-zinc-50/50 text-[9px] font-black uppercase tracking-widest text-zinc-400">
+                <th className="px-4 py-3 border-none w-[44px]">
+                  <input
+                    type="checkbox"
+                    checked={allVisibleOrdersSelected}
+                    onChange={toggleAllVisibleOrders}
+                    className="h-4 w-4 rounded border-zinc-300 accent-zinc-900"
+                    title="Выбрать все видимые строки"
+                  />
+                </th>
                 <th className="px-5 py-3 border-none w-[150px]">Дата / ID</th>
                 <th className="px-5 py-3 border-none w-[240px]">Клиент / Контакт</th>
                 <th className="px-5 py-3 border-none w-[220px]">Статус / Доставка</th>
@@ -4163,7 +4394,9 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                     <OrderSummaryRow
                       order={order}
                       expanded={expanded}
+                      selected={selectedOrderKeys.has(rowKey)}
                       onToggle={() => setExpandedOrderId(expanded ? null : rowKey)}
+                      onSelectChange={(checked) => toggleOrderSelection(rowKey, checked)}
                     />
                     {expanded && (
                       <OrderRow
