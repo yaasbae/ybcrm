@@ -3154,12 +3154,12 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                 <label className={newOrderLabelClass}>
                   <Calendar className="h-4 w-4" /> Дата и ID
                 </label>
-                <div className="grid min-w-0 grid-cols-2 gap-2 sm:gap-3">
+                <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-3 sm:gap-3">
                   <input
                     type="date"
                     value={newOrder.date ? newOrder.date.toISOString().split('T')[0] : ''}
                     onChange={(e) => setNewOrder({...newOrder, date: new Date(e.target.value)})}
-                    className={newOrderDateIdFieldClass}
+                    className={cn(newOrderDateIdFieldClass, "crm-compact-date-input")}
                   />
                   <input
                     type="text"

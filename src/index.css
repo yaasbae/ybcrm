@@ -51,6 +51,30 @@
   }
 }
 
+@layer components {
+  .crm-compact-date-input {
+    box-sizing: border-box;
+    max-width: 100%;
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .crm-compact-date-input::-webkit-date-and-time-value {
+    margin: 0;
+    max-width: 100%;
+    min-width: 0;
+    overflow: hidden;
+    text-align: left;
+    text-overflow: ellipsis;
+  }
+
+  .crm-compact-date-input::-webkit-calendar-picker-indicator {
+    margin-left: 0;
+    padding: 0;
+    width: 14px;
+  }
+}
+
 @utility no-scrollbar {
   -ms-overflow-style: none;
   scrollbar-width: none;
