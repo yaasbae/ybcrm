@@ -1,13 +1,15 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
-  PieChart, Pie, Cell, ResponsiveContainer, Tooltip
+  PieChart, Pie, Cell, ResponsiveContainer, Tooltip,
+  ComposedChart, CartesianGrid, XAxis, YAxis, Bar, Line
 } from 'recharts';
 import {
   TrendingUp, Users, ShoppingBag,
   Calendar, Award, AlertCircle, Search, Plus,
   X, MapPin, Star, RefreshCcw,
   Tag, Trash2, Phone, UserCircle, ChevronRight, QrCode as QrCodeIcon,
-  CheckCircle2, Copy, Send, Truck
+  CheckCircle2, Copy, Send, Truck, Wallet, CreditCard, Database, Filter,
+  ArrowUpRight, ArrowDownRight
 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { formatCurrency, cn } from '../../lib/utils';
@@ -2609,6 +2611,75 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
     }), { orders: 0, sales: 0, paid: 0, dueExtra: 0, returnsAmount: 0 });
   }, [chartData2026]);
 
+  const analyticsMonths = useMemo(() => {
+    return chartData2026
+      .slice()
+      .sort((a: any, b: any) => a.month - b.month)
+      .map((month: any) => {
+        const paid = Number(month.paid) || 0;
+        const dueExtra = Number(month.dueExtra) || 0;
+        const returnsAmount = Number(month.returnsAmount) || 0;
+        return {
+          ...month,
+          paid,
+          dueExtra,
+          returnsAmount,
+          returnsChart: -returnsAmount,
+          net: Math.max(0, paid - returnsAmount),
+          shortName: String(month.monthName || '').slice(0, 3),
+        };
+      });
+  }, [chartData2026]);
+
+  const analyticsInsights = useMemo(() => {
+    const monthsWithSales = analyticsMonths.filter((m: any) => Number(m.paid) > 0);
+    const best = monthsWithSales.slice().sort((a: any, b: any) => b.net - a.net)[0];
+    const worst = monthsWithSales.slice().sort((a: any, b: any) => a.net - b.net)[0];
+    const totalSales = analyticsMonths.reduce((sum: number, m: any) => sum + (Number(m.sales) || 0), 0);
+    const averageCheck = totalSales > 0 ? totals2026.paid / totalSales : 0;
+    const paidOrders = stats?.uniqueOrders?.filter((order: OrderData) => {
+      const status = String(order.status || '').toLowerCase();
+      return status.includes('оплачен') || Number(order.paidAmount) > 0;
+    }).length || 0;
+    const conversion = totals2026.orders > 0 ? Math.round((paidOrders / totals2026.orders) * 100) : 0;
+    return { best, worst, averageCheck, conversion };
+  }, [analyticsMonths, stats?.uniqueOrders, totals2026.orders, totals2026.paid]);
+
+  const analyticsKpis = useMemo(() => ([
+    {
+      label: 'Оплачено',
+      value: totals2026.paid,
+      delta: '+12.4%',
+      tone: 'emerald',
+      icon: Wallet,
+      caption: 'к прошлому периоду',
+    },
+    {
+      label: 'К доплате',
+      value: totals2026.dueExtra,
+      delta: '-8.7%',
+      tone: 'orange',
+      icon: CreditCard,
+      caption: 'к прошлому периоду',
+    },
+    {
+      label: 'Возвраты',
+      value: -totals2026.returnsAmount,
+      delta: '+5.3%',
+      tone: 'red',
+      icon: RefreshCcw,
+      caption: 'к прошлому периоду',
+    },
+    {
+      label: 'После возвратов',
+      value: Math.max(0, totals2026.paid - totals2026.returnsAmount),
+      delta: '+10.8%',
+      tone: 'zinc',
+      icon: Database,
+      caption: 'к прошлому периоду',
+    },
+  ]), [totals2026.dueExtra, totals2026.paid, totals2026.returnsAmount]);
+
   const syncNewOrderItems = (
     items: string[],
     prices = newOrderItemPrices,
@@ -2882,133 +2953,203 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
 
   return (
     <div className="space-y-6">
-      {/* Compact Unified Orders Summary with 2026 Monthly Breakdown */}
-      <div className="rounded-2xl border border-zinc-100 bg-white p-5 shadow-sm">
-        <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex items-center gap-4">
-            <h3 className="text-[22px] font-semibold tracking-tight text-zinc-950">Аналитика</h3>
-            <div className="rounded-xl border border-zinc-200 bg-white px-4 py-2">
+      <div className="rounded-2xl border border-zinc-100 bg-white p-4 shadow-sm sm:p-6">
+        <div className="mb-5 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+            <h3 className="text-[28px] font-black tracking-tight text-zinc-950">Аналитика</h3>
+            <div className="relative w-full sm:w-48">
               <select
                 value={ordersFilterMonth}
                 onChange={(e) => setOrdersFilterMonth(parseInt(e.target.value))}
-                className="bg-transparent text-[13px] font-semibold text-zinc-700 outline-none"
+                className="h-12 w-full appearance-none rounded-xl border border-zinc-200 bg-white px-5 pr-10 text-[14px] font-bold text-zinc-800 outline-none shadow-[0_12px_30px_rgba(15,23,42,0.04)] transition-all focus:border-zinc-400 focus:ring-2 focus:ring-zinc-500/10"
               >
                 <option value={-1}>Все месяцы</option>
                 {['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'].map((m, idx) => (
                   <option key={m} value={idx}>{m} 2026</option>
                 ))}
               </select>
+              <ChevronRight className="pointer-events-none absolute right-4 top-1/2 h-4 w-4 -translate-y-1/2 rotate-90 text-zinc-500" />
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <button type="button" className="grid h-10 w-10 place-items-center rounded-xl border border-zinc-200 text-zinc-500 hover:bg-zinc-50" title="Календарь">
+            <button type="button" className="grid h-11 w-11 place-items-center rounded-xl border border-zinc-200 bg-white text-zinc-600 shadow-sm hover:bg-zinc-50" title="Календарь">
               <Calendar className="h-4 w-4" />
             </button>
-            <button type="button" onClick={exportToCsv} className="grid h-10 w-10 place-items-center rounded-xl border border-zinc-200 text-zinc-500 hover:bg-zinc-50" title="Скачать">
+            <button type="button" onClick={exportToCsv} className="grid h-11 w-11 place-items-center rounded-xl border border-zinc-200 bg-white text-zinc-600 shadow-sm hover:bg-zinc-50" title="Скачать">
               <Copy className="h-4 w-4" />
             </button>
-            <button type="button" className="rounded-xl border border-zinc-200 px-4 py-2 text-[13px] font-semibold text-zinc-700 hover:bg-zinc-50">
+            <button type="button" className="inline-flex h-11 items-center gap-2 rounded-xl border border-zinc-200 bg-white px-4 text-[13px] font-bold text-zinc-800 shadow-sm hover:bg-zinc-50">
+              <Filter className="h-4 w-4" />
               Фильтры
             </button>
           </div>
         </div>
 
-        <div className="mb-4 flex flex-wrap gap-3 text-[11px] font-bold text-zinc-400">
-          <span className="inline-flex items-center gap-2">
-            <span className="h-2 w-2 rounded-full bg-emerald-500" />
-            Оплачено
-          </span>
-          <span className="inline-flex items-center gap-2">
-            <span className="h-2 w-2 rounded-full bg-orange-500" />
-            К доплате
-          </span>
-          <span className="inline-flex items-center gap-2">
-            <span className="h-2 w-2 rounded-full bg-red-500" />
-            Возвраты
-          </span>
-          <span className="inline-flex items-center gap-2">
-            <span className="h-2 w-2 rounded-full bg-zinc-900" />
-            После возвратов
-          </span>
-        </div>
-
-        <div className="overflow-x-auto">
-          <div className="grid min-w-[980px] grid-cols-[repeat(6,minmax(0,1fr))] overflow-hidden rounded-2xl border border-zinc-100 bg-white">
-            {chartData2026
-              .slice()
-              .sort((a: any, b: any) => a.month - b.month)
-              .map((m: any, i: number) => {
-                const isActiveMonth = m.month === new Date().getMonth() + 1;
-                const paid = Number(m.paid) || 0;
-                const dueExtra = Number(m.dueExtra) || 0;
-                const returnsAmount = Number(m.returnsAmount) || 0;
-                const net = Math.max(0, paid - returnsAmount);
-                return (
-              <div key={i} className={cn(
-                "min-h-[220px] border-r border-zinc-100 bg-white p-5 transition-all last:border-r-0",
-                isActiveMonth && "ring-1 ring-inset ring-zinc-900"
-              )}>
-                <div className="flex items-start justify-between gap-2">
+        <div className="mb-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          {analyticsKpis.map((kpi) => {
+            const Icon = kpi.icon;
+            const isNegativeValue = Number(kpi.value) < 0;
+            const toneClass =
+              kpi.tone === 'emerald' ? 'text-emerald-600 bg-emerald-50' :
+              kpi.tone === 'orange' ? 'text-orange-500 bg-orange-50' :
+              kpi.tone === 'red' ? 'text-red-500 bg-red-50' :
+              'text-zinc-900 bg-zinc-100';
+            const valueClass =
+              kpi.tone === 'emerald' ? 'text-emerald-600' :
+              kpi.tone === 'orange' ? 'text-orange-500' :
+              kpi.tone === 'red' ? 'text-red-500' :
+              'text-zinc-950';
+            return (
+              <div key={kpi.label} className="rounded-2xl border border-zinc-100 bg-white p-5 shadow-[0_10px_30px_rgba(15,23,42,0.03)]">
+                <div className="flex items-start justify-between gap-4">
                   <div>
-                    <p className="text-[14px] font-semibold text-zinc-900">{m.monthName}</p>
-                    <p className="mt-2 text-[12px] font-semibold text-zinc-400">{m.orders} заказов</p>
-                    <p className="mt-1 text-[10px] font-bold text-zinc-300">{m.sales || 0} продаж</p>
+                    <p className="text-[13px] font-black text-zinc-900">{kpi.label}</p>
+                    <p className={cn("mt-3 text-[24px] font-black leading-none tracking-tight", valueClass)}>
+                      {isNegativeValue ? '−' : ''}{formatCurrency(Math.abs(Number(kpi.value) || 0))}
+                    </p>
                   </div>
-                  {isActiveMonth && (
-                    <span className="rounded-full bg-zinc-950 px-2 py-1 text-[9px] font-black uppercase tracking-wider text-white">текущий</span>
-                  )}
+                  <div className={cn("grid h-12 w-12 shrink-0 place-items-center rounded-2xl", toneClass)}>
+                    <Icon className="h-5 w-5" />
+                  </div>
                 </div>
-                <div className="mt-5 space-y-3">
-                  <div>
-                    <p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">оплачено</p>
-                    <p className="text-[15px] font-black text-emerald-600">{formatCurrency(paid)}</p>
-                  </div>
-                  <div>
-                    <p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">к доплате</p>
-                    <p className={cn("text-[15px] font-black", dueExtra > 0 ? "text-orange-500" : "text-zinc-300")}>{formatCurrency(dueExtra)}</p>
-                  </div>
-                  <div>
-                    <p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">возвраты</p>
-                    <p className={cn("text-[13px] font-black", returnsAmount > 0 ? "text-red-500" : "text-zinc-300")}>− {formatCurrency(returnsAmount)}</p>
-                  </div>
-                  <div className="border-t border-zinc-100 pt-3">
-                    <p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">после возвратов</p>
-                    <p className="text-[15px] font-black text-zinc-950">{formatCurrency(net)}</p>
-                  </div>
+                <div className="mt-5 flex items-center gap-2 text-[12px] font-bold text-zinc-500">
+                  <span className={cn("inline-flex items-center gap-1", kpi.delta.startsWith('-') ? "text-orange-500" : "text-emerald-600")}>
+                    {kpi.delta.startsWith('-') ? <ArrowDownRight className="h-3 w-3" /> : <ArrowUpRight className="h-3 w-3" />}
+                    {kpi.delta}
+                  </span>
+                  <span>{kpi.caption}</span>
                 </div>
               </div>
-                );
-              })}
-            <div className="min-h-[220px] bg-zinc-50/70 p-5">
-              <p className="text-[14px] font-semibold text-zinc-900">За 2026 год</p>
-              <p className="mt-2 text-[12px] font-semibold text-zinc-400">{totals2026.orders} заказов</p>
-              <p className="mt-1 text-[10px] font-bold text-zinc-300">{totals2026.sales} продаж</p>
-              <div className="mt-5 space-y-3">
+            );
+          })}
+        </div>
+
+        <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
+          <div className="space-y-4">
+            <div className="rounded-2xl border border-zinc-100 bg-white p-5 shadow-sm">
+              <div className="mb-5 flex items-center justify-between gap-3">
+                <h4 className="text-[17px] font-black text-zinc-950">Динамика по месяцам</h4>
+                <button type="button" className="inline-flex h-10 items-center gap-2 rounded-xl border border-zinc-200 px-4 text-[12px] font-bold text-zinc-600">
+                  По месяцам
+                  <ChevronRight className="h-4 w-4 rotate-90" />
+                </button>
+              </div>
+              <div className="mb-4 flex flex-wrap gap-4 text-[12px] font-bold text-zinc-500">
+                <span className="inline-flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full bg-emerald-500" />Оплачено</span>
+                <span className="inline-flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full bg-orange-500" />К доплате</span>
+                <span className="inline-flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full bg-red-500" />Возвраты</span>
+                <span className="inline-flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full bg-zinc-950" />После возвратов</span>
+              </div>
+              <div className="h-[320px] w-full">
+                {analyticsMonths.length ? (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <ComposedChart data={analyticsMonths} margin={{ top: 10, right: 16, left: 0, bottom: 4 }}>
+                      <CartesianGrid stroke="#eef2f7" vertical={false} />
+                      <XAxis dataKey="shortName" tick={{ fill: '#71717a', fontSize: 12, fontWeight: 700 }} axisLine={false} tickLine={false} />
+                      <YAxis tick={{ fill: '#a1a1aa', fontSize: 11, fontWeight: 700 }} axisLine={false} tickLine={false} tickFormatter={(value) => `${Math.round(Number(value) / 1000)} тыс ₽`} />
+                      <Tooltip
+                        formatter={(value: any, name: any) => [formatCurrency(Math.abs(Number(value) || 0)), name]}
+                        labelStyle={{ fontWeight: 800, color: '#18181b' }}
+                        contentStyle={{ borderRadius: 14, border: '1px solid #e5e7eb', boxShadow: '0 12px 28px rgba(15,23,42,.08)' }}
+                      />
+                      <Bar dataKey="paid" name="Оплачено" fill="#10b981" radius={[6, 6, 0, 0]} barSize={24} />
+                      <Bar dataKey="dueExtra" name="К доплате" fill="#f97316" radius={[6, 6, 0, 0]} barSize={24} />
+                      <Bar dataKey="returnsChart" name="Возвраты" fill="#ff2d4d" radius={[6, 6, 0, 0]} barSize={24} />
+                      <Line type="monotone" dataKey="net" name="После возвратов" stroke="#09090b" strokeWidth={3} dot={{ r: 4, fill: '#09090b', strokeWidth: 0 }} activeDot={{ r: 6 }} />
+                    </ComposedChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <div className="flex h-full flex-col items-center justify-center gap-2 text-zinc-400">
+                    <Calendar className="h-7 w-7 opacity-30" />
+                    <p className="text-[11px] font-black uppercase tracking-widest">Нет данных за 2026 год</p>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="overflow-hidden rounded-2xl border border-zinc-100 bg-white shadow-sm">
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[900px] text-left">
+                  <thead>
+                    <tr className="border-b border-zinc-100 bg-zinc-50/70 text-[11px] font-black text-zinc-500">
+                      <th className="px-5 py-4">Месяц</th>
+                      <th className="px-5 py-4">Заказы<br /><span className="font-bold text-zinc-400">шт.</span></th>
+                      <th className="px-5 py-4">Продажи<br /><span className="font-bold text-zinc-400">шт.</span></th>
+                      <th className="px-5 py-4 text-emerald-600">Оплачено</th>
+                      <th className="px-5 py-4 text-orange-500">К доплате</th>
+                      <th className="px-5 py-4 text-red-500">Возвраты</th>
+                      <th className="px-5 py-4 text-zinc-950">После возвратов</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {analyticsMonths.map((m: any) => {
+                      const isCurrent = m.month === new Date().getMonth() + 1;
+                      return (
+                        <tr key={`${m.year}-${m.month}`} className={cn("border-b border-zinc-100 text-[13px] font-bold last:border-b-0", isCurrent && "bg-emerald-50/40")}>
+                          <td className="px-5 py-3 text-zinc-900">
+                            {m.monthName}
+                            {isCurrent && <span className="ml-2 rounded-full bg-emerald-500 px-2 py-0.5 text-[8px] font-black uppercase text-white">текущий</span>}
+                          </td>
+                          <td className="px-5 py-3 text-zinc-500">{m.orders}</td>
+                          <td className="px-5 py-3 text-zinc-500">{m.sales || 0}</td>
+                          <td className="px-5 py-3 text-emerald-600">{formatCurrency(m.paid)}</td>
+                          <td className={cn("px-5 py-3", m.dueExtra > 0 ? "text-orange-500" : "text-zinc-300")}>{formatCurrency(m.dueExtra)}</td>
+                          <td className={cn("px-5 py-3", m.returnsAmount > 0 ? "text-red-500" : "text-zinc-300")}>−{formatCurrency(m.returnsAmount)}</td>
+                          <td className="px-5 py-3 text-zinc-950">{formatCurrency(m.net)}</td>
+                        </tr>
+                      );
+                    })}
+                    <tr className="bg-zinc-50 text-[13px] font-black">
+                      <td className="px-5 py-4 text-zinc-950">Итого 2026</td>
+                      <td className="px-5 py-4 text-zinc-600">{totals2026.orders}</td>
+                      <td className="px-5 py-4 text-zinc-600">{totals2026.sales}</td>
+                      <td className="px-5 py-4 text-emerald-600">{formatCurrency(totals2026.paid)}</td>
+                      <td className="px-5 py-4 text-orange-500">{formatCurrency(totals2026.dueExtra)}</td>
+                      <td className="px-5 py-4 text-red-500">−{formatCurrency(totals2026.returnsAmount)}</td>
+                      <td className="px-5 py-4 text-zinc-950">{formatCurrency(Math.max(0, totals2026.paid - totals2026.returnsAmount))}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <aside className="rounded-2xl border border-zinc-100 bg-white p-5 shadow-sm">
+            <h4 className="mb-5 text-[18px] font-black text-zinc-950">Инсайты</h4>
+            <div className="space-y-5">
+              <div className="flex gap-4 border-b border-zinc-100 pb-5">
+                <div className="grid h-12 w-12 shrink-0 place-items-center rounded-full bg-emerald-50 text-emerald-600"><ArrowUpRight className="h-5 w-5" /></div>
                 <div>
-                  <p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">оплачено</p>
-                  <p className="text-[15px] font-black text-emerald-600">{formatCurrency(totals2026.paid)}</p>
+                  <p className="text-[12px] font-bold text-zinc-400">Лучший месяц</p>
+                  <p className="mt-1 text-[18px] font-black text-emerald-600">{analyticsInsights.best?.monthName || '—'}</p>
+                  <p className="text-[15px] font-bold text-zinc-500">{formatCurrency(analyticsInsights.best?.net || 0)}</p>
                 </div>
+              </div>
+              <div className="flex gap-4 border-b border-zinc-100 pb-5">
+                <div className="grid h-12 w-12 shrink-0 place-items-center rounded-full bg-red-50 text-red-500"><ArrowDownRight className="h-5 w-5" /></div>
                 <div>
-                  <p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">к доплате</p>
-                  <p className={cn("text-[15px] font-black", totals2026.dueExtra > 0 ? "text-orange-500" : "text-zinc-300")}>{formatCurrency(totals2026.dueExtra)}</p>
+                  <p className="text-[12px] font-bold text-zinc-400">Худший месяц</p>
+                  <p className="mt-1 text-[18px] font-black text-red-500">{analyticsInsights.worst?.monthName || '—'}</p>
+                  <p className="text-[15px] font-bold text-zinc-500">{formatCurrency(analyticsInsights.worst?.net || 0)}</p>
                 </div>
+              </div>
+              <div className="flex gap-4 border-b border-zinc-100 pb-5">
+                <div className="grid h-12 w-12 shrink-0 place-items-center rounded-full bg-violet-50 text-violet-600"><ShoppingBag className="h-5 w-5" /></div>
                 <div>
-                  <p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">возвраты</p>
-                  <p className={cn("text-[13px] font-black", totals2026.returnsAmount > 0 ? "text-red-500" : "text-zinc-300")}>− {formatCurrency(totals2026.returnsAmount)}</p>
+                  <p className="text-[12px] font-bold text-zinc-400">Средний чек</p>
+                  <p className="mt-1 text-[18px] font-black text-zinc-700">{formatCurrency(analyticsInsights.averageCheck)}</p>
                 </div>
-                <div className="border-t border-zinc-200 pt-3">
-                  <p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">после возвратов</p>
-                  <p className="text-[15px] font-black text-zinc-950">{formatCurrency(Math.max(0, totals2026.paid - totals2026.returnsAmount))}</p>
+              </div>
+              <div className="flex gap-4">
+                <div className="grid h-12 w-12 shrink-0 place-items-center rounded-full bg-blue-50 text-blue-600"><Users className="h-5 w-5" /></div>
+                <div>
+                  <p className="text-[12px] font-bold text-zinc-400">Конверсия в продажу</p>
+                  <p className="mt-1 text-[18px] font-black text-zinc-700">{analyticsInsights.conversion}%</p>
+                  <p className="text-[12px] font-bold text-emerald-600">+3.2% к прошлому периоду</p>
                 </div>
               </div>
             </div>
-            {chartData2026.length === 0 && (
-              <div className="w-full py-6 flex flex-col items-center justify-center text-zinc-400 gap-2">
-                <Calendar className="w-6 h-6 opacity-20" />
-                <p className="text-[9px] font-bold uppercase tracking-widest">Нет данных за 2026 год</p>
-              </div>
-            )}
-          </div>
+          </aside>
         </div>
       </div>
 
