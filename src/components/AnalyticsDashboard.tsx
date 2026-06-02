@@ -712,7 +712,9 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
   }, []);
 
   useEffect(() => {
-    const combined = [...firebaseOrders, ...sheetOrders].sort((a, b) => b.date.getTime() - a.date.getTime());
+    const firebaseOrderIds = new Set(firebaseOrders.map(order => order.orderId));
+    const sheetOnlyOrders = sheetOrders.filter(order => !firebaseOrderIds.has(order.orderId));
+    const combined = [...firebaseOrders, ...sheetOnlyOrders].sort((a, b) => b.date.getTime() - a.date.getTime());
     setData(combined);
   }, [firebaseOrders, sheetOrders]);
 
