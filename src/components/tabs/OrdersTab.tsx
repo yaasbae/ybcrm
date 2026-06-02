@@ -2593,12 +2593,13 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
   }, [stats?.chartData]);
 
   const totals2026 = useMemo(() => {
-    return chartData2026.reduce((acc: { orders: number; paid: number; dueExtra: number; returnsAmount: number }, month: any) => ({
+    return chartData2026.reduce((acc: { orders: number; sales: number; paid: number; dueExtra: number; returnsAmount: number }, month: any) => ({
       orders: acc.orders + (Number(month.orders) || 0),
+      sales: acc.sales + (Number(month.sales) || 0),
       paid: acc.paid + (Number(month.paid) || 0),
       dueExtra: acc.dueExtra + (Number(month.dueExtra) || 0),
       returnsAmount: acc.returnsAmount + (Number(month.returnsAmount) || 0),
-    }), { orders: 0, paid: 0, dueExtra: 0, returnsAmount: 0 });
+    }), { orders: 0, sales: 0, paid: 0, dueExtra: 0, returnsAmount: 0 });
   }, [chartData2026]);
 
   const syncNewOrderItems = (
@@ -2943,6 +2944,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                   <div>
                     <p className="text-[14px] font-semibold text-zinc-900">{m.monthName}</p>
                     <p className="mt-2 text-[12px] font-semibold text-zinc-400">{m.orders} заказов</p>
+                    <p className="mt-1 text-[10px] font-bold text-zinc-300">{m.sales || 0} продаж</p>
                   </div>
                   {isActiveMonth && (
                     <span className="rounded-full bg-zinc-950 px-2 py-1 text-[9px] font-black uppercase tracking-wider text-white">текущий</span>
@@ -2972,6 +2974,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
             <div className="min-h-[220px] bg-zinc-50/70 p-5">
               <p className="text-[14px] font-semibold text-zinc-900">За 2026 год</p>
               <p className="mt-2 text-[12px] font-semibold text-zinc-400">{totals2026.orders} заказов</p>
+              <p className="mt-1 text-[10px] font-bold text-zinc-300">{totals2026.sales} продаж</p>
               <div className="mt-5 space-y-3">
                 <div>
                   <p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">оплачено</p>
