@@ -52,6 +52,17 @@
 }
 
 @layer components {
+  .crm-date-id-row {
+    column-gap: 3mm;
+    display: grid;
+    grid-template-columns: minmax(0, calc((100% - 3mm) / 2)) minmax(0, calc((100% - 3mm) / 2));
+  }
+
+  .crm-date-id-row > * {
+    min-width: 0;
+    width: 100%;
+  }
+
   .crm-compact-date-input {
     box-sizing: border-box;
     max-width: 100%;
