@@ -2953,39 +2953,39 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
 
   return (
     <div className="space-y-6">
-      <div className="rounded-2xl border border-zinc-100 bg-white p-4 shadow-sm sm:p-6">
-        <div className="mb-5 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-            <h3 className="text-[28px] font-black tracking-tight text-zinc-950">Аналитика</h3>
-            <div className="relative w-full sm:w-48">
+      <div className="rounded-2xl border border-zinc-100 bg-white p-3 shadow-sm sm:p-6">
+        <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex items-center gap-3 sm:flex-row">
+            <h3 className="shrink-0 text-[24px] font-black tracking-tight text-zinc-950 sm:text-[28px]">Аналитика</h3>
+            <div className="relative min-w-0 flex-1 sm:w-48 sm:flex-none">
               <select
                 value={ordersFilterMonth}
                 onChange={(e) => setOrdersFilterMonth(parseInt(e.target.value))}
-                className="h-12 w-full appearance-none rounded-xl border border-zinc-200 bg-white px-5 pr-10 text-[14px] font-bold text-zinc-800 outline-none shadow-[0_12px_30px_rgba(15,23,42,0.04)] transition-all focus:border-zinc-400 focus:ring-2 focus:ring-zinc-500/10"
+                className="h-10 w-full appearance-none rounded-xl border border-zinc-200 bg-white px-3 pr-8 text-[12px] font-bold text-zinc-800 outline-none shadow-[0_12px_30px_rgba(15,23,42,0.04)] transition-all focus:border-zinc-400 focus:ring-2 focus:ring-zinc-500/10 sm:h-12 sm:px-5 sm:pr-10 sm:text-[14px]"
               >
                 <option value={-1}>Все месяцы</option>
                 {['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'].map((m, idx) => (
                   <option key={m} value={idx}>{m} 2026</option>
                 ))}
               </select>
-              <ChevronRight className="pointer-events-none absolute right-4 top-1/2 h-4 w-4 -translate-y-1/2 rotate-90 text-zinc-500" />
+              <ChevronRight className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 rotate-90 text-zinc-500 sm:right-4" />
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            <button type="button" className="grid h-11 w-11 place-items-center rounded-xl border border-zinc-200 bg-white text-zinc-600 shadow-sm hover:bg-zinc-50" title="Календарь">
+          <div className="flex items-center gap-2 overflow-x-auto no-scrollbar">
+            <button type="button" className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-zinc-200 bg-white text-zinc-600 shadow-sm hover:bg-zinc-50 sm:h-11 sm:w-11" title="Календарь">
               <Calendar className="h-4 w-4" />
             </button>
-            <button type="button" onClick={exportToCsv} className="grid h-11 w-11 place-items-center rounded-xl border border-zinc-200 bg-white text-zinc-600 shadow-sm hover:bg-zinc-50" title="Скачать">
+            <button type="button" onClick={exportToCsv} className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-zinc-200 bg-white text-zinc-600 shadow-sm hover:bg-zinc-50 sm:h-11 sm:w-11" title="Скачать">
               <Copy className="h-4 w-4" />
             </button>
-            <button type="button" className="inline-flex h-11 items-center gap-2 rounded-xl border border-zinc-200 bg-white px-4 text-[13px] font-bold text-zinc-800 shadow-sm hover:bg-zinc-50">
+            <button type="button" className="inline-flex h-10 shrink-0 items-center gap-2 rounded-xl border border-zinc-200 bg-white px-3 text-[12px] font-bold text-zinc-800 shadow-sm hover:bg-zinc-50 sm:h-11 sm:px-4 sm:text-[13px]">
               <Filter className="h-4 w-4" />
               Фильтры
             </button>
           </div>
         </div>
 
-        <div className="mb-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        <div className="mb-4 grid grid-cols-2 gap-2 sm:gap-3 xl:grid-cols-4">
           {analyticsKpis.map((kpi) => {
             const Icon = kpi.icon;
             const isNegativeValue = Number(kpi.value) < 0;
@@ -3000,24 +3000,24 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
               kpi.tone === 'red' ? 'text-red-500' :
               'text-zinc-950';
             return (
-              <div key={kpi.label} className="rounded-2xl border border-zinc-100 bg-white p-5 shadow-[0_10px_30px_rgba(15,23,42,0.03)]">
-                <div className="flex items-start justify-between gap-4">
-                  <div>
-                    <p className="text-[13px] font-black text-zinc-900">{kpi.label}</p>
-                    <p className={cn("mt-3 text-[24px] font-black leading-none tracking-tight", valueClass)}>
+              <div key={kpi.label} className="min-w-0 rounded-2xl border border-zinc-100 bg-white p-3 shadow-[0_10px_30px_rgba(15,23,42,0.03)] sm:p-5">
+                <div className="flex items-start justify-between gap-2 sm:gap-4">
+                  <div className="min-w-0">
+                    <p className="truncate text-[11px] font-black text-zinc-900 sm:text-[13px]">{kpi.label}</p>
+                    <p className={cn("mt-2 whitespace-nowrap text-[clamp(11px,3.25vw,15px)] font-black leading-none tracking-tight sm:mt-3 sm:text-[24px]", valueClass)}>
                       {isNegativeValue ? '−' : ''}{formatCurrency(Math.abs(Number(kpi.value) || 0))}
                     </p>
                   </div>
-                  <div className={cn("grid h-12 w-12 shrink-0 place-items-center rounded-2xl", toneClass)}>
-                    <Icon className="h-5 w-5" />
+                  <div className={cn("grid h-8 w-8 shrink-0 place-items-center rounded-xl sm:h-12 sm:w-12 sm:rounded-2xl", toneClass)}>
+                    <Icon className="h-4 w-4 sm:h-5 sm:w-5" />
                   </div>
                 </div>
-                <div className="mt-5 flex items-center gap-2 text-[12px] font-bold text-zinc-500">
+                <div className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-[9px] font-bold text-zinc-500 sm:mt-5 sm:text-[12px]">
                   <span className={cn("inline-flex items-center gap-1", kpi.delta.startsWith('-') ? "text-orange-500" : "text-emerald-600")}>
                     {kpi.delta.startsWith('-') ? <ArrowDownRight className="h-3 w-3" /> : <ArrowUpRight className="h-3 w-3" />}
                     {kpi.delta}
                   </span>
-                  <span>{kpi.caption}</span>
+                  <span className="hidden sm:inline">{kpi.caption}</span>
                 </div>
               </div>
             );
@@ -3026,35 +3026,35 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
 
         <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
           <div className="space-y-4">
-            <div className="rounded-2xl border border-zinc-100 bg-white p-5 shadow-sm">
-              <div className="mb-5 flex items-center justify-between gap-3">
-                <h4 className="text-[17px] font-black text-zinc-950">Динамика по месяцам</h4>
-                <button type="button" className="inline-flex h-10 items-center gap-2 rounded-xl border border-zinc-200 px-4 text-[12px] font-bold text-zinc-600">
+            <div className="rounded-2xl border border-zinc-100 bg-white p-3 shadow-sm sm:p-5">
+              <div className="mb-4 flex items-center justify-between gap-3 sm:mb-5">
+                <h4 className="text-[15px] font-black text-zinc-950 sm:text-[17px]">Динамика по месяцам</h4>
+                <button type="button" className="hidden h-10 items-center gap-2 rounded-xl border border-zinc-200 px-4 text-[12px] font-bold text-zinc-600 sm:inline-flex">
                   По месяцам
                   <ChevronRight className="h-4 w-4 rotate-90" />
                 </button>
               </div>
-              <div className="mb-4 flex flex-wrap gap-4 text-[12px] font-bold text-zinc-500">
+              <div className="mb-3 grid grid-cols-2 gap-2 text-[10px] font-bold text-zinc-500 sm:mb-4 sm:flex sm:flex-wrap sm:gap-4 sm:text-[12px]">
                 <span className="inline-flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full bg-emerald-500" />Оплачено</span>
                 <span className="inline-flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full bg-orange-500" />К доплате</span>
                 <span className="inline-flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full bg-red-500" />Возвраты</span>
                 <span className="inline-flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full bg-zinc-950" />После возвратов</span>
               </div>
-              <div className="h-[320px] w-full">
+              <div className="h-[240px] w-full sm:h-[320px]">
                 {analyticsMonths.length ? (
                   <ResponsiveContainer width="100%" height="100%">
-                    <ComposedChart data={analyticsMonths} margin={{ top: 10, right: 16, left: 0, bottom: 4 }}>
+                    <ComposedChart data={analyticsMonths} margin={{ top: 10, right: 6, left: -22, bottom: 0 }}>
                       <CartesianGrid stroke="#eef2f7" vertical={false} />
-                      <XAxis dataKey="shortName" tick={{ fill: '#71717a', fontSize: 12, fontWeight: 700 }} axisLine={false} tickLine={false} />
-                      <YAxis tick={{ fill: '#a1a1aa', fontSize: 11, fontWeight: 700 }} axisLine={false} tickLine={false} tickFormatter={(value) => `${Math.round(Number(value) / 1000)} тыс ₽`} />
+                      <XAxis dataKey="shortName" tick={{ fill: '#71717a', fontSize: 10, fontWeight: 700 }} axisLine={false} tickLine={false} />
+                      <YAxis tick={{ fill: '#a1a1aa', fontSize: 9, fontWeight: 700 }} axisLine={false} tickLine={false} tickFormatter={(value) => `${Math.round(Number(value) / 1000)}т`} />
                       <Tooltip
                         formatter={(value: any, name: any) => [formatCurrency(Math.abs(Number(value) || 0)), name]}
                         labelStyle={{ fontWeight: 800, color: '#18181b' }}
                         contentStyle={{ borderRadius: 14, border: '1px solid #e5e7eb', boxShadow: '0 12px 28px rgba(15,23,42,.08)' }}
                       />
-                      <Bar dataKey="paid" name="Оплачено" fill="#10b981" radius={[6, 6, 0, 0]} barSize={24} />
-                      <Bar dataKey="dueExtra" name="К доплате" fill="#f97316" radius={[6, 6, 0, 0]} barSize={24} />
-                      <Bar dataKey="returnsChart" name="Возвраты" fill="#ff2d4d" radius={[6, 6, 0, 0]} barSize={24} />
+                      <Bar dataKey="paid" name="Оплачено" fill="#10b981" radius={[5, 5, 0, 0]} barSize={18} />
+                      <Bar dataKey="dueExtra" name="К доплате" fill="#f97316" radius={[5, 5, 0, 0]} barSize={18} />
+                      <Bar dataKey="returnsChart" name="Возвраты" fill="#ff2d4d" radius={[5, 5, 0, 0]} barSize={18} />
                       <Line type="monotone" dataKey="net" name="После возвратов" stroke="#09090b" strokeWidth={3} dot={{ r: 4, fill: '#09090b', strokeWidth: 0 }} activeDot={{ r: 6 }} />
                     </ComposedChart>
                   </ResponsiveContainer>
@@ -3068,7 +3068,50 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
             </div>
 
             <div className="overflow-hidden rounded-2xl border border-zinc-100 bg-white shadow-sm">
-              <div className="overflow-x-auto">
+              <div className="space-y-2 p-3 md:hidden">
+                {analyticsMonths.map((m: any) => {
+                  const isCurrent = m.month === new Date().getMonth() + 1;
+                  return (
+                    <div key={`${m.year}-${m.month}-mobile`} className={cn("rounded-2xl border border-zinc-100 bg-white p-4", isCurrent && "border-emerald-100 bg-emerald-50/40")}>
+                      <div className="mb-3 flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-[15px] font-black text-zinc-950">{m.monthName}</p>
+                          <p className="mt-1 text-[11px] font-bold text-zinc-400">{m.orders} заказов · {m.sales || 0} продаж</p>
+                        </div>
+                        {isCurrent && <span className="rounded-full bg-emerald-500 px-2 py-1 text-[8px] font-black uppercase tracking-wide text-white">текущий</span>}
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div className="rounded-xl bg-emerald-50 p-3">
+                          <p className="text-[9px] font-black uppercase tracking-widest text-emerald-700">оплачено</p>
+                          <p className="mt-1 text-[13px] font-black text-emerald-600">{formatCurrency(m.paid)}</p>
+                        </div>
+                        <div className="rounded-xl bg-orange-50 p-3">
+                          <p className="text-[9px] font-black uppercase tracking-widest text-orange-700">к доплате</p>
+                          <p className={cn("mt-1 text-[13px] font-black", m.dueExtra > 0 ? "text-orange-500" : "text-zinc-300")}>{formatCurrency(m.dueExtra)}</p>
+                        </div>
+                        <div className="rounded-xl bg-red-50 p-3">
+                          <p className="text-[9px] font-black uppercase tracking-widest text-red-700">возвраты</p>
+                          <p className={cn("mt-1 text-[13px] font-black", m.returnsAmount > 0 ? "text-red-500" : "text-zinc-300")}>−{formatCurrency(m.returnsAmount)}</p>
+                        </div>
+                        <div className="rounded-xl bg-zinc-50 p-3">
+                          <p className="text-[9px] font-black uppercase tracking-widest text-zinc-500">итог</p>
+                          <p className="mt-1 text-[13px] font-black text-zinc-950">{formatCurrency(m.net)}</p>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+                <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
+                  <p className="text-[15px] font-black text-zinc-950">Итого 2026</p>
+                  <div className="mt-3 grid grid-cols-2 gap-2 text-[12px] font-black">
+                    <span className="text-emerald-600">{formatCurrency(totals2026.paid)}</span>
+                    <span className="text-orange-500">{formatCurrency(totals2026.dueExtra)}</span>
+                    <span className="text-red-500">−{formatCurrency(totals2026.returnsAmount)}</span>
+                    <span className="text-zinc-950">{formatCurrency(Math.max(0, totals2026.paid - totals2026.returnsAmount))}</span>
+                  </div>
+                </div>
+              </div>
+              <div className="hidden overflow-x-auto md:block">
                 <table className="w-full min-w-[900px] text-left">
                   <thead>
                     <tr className="border-b border-zinc-100 bg-zinc-50/70 text-[11px] font-black text-zinc-500">
@@ -3114,34 +3157,34 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
             </div>
           </div>
 
-          <aside className="rounded-2xl border border-zinc-100 bg-white p-5 shadow-sm">
-            <h4 className="mb-5 text-[18px] font-black text-zinc-950">Инсайты</h4>
-            <div className="space-y-5">
-              <div className="flex gap-4 border-b border-zinc-100 pb-5">
-                <div className="grid h-12 w-12 shrink-0 place-items-center rounded-full bg-emerald-50 text-emerald-600"><ArrowUpRight className="h-5 w-5" /></div>
+          <aside className="rounded-2xl border border-zinc-100 bg-white p-4 shadow-sm sm:p-5">
+            <h4 className="mb-4 text-[17px] font-black text-zinc-950 sm:mb-5 sm:text-[18px]">Инсайты</h4>
+            <div className="grid gap-3 sm:space-y-5 xl:block">
+              <div className="flex gap-3 rounded-2xl border border-zinc-100 p-3 sm:gap-4 sm:border-0 sm:border-b sm:p-0 sm:pb-5">
+                <div className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-emerald-50 text-emerald-600 sm:h-12 sm:w-12"><ArrowUpRight className="h-5 w-5" /></div>
                 <div>
                   <p className="text-[12px] font-bold text-zinc-400">Лучший месяц</p>
                   <p className="mt-1 text-[18px] font-black text-emerald-600">{analyticsInsights.best?.monthName || '—'}</p>
                   <p className="text-[15px] font-bold text-zinc-500">{formatCurrency(analyticsInsights.best?.net || 0)}</p>
                 </div>
               </div>
-              <div className="flex gap-4 border-b border-zinc-100 pb-5">
-                <div className="grid h-12 w-12 shrink-0 place-items-center rounded-full bg-red-50 text-red-500"><ArrowDownRight className="h-5 w-5" /></div>
+              <div className="flex gap-3 rounded-2xl border border-zinc-100 p-3 sm:gap-4 sm:border-0 sm:border-b sm:p-0 sm:pb-5">
+                <div className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-red-50 text-red-500 sm:h-12 sm:w-12"><ArrowDownRight className="h-5 w-5" /></div>
                 <div>
                   <p className="text-[12px] font-bold text-zinc-400">Худший месяц</p>
                   <p className="mt-1 text-[18px] font-black text-red-500">{analyticsInsights.worst?.monthName || '—'}</p>
                   <p className="text-[15px] font-bold text-zinc-500">{formatCurrency(analyticsInsights.worst?.net || 0)}</p>
                 </div>
               </div>
-              <div className="flex gap-4 border-b border-zinc-100 pb-5">
-                <div className="grid h-12 w-12 shrink-0 place-items-center rounded-full bg-violet-50 text-violet-600"><ShoppingBag className="h-5 w-5" /></div>
+              <div className="flex gap-3 rounded-2xl border border-zinc-100 p-3 sm:gap-4 sm:border-0 sm:border-b sm:p-0 sm:pb-5">
+                <div className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-violet-50 text-violet-600 sm:h-12 sm:w-12"><ShoppingBag className="h-5 w-5" /></div>
                 <div>
                   <p className="text-[12px] font-bold text-zinc-400">Средний чек</p>
                   <p className="mt-1 text-[18px] font-black text-zinc-700">{formatCurrency(analyticsInsights.averageCheck)}</p>
                 </div>
               </div>
-              <div className="flex gap-4">
-                <div className="grid h-12 w-12 shrink-0 place-items-center rounded-full bg-blue-50 text-blue-600"><Users className="h-5 w-5" /></div>
+              <div className="flex gap-3 rounded-2xl border border-zinc-100 p-3 sm:gap-4 sm:border-0 sm:p-0">
+                <div className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-blue-50 text-blue-600 sm:h-12 sm:w-12"><Users className="h-5 w-5" /></div>
                 <div>
                   <p className="text-[12px] font-bold text-zinc-400">Конверсия в продажу</p>
                   <p className="mt-1 text-[18px] font-black text-zinc-700">{analyticsInsights.conversion}%</p>
