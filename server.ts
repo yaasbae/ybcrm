@@ -2097,12 +2097,12 @@ app.post("/api/bot/config", async (req, res) => {
 });
 
 app.get("/api/bot/buttons", async (_req, res) => {
-  res.json(botCfg);
+  res.json({ ...botCfg, buttons: cleanBotButtons(botCfg.buttons) });
 });
 
 app.post("/api/bot/buttons", async (req, res) => {
   const { buttons, welcomeText, managerChatIds } = req.body;
-  if (buttons) botCfg.buttons = buttons;
+  if (buttons) botCfg.buttons = cleanBotButtons(buttons);
   if (welcomeText !== undefined) botCfg.welcomeText = welcomeText;
   if (managerChatIds !== undefined) botCfg.managerChatIds = parseManagerChatIds(managerChatIds);
   if (db) await setDoc(doc(db, "settings", "bot_buttons"), { buttons: botCfg.buttons, welcomeText: botCfg.welcomeText, managerChatIds: botCfg.managerChatIds }, { merge: true });
@@ -2932,12 +2932,18 @@ async function getCostumeById(costumeId: string): Promise<any | null> {
 // Bot button config — editable from CRM
 interface BotButton { id: string; label: string; response: string; }
 interface BotCfg { welcomeText: string; buttons: BotButton[]; managerChatIds: string[]; }
+const visibleBotButton = (button: BotButton) => button.id !== "tryon";
+const cleanBotButton = (button: BotButton): BotButton => (
+  button.id === "catalog"
+    ? { ...button, response: button.response.replace(/\n\nЕсли хочешь примерить[\s\S]*?👇/g, "") }
+    : button
+);
+const cleanBotButtons = (buttons: BotButton[]) => buttons.filter(visibleBotButton).map(cleanBotButton);
 
 const DEFAULT_BOT_CFG: BotCfg = {
-  welcomeText: "Привет, {name}! 👋\n\nДобро пожаловать в *YB Studio* — твой личный стилист.\n\n✨ Здесь ты можешь:\n👗 Примерить любой костюм онлайн\n🎁 Получить персональную скидку\n🆕 Первым узнавать о новинках\n\n*Специально для тебя — скидка 10% на первый заказ!*\nВыбери что тебя интересует 👇",
+  welcomeText: "Привет, {name}! 👋\n\nДобро пожаловать в *YB Studio* — твой личный стилист.\n\n✨ Здесь ты можешь:\n👗 Посмотреть каталог\n🎁 Получить персональную скидку\n🆕 Первым узнавать о новинках\n\n*Специально для тебя — скидка 10% на первый заказ!*\nВыбери что тебя интересует 👇",
   buttons: [
-    { id: "catalog", label: "👗 Каталог",             response: "👗 *Каталог YB Studio*\n\nПосмотреть все модели можно на нашем сайте и в Instagram.\n\nЕсли хочешь примерить понравившийся костюм онлайн — нажми кнопку ниже 👇" },
-    { id: "tryon",   label: "✨ Примерить онлайн",    response: "" },
+    { id: "catalog", label: "👗 Каталог",             response: "👗 *Каталог YB Studio*\n\nПосмотреть все модели можно на нашем сайте и в Instagram." },
     { id: "bonuses", label: "🎁 Мои бонусы",          response: "🎁 *Твои бонусы*\n\nОтправь свой номер телефона чтобы проверить баланс." },
     { id: "news",    label: "🆕 Новинки",             response: "🆕 *Новинки YB Studio*\n\nСледи за обновлениями — скоро здесь появятся новые коллекции!" },
     { id: "contact", label: "📞 Связаться с нами",    response: "📞 *Связь с нами*\n\nНапиши своё сообщение — менеджер ответит в течение нескольких минут 🙏" },
@@ -2953,7 +2959,7 @@ async function loadBotCfg() {
     const snap = await getDoc(doc(db, "settings", "bot_buttons"));
     if (snap.exists()) {
       const data = snap.data() as any;
-      if (data.buttons) botCfg.buttons = data.buttons;
+      if (data.buttons) botCfg.buttons = cleanBotButtons(data.buttons);
       if (data.welcomeText) botCfg.welcomeText = data.welcomeText;
       if (data.managerChatIds) botCfg.managerChatIds = parseManagerChatIds(data.managerChatIds);
     }

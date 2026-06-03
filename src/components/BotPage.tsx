@@ -31,6 +31,8 @@ interface BotButton {
   response: string;
 }
 
+const hideBotButton = (button: BotButton) => button.id !== 'tryon';
+
 export const BotPage: React.FC = () => {
   const [tab, setTab] = useState<'subscribers' | 'messages' | 'catalog' | 'settings'>('subscribers');
   const [subscribers, setSubscribers] = useState<Subscriber[]>([]);
@@ -96,7 +98,7 @@ export const BotPage: React.FC = () => {
       setCostumes(costumeResult.value);
     }
     if (btnResult.status === 'fulfilled' && btnResult.value?.buttons) {
-      setBotButtons(btnResult.value.buttons);
+      setBotButtons(btnResult.value.buttons.filter(hideBotButton));
     }
     if (managerResult.status === 'fulfilled' && Array.isArray(managerResult.value?.managerChatIds)) {
       setManagerChatIds(managerResult.value.managerChatIds.join('\n'));
@@ -241,7 +243,7 @@ export const BotPage: React.FC = () => {
       await fetch('/api/bot/buttons', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ buttons: botButtons }),
+        body: JSON.stringify({ buttons: botButtons.filter(hideBotButton) }),
       });
       setButtonsSavedOk(true);
       setTimeout(() => setButtonsSavedOk(false), 2000);
@@ -629,28 +631,22 @@ export const BotPage: React.FC = () => {
                               className="flex-1 bg-white border border-zinc-200 rounded-lg px-2.5 py-1.5 text-[11px] font-bold focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-400 transition-all"
                               placeholder="Название кнопки..."
                             />
-                            {btn.id !== 'tryon' && (
-                              <button onClick={() => removeButton(btn.id)}
-                                className="p-1.5 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-all shrink-0">
-                                <Trash2 size={12} />
-                              </button>
-                            )}
+                            <button onClick={() => removeButton(btn.id)}
+                              className="p-1.5 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-all shrink-0">
+                              <Trash2 size={12} />
+                            </button>
                           </div>
-                          {btn.id === 'tryon' ? (
-                            <p className="text-[9px] text-zinc-400 italic">Открывает каталог костюмов для AI-примерки</p>
-                          ) : (
-                            <textarea
-                              value={btn.response}
-                              onChange={e => {
-                                const updated = [...botButtons];
-                                updated[i] = { ...updated[i], response: e.target.value };
-                                setBotButtons(updated);
-                              }}
-                              rows={3}
-                              placeholder="Текст ответа когда нажимают эту кнопку..."
-                              className="w-full bg-white border border-zinc-200 rounded-lg px-2.5 py-1.5 text-[11px] focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-400 transition-all resize-y overflow-y-auto"
-                            />
-                          )}
+                          <textarea
+                            value={btn.response}
+                            onChange={e => {
+                              const updated = [...botButtons];
+                              updated[i] = { ...updated[i], response: e.target.value };
+                              setBotButtons(updated);
+                            }}
+                            rows={3}
+                            placeholder="Текст ответа когда нажимают эту кнопку..."
+                            className="w-full bg-white border border-zinc-200 rounded-lg px-2.5 py-1.5 text-[11px] focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-400 transition-all resize-y overflow-y-auto"
+                          />
                         </div>
                       ))}
                     </div>
