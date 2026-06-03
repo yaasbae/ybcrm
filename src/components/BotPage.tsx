@@ -74,22 +74,33 @@ export const BotPage: React.FC = () => {
 
   const loadData = async () => {
     setIsLoading(true);
-    try {
-      const [subSnap, msgSnap, cfgSnap, costumeRes, btnRes, managerRes] = await Promise.all([
-        getDocs(query(collection(db, 'bot_subscribers'), orderBy('subscribedAt', 'desc'))),
-        getDocs(query(collection(db, 'bot_messages'), orderBy('receivedAt', 'desc'), limit(50))),
-        getDoc(doc(db, 'settings', 'bot_config')),
-        fetch('/api/bot/costumes').then(r => r.json()),
-        fetch('/api/bot/buttons').then(r => r.json()),
-        fetch('/api/bot/manager-config').then(r => r.json()),
-      ]);
-      setSubscribers(subSnap.docs.map(d => ({ userId: d.id, ...d.data() } as Subscriber)));
-      setMessages(msgSnap.docs.map(d => ({ id: d.id, ...d.data() } as BotMessage)));
-      if (cfgSnap.exists() && cfgSnap.data().welcomeText) setWelcomeText(cfgSnap.data().welcomeText);
-      if (Array.isArray(costumeRes)) setCostumes(costumeRes);
-      if (btnRes?.buttons) setBotButtons(btnRes.buttons);
-      if (Array.isArray(managerRes?.managerChatIds)) setManagerChatIds(managerRes.managerChatIds.join('\n'));
-    } catch {}
+    const [subResult, msgResult, cfgResult, costumeResult, btnResult, managerResult] = await Promise.allSettled([
+      getDocs(query(collection(db, 'bot_subscribers'), orderBy('subscribedAt', 'desc'))),
+      getDocs(query(collection(db, 'bot_messages'), orderBy('receivedAt', 'desc'), limit(50))),
+      getDoc(doc(db, 'settings', 'bot_config')),
+      fetch('/api/bot/costumes').then(r => r.ok ? r.json() : []),
+      fetch('/api/bot/buttons').then(r => r.ok ? r.json() : null),
+      fetch('/api/bot/manager-config').then(r => r.ok ? r.json() : null),
+    ]);
+
+    if (subResult.status === 'fulfilled') {
+      setSubscribers(subResult.value.docs.map(d => ({ userId: d.id, ...d.data() } as Subscriber)));
+    }
+    if (msgResult.status === 'fulfilled') {
+      setMessages(msgResult.value.docs.map(d => ({ id: d.id, ...d.data() } as BotMessage)));
+    }
+    if (cfgResult.status === 'fulfilled' && cfgResult.value.exists() && cfgResult.value.data().welcomeText) {
+      setWelcomeText(cfgResult.value.data().welcomeText);
+    }
+    if (costumeResult.status === 'fulfilled' && Array.isArray(costumeResult.value)) {
+      setCostumes(costumeResult.value);
+    }
+    if (btnResult.status === 'fulfilled' && btnResult.value?.buttons) {
+      setBotButtons(btnResult.value.buttons);
+    }
+    if (managerResult.status === 'fulfilled' && Array.isArray(managerResult.value?.managerChatIds)) {
+      setManagerChatIds(managerResult.value.managerChatIds.join('\n'));
+    }
     setIsLoading(false);
   };
 

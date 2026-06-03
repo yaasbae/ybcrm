@@ -49,6 +49,22 @@ service cloud.firestore {
       allow write: if isAuthenticated();
     }
 
+    // Bot settings are saved through server API endpoints.
+    match /settings/bot_config {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    match /settings/bot_buttons {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    match /settings/bot_manager_config {
+      allow read: if true;
+      allow write: if true;
+    }
+
     // Other settings stay admin-only because they may contain integration config.
     match /settings/{document=**} {
       allow read: if true;
@@ -63,6 +79,36 @@ service cloud.firestore {
     // Contacts collection
     match /contacts/{document=**} {
       allow read, write: if isAuthenticated();
+    }
+
+    // Telegram bot data is written by the CRM server through Firebase client SDK,
+    // so these collections need explicit access outside browser auth.
+    match /costumes/{document=**} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    match /bot_subscribers/{document=**} {
+      allow read: if isAuthenticated();
+      allow write: if true;
+    }
+
+    match /bot_messages/{document=**} {
+      allow read: if isAuthenticated();
+      allow write: if true;
+      allow update: if isAuthenticated();
+    }
+
+    match /tryon_usage/{document=**} {
+      allow read, write: if true;
+    }
+
+    match /tryon_states/{document=**} {
+      allow read, write: if true;
+    }
+
+    match /tryon_orders/{document=**} {
+      allow read, write: if true;
     }
 
     // Dialog Knowledge Base collection
