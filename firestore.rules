@@ -81,6 +81,36 @@ service cloud.firestore {
       allow read, write: if isAuthenticated();
     }
 
+    // Broadcast history and broadcast runtime data.
+    match /broadcasts/{document=**} {
+      allow read, write: if isAuthenticated();
+    }
+
+    match /settings/broadcast_config {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    match /settings/no_telegram {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    match /settings/stealth_sent {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    match /settings/stealth_job {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    match /settings/stealth_job_data {
+      allow read: if true;
+      allow write: if true;
+    }
+
     // Telegram bot data is written by the CRM server through Firebase client SDK,
     // so these collections need explicit access outside browser auth.
     match /costumes/{document=**} {

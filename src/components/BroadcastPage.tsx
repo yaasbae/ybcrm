@@ -222,7 +222,7 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId, initialTab = 'compose'
   const [imagePreviews, setImagePreviews] = useState<string[]>([]);
   const [contactButton, setContactButton] = useState(true);
   const [isConfigLoaded, setIsConfigLoaded] = useState(false);
-  const [clientFilter, setClientFilter] = useState<'all' | 'unsent' | 'sent' | 'no_tg'>('unsent');
+  const [clientFilter, setClientFilter] = useState<'all' | 'unsent' | 'sent' | 'no_tg'>('all');
 
   // Telegram auth state
   const [tgStatus, setTgStatus] = useState<TgStatus>({ authorized: false, accounts: [] });
@@ -454,15 +454,19 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId, initialTab = 'compose'
   useEffect(() => {
     const loadData = async () => {
       try {
-        const [contactsSnap, broadcastsSnap, noTgSnap, stealthSentSnap] = await Promise.all([
+        const [contactsResult, broadcastsResult, noTgResult, stealthSentResult] = await Promise.allSettled([
           getDocs(query(collection(db, 'contacts'), orderBy('totalSpent', 'desc'))),
           getDocs(query(collection(db, 'broadcasts'), orderBy('sentAt', 'desc'), limit(30))),
           getDoc(doc(db, 'settings', 'no_telegram')),
           getDoc(doc(db, 'settings', 'stealth_sent')),
         ]);
+        const contactsSnap = contactsResult.status === 'fulfilled' ? contactsResult.value : null;
+        const broadcastsSnap = broadcastsResult.status === 'fulfilled' ? broadcastsResult.value : null;
+        const noTgSnap = noTgResult.status === 'fulfilled' ? noTgResult.value : null;
+        const stealthSentSnap = stealthSentResult.status === 'fulfilled' ? stealthSentResult.value : null;
 
         // Load saved no-telegram phones
-        if (noTgSnap.exists()) {
+        if (noTgSnap?.exists()) {
           const map = new Map<string, string>();
           (noTgSnap.data().phones || []).forEach((p: { phone: string; addedAt: string }) => map.set(normalizeBroadcastPhone(p.phone), p.addedAt));
           setNoTelegramPhones(map);
@@ -474,7 +478,7 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId, initialTab = 'compose'
         let latestLog: Array<{ phone: string; name: string; status: 'sent' | 'error'; error?: string }> = [];
         let latestAt = '';
         const accStats = new Map<string, number>();
-        broadcastsSnap.docs.forEach(d => {
+        broadcastsSnap?.docs.forEach(d => {
           const b = d.data() as any;
           if (b.sentCount === undefined) return;
           if (b.sentCount === 0) return;
@@ -494,7 +498,7 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId, initialTab = 'compose'
         if (latestLog.length > 0) setSendLog(latestLog);
 
         // Загружаем даты отправки из stealth_sent
-        if (stealthSentSnap.exists()) {
+        if (stealthSentSnap?.exists()) {
           const datesMap = new Map<string, string>();
           (stealthSentSnap.data().phones || []).forEach((p: any) => {
             const ph = typeof p === 'string' ? p : p?.phone;
@@ -511,7 +515,7 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId, initialTab = 'compose'
         // Клиентская база — коллекция contacts, отсортирована по totalSpent
         const revMap = new Map<string, number>();
         const ordMap = new Map<string, number>();
-        const data = contactsSnap.docs.map(d => {
+        const data = (contactsSnap?.docs || []).map(d => {
           const c = d.data() as any;
           const phone = normalizeBroadcastPhone(c.phone || d.id || '');
           const rev = c.totalSpent || 0;
