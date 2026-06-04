@@ -2933,18 +2933,40 @@ async function getCostumeById(costumeId: string): Promise<any | null> {
 // Bot button config — editable from CRM
 interface BotButton { id: string; label: string; response: string; }
 interface BotCfg { welcomeText: string; buttons: BotButton[]; managerChatIds: string[]; }
+const DEFAULT_CATALOG_BUTTON: BotButton = {
+  id: "catalog",
+  label: "👗 Каталог",
+  response: "👗 *Каталог YB Studio*\n\nПосмотреть все модели можно на нашем сайте и в Instagram.",
+};
 const visibleBotButton = (button: BotButton) => button.id !== "tryon";
-const cleanBotButton = (button: BotButton): BotButton => (
-  button.id === "catalog"
-    ? { ...button, response: button.response.replace(/\n\nЕсли хочешь примерить[\s\S]*?👇/g, "") }
-    : button
-);
-const cleanBotButtons = (buttons: BotButton[]) => buttons.filter(visibleBotButton).map(cleanBotButton);
+const cleanCatalogResponse = (response: string) => response.replace(/\n\nЕсли хочешь примерить[\s\S]*?👇/g, "");
+const cleanBotButton = (button: BotButton): BotButton => ({ ...button, label: (button.label || "").trim() });
+const cleanBotButtons = (buttons: BotButton[]) => {
+  const cleaned: BotButton[] = [];
+  buttons.filter(visibleBotButton).forEach(rawButton => {
+    const button = cleanBotButton(rawButton);
+    if (!button.label) return;
+    if (button.id === "catalog") {
+      cleaned.push(DEFAULT_CATALOG_BUTTON);
+      if (!/каталог/i.test(button.label)) {
+        cleaned.push({
+          id: "btn_presale_terms",
+          label: button.label,
+          response: cleanCatalogResponse(button.response || ""),
+        });
+      }
+      return;
+    }
+    cleaned.push(button);
+  });
+  const hasCatalog = cleaned.some(button => button.id === "catalog");
+  return hasCatalog ? cleaned : [DEFAULT_CATALOG_BUTTON, ...cleaned];
+};
 
 const DEFAULT_BOT_CFG: BotCfg = {
   welcomeText: "Привет, {name}! 👋\n\nДобро пожаловать в *YB Studio* — твой личный стилист.\n\n✨ Здесь ты можешь:\n👗 Посмотреть каталог\n🎁 Получить персональную скидку\n🆕 Первым узнавать о новинках\n\n*Специально для тебя — скидка 10% на первый заказ!*\nВыбери что тебя интересует 👇",
   buttons: [
-    { id: "catalog", label: "👗 Каталог",             response: "👗 *Каталог YB Studio*\n\nПосмотреть все модели можно на нашем сайте и в Instagram." },
+    DEFAULT_CATALOG_BUTTON,
     { id: "bonuses", label: "🎁 Мои бонусы",          response: "🎁 *Твои бонусы*\n\nОтправь свой номер телефона чтобы проверить баланс." },
     { id: "news",    label: "🆕 Новинки",             response: "🆕 *Новинки YB Studio*\n\nСледи за обновлениями — скоро здесь появятся новые коллекции!" },
     { id: "contact", label: "📞 Связаться с нами",    response: "📞 *Связь с нами*\n\nНапиши своё сообщение — менеджер ответит в течение нескольких минут 🙏" },
