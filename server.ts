@@ -1368,8 +1368,8 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
           await saveStealthProgress();
           await saveNoTgAndSent();
         } else {
-          // Отправляем
-          const variant = messageVariants[Math.floor(Math.random() * messageVariants.length)];
+          // Отправляем варианты по кругу: 1,2,3...10, затем снова 1.
+          const variant = messageVariants[phoneIdx % messageVariants.length];
           const textMsg = contactButton ? `${variant}\n\nНаписать менеджеру: ${BROADCAST_MANAGER_BOT_URL}` : variant;
 
           if (imageFiles.length > 0) {
@@ -1522,9 +1522,9 @@ app.post("/api/broadcast/gramjs", async (req, res) => {
   const imageFiles: Array<{ base64: string; name: string }> = images?.length
     ? images
     : imageBase64 ? [{ base64: imageBase64, name: imageName || 'photo.jpg' }] : [];
-  // Variants: if provided, pick random per recipient; fallback to single message
+  // Variants: if provided, send them round-robin per recipient; fallback to single message
   const variants: string[] = (messageVariants?.length > 0) ? messageVariants : (message ? [message] : []);
-  const getVariant = () => variants[Math.floor(Math.random() * variants.length)];
+  const getVariant = (index: number) => variants[index % variants.length];
   // mode: "burn" = расходный (быстро, до бана), "safe" = бережный (медленно)
   const MESSAGES_PER_ACCOUNT = mode === "burn" ? 9999 : 20;
   const getMsgDelay = () => mode === "burn" ? 200 + Math.random() * 300 : 3000 + Math.random() * 4000;
@@ -1676,7 +1676,8 @@ app.post("/api/broadcast/gramjs", async (req, res) => {
           results.push({ phone: rawPhone, status: "no_telegram", error: "Нет Telegram" });
           continue;
         }
-        const textMsg = contactButton ? `${getVariant()}\n\nНаписать менеджеру: ${BROADCAST_MANAGER_BOT_URL}` : getVariant();
+        const variant = getVariant(i);
+        const textMsg = contactButton ? `${variant}\n\nНаписать менеджеру: ${BROADCAST_MANAGER_BOT_URL}` : variant;
         if (imageFiles.length > 0) {
           const { CustomFile } = await import("telegram/client/uploads");
           const fileObjs = await Promise.all(imageFiles.map(async f => {

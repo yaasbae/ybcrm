@@ -874,10 +874,12 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId, initialTab = 'compose'
   const sendDisabledReason = useMemo(() => {
     if (!tgStatus.authorized) return 'Сначала подключи Telegram аккаунт';
     if (!message.trim()) return 'Напиши текст сообщения';
+    if (message.length > 4096) return 'Telegram принимает до 4096 символов в одном сообщении';
+    if (messageVariants.some(v => v.length > 4096)) return 'Один из вариантов длиннее 4096 символов';
     if (selected.size === 0) return 'Выбери клиентов для рассылки';
     if (isSending) return 'Рассылка уже идет';
     return '';
-  }, [isSending, message, selected.size, tgStatus.authorized]);
+  }, [isSending, message, messageVariants, selected.size, tgStatus.authorized]);
   const clientByPhone = useMemo(() => {
     const map = new Map<string, any>();
     clients.forEach(client => {
@@ -1196,7 +1198,7 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId, initialTab = 'compose'
                 <label className="text-[9px] font-black text-zinc-400 uppercase tracking-widest ml-1">Google Gemini · Генерация вариантов</label>
                 {geminiConfigured && <span className="text-[8px] font-black text-emerald-500 uppercase tracking-widest">✓ настроен</span>}
               </div>
-              <p className="text-[9px] text-zinc-400 ml-1">API ключ из <span className="font-bold">aistudio.google.com</span> — бесплатно, используется для генерации 9 вариантов сообщений</p>
+              <p className="text-[9px] text-zinc-400 ml-1">API ключ из <span className="font-bold">aistudio.google.com</span> — бесплатно, используется для генерации дополнительных вариантов сообщений</p>
               <div className="flex gap-2">
                 <input
                   type="password"
@@ -1360,8 +1362,8 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId, initialTab = 'compose'
             <div className="space-y-1">
               <div className="flex items-center justify-between ml-1">
                 <label className="text-[9px] font-black text-zinc-400 uppercase tracking-widest">Текст сообщения</label>
-                <span className={cn("text-[9px] font-black", charCount > 160 ? "text-amber-500" : "text-zinc-300")}>
-                  {charCount}/160
+                <span className={cn("text-[9px] font-black", charCount > 4096 ? "text-red-500" : charCount > 3500 ? "text-amber-500" : "text-zinc-300")}>
+                  {charCount}/4096
                 </span>
               </div>
               <textarea
@@ -1373,17 +1375,17 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId, initialTab = 'compose'
               />
             </div>
 
-            {/* 9 вариантов сообщений */}
+            {/* Message variants */}
             <div className="space-y-2">
               <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 ml-1">
                 <label className="text-[9px] font-black text-zinc-400 uppercase tracking-widest">
-                  Варианты сообщений (1–9) — при рассылке каждому отправится случайный
+                  Варианты сообщений: основной текст + 9 ниже = 10, отправляются по кругу
                 </label>
                 <div className="flex gap-2">
                   <button
                     onClick={handleGenerateVariants}
                     disabled={isGeneratingVariants || !message.trim()}
-                    title={!message.trim() ? 'Сначала напиши текст сообщения' : 'Сгенерировать 9 вариантов'}
+                    title={!message.trim() ? 'Сначала напиши текст сообщения' : 'Сгенерировать варианты'}
                     className="flex items-center gap-1 px-2 py-1 bg-violet-100 hover:bg-violet-200 text-violet-700 rounded-lg text-[8px] font-black uppercase tracking-widest transition-all disabled:opacity-40"
                   >
                     {isGeneratingVariants ? <Loader2 size={9} className="animate-spin" /> : '✨'}
