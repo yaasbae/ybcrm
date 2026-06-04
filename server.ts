@@ -2934,13 +2934,15 @@ async function getCostumeById(costumeId: string): Promise<any | null> {
 interface BotButton { id: string; label: string; response: string; }
 interface BotCfg { welcomeText: string; buttons: BotButton[]; managerChatIds: string[]; }
 const DEFAULT_CATALOG_BUTTON: BotButton = {
-  id: "catalog",
+  id: "catalog_text",
   label: "👗 Каталог",
   response: "👗 *Каталог YB Studio*\n\nПосмотреть все модели можно на нашем сайте и в Instagram.",
 };
+const PHOTO_CATALOG_BUTTON_RE = /(смотреть\s*фото|фото\s*каталог|каталог\s*фото)/i;
 const visibleBotButton = (button: BotButton) => button.id !== "tryon";
 const cleanCatalogResponse = (response: string) => response.replace(/\n\nЕсли хочешь примерить[\s\S]*?👇/g, "");
 const cleanBotButton = (button: BotButton): BotButton => ({ ...button, label: (button.label || "").trim() });
+const isPhotoCatalogButton = (button: BotButton) => button.id === "catalog_photos" || PHOTO_CATALOG_BUTTON_RE.test(button.label || "");
 const cleanBotButtons = (buttons: BotButton[]) => {
   const cleaned: BotButton[] = [];
   buttons.filter(visibleBotButton).forEach(rawButton => {
@@ -2959,7 +2961,7 @@ const cleanBotButtons = (buttons: BotButton[]) => {
     }
     cleaned.push(button);
   });
-  const hasCatalog = cleaned.some(button => button.id === "catalog");
+  const hasCatalog = cleaned.some(button => button.id === DEFAULT_CATALOG_BUTTON.id || /^👗?\s*Каталог$/i.test(button.label || ""));
   return hasCatalog ? cleaned : [DEFAULT_CATALOG_BUTTON, ...cleaned];
 };
 
@@ -3366,10 +3368,10 @@ function startTelegramBot() {
         await ctx.replyWithPhoto({ url: c.imageUrl }, { caption: c.name }).catch(() => {});
       }
 
-      // Show try-on button
+      // Catalog is photo-only here; online try-on is intentionally not attached to catalog items.
       await ctx.reply(
-        `*${c.name}*\n\nХочешь примерить эту модель онлайн?`,
-        { parse_mode: "Markdown", ...Markup.inlineKeyboard([[Markup.button.callback("✨ Примерить онлайн", `tryon_${costumeId}`)]]) }
+        `*${c.name}*\n\nФото модели отправила. Чтобы оформить заказ — жми «✍️ Хочу костюм» или напиши менеджеру.`,
+        { parse_mode: "Markdown" }
       );
     } catch (e: any) {
       console.error("catalog action error:", e.message);
@@ -3572,7 +3574,7 @@ function startTelegramBot() {
       // Check if text matches any menu button label
       const btn = botCfg.buttons.find(b => b.label === text);
       if (btn) {
-        if (btn.id === "catalog" || btn.id === "tryon") {
+        if (isPhotoCatalogButton(btn)) {
           // Show catalog as list of model name buttons
           saveSubscriber(ctx).catch(() => {});
           const costumes = await getCostumes();
@@ -3582,9 +3584,7 @@ function startTelegramBot() {
             [Markup.button.callback(`👗 ${c.name}`, `catalog_${c.id}`)]
           );
           await ctx.reply(
-            btn.id === "tryon"
-              ? "✨ *Онлайн примерка* _(тестовый режим)_\n\nВыбери модель для примерки 👇"
-              : "👗 *Каталог YB Studio*\n\nВыбери модель чтобы посмотреть фото 👇",
+            "👗 *Каталог YB Studio*\n\nВыбери модель чтобы посмотреть фото 👇",
             { parse_mode: "Markdown", ...Markup.inlineKeyboard(modelButtons) }
           );
         } else if (btn.id === "contact") {
