@@ -202,7 +202,7 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId, initialTab = 'compose'
   const [isGeneratingVariants, setIsGeneratingVariants] = useState(false);
   const [variantsError, setVariantsError] = useState('');
   const [showVariants, setShowVariants] = useState(false);
-  const [stealthStatus, setStealthStatus] = useState<{status:string;sent:number;failed:number;checked:number;total:number;delayMinutes?:number;currentIndex?:number;currentAccount?:string;log?:Array<{phone:string;name:string;status:string;error?:string;account?:string}>} | null>(null);
+  const [stealthStatus, setStealthStatus] = useState<{status:string;sent:number;failed:number;checked:number;total:number;delayMinutes?:number;activeFromHour?:number;activeToHour?:number;wakeAt?:string;currentIndex?:number;currentAccount?:string;log?:Array<{phone:string;name:string;status:string;error?:string;account?:string}>} | null>(null);
   const [clientRevenue, setClientRevenue] = useState<Map<string, number>>(new Map());
   const [clientOrders, setClientOrders] = useState<Map<string, number>>(new Map());
   const [sentPhones, setSentPhones] = useState<Set<string>>(new Set());
@@ -821,7 +821,7 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId, initialTab = 'compose'
       const response = await fetch('/api/broadcast/stealth-start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ phones, messageVariants: allVariants, images: imageFiles, contactButton, delayMinutes: sendIntervalMinutes })
+        body: JSON.stringify({ phones, messageVariants: allVariants, images: imageFiles, contactButton, delayMinutes: sendIntervalMinutes, activeFromHour: 8, activeToHour: 21 })
       });
       const raw = await response.text();
       let data: any = {};
@@ -832,7 +832,7 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId, initialTab = 'compose'
       }
       if (!response.ok) throw new Error(data.error || `Ошибка API ${response.status}`);
       if (data.error) throw new Error(data.error);
-      setStealthStatus({ status: 'running', sent: 0, failed: 0, checked: 0, total: data.total, delayMinutes: data.delayMinutes || sendIntervalMinutes });
+      setStealthStatus({ status: 'running', sent: 0, failed: 0, checked: 0, total: data.total, delayMinutes: data.delayMinutes || sendIntervalMinutes, activeFromHour: data.activeFromHour || 8, activeToHour: data.activeToHour || 21 });
       setSendDebug(`Запущено: ${data.total} номеров`);
     } catch (e: any) {
       setResult({ error: e.message });
@@ -1712,11 +1712,12 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId, initialTab = 'compose'
               <span className="text-[9px] font-black text-violet-600 uppercase tracking-widest">Рассылка</span>
               <div className="flex items-center gap-2">
                 {stealthStatus.status === 'running' && <Loader2 size={12} className="animate-spin text-violet-400" />}
+                {stealthStatus.status === 'sleeping' && <span className="text-[9px] font-black text-blue-500">Ждём утра</span>}
                 {stealthStatus.status === 'done' && <span className="text-[9px] font-black text-emerald-500">Готово</span>}
                 {stealthStatus.status === 'stopped' && <span className="text-[9px] font-black text-zinc-500">Остановлено</span>}
                 {stealthStatus.status === 'waiting_accounts' && <span className="text-[9px] font-black text-amber-500">Пауза</span>}
                 {stealthStatus.status === 'error' && <span className="text-[9px] font-black text-red-500">Ошибка</span>}
-                {stealthStatus.status === 'running' && (
+                {['running', 'sleeping'].includes(stealthStatus.status) && (
                   <button onClick={async () => {
                     await fetch('/api/broadcast/stealth-stop', { method: 'POST' }).catch(() => {});
                     setStealthStatus(prev => prev ? { ...prev, status: 'stopped' } : prev);
@@ -1751,13 +1752,21 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId, initialTab = 'compose'
               )}
               {stealthStatus.status === 'running' && stealthStatus.currentAccount && (
                 <p className="text-[8px] text-zinc-400 text-center">
-                  Аккаунт: {stealthStatus.currentAccount} · {stealthStatus.delayMinutes || sendIntervalMinutes} мин между отправками
+                  Аккаунт: {stealthStatus.currentAccount} · {stealthStatus.delayMinutes || sendIntervalMinutes} мин · окно {stealthStatus.activeFromHour || 8}:00-{stealthStatus.activeToHour || 21}:00
                 </p>
+              )}
+              {stealthStatus.status === 'sleeping' && (
+                <div className="rounded-xl border border-blue-100 bg-blue-50 px-3 py-2 text-center">
+                  <p className="text-[9px] font-black text-blue-600 uppercase tracking-widest">Ночная пауза</p>
+                  <p className="text-[8px] text-blue-500 mt-1">
+                    Рассылка продолжится после {stealthStatus.activeFromHour || 8}:00 по Москве
+                  </p>
+                </div>
               )}
               {stealthStatus.status === 'waiting_accounts' && (
                 <div className="space-y-2">
-                  <p className="text-[9px] text-amber-600 font-bold text-center">Все аккаунты забанены</p>
-                  <p className="text-[8px] text-zinc-400 text-center">Добавь новые аккаунты в Настройки</p>
+                  <p className="text-[9px] text-amber-600 font-bold text-center">Все аккаунты в бане или лимите</p>
+                  <p className="text-[8px] text-zinc-400 text-center">Добавь новые аккаунты или продолжи позже</p>
                   <button
                     onClick={async () => {
                       try {

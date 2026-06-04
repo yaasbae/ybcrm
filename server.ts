@@ -1137,18 +1137,21 @@ app.post('/api/ai/generate-variants', async (req, res) => {
 });
 
 // Фоновая рассылка: 1 аккаунт → до 20 номеров → выбранная пауза между отправками → следующий аккаунт
-type StealthJobStatus = 'idle'|'running'|'waiting_accounts'|'stopped'|'done'|'error';
+type StealthJobStatus = 'idle'|'running'|'sleeping'|'waiting_accounts'|'stopped'|'done'|'error';
 let stealthJob: {
   status: StealthJobStatus;
   total: number; sent: number; failed: number; checked: number; currentIndex: number;
   currentAccount: string;
   delayMinutes?: number;
+  activeFromHour?: number;
+  activeToHour?: number;
+  wakeAt?: string;
   startedAt: string; finishedAt?: string; error?: string;
   stopRequested: boolean;
   log: Array<{phone:string;name:string;status:string;error?:string;account?:string}>;
 } = {
   status: 'idle', total: 0, sent: 0, failed: 0, checked: 0, currentIndex: 0,
-  currentAccount: '', delayMinutes: 2, startedAt: '', stopRequested: false, log: []
+  currentAccount: '', delayMinutes: 2, activeFromHour: 8, activeToHour: 21, startedAt: '', stopRequested: false, log: []
 };
 
 const saveStealthProgress = async () => {
@@ -1156,16 +1159,69 @@ const saveStealthProgress = async () => {
   await setDoc(doc(db, 'settings', 'stealth_job'), { ...stealthJob, log: stealthJob.log.slice(-500) }).catch(() => {});
 };
 
-async function runStealthBroadcast(phones: string[], messageVariants: string[], contactButton: boolean, imageFiles: Array<{base64:string;name:string}>, startFrom = 0, delayMinutes = 2) {
+const MOSCOW_TZ = 'Europe/Moscow';
+
+function getMoscowMinutesOfDay(date = new Date()) {
+  const parts = new Intl.DateTimeFormat('ru-RU', {
+    timeZone: MOSCOW_TZ,
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  }).formatToParts(date);
+  const hour = Number(parts.find(p => p.type === 'hour')?.value || 0);
+  const minute = Number(parts.find(p => p.type === 'minute')?.value || 0);
+  return hour * 60 + minute;
+}
+
+function msUntilMoscowHour(hour: number) {
+  const currentMinutes = getMoscowMinutesOfDay();
+  const targetMinutes = hour * 60;
+  const minutesUntil = currentMinutes < targetMinutes
+    ? targetMinutes - currentMinutes
+    : (24 * 60 - currentMinutes) + targetMinutes;
+  return minutesUntil * 60 * 1000;
+}
+
+async function waitForBroadcastWindow(activeFromHour = 8, activeToHour = 21) {
+  const fromMinutes = activeFromHour * 60;
+  const toMinutes = activeToHour * 60;
+
+  while (!stealthJob.stopRequested) {
+    const currentMinutes = getMoscowMinutesOfDay();
+    if (currentMinutes >= fromMinutes && currentMinutes < toMinutes) {
+      if (stealthJob.status === 'sleeping') {
+        stealthJob.status = 'running';
+        stealthJob.wakeAt = undefined;
+        await saveStealthProgress();
+      }
+      return;
+    }
+
+    const waitMs = msUntilMoscowHour(activeFromHour);
+    stealthJob.status = 'sleeping';
+    stealthJob.wakeAt = new Date(Date.now() + waitMs).toISOString();
+    await saveStealthProgress();
+    console.log(`[stealth] outside send window ${activeFromHour}:00-${activeToHour}:00 MSK, sleeping ${Math.ceil(waitMs / 60000)} min`);
+
+    const waitSteps = Math.ceil(waitMs / 30000);
+    for (let w = 0; w < waitSteps && !stealthJob.stopRequested; w++) {
+      await new Promise(r => setTimeout(r, Math.min(30000, waitMs - w * 30000)));
+    }
+  }
+}
+
+async function runStealthBroadcast(phones: string[], messageVariants: string[], contactButton: boolean, imageFiles: Array<{base64:string;name:string}>, startFrom = 0, delayMinutes = 2, activeFromHour = 8, activeToHour = 21) {
   if (!db) return;
 
   const MESSAGES_PER_ACCOUNT = 20;
   const safeDelayMinutes = [2, 5, 10].includes(Number(delayMinutes)) ? Number(delayMinutes) : 2;
+  const safeActiveFromHour = Number.isFinite(Number(activeFromHour)) ? Math.min(23, Math.max(0, Number(activeFromHour))) : 8;
+  const safeActiveToHour = Number.isFinite(Number(activeToHour)) ? Math.min(24, Math.max(1, Number(activeToHour))) : 21;
   const DELAY_BETWEEN_SENDS = safeDelayMinutes * 60 * 1000;
 
   if (startFrom === 0) {
-    stealthJob = { status: 'running', total: phones.length, sent: 0, failed: 0, checked: 0, currentIndex: 0, currentAccount: '', delayMinutes: safeDelayMinutes, startedAt: new Date().toISOString(), stopRequested: false, log: [] };
-    await setDoc(doc(db, 'settings', 'stealth_job_data'), { phones, messageVariants, contactButton, imageFiles, delayMinutes: safeDelayMinutes }).catch((e) => {
+    stealthJob = { status: 'running', total: phones.length, sent: 0, failed: 0, checked: 0, currentIndex: 0, currentAccount: '', delayMinutes: safeDelayMinutes, activeFromHour: safeActiveFromHour, activeToHour: safeActiveToHour, startedAt: new Date().toISOString(), stopRequested: false, log: [] };
+    await setDoc(doc(db, 'settings', 'stealth_job_data'), { phones, messageVariants, contactButton, imageFiles, delayMinutes: safeDelayMinutes, activeFromHour: safeActiveFromHour, activeToHour: safeActiveToHour }).catch((e) => {
       console.warn('[stealth] could not persist job data:', e?.message || e);
     });
   } else {
@@ -1173,6 +1229,9 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
     stealthJob.stopRequested = false;
     stealthJob.currentIndex = startFrom;
     stealthJob.delayMinutes = safeDelayMinutes;
+    stealthJob.activeFromHour = safeActiveFromHour;
+    stealthJob.activeToHour = safeActiveToHour;
+    stealthJob.wakeAt = undefined;
   }
   await saveStealthProgress();
 
@@ -1225,12 +1284,17 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
 
   let phoneIdx = startFrom;
   const deadAccounts = new Set<string>(); // навсегда мёртвые (AUTH_KEY и тд)
+  const limitedAccounts = new Set<string>(); // временно упёрлись в PEER_FLOOD в этой рассылке
   let roundIdx = 0;
   const phoneFloodTries = new Map<number, number>(); // phoneIdx → кол-во PEER_FLOOD попыток
   const lastSentAtByAccount = new Map<string, number>();
 
   while (phoneIdx < phones.length && !stealthJob.stopRequested) {
-    const liveAccounts = accounts.filter(a => !deadAccounts.has(a.phone));
+    await waitForBroadcastWindow(safeActiveFromHour, safeActiveToHour);
+    if (stealthJob.stopRequested) break;
+
+    const availableAccountCount = accounts.filter(a => !deadAccounts.has(a.phone)).length;
+    const liveAccounts = accounts.filter(a => !deadAccounts.has(a.phone) && !limitedAccounts.has(a.phone));
     if (!liveAccounts.length) break; // все аккаунты мёртвые
 
     const acc = liveAccounts[roundIdx % liveAccounts.length];
@@ -1296,15 +1360,16 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
         }
         if (resolveErr.includes('PEER_FLOOD')) {
           console.log(`[stealth] account ${acc.phone} PEER_FLOOD on resolve, switching account`);
+          limitedAccounts.add(acc.phone);
           const tries = (phoneFloodTries.get(phoneIdx) || 0) + 1;
           phoneFloodTries.set(phoneIdx, tries);
-          if (tries >= liveAccounts.length) {
-            // Все аккаунты дали PEER_FLOOD на этот номер — пропускаем, подождём следующего круга
-            console.log(`[stealth] all accounts PEER_FLOOD for ${phone}, skipping for now`);
-            phoneFloodTries.delete(phoneIdx);
-            stealthJob.log.push({ phone: rawPhone, name: rawPhone, status: 'error', error: 'PEER_FLOOD — все аккаунты', account: acc.phone });
-            stealthJob.failed++; phoneIdx++; stealthJob.checked++; stealthJob.currentIndex = phoneIdx;
+          if (tries >= availableAccountCount) {
+            console.log(`[stealth] all accounts PEER_FLOOD at index ${phoneIdx}, pausing job`);
+            stealthJob.status = 'waiting_accounts';
+            stealthJob.log.push({ phone: rawPhone, name: rawPhone, status: 'error', error: 'Все аккаунты упёрлись в лимит Telegram', account: acc.phone });
             await saveStealthProgress();
+            accountBanned = true;
+            break;
           }
           accountBanned = true;
           break;
@@ -1324,14 +1389,16 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
           }
           if (importErr.includes('PEER_FLOOD')) {
             console.log(`[stealth] account ${acc.phone} PEER_FLOOD at ImportContacts, switching`);
+            limitedAccounts.add(acc.phone);
             const tries = (phoneFloodTries.get(phoneIdx) || 0) + 1;
             phoneFloodTries.set(phoneIdx, tries);
-            if (tries >= liveAccounts.length) {
-              console.log(`[stealth] all accounts PEER_FLOOD for ${phone}, skipping`);
-              phoneFloodTries.delete(phoneIdx);
-              stealthJob.log.push({ phone: rawPhone, name: rawPhone, status: 'error', error: 'PEER_FLOOD — все аккаунты', account: acc.phone });
-              stealthJob.failed++; phoneIdx++; stealthJob.checked++; stealthJob.currentIndex = phoneIdx;
+            if (tries >= availableAccountCount) {
+              console.log(`[stealth] all accounts PEER_FLOOD at index ${phoneIdx}, pausing job`);
+              stealthJob.status = 'waiting_accounts';
+              stealthJob.log.push({ phone: rawPhone, name: rawPhone, status: 'error', error: 'Все аккаунты упёрлись в лимит Telegram', account: acc.phone });
               await saveStealthProgress();
+              accountBanned = true;
+              break;
             }
             accountBanned = true;
             break;
@@ -1409,13 +1476,15 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
         }
         if (errMsg.includes('PEER_FLOOD')) {
           console.log(`[stealth] account ${acc.phone} PEER_FLOOD on send, switching account`);
+          limitedAccounts.add(acc.phone);
           const tries = (phoneFloodTries.get(phoneIdx) || 0) + 1;
           phoneFloodTries.set(phoneIdx, tries);
-          if (tries >= liveAccounts.length) {
-            phoneFloodTries.delete(phoneIdx);
-            stealthJob.log.push({ phone: rawPhone, name: rawPhone, status: 'error', error: 'PEER_FLOOD на отправке — все аккаунты', account: acc.phone });
-            stealthJob.failed++; phoneIdx++; stealthJob.checked++; stealthJob.currentIndex = phoneIdx;
+          if (tries >= availableAccountCount) {
+            stealthJob.status = 'waiting_accounts';
+            stealthJob.log.push({ phone: rawPhone, name: rawPhone, status: 'error', error: 'Все аккаунты упёрлись в лимит Telegram', account: acc.phone });
             await saveStealthProgress();
+            accountBanned = true;
+            break;
           }
           accountBanned = true;
           break;
@@ -1431,14 +1500,15 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
 
     await client.destroy().catch(() => {});
     console.log(`[stealth] account ${acc.phone} done: sent ${sentByThisAccount}, banned: ${accountBanned}, phoneIdx: ${phoneIdx}`);
+    if (stealthJob.status === 'waiting_accounts') break;
   }
 
   await saveNoTgAndSent();
 
   if (stealthJob.stopRequested) {
     stealthJob.status = 'stopped';
-  } else if (!accounts.filter(a => !deadAccounts.has(a.phone)).length) {
-    stealthJob.status = 'waiting_accounts'; // все аккаунты мёртвые — нужно добавить новые
+  } else if (stealthJob.status === 'waiting_accounts' || !accounts.filter(a => !deadAccounts.has(a.phone) && !limitedAccounts.has(a.phone)).length) {
+    stealthJob.status = 'waiting_accounts'; // все аккаунты мёртвые/лимитнутые — нужно добавить новые или продолжить позже
   } else {
     stealthJob.status = 'done';
   }
@@ -1447,29 +1517,31 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
 }
 
 app.post('/api/broadcast/stealth-start', async (req, res) => {
-  const { phones, messageVariants, contactButton, images, delayMinutes } = req.body;
+  const { phones, messageVariants, contactButton, images, delayMinutes, activeFromHour, activeToHour } = req.body;
   if (!phones?.length || !messageVariants?.length) return res.status(400).json({ error: 'Нужны phones и messageVariants' });
-  if (stealthJob.status === 'running') return res.status(400).json({ error: 'Рассылка уже идёт' });
+  if (['running', 'sleeping'].includes(stealthJob.status)) return res.status(400).json({ error: 'Рассылка уже идёт' });
   const safeDelayMinutes = [2, 5, 10].includes(Number(delayMinutes)) ? Number(delayMinutes) : 2;
-  runStealthBroadcast(phones, messageVariants, !!contactButton, images || [], 0, safeDelayMinutes);
-  res.json({ success: true, total: phones.length, delayMinutes: safeDelayMinutes });
+  const safeActiveFromHour = Number.isFinite(Number(activeFromHour)) ? Math.min(23, Math.max(0, Number(activeFromHour))) : 8;
+  const safeActiveToHour = Number.isFinite(Number(activeToHour)) ? Math.min(24, Math.max(1, Number(activeToHour))) : 21;
+  runStealthBroadcast(phones, messageVariants, !!contactButton, images || [], 0, safeDelayMinutes, safeActiveFromHour, safeActiveToHour);
+  res.json({ success: true, total: phones.length, delayMinutes: safeDelayMinutes, activeFromHour: safeActiveFromHour, activeToHour: safeActiveToHour });
 });
 
 // Продолжить после добавления аккаунтов
 app.post('/api/broadcast/stealth-resume', async (req, res) => {
-  if (stealthJob.status === 'running') return res.status(400).json({ error: 'Рассылка уже идёт' });
+  if (['running', 'sleeping'].includes(stealthJob.status)) return res.status(400).json({ error: 'Рассылка уже идёт' });
   if (stealthJob.status !== 'waiting_accounts') return res.status(400).json({ error: 'Нет паузы для продолжения' });
   if (!db) return res.status(500).json({ error: 'DB не подключена' });
   const dataSnap = await getDoc(doc(db, 'settings', 'stealth_job_data')).catch(() => null);
   if (!dataSnap?.exists()) return res.status(400).json({ error: 'Данные задания не найдены' });
-  const { phones, messageVariants, contactButton, imageFiles, delayMinutes } = dataSnap.data() as any;
+  const { phones, messageVariants, contactButton, imageFiles, delayMinutes, activeFromHour, activeToHour } = dataSnap.data() as any;
   const resumeFrom = stealthJob.currentIndex;
-  runStealthBroadcast(phones, messageVariants, !!contactButton, imageFiles || [], resumeFrom, delayMinutes || stealthJob.delayMinutes || 2);
+  runStealthBroadcast(phones, messageVariants, !!contactButton, imageFiles || [], resumeFrom, delayMinutes || stealthJob.delayMinutes || 2, activeFromHour || stealthJob.activeFromHour || 8, activeToHour || stealthJob.activeToHour || 21);
   res.json({ success: true, resumeFrom, total: phones.length });
 });
 
 app.post('/api/broadcast/stealth-stop', (_req, res) => {
-  if (stealthJob.status !== 'running') return res.status(400).json({ error: 'Рассылка не запущена' });
+  if (!['running', 'sleeping'].includes(stealthJob.status)) return res.status(400).json({ error: 'Рассылка не запущена' });
   stealthJob.stopRequested = true;
   res.json({ success: true });
 });
@@ -1477,7 +1549,7 @@ app.post('/api/broadcast/stealth-stop', (_req, res) => {
 app.post('/api/broadcast/stealth-clear', async (_req, res) => {
   stealthJob = {
     status: 'idle', total: 0, sent: 0, failed: 0, checked: 0, currentIndex: 0,
-    currentAccount: '', delayMinutes: 2, startedAt: '', stopRequested: false, log: []
+    currentAccount: '', delayMinutes: 2, activeFromHour: 8, activeToHour: 21, startedAt: '', stopRequested: false, log: []
   };
   await saveStealthProgress();
   res.json({ success: true });
@@ -1488,8 +1560,8 @@ app.get('/api/broadcast/stealth-status', async (_req, res) => {
     const snap = await getDoc(doc(db, 'settings', 'stealth_job')).catch(() => null);
     if (snap?.exists()) {
       const d = snap.data() as any;
-      if (d.status === 'waiting_accounts' || d.status === 'stopped') {
-        stealthJob = { status: d.status, total: d.total, sent: d.sent, failed: d.failed, checked: d.checked, currentIndex: d.currentIndex, currentAccount: d.currentAccount || '', delayMinutes: d.delayMinutes || 2, startedAt: d.startedAt, finishedAt: d.finishedAt, stopRequested: false, log: d.log || [] };
+      if (['waiting_accounts', 'sleeping', 'stopped'].includes(d.status)) {
+        stealthJob = { status: d.status, total: d.total, sent: d.sent, failed: d.failed, checked: d.checked, currentIndex: d.currentIndex, currentAccount: d.currentAccount || '', delayMinutes: d.delayMinutes || 2, activeFromHour: d.activeFromHour || 8, activeToHour: d.activeToHour || 21, wakeAt: d.wakeAt, startedAt: d.startedAt, finishedAt: d.finishedAt, stopRequested: false, log: d.log || [] };
       }
     }
   }
