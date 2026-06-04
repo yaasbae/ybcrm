@@ -2930,6 +2930,46 @@ async function getCostumeById(costumeId: string): Promise<any | null> {
   return { id: snap.id, ...snap.data() };
 }
 
+async function downloadTelegramPhoto(url: string, index: number) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 12000);
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+    if (!response.ok) throw new Error(`photo fetch ${response.status}`);
+    const input = Buffer.from(await response.arrayBuffer());
+    const jpeg = await sharp(input)
+      .rotate()
+      .resize(1600, 1600, { fit: "inside", withoutEnlargement: true })
+      .jpeg({ quality: 88 })
+      .toBuffer();
+    return { source: jpeg, filename: `costume-${index + 1}.jpg` };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function sendCostumePhotos(ctx: any, costumeName: string, urls: string[]) {
+  const cleanUrls = urls.filter(Boolean);
+  let sent = 0;
+  for (let i = 0; i < cleanUrls.length; i += 1) {
+    const url = cleanUrls[i];
+    try {
+      const photo = await downloadTelegramPhoto(url, i);
+      await ctx.replyWithPhoto(photo, i === 0 ? { caption: costumeName } : undefined);
+      sent += 1;
+    } catch (e: any) {
+      console.error(`costume photo ${i + 1} error:`, e.message);
+      try {
+        await ctx.replyWithPhoto({ url }, i === 0 ? { caption: costumeName } : undefined);
+        sent += 1;
+      } catch (fallbackError: any) {
+        console.error(`costume photo ${i + 1} fallback error:`, fallbackError.message);
+      }
+    }
+  }
+  return sent;
+}
+
 // Bot button config — editable from CRM
 interface BotButton { id: string; label: string; response: string; }
 interface BotCfg { welcomeText: string; buttons: BotButton[]; managerChatIds: string[]; }
@@ -3344,21 +3384,9 @@ function startTelegramBot() {
       if (!c) return ctx.reply("Модель не найдена, попробуй ещё раз").catch(() => {});
       const urls: string[] = c.imageUrls?.length ? c.imageUrls : [c.imageUrl];
 
-      // Send all photos as an album — pass URLs directly, Telegram downloads them
-      try {
-        if (urls.length === 1) {
-          await ctx.replyWithPhoto({ url: urls[0] }, { caption: c.name });
-        } else {
-          await ctx.replyWithMediaGroup(
-            urls.map((url, j) => ({
-              type: "photo" as const,
-              media: url,
-              ...(j === 0 ? { caption: c.name } : {}),
-            }))
-          );
-        }
-      } catch (e: any) {
-        await ctx.replyWithPhoto({ url: c.imageUrl }, { caption: c.name }).catch(() => {});
+      const sentPhotos = await sendCostumePhotos(ctx, c.name, urls);
+      if (!sentPhotos) {
+        await ctx.reply("Не смогла отправить фото сейчас. Попробуй ещё раз или напиши менеджеру 🙏").catch(() => {});
       }
 
       await ctx.reply(
