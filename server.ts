@@ -53,6 +53,7 @@ const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
 const TG_API_ID = Number(process.env.TG_API_ID || 2040);
 const TG_API_HASH = process.env.TG_API_HASH || "b18441a1ff607e10a989891a5462e627";
 const GEMINI_TEXT_MODEL = process.env.GEMINI_TEXT_MODEL || "gemini-2.5-flash";
+const BROADCAST_MANAGER_BOT_URL = "https://t.me/YAASBAE_CLO_bot";
 
 const pendingTgClients = new Map<string, { client: TelegramClient; phoneCodeHash: string }>();
 
@@ -1369,7 +1370,7 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
         } else {
           // Отправляем
           const variant = messageVariants[Math.floor(Math.random() * messageVariants.length)];
-          const textMsg = contactButton ? `${variant}\n\nНаписать менеджеру: https://t.me/yaasbae_ru` : variant;
+          const textMsg = contactButton ? `${variant}\n\nНаписать менеджеру: ${BROADCAST_MANAGER_BOT_URL}` : variant;
 
           if (imageFiles.length > 0) {
             const { CustomFile } = await import('telegram/client/uploads');
@@ -1675,7 +1676,7 @@ app.post("/api/broadcast/gramjs", async (req, res) => {
           results.push({ phone: rawPhone, status: "no_telegram", error: "Нет Telegram" });
           continue;
         }
-        const textMsg = contactButton ? `${getVariant()}\n\nНаписать менеджеру: https://t.me/yaasbae_ru` : getVariant();
+        const textMsg = contactButton ? `${getVariant()}\n\nНаписать менеджеру: ${BROADCAST_MANAGER_BOT_URL}` : getVariant();
         if (imageFiles.length > 0) {
           const { CustomFile } = await import("telegram/client/uploads");
           const fileObjs = await Promise.all(imageFiles.map(async f => {
