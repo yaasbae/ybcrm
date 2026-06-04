@@ -3342,49 +3342,31 @@ function startTelegramBot() {
       if (!db) return ctx.reply("База данных недоступна, попробуй позже").catch(() => {});
       const c = await getCostumeById(costumeId);
       if (!c) return ctx.reply("Модель не найдена, попробуй ещё раз").catch(() => {});
-
-      // Ask for colour first — photo arrives after the choice
-      await ctx.reply(
-        `*${c.name}*\n\nВыбери цвет 👇`,
-        {
-          parse_mode: "Markdown",
-          ...Markup.inlineKeyboard([[
-            Markup.button.callback("🔵 Blue", `color_blue_${c.id}`),
-            Markup.button.callback("🩷 Pink", `color_pink_${c.id}`),
-          ]]),
-        }
-      );
-    } catch (e: any) {
-      console.error("catalog action error:", e.message);
-    }
-  });
-
-  // Colour choice → send the matching costume photo (1st photo = blue, 2nd = pink)
-  bot.action(/^color_(blue|pink)_(.+)$/, async (ctx) => {
-    try {
-      await ctx.answerCbQuery().catch(() => {});
-      const color = ctx.match[1];
-      const costumeId = ctx.match[2];
-      if (!db) return ctx.reply("База данных недоступна, попробуй позже").catch(() => {});
-      const c = await getCostumeById(costumeId);
-      if (!c) return ctx.reply("Модель не найдена, попробуй ещё раз").catch(() => {});
       const urls: string[] = c.imageUrls?.length ? c.imageUrls : [c.imageUrl];
-      const idx = color === "pink" ? 1 : 0;
-      const url = urls[idx] || urls[0] || c.imageUrl;
-      const colorLabel = color === "pink" ? "Pink 🩷" : "Blue 🔵";
 
+      // Send all photos as an album — pass URLs directly, Telegram downloads them
       try {
-        await ctx.replyWithPhoto({ url }, { caption: `${c.name} — ${colorLabel}` });
+        if (urls.length === 1) {
+          await ctx.replyWithPhoto({ url: urls[0] }, { caption: c.name });
+        } else {
+          await ctx.replyWithMediaGroup(
+            urls.map((url, j) => ({
+              type: "photo" as const,
+              media: url,
+              ...(j === 0 ? { caption: c.name } : {}),
+            }))
+          );
+        }
       } catch (e: any) {
-        await ctx.replyWithPhoto({ url: c.imageUrl }, { caption: `${c.name} — ${colorLabel}` }).catch(() => {});
+        await ctx.replyWithPhoto({ url: c.imageUrl }, { caption: c.name }).catch(() => {});
       }
 
       await ctx.reply(
-        `*${c.name}* — ${colorLabel}\n\nЧтобы оформить заказ — напиши менеджеру 🙏`,
+        `*${c.name}*\n\nЧтобы оформить заказ — напиши менеджеру 🙏`,
         { parse_mode: "Markdown" }
       );
     } catch (e: any) {
-      console.error("color action error:", e.message);
+      console.error("catalog action error:", e.message);
     }
   });
 
