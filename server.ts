@@ -1272,6 +1272,8 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
   if (!db) return;
 
   const MESSAGES_PER_ACCOUNT = 20;
+  const CONTACT_LOOKUP_DELAY_MS = 2000;
+  const MAX_NO_TG_STREAK = 30;
   const safeDelayMinutes = [2, 5, 10].includes(Number(delayMinutes)) ? Number(delayMinutes) : 2;
   const safeActiveFromHour = Number.isFinite(Number(activeFromHour)) ? Math.min(23, Math.max(0, Number(activeFromHour))) : 8;
   const safeActiveToHour = Number.isFinite(Number(activeToHour)) ? Math.min(24, Math.max(1, Number(activeToHour))) : 21;
@@ -1344,6 +1346,22 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
   let roundIdx = 0;
   const phoneFloodTries = new Map<number, number>(); // phoneIdx → кол-во PEER_FLOOD попыток
   const lastSentAtByAccount = new Map<string, number>();
+  let noTgStreak = 0;
+  const isTelegramNetworkError = (err: string) => {
+    const upper = String(err || '').toUpperCase();
+    return upper.includes('TIMEOUT') || upper.includes('NETWORK') || upper.includes('CONNECTION') || upper.includes('ECONNRESET');
+  };
+  const pauseForTelegramLookupError = async (rawPhone: string, error: string, account?: string) => {
+    stealthJob.status = 'waiting_accounts';
+    stealthJob.log.push({
+      phone: rawPhone,
+      name: rawPhone,
+      status: 'error',
+      error: `Telegram не ответил при проверке номера: ${error || 'timeout'}`,
+      account
+    });
+    await saveStealthProgress();
+  };
 
   while (phoneIdx < phones.length && !stealthJob.stopRequested) {
     await waitForBroadcastWindow(safeActiveFromHour, safeActiveToHour);
@@ -1430,6 +1448,12 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
           accountBanned = true;
           break;
         }
+        if (isTelegramNetworkError(resolveErr)) {
+          console.log(`[stealth] account ${acc.phone} lookup timeout on ResolvePhone: ${resolveErr}`);
+          await pauseForTelegramLookupError(rawPhone, resolveErr, acc.phone);
+          accountBanned = true;
+          break;
+        }
 
         if (!entity) {
           const imported = await client.invoke(new Api.contacts.ImportContacts({
@@ -1459,6 +1483,18 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
             accountBanned = true;
             break;
           }
+          if (isTelegramNetworkError(importErr)) {
+            console.log(`[stealth] account ${acc.phone} lookup timeout on ImportContacts: ${importErr}`);
+            await pauseForTelegramLookupError(rawPhone, importErr, acc.phone);
+            accountBanned = true;
+            break;
+          }
+          if (importErr && !entity) {
+            console.log(`[stealth] account ${acc.phone} ImportContacts error for ${phone}: ${importErr}`);
+            await pauseForTelegramLookupError(rawPhone, importErr, acc.phone);
+            accountBanned = true;
+            break;
+          }
 
           entity = imported?.users?.[0] ?? null;
           const uid = imported?.importedContacts?.[0]?.userId;
@@ -1484,13 +1520,29 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
             newNoTg.push({ phone: cleanPhone, addedAt: new Date().toISOString() });
           }
           stealthJob.log.push({ phone: rawPhone, name: rawPhone, status: 'no_tg', error: 'Нет Telegram', account: acc.phone });
+          noTgStreak++;
           stealthJob.failed++;
           phoneIdx++;
           stealthJob.checked++;
           stealthJob.currentIndex = phoneIdx;
           await saveStealthProgress();
           await saveNoTgAndSent();
+          if (noTgStreak >= MAX_NO_TG_STREAK) {
+            stealthJob.status = 'waiting_accounts';
+            stealthJob.log.push({
+              phone: rawPhone,
+              name: rawPhone,
+              status: 'error',
+              error: `Слишком много Нет Telegram подряд (${MAX_NO_TG_STREAK}). Рассылка поставлена на паузу для проверки аккаунта/базы.`,
+              account: acc.phone
+            });
+            await saveStealthProgress();
+            accountBanned = true;
+            break;
+          }
+          await new Promise(r => setTimeout(r, CONTACT_LOOKUP_DELAY_MS));
         } else {
+          noTgStreak = 0;
           // Отправляем варианты по кругу: 1,2,3...10, затем снова 1.
           const variant = messageVariants[phoneIdx % messageVariants.length];
           const textMsg = contactButton ? `${variant}\n\nНаписать менеджеру: ${BROADCAST_MANAGER_BOT_URL}` : variant;
