@@ -7,9 +7,13 @@ import { cn } from '../lib/utils';
 import { motion } from 'motion/react';
 import { db } from '../firebase';
 import { doc, onSnapshot, setDoc } from 'firebase/firestore';
+import { YAASBAE_BLOGGERS } from '../data/bloggersYaasbae';
 
 const DEFAULT_PAYMENT_TYPES = ["QR код", "Сплитами", "Долями", "Наличкой", "Наложенный СДЭК"];
 const DEFAULT_STATUSES = ["Новый", "В работе", "Оплачен", "Отгружен", "Доставлен", "Возврат", "Отмена", "Обмен"];
+const IMPORTED_BLOGGER_NAMES = Array.from(new Set(
+  YAASBAE_BLOGGERS.map((blogger) => blogger.name.trim()).filter(Boolean)
+));
 
 export const HandbookPage: React.FC = () => {
   const [handbookProducts, setHandbookProducts] = useState<string[]>([]);
@@ -42,7 +46,15 @@ export const HandbookPage: React.FC = () => {
         if (d.deliveries) setHandbookDeliveries(d.deliveries);
         if (d.paymentTypes) setHandbookPaymentTypes(d.paymentTypes);
         if (d.managers) setHandbookManagers(d.managers);
-        if (d.bloggers) setHandbookBloggers(d.bloggers);
+        const currentBloggers = Array.isArray(d.bloggers) ? d.bloggers : [];
+        const mergedBloggers = Array.from(new Set([...currentBloggers, ...IMPORTED_BLOGGER_NAMES]));
+        setHandbookBloggers(mergedBloggers);
+        if (mergedBloggers.length !== currentBloggers.length) {
+          setDoc(doc(db, 'settings', 'handbook'), { bloggers: mergedBloggers }, { merge: true }).catch((err) => {
+            console.error(err);
+            setSaveError('Не удалось добавить блогеров из маркетинга в справочник.');
+          });
+        }
       }
     }, (error) => {
       console.error(error);
@@ -77,58 +89,88 @@ export const HandbookPage: React.FC = () => {
     setItems: (v: string[]) => void;
     saveKey: string;
     placeholder: string;
-  }) => (
-    <div className="w-48 flex-shrink-0 space-y-3 border-r border-zinc-100 pr-6 last:border-r-0">
-      <div className="flex items-center gap-2 mb-2">
-        <Icon className={cn("w-3 h-3", iconColor)} />
-        <h4 className="text-[9px] font-black uppercase tracking-widest text-zinc-500">{title}</h4>
-      </div>
-      <input
-        type="text"
-        placeholder={placeholder}
-        className="w-full bg-white border border-zinc-200 rounded-xl px-4 py-2.5 text-[11px] font-bold text-zinc-900 outline-none focus:ring-2 focus:ring-blue-500/10 focus:border-blue-500 transition-all shadow-sm"
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' && e.currentTarget.value) {
-            const val = e.currentTarget.value;
-            if (!items.includes(val)) {
-              const nl = [val, ...items];
-              setItems(nl);
-              saveHandbook(saveKey, nl);
-              e.currentTarget.value = '';
-            }
-          }
-        }}
-      />
-      <div className="space-y-1 max-h-64 overflow-y-auto pr-1">
-        {items.map((item, idx) => (
-          <div key={idx} className="group flex items-center justify-between p-2 hover:bg-white rounded-lg border border-transparent hover:border-zinc-200 transition-all">
-            <input
-              value={item}
-              onChange={(e) => {
-                const nl = [...items];
-                nl[idx] = e.target.value;
-                setItems(nl);
-              }}
-              onBlur={() => saveHandbook(saveKey, items)}
-              className="flex-1 bg-transparent text-[10px] font-bold text-zinc-700 outline-none w-full"
-            />
-            <button
-              onClick={() => {
-                if (window.confirm('Удалить?')) {
-                  const nl = items.filter((_, i) => i !== idx);
-                  setItems(nl);
-                  saveHandbook(saveKey, nl);
-                }
-              }}
-              className="p-1 text-zinc-300 hover:text-red-500 opacity-0 group-hover:opacity-100"
-            >
-              <X size={10} />
-            </button>
+  }) => {
+    const inputRef = React.useRef<HTMLInputElement>(null);
+    const addValue = (input: HTMLInputElement | null) => {
+      const val = input?.value.trim();
+      if (!val) return;
+      if (!items.includes(val)) {
+        const nl = [val, ...items];
+        setItems(nl);
+        saveHandbook(saveKey, nl);
+      }
+      if (input) input.value = '';
+    };
+
+    return (
+      <div className="w-48 flex-shrink-0 space-y-3 border-r border-zinc-100 pr-6 last:border-r-0">
+        <div className="flex items-center gap-2 mb-2">
+          <Icon className={cn("w-3 h-3", iconColor)} />
+          <h4 className="text-[9px] font-black uppercase tracking-widest text-zinc-500">{title}</h4>
+        </div>
+        <div className="flex gap-1.5">
+          <input
+            ref={inputRef}
+            type="text"
+            placeholder={placeholder}
+            className="min-w-0 flex-1 bg-white border border-zinc-200 rounded-xl px-4 py-2.5 text-[11px] font-bold text-zinc-900 outline-none focus:ring-2 focus:ring-blue-500/10 focus:border-blue-500 transition-all shadow-sm"
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                addValue(e.currentTarget);
+              }
+            }}
+          />
+          <button
+            type="button"
+            onClick={() => addValue(inputRef.current)}
+            className="w-10 rounded-xl bg-zinc-900 text-white text-lg leading-none shadow-sm hover:bg-zinc-700 transition-colors"
+            title={`Добавить: ${title}`}
+          >
+            +
+          </button>
+        </div>
+        {saveKey === 'bloggers' && (
+          <div className="rounded-xl border border-purple-100 bg-purple-50 px-3 py-2">
+            <p className="text-[8px] font-black uppercase tracking-widest text-purple-600">
+              Из маркетинга: {IMPORTED_BLOGGER_NAMES.length}
+            </p>
+            <p className="mt-1 text-[8px] font-semibold text-purple-400">
+              Нового блогера добавляй через +
+            </p>
           </div>
-        ))}
+        )}
+        <div className="space-y-1 max-h-64 overflow-y-auto pr-1">
+          {items.map((item, idx) => (
+            <div key={idx} className="group flex items-center justify-between p-2 hover:bg-white rounded-lg border border-transparent hover:border-zinc-200 transition-all">
+              <input
+                value={item}
+                onChange={(e) => {
+                  const nl = [...items];
+                  nl[idx] = e.target.value;
+                  setItems(nl);
+                }}
+                onBlur={() => saveHandbook(saveKey, items)}
+                className="flex-1 bg-transparent text-[10px] font-bold text-zinc-700 outline-none w-full"
+              />
+              <button
+                onClick={() => {
+                  if (window.confirm('Удалить?')) {
+                    const nl = items.filter((_, i) => i !== idx);
+                    setItems(nl);
+                    saveHandbook(saveKey, nl);
+                  }
+                }}
+                className="p-1 text-zinc-300 hover:text-red-500 opacity-0 group-hover:opacity-100"
+              >
+                <X size={10} />
+              </button>
+            </div>
+          ))}
+        </div>
       </div>
-    </div>
-  );
+    );
+  };
 
   return (
     <div className="max-w-7xl mx-auto px-4 py-4 space-y-4 font-sans text-zinc-900">
