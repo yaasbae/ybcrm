@@ -1347,6 +1347,8 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
   const phoneFloodTries = new Map<number, number>(); // phoneIdx → кол-во PEER_FLOOD попыток
   const lastSentAtByAccount = new Map<string, number>();
   let noTgStreak = 0;
+  let sentVariantIndex = stealthJob.sent || 0;
+  let lastSuccessfulSendAt = 0;
   const isTelegramNetworkError = (err: string) => {
     const upper = String(err || '').toUpperCase();
     return upper.includes('TIMEOUT') || upper.includes('NETWORK') || upper.includes('CONNECTION') || upper.includes('ECONNRESET');
@@ -1544,8 +1546,17 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
         } else {
           noTgStreak = 0;
           // Отправляем варианты по кругу: 1,2,3...10, затем снова 1.
-          const variant = messageVariants[phoneIdx % messageVariants.length];
+          const variant = messageVariants[sentVariantIndex % messageVariants.length];
           const textMsg = contactButton ? `${variant}\n\nНаписать менеджеру: ${BROADCAST_MANAGER_BOT_URL}` : variant;
+          const globalWaitMs = Math.max(0, DELAY_BETWEEN_SENDS - (Date.now() - lastSuccessfulSendAt));
+          if (lastSuccessfulSendAt > 0 && globalWaitMs > 0 && !stealthJob.stopRequested) {
+            console.log(`[stealth] waiting ${Math.ceil(globalWaitMs / 60000)} min before next message`);
+            const waitSteps = Math.ceil(globalWaitMs / 10000);
+            for (let w = 0; w < waitSteps && !stealthJob.stopRequested; w++) {
+              await new Promise(r => setTimeout(r, Math.min(10000, globalWaitMs - w * 10000)));
+            }
+          }
+          if (stealthJob.stopRequested) break;
 
           if (imageFiles.length > 0) {
             const { CustomFile } = await import('telegram/client/uploads');
@@ -1563,7 +1574,9 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
           newSent.push(cleanPhone);
           stealthJob.log.push({ phone: rawPhone, name: rawPhone, status: 'sent', account: acc.phone });
           lastSentAtByAccount.set(accountKey, Date.now());
+          lastSuccessfulSendAt = Date.now();
           stealthJob.sent++;
+          sentVariantIndex++;
           sentByThisAccount++;
           phoneIdx++;
           stealthJob.checked++;

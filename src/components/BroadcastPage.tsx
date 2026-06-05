@@ -198,6 +198,8 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId, initialTab = 'compose'
   const [isSending, setIsSending] = useState(false);
   const [sendDebug, setSendDebug] = useState('');
   const [sendIntervalMinutes, setSendIntervalMinutes] = useState<2 | 5 | 10>(2);
+  const [activeFromHour, setActiveFromHour] = useState(8);
+  const [activeToHour, setActiveToHour] = useState(21);
   const [messageVariants, setMessageVariants] = useState<string[]>([]);
   const [isGeneratingVariants, setIsGeneratingVariants] = useState(false);
   const [variantsError, setVariantsError] = useState('');
@@ -553,6 +555,8 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId, initialTab = 'compose'
       if (d.message) setMessage(d.message);
       if (typeof d.contactButton === 'boolean') setContactButton(d.contactButton);
       if ([2, 5, 10].includes(d.sendIntervalMinutes)) setSendIntervalMinutes(d.sendIntervalMinutes);
+      if (typeof d.activeFromHour === 'number') setActiveFromHour(Math.min(23, Math.max(0, d.activeFromHour)));
+      if (typeof d.activeToHour === 'number') setActiveToHour(Math.min(24, Math.max(1, d.activeToHour)));
     }).catch(() => {}).finally(() => setIsConfigLoaded(true));
   }, []);
 
@@ -560,10 +564,17 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId, initialTab = 'compose'
   useEffect(() => {
     if (!isConfigLoaded) return;
     const timer = setTimeout(() => {
-      setDoc(doc(db, 'settings', 'broadcast_config'), { message, messageVariants, contactButton, sendIntervalMinutes }).catch(() => {});
+      setDoc(doc(db, 'settings', 'broadcast_config'), {
+        message,
+        messageVariants,
+        contactButton,
+        sendIntervalMinutes,
+        activeFromHour,
+        activeToHour
+      }, { merge: true }).catch(() => {});
     }, 1500);
     return () => clearTimeout(timer);
-  }, [isConfigLoaded, message, messageVariants, contactButton, sendIntervalMinutes]);
+  }, [isConfigLoaded, message, messageVariants, contactButton, sendIntervalMinutes, activeFromHour, activeToHour]);
 
   const handleSelectFirst = (count: number) => {
     setSelected(new Set(filteredPhones.slice(0, count)));
@@ -821,7 +832,7 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId, initialTab = 'compose'
       const response = await fetch('/api/broadcast/stealth-start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ phones, messageVariants: allVariants, images: imageFiles, contactButton, delayMinutes: sendIntervalMinutes, activeFromHour: 8, activeToHour: 21 })
+        body: JSON.stringify({ phones, messageVariants: allVariants, images: imageFiles, contactButton, delayMinutes: sendIntervalMinutes, activeFromHour, activeToHour })
       });
       const raw = await response.text();
       let data: any = {};
@@ -832,7 +843,7 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId, initialTab = 'compose'
       }
       if (!response.ok) throw new Error(data.error || `Ошибка API ${response.status}`);
       if (data.error) throw new Error(data.error);
-      setStealthStatus({ status: 'running', sent: 0, failed: 0, checked: 0, total: data.total, delayMinutes: data.delayMinutes || sendIntervalMinutes, activeFromHour: data.activeFromHour || 8, activeToHour: data.activeToHour || 21 });
+      setStealthStatus({ status: 'running', sent: 0, failed: 0, checked: 0, total: data.total, delayMinutes: data.delayMinutes || sendIntervalMinutes, activeFromHour: data.activeFromHour || activeFromHour, activeToHour: data.activeToHour || activeToHour });
       setSendDebug(`Запущено: ${data.total} номеров`);
     } catch (e: any) {
       setResult({ error: e.message });
@@ -1345,7 +1356,7 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId, initialTab = 'compose'
                   <button
                     key={minutes}
                     onClick={() => setSendIntervalMinutes(minutes)}
-                    title={`Пауза ${minutes} мин между отправками с одного аккаунта`}
+                    title={`Пауза ${minutes} мин между успешными отправками`}
                     className={cn(
                       "px-3 py-2 rounded-lg text-[9px] font-black uppercase transition-all",
                       sendIntervalMinutes === minutes ? "bg-violet-500 text-white shadow-sm" : "bg-white text-zinc-500 hover:text-zinc-800"
@@ -1354,6 +1365,26 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId, initialTab = 'compose'
                     {minutes} мин
                   </button>
                 ))}
+              </div>
+              <div className="flex items-center gap-2 rounded-xl bg-zinc-100 p-1 text-[9px] font-black uppercase text-zinc-400">
+                <span className="px-2">окно</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={23}
+                  value={activeFromHour}
+                  onChange={e => setActiveFromHour(Math.min(23, Math.max(0, Number(e.target.value) || 0)))}
+                  className="h-8 w-14 rounded-lg border border-zinc-200 bg-white px-2 text-center text-[10px] font-black text-zinc-700 outline-none focus:border-violet-300"
+                />
+                <span>—</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={24}
+                  value={activeToHour}
+                  onChange={e => setActiveToHour(Math.min(24, Math.max(1, Number(e.target.value) || 1)))}
+                  className="h-8 w-14 rounded-lg border border-zinc-200 bg-white px-2 text-center text-[10px] font-black text-zinc-700 outline-none focus:border-violet-300"
+                />
               </div>
             </div>
 
