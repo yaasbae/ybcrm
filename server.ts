@@ -8,8 +8,11 @@ import Anthropic from "@anthropic-ai/sdk";
 import { initializeApp } from "firebase/app";
 import { initializeFirestore, doc, getDoc, collection, getDocs, addDoc, setDoc, updateDoc, deleteDoc, serverTimestamp, query, where, orderBy } from "firebase/firestore";
 import { getStorage, ref as storageRef, uploadBytes as fbUploadBytes, getDownloadURL as fbGetDownloadURL } from "firebase/storage";
+import { initializeApp as initializeAdminApp, applicationDefault, getApps as getAdminApps } from "firebase-admin/app";
+import { getFirestore as getAdminFirestore } from "firebase-admin/firestore";
 import fs from "fs";
 import https from "https";
+import { execFileSync } from "child_process";
 import { tmpdir } from "os";
 import { randomBytes } from "crypto";
 import { createRequire } from "module";
@@ -59,7 +62,10 @@ const pendingTgClients = new Map<string, { client: TelegramClient; phoneCodeHash
 
 const firebaseConfigPath = path.join(process.cwd(), "firebase-applet-config.json");
 let db: any = null;
+let adminDb: any = null;
 let fbStorage: any = null;
+let firebaseProjectId = "";
+let firebaseDatabaseId = "production";
 
 try {
   let firebaseConfig: any = null;
@@ -69,10 +75,22 @@ try {
     firebaseConfig = JSON.parse(fs.readFileSync(firebaseConfigPath, "utf-8"));
   }
   if (firebaseConfig) {
+    firebaseProjectId = firebaseConfig.projectId || "";
+    firebaseDatabaseId = firebaseConfig.firestoreDatabaseId || "(default)";
     const firebaseApp = initializeApp(firebaseConfig);
     db = initializeFirestore(firebaseApp, { experimentalForceLongPolling: true }, firebaseConfig.firestoreDatabaseId);
     fbStorage = getStorage(firebaseApp);
     console.log("Firebase initialized on server");
+    try {
+      const adminApp = getAdminApps()[0] || initializeAdminApp({
+        credential: applicationDefault(),
+        projectId: firebaseConfig.projectId,
+      });
+      adminDb = getAdminFirestore(adminApp, firebaseDatabaseId);
+      console.log("Firebase Admin initialized on server");
+    } catch (adminError: any) {
+      console.warn("Firebase Admin init skipped:", adminError.message);
+    }
   } else {
     console.warn("Firebase config not found");
   }
@@ -88,6 +106,80 @@ app.use(express.urlencoded({ extended: true, limit: '20mb' }));
 app.get("/api/ping", (req, res) => {
   res.send("ybcrm-system 2.0 - Claude AI + ManyChat v8");
 });
+
+async function readTgAccounts(): Promise<any[]> {
+  if (adminDb) {
+    try {
+      const snap = await adminDb.collection("settings").doc("tg_accounts").get();
+      return snap.exists ? (snap.data()?.accounts || []) : [];
+    } catch (e: any) {
+      console.warn("Firebase Admin tg_accounts read fallback:", e.message);
+    }
+  }
+  if (!db) return [];
+  const snap = await getDoc(doc(db, "settings", "tg_accounts"));
+  return snap.exists() ? (snap.data().accounts || []) : [];
+}
+
+function toFirestoreValue(value: any): any {
+  if (value === null || value === undefined) return { nullValue: null };
+  if (Array.isArray(value)) {
+    return { arrayValue: { values: value.map(toFirestoreValue) } };
+  }
+  if (typeof value === "object") {
+    const fields = Object.fromEntries(
+      Object.entries(value).map(([key, child]) => [key, toFirestoreValue(child)])
+    );
+    return { mapValue: { fields } };
+  }
+  if (typeof value === "boolean") return { booleanValue: value };
+  if (typeof value === "number") {
+    return Number.isInteger(value) ? { integerValue: String(value) } : { doubleValue: value };
+  }
+  return { stringValue: String(value) };
+}
+
+async function saveTgAccountsWithGcloud(accounts: any[]): Promise<void> {
+  if (!firebaseProjectId || !firebaseDatabaseId) throw new Error("Firebase project не настроен");
+  const accessToken = execFileSync("gcloud", ["auth", "print-access-token"], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+  }).trim();
+  if (!accessToken) throw new Error("gcloud не вернул access token");
+  const url = `https://firestore.googleapis.com/v1/projects/${firebaseProjectId}/databases/${firebaseDatabaseId}/documents/settings/tg_accounts?updateMask.fieldPaths=accounts`;
+  await axios.patch(
+    url,
+    { fields: { accounts: toFirestoreValue(accounts) } },
+    { headers: { Authorization: `Bearer ${accessToken}` } }
+  );
+}
+
+async function saveTgAccounts(accounts: any[]): Promise<void> {
+  if (adminDb) {
+    try {
+      await adminDb.collection("settings").doc("tg_accounts").set({ accounts }, { merge: true });
+      return;
+    } catch (e: any) {
+      console.warn("Firebase Admin tg_accounts write fallback:", e.message);
+    }
+  }
+  try {
+    await saveTgAccountsWithGcloud(accounts);
+    return;
+  } catch (e: any) {
+    console.warn("Firebase REST tg_accounts write fallback:", e.message);
+  }
+  if (!db) throw new Error("БД не подключена");
+  await setDoc(doc(db, "settings", "tg_accounts"), { accounts });
+}
+
+async function upsertTgAccount(entry: any): Promise<void> {
+  const accounts = await readTgAccounts();
+  const idx = accounts.findIndex((a: any) => a.phone === entry.phone);
+  if (idx >= 0) accounts[idx] = entry;
+  else accounts.push(entry);
+  await saveTgAccounts(accounts);
+}
 
 app.get("/api/sheet/export", async (req, res) => {
   try {
@@ -711,14 +803,7 @@ app.post("/api/tg/auth/sign-in", async (req, res) => {
       }
     }
     const sessionString = client.session.save() as unknown as string;
-    if (db) {
-      const accountsSnap = await getDoc(doc(db, "settings", "tg_accounts"));
-      const accounts = accountsSnap.exists() ? accountsSnap.data().accounts || [] : [];
-      const idx = accounts.findIndex((a: any) => a.phone === phone);
-      const entry = { phone, sessionString, addedAt: new Date().toISOString(), active: true };
-      if (idx >= 0) accounts[idx] = entry; else accounts.push(entry);
-      await setDoc(doc(db, "settings", "tg_accounts"), { accounts });
-    }
+    await upsertTgAccount({ phone, sessionString, addedAt: new Date().toISOString(), active: true });
     pendingTgClients.delete(phone);
     res.json({ success: true, phone });
   } catch (e: any) {
@@ -729,9 +814,7 @@ app.post("/api/tg/auth/sign-in", async (req, res) => {
 
 app.get("/api/tg/auth/status", async (req, res) => {
   try {
-    if (!db) return res.json({ authorized: false, accounts: [] });
-    const snap = await getDoc(doc(db, "settings", "tg_accounts"));
-    const accounts = snap.exists() ? (snap.data().accounts || []).filter((a: any) => a.sessionString) : [];
+    const accounts = (await readTgAccounts()).filter((a: any) => a.sessionString);
     // Fallback: old single session
     if (accounts.length === 0) {
       const old = await getDoc(doc(db, "settings", "tg_session"));
@@ -757,14 +840,7 @@ app.post("/api/tg/accounts/add-session", async (req, res) => {
     const me = await client.getMe() as any;
     const phone = me.phone ? `+${me.phone}` : (me.username ? `@${me.username}` : `id${me.id}`);
     await client.disconnect();
-    if (db) {
-      const snap = await getDoc(doc(db, "settings", "tg_accounts"));
-      const accounts = snap.exists() ? snap.data().accounts || [] : [];
-      const idx = accounts.findIndex((a: any) => a.phone === phone);
-      const entry = { phone, sessionString: sessionString.trim(), addedAt: new Date().toISOString(), active: true };
-      if (idx >= 0) accounts[idx] = entry; else accounts.push(entry);
-      await setDoc(doc(db, "settings", "tg_accounts"), { accounts });
-    }
+    await upsertTgAccount({ phone, sessionString: sessionString.trim(), addedAt: new Date().toISOString(), active: true });
     res.json({ success: true, phone });
   } catch (e: any) {
     console.error("add-session error:", e);
@@ -775,9 +851,7 @@ app.post("/api/tg/accounts/add-session", async (req, res) => {
 app.post("/api/tg/accounts/bulk-add-sessions", async (req, res) => {
   const { sessions } = req.body; // string[]
   if (!sessions?.length) return res.status(400).json({ error: "Нужен массив sessions" });
-  if (!db) return res.status(500).json({ error: "БД не подключена" });
-  const snap = await getDoc(doc(db, "settings", "tg_accounts"));
-  const existing: any[] = snap.exists() ? snap.data().accounts || [] : [];
+  const existing: any[] = await readTgAccounts();
   const added: string[] = [], failed: string[] = [];
   for (const sessionString of sessions) {
     const s = sessionString.trim();
@@ -796,7 +870,7 @@ app.post("/api/tg/accounts/bulk-add-sessions", async (req, res) => {
       failed.push(s.slice(0, 20) + "...");
     }
   }
-  await setDoc(doc(db, "settings", "tg_accounts"), { accounts: existing });
+  await saveTgAccounts(existing);
   res.json({ success: true, added: added.length, failed: failed.length, addedPhones: added });
 });
 
@@ -886,14 +960,7 @@ app.post("/api/tg/accounts/upload-session-file", async (req, res) => {
     const phone = me.phone ? `+${me.phone}` : (me.username ? `@${me.username}` : `id${me.id}`);
     await tgClient.disconnect();
 
-    if (db) {
-      const snap = await getDoc(doc(db, "settings", "tg_accounts"));
-      const accounts = snap.exists() ? snap.data().accounts || [] : [];
-      const idx = accounts.findIndex((a: any) => a.phone === phone);
-      const entry = { phone, sessionString, addedAt: new Date().toISOString(), active: true };
-      if (idx >= 0) accounts[idx] = entry; else accounts.push(entry);
-      await setDoc(doc(db, "settings", "tg_accounts"), { accounts });
-    }
+    await upsertTgAccount({ phone, sessionString, addedAt: new Date().toISOString(), active: true });
     res.json({ success: true, phone });
   } catch (e: any) {
     console.error("upload-session-file error:", e);
@@ -926,10 +993,8 @@ app.post("/api/tg/broadcast/config", async (req, res) => {
 app.post("/api/tg/accounts/remove", async (req, res) => {
   const { phone } = req.body;
   try {
-    if (!db) return res.status(500).json({ error: "DB not connected" });
-    const snap = await getDoc(doc(db, "settings", "tg_accounts"));
-    const accounts = snap.exists() ? snap.data().accounts || [] : [];
-    await setDoc(doc(db, "settings", "tg_accounts"), { accounts: accounts.filter((a: any) => a.phone !== phone) });
+    const accounts = await readTgAccounts();
+    await saveTgAccounts(accounts.filter((a: any) => a.phone !== phone));
     res.json({ success: true });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -939,14 +1004,12 @@ app.post("/api/tg/accounts/remove", async (req, res) => {
 app.post("/api/tg/accounts/set-active", async (req, res) => {
   const { phone, active, onlyThis } = req.body;
   try {
-    if (!db) return res.status(500).json({ error: "DB not connected" });
-    const snap = await getDoc(doc(db, "settings", "tg_accounts"));
-    const accounts = snap.exists() ? snap.data().accounts || [] : [];
+    const accounts = await readTgAccounts();
     const updated = accounts.map((a: any) => {
       if (onlyThis) return { ...a, active: a.phone === phone };
       return a.phone === phone ? { ...a, active: !!active } : a;
     });
-    await setDoc(doc(db, "settings", "tg_accounts"), { accounts: updated });
+    await saveTgAccounts(updated);
     res.json({ success: true });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -956,11 +1019,9 @@ app.post("/api/tg/accounts/set-active", async (req, res) => {
 app.post("/api/tg/accounts/set-proxy", async (req, res) => {
   const { phone, proxy } = req.body;
   try {
-    if (!db) return res.status(500).json({ error: "DB not connected" });
-    const snap = await getDoc(doc(db, "settings", "tg_accounts"));
-    const accounts = snap.exists() ? snap.data().accounts || [] : [];
+    const accounts = await readTgAccounts();
     const updated = accounts.map((a: any) => a.phone === phone ? { ...a, proxy: proxy || null } : a);
-    await setDoc(doc(db, "settings", "tg_accounts"), { accounts: updated });
+    await saveTgAccounts(updated);
     res.json({ success: true });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -972,8 +1033,7 @@ app.post("/api/tg/accounts/set-photo", async (req, res) => {
   if (!photoBase64) return res.status(400).json({ error: "Нужен photoBase64" });
   if (!db) return res.status(500).json({ error: "DB not connected" });
   try {
-    const snap = await getDoc(doc(db, "settings", "tg_accounts"));
-    const accounts = snap.exists() ? (snap.data().accounts || []).filter((a: any) => a.sessionString && a.active !== false) : [];
+    const accounts = (await readTgAccounts()).filter((a: any) => a.sessionString && a.active !== false);
     if (accounts.length === 0) return res.status(400).json({ error: "Нет активных аккаунтов" });
     const { CustomFile } = await import("telegram/client/uploads");
     const buf = Buffer.from(photoBase64, "base64");
@@ -1005,9 +1065,7 @@ async function runTgCheckJob(phones: string[]) {
   await setDoc(doc(db, 'settings', 'tg_check_job'), { ...tgCheckJob }).catch(() => {});
   let client: TelegramClient | null = null;
   try {
-    let accounts: any[] = [];
-    const snap = await getDoc(doc(db, 'settings', 'tg_accounts'));
-    if (snap.exists()) accounts = (snap.data().accounts || []).filter((a: any) => a.sessionString && a.active !== false);
+    const accounts = (await readTgAccounts()).filter((a: any) => a.sessionString && a.active !== false);
     if (!accounts.length) throw new Error('Нет активных аккаунтов');
 
     client = new TelegramClient(new StringSession(accounts[0].sessionString), TG_API_ID, TG_API_HASH, { connectionRetries: 3, ...buildProxyOpts(accounts[0]) });
@@ -1236,8 +1294,7 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
   await saveStealthProgress();
 
   // Загрузка аккаунтов
-  const snap = await getDoc(doc(db, 'settings', 'tg_accounts'));
-  const accounts: any[] = snap.exists() ? (snap.data().accounts || []).filter((a: any) => a.sessionString && a.active !== false) : [];
+  const accounts: any[] = (await readTgAccounts()).filter((a: any) => a.sessionString && a.active !== false);
   if (!accounts.length) { stealthJob.status = 'waiting_accounts'; await saveStealthProgress(); return; }
 
   const configSnap = await getDoc(doc(db, 'settings', 'broadcast_config')).catch(() => null);
@@ -1267,10 +1324,9 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
   const newSent: string[] = [];
 
   const markAccountDead = async (acc: any) => {
-    const aSnap = await getDoc(doc(db!, 'settings', 'tg_accounts')).catch(() => null);
-    if (aSnap?.exists()) {
-      const allAccs = aSnap.data().accounts || [];
-      await setDoc(doc(db!, 'settings', 'tg_accounts'), { accounts: allAccs.map((a:any) => a.phone === acc.phone ? {...a, active: false, bannedAt: new Date().toISOString()} : a) }).catch(() => {});
+    const allAccs = await readTgAccounts().catch(() => []);
+    if (allAccs.length) {
+      await saveTgAccounts(allAccs.map((a:any) => a.phone === acc.phone ? {...a, active: false, bannedAt: new Date().toISOString()} : a)).catch(() => {});
     }
   };
 
@@ -1606,11 +1662,7 @@ app.post("/api/broadcast/gramjs", async (req, res) => {
   if (!db) return res.status(500).json({ error: "База данных не подключена" });
   try {
     // Load accounts
-    let accounts: any[] = [];
-    const snap = await getDoc(doc(db, "settings", "tg_accounts"));
-    if (snap.exists()) {
-      accounts = (snap.data().accounts || []).filter((a: any) => a.sessionString && a.active !== false);
-    }
+    let accounts: any[] = (await readTgAccounts()).filter((a: any) => a.sessionString && a.active !== false);
     if (accounts.length === 0) {
       const old = await getDoc(doc(db, "settings", "tg_session"));
       if (old.exists() && old.data().sessionString) {
@@ -1642,13 +1694,11 @@ app.post("/api/broadcast/gramjs", async (req, res) => {
 
     const markDead = async (idx: number) => {
       deadAccounts.add(idx);
-      if (!db) return;
-      const accSnap = await getDoc(doc(db, "settings", "tg_accounts")).catch(() => null);
-      if (accSnap?.exists()) {
-        const allAccs = accSnap.data().accounts || [];
-        const bannedPhone = accounts[idx]?.phone;
+      const allAccs = await readTgAccounts().catch(() => []);
+      const bannedPhone = accounts[idx]?.phone;
+      if (allAccs.length && bannedPhone) {
         const updated = allAccs.map((a: any) => a.phone === bannedPhone ? { ...a, active: false, bannedAt: new Date().toISOString() } : a);
-        await setDoc(doc(db, "settings", "tg_accounts"), { accounts: updated }).catch(() => {});
+        await saveTgAccounts(updated).catch(() => {});
       }
     };
 
@@ -2889,6 +2939,136 @@ app.get('/api/tochka/status', async (_req, res) => {
   if (!db) return res.json({ configured: false });
   const snap = await getDoc(doc(db, 'settings', 'tochka_api')).catch(() => null);
   res.json({ configured: !!snap?.exists(), customerCode: snap?.data()?.customerCode });
+});
+
+// ─── Chatwoot ───────────────────────────────────────────────────────────────
+// Связь карточки клиента в Chatwoot с его заказами из CRM.
+// Chatwoot шлёт вебхук (contact_created / conversation_created) → ищем клиента
+// в Firestore по телефону → пишем заказы обратно в Chatwoot через REST API.
+
+const CHATWOOT_BASE_URL = (process.env.CHATWOOT_BASE_URL || "").replace(/\/$/, "");
+const CHATWOOT_API_TOKEN = process.env.CHATWOOT_API_TOKEN || "";
+const CHATWOOT_ACCOUNT_ID = process.env.CHATWOOT_ACCOUNT_ID || "";
+const CHATWOOT_WEBHOOK_SECRET = process.env.CHATWOOT_WEBHOOK_SECRET || "";
+
+function chatwootApi(accountId: string) {
+  return axios.create({
+    baseURL: `${CHATWOOT_BASE_URL}/api/v1/accounts/${accountId}`,
+    headers: { api_access_token: CHATWOOT_API_TOKEN, "Content-Type": "application/json" },
+    timeout: 15000,
+  });
+}
+
+// Собрать сводку по клиенту из Firestore по нормализованному телефону
+async function buildChatwootClientSummary(phone: string) {
+  if (!db || !phone) return null;
+  const contactSnap = await getDoc(doc(db, "contacts", phone)).catch(() => null);
+  const ordersSnap = await getDocs(
+    query(collection(db, "orders"), where("clientPhone", "==", phone))
+  ).catch(() => null);
+
+  const contact = contactSnap?.exists() ? contactSnap.data() : null;
+  const orders = ordersSnap
+    ? ordersSnap.docs
+        .map(d => ({ orderId: d.id, ...(d.data() as any) }))
+        .sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")))
+    : [];
+
+  if (!contact && orders.length === 0) return null;
+
+  const attributes: Record<string, any> = {};
+  if (contact?.loyaltyCardId) attributes.loyalty_card = contact.loyaltyCardId;
+  if (contact?.totalSpent != null) attributes.total_spent = contact.totalSpent;
+  attributes.orders_count = contact?.ordersCount ?? orders.length;
+  if (contact?.currentDiscount != null) attributes.discount = contact.currentDiscount;
+  if (contact?.city) attributes.city = contact.city;
+
+  const lines: string[] = [];
+  lines.push(`🧾 Клиент из CRM${contact?.fullName ? `: ${contact.fullName}` : ""}`);
+  if (contact?.loyaltyCardId) lines.push(`Карта лояльности: ${contact.loyaltyCardId}`);
+  if (contact?.totalSpent != null) lines.push(`Всего потрачено: ${contact.totalSpent} ₽`);
+  if (orders.length) {
+    lines.push(`\nПоследние заказы (${orders.length}):`);
+    for (const o of orders.slice(0, 5)) {
+      const parts = [o.orderId, o.status, o.revenue != null ? `${o.revenue} ₽` : null, o.deliveryMethod, o.date]
+        .filter(Boolean)
+        .join(" · ");
+      lines.push(`• ${parts}`);
+    }
+  } else {
+    lines.push("\nЗаказов в CRM пока нет.");
+  }
+
+  return { attributes, note: lines.join("\n") };
+}
+
+// Извлечь телефон из разных форматов payload Chatwoot
+function extractChatwootPhone(payload: any): string {
+  const raw =
+    payload?.phone_number ||
+    payload?.sender?.phone_number ||
+    payload?.meta?.sender?.phone_number ||
+    payload?.contact?.phone_number ||
+    payload?.contact_inbox?.contact?.phone_number ||
+    "";
+  return normalizeBroadcastPhone(raw);
+}
+
+app.post("/api/chatwoot/webhook", async (req, res) => {
+  // Опциональная защита: Chatwoot не подписывает вебхуки, поэтому секрет
+  // передаём в query (?token=...) при настройке URL в Chatwoot.
+  if (CHATWOOT_WEBHOOK_SECRET && req.query.token !== CHATWOOT_WEBHOOK_SECRET) {
+    return res.status(401).json({ error: "unauthorized" });
+  }
+  // Сразу отвечаем Chatwoot — обогащение делаем асинхронно, чтобы не держать вебхук.
+  res.json({ success: true });
+
+  try {
+    const body = req.body || {};
+    const event = body.event;
+    if (event !== "contact_created" && event !== "conversation_created") return;
+    if (!CHATWOOT_BASE_URL || !CHATWOOT_API_TOKEN) {
+      console.warn("[chatwoot] webhook: CHATWOOT_BASE_URL/API_TOKEN не заданы — пропускаю");
+      return;
+    }
+
+    const accountId = String(CHATWOOT_ACCOUNT_ID || body.account?.id || body.account_id || "");
+    const phone = extractChatwootPhone(body);
+    console.log(`[chatwoot] webhook: event=${event} phone=${phone || "—"} account=${accountId || "—"}`);
+    if (!accountId || !phone) return;
+
+    const summary = await buildChatwootClientSummary(phone);
+    if (!summary) {
+      console.log(`[chatwoot] webhook: клиент ${phone} не найден в CRM`);
+      return;
+    }
+
+    const api = chatwootApi(accountId);
+
+    // Обновить атрибуты контакта (id есть и в contact, и в conversation событиях)
+    const contactId =
+      body.id && event === "contact_created"
+        ? body.id
+        : body.meta?.sender?.id || body.sender?.id || body.contact?.id;
+    if (contactId) {
+      await api
+        .put(`/contacts/${contactId}`, { custom_attributes: summary.attributes })
+        .catch((e: any) => console.error("[chatwoot] update contact:", e.response?.data || e.message));
+    }
+
+    // Для беседы — добавить приватную заметку со списком заказов
+    if (event === "conversation_created" && body.id) {
+      await api
+        .post(`/conversations/${body.id}/messages`, {
+          content: summary.note,
+          message_type: "outgoing",
+          private: true,
+        })
+        .catch((e: any) => console.error("[chatwoot] add note:", e.response?.data || e.message));
+    }
+  } catch (e: any) {
+    console.error("[chatwoot] webhook error:", e.message);
+  }
 });
 
 // ─── Telegram Bot ───────────────────────────────────────────────────────────
