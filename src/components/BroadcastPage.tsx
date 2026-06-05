@@ -26,6 +26,8 @@ interface Props {
   initialTab?: 'compose' | 'settings';
 }
 
+const DEFAULT_BROADCAST_DISPLAY_NAME = 'YAASBAE Brand';
+
 function friendlyError(err: string): string {
   if (!err) return '';
   if (err.includes('FROZEN_METHOD_INVALID') || err.includes('FROZEN')) return 'Метод заблокирован антиспамом';
@@ -242,7 +244,7 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId, initialTab = 'compose'
   const [bulkSessions, setBulkSessions] = useState('');
   const [isBulkAdding, setIsBulkAdding] = useState(false);
   const [bulkResult, setBulkResult] = useState('');
-  const [displayName, setDisplayName] = useState('');
+  const [displayName, setDisplayName] = useState(DEFAULT_BROADCAST_DISPLAY_NAME);
   const [isSettingPhoto, setIsSettingPhoto] = useState(false);
   const [photoResult, setPhotoResult] = useState('');
   const [isSavingName, setIsSavingName] = useState(false);
@@ -376,13 +378,14 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId, initialTab = 'compose'
 
   const handleSaveDisplayName = async (nextDisplayName = displayName) => {
     setIsSavingName(true);
+    const safeDisplayName = nextDisplayName.trim() || DEFAULT_BROADCAST_DISPLAY_NAME;
     try {
       await fetch('/api/tg/broadcast/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ displayName: nextDisplayName })
+        body: JSON.stringify({ displayName: safeDisplayName })
       });
-      setDisplayName(nextDisplayName);
+      setDisplayName(safeDisplayName);
     } finally {
       setIsSavingName(false);
     }
@@ -537,7 +540,7 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId, initialTab = 'compose'
       try {
         const res = await fetch('/api/tg/broadcast/config');
         const data = await res.json();
-        if (data.displayName) setDisplayName(data.displayName);
+        setDisplayName(data.displayName || DEFAULT_BROADCAST_DISPLAY_NAME);
       } catch {}
     };
     loadData();
@@ -832,7 +835,7 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId, initialTab = 'compose'
       const response = await fetch('/api/broadcast/stealth-start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ phones, messageVariants: allVariants, images: imageFiles, contactButton, delayMinutes: sendIntervalMinutes, activeFromHour, activeToHour })
+        body: JSON.stringify({ phones, messageVariants: allVariants, images: imageFiles, contactButton, delayMinutes: sendIntervalMinutes, activeFromHour, activeToHour, displayName: displayName || DEFAULT_BROADCAST_DISPLAY_NAME })
       });
       const raw = await response.text();
       let data: any = {};
@@ -1459,8 +1462,8 @@ export const BroadcastPage: React.FC<Props> = ({ sheetId, initialTab = 'compose'
             {/* Кнопка под сообщением */}
             <div className="flex items-center justify-between gap-3 px-1">
               <div>
-                <p className="text-[10px] font-bold text-zinc-700">Кнопка "Написать менеджеру"</p>
-                <p className="text-[9px] text-zinc-400">Ссылка на @YAASBAE_CLO_bot под каждым сообщением</p>
+                <p className="text-[10px] font-bold text-zinc-700">Кнопка "Узнать подробности в бот"</p>
+                <p className="text-[9px] text-zinc-400">Активная ссылка на @YAASBAE_CLO_bot под каждым сообщением</p>
               </div>
               <button onClick={() => setContactButton(v => !v)}
                 className={cn("w-10 h-6 rounded-full transition-all relative shrink-0", contactButton ? "bg-blue-500" : "bg-zinc-200")}>

@@ -19,6 +19,7 @@ import { createRequire } from "module";
 import { TelegramClient } from "telegram";
 import { StringSession } from "telegram/sessions";
 import { Api } from "telegram";
+import { Button } from "telegram/tl/custom/button";
 import { Telegraf, Markup } from "telegraf";
 import { GoogleGenAI, Modality } from "@google/genai";
 import sharp from "sharp";
@@ -57,8 +58,51 @@ const TG_API_ID = Number(process.env.TG_API_ID || 2040);
 const TG_API_HASH = process.env.TG_API_HASH || "b18441a1ff607e10a989891a5462e627";
 const GEMINI_TEXT_MODEL = process.env.GEMINI_TEXT_MODEL || "gemini-2.5-flash";
 const BROADCAST_MANAGER_BOT_URL = "https://t.me/YAASBAE_CLO_bot";
+const BROADCAST_MANAGER_BUTTON_TEXT = "Узнать подробности в бот";
+const DEFAULT_BROADCAST_DISPLAY_NAME = "YAASBAE Brand";
 
 const pendingTgClients = new Map<string, { client: TelegramClient; phoneCodeHash: string }>();
+
+function escapeTelegramHtml(value: string) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function buildBroadcastMessageText(message: string, contactButton: boolean) {
+  const cleanMessage = String(message || "").trim();
+  if (!contactButton) return escapeTelegramHtml(cleanMessage);
+  return `${escapeTelegramHtml(cleanMessage)}\n\n<a href="${BROADCAST_MANAGER_BOT_URL}">${BROADCAST_MANAGER_BUTTON_TEXT}</a>`;
+}
+
+async function sendBroadcastMessage(client: TelegramClient, entity: any, message: string, contactButton: boolean) {
+  const preparedMessage = buildBroadcastMessageText(message, contactButton);
+  const baseParams: any = {
+    message: preparedMessage,
+    parseMode: "html",
+    linkPreview: false,
+  };
+  if (!contactButton) return client.sendMessage(entity, baseParams);
+
+  try {
+    return await client.sendMessage(entity, {
+      ...baseParams,
+      buttons: Button.url(BROADCAST_MANAGER_BUTTON_TEXT, BROADCAST_MANAGER_BOT_URL),
+    } as any);
+  } catch (error: any) {
+    const msg = String(error?.message || error || "");
+    if (msg.includes("BUTTON") || msg.includes("REPLY_MARKUP") || msg.includes("markup")) {
+      return client.sendMessage(entity, baseParams);
+    }
+    throw error;
+  }
+}
+
+function normalizeBroadcastDisplayName(value?: string) {
+  const clean = String(value || "").trim();
+  return clean || DEFAULT_BROADCAST_DISPLAY_NAME;
+}
 
 const firebaseConfigPath = path.join(process.cwd(), "firebase-applet-config.json");
 let db: any = null;
@@ -1268,7 +1312,7 @@ async function waitForBroadcastWindow(activeFromHour = 8, activeToHour = 21) {
   }
 }
 
-async function runStealthBroadcast(phones: string[], messageVariants: string[], contactButton: boolean, imageFiles: Array<{base64:string;name:string}>, startFrom = 0, delayMinutes = 2, activeFromHour = 8, activeToHour = 21) {
+async function runStealthBroadcast(phones: string[], messageVariants: string[], contactButton: boolean, imageFiles: Array<{base64:string;name:string}>, startFrom = 0, delayMinutes = 2, activeFromHour = 8, activeToHour = 21, displayName = "") {
   if (!db) return;
 
   const MESSAGES_PER_ACCOUNT = 20;
@@ -1281,7 +1325,7 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
 
   if (startFrom === 0) {
     stealthJob = { status: 'running', total: phones.length, sent: 0, failed: 0, checked: 0, currentIndex: 0, currentAccount: '', delayMinutes: safeDelayMinutes, activeFromHour: safeActiveFromHour, activeToHour: safeActiveToHour, startedAt: new Date().toISOString(), stopRequested: false, log: [] };
-    await setDoc(doc(db, 'settings', 'stealth_job_data'), { phones, messageVariants, contactButton, imageFiles, delayMinutes: safeDelayMinutes, activeFromHour: safeActiveFromHour, activeToHour: safeActiveToHour }).catch((e) => {
+    await setDoc(doc(db, 'settings', 'stealth_job_data'), { phones, messageVariants, contactButton, imageFiles, delayMinutes: safeDelayMinutes, activeFromHour: safeActiveFromHour, activeToHour: safeActiveToHour, displayName: normalizeBroadcastDisplayName(displayName) }).catch((e) => {
       console.warn('[stealth] could not persist job data:', e?.message || e);
     });
   } else {
@@ -1300,7 +1344,7 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
   if (!accounts.length) { stealthJob.status = 'waiting_accounts'; await saveStealthProgress(); return; }
 
   const configSnap = await getDoc(doc(db, 'settings', 'broadcast_config')).catch(() => null);
-  const broadcastDisplayName: string = configSnap?.exists() ? (configSnap.data()?.displayName || '') : '';
+  const broadcastDisplayName = normalizeBroadcastDisplayName(displayName || (configSnap?.exists() ? configSnap.data()?.displayName : ""));
 
   // Загружаем no_telegram
   const noTgSnap = await getDoc(doc(db, 'settings', 'no_telegram')).catch(() => null);
@@ -1547,7 +1591,6 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
           noTgStreak = 0;
           // Отправляем варианты по кругу: 1,2,3...10, затем снова 1.
           const variant = messageVariants[sentVariantIndex % messageVariants.length];
-          const textMsg = contactButton ? `${variant}\n\nНаписать менеджеру: ${BROADCAST_MANAGER_BOT_URL}` : variant;
           const globalWaitMs = Math.max(0, DELAY_BETWEEN_SENDS - (Date.now() - lastSuccessfulSendAt));
           if (lastSuccessfulSendAt > 0 && globalWaitMs > 0 && !stealthJob.stopRequested) {
             console.log(`[stealth] waiting ${Math.ceil(globalWaitMs / 60000)} min before next message`);
@@ -1567,7 +1610,7 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
             }));
             await client.sendFile(entity, { file: fileObjs.length === 1 ? fileObjs[0] : fileObjs as any, forceDocument: false });
           }
-          await client.sendMessage(entity, { message: textMsg });
+          await sendBroadcastMessage(client, entity, variant, contactButton);
 
           sentSet.add(cleanPhone);
           sentDateMap.set(cleanPhone, new Date().toISOString());
@@ -1638,13 +1681,15 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
 }
 
 app.post('/api/broadcast/stealth-start', async (req, res) => {
-  const { phones, messageVariants, contactButton, images, delayMinutes, activeFromHour, activeToHour } = req.body;
+  const { phones, messageVariants, contactButton, images, delayMinutes, activeFromHour, activeToHour, displayName } = req.body;
   if (!phones?.length || !messageVariants?.length) return res.status(400).json({ error: 'Нужны phones и messageVariants' });
   if (['running', 'sleeping'].includes(stealthJob.status)) return res.status(400).json({ error: 'Рассылка уже идёт' });
   const safeDelayMinutes = [2, 5, 10].includes(Number(delayMinutes)) ? Number(delayMinutes) : 2;
   const safeActiveFromHour = Number.isFinite(Number(activeFromHour)) ? Math.min(23, Math.max(0, Number(activeFromHour))) : 8;
   const safeActiveToHour = Number.isFinite(Number(activeToHour)) ? Math.min(24, Math.max(1, Number(activeToHour))) : 21;
-  runStealthBroadcast(phones, messageVariants, !!contactButton, images || [], 0, safeDelayMinutes, safeActiveFromHour, safeActiveToHour);
+  const safeDisplayName = normalizeBroadcastDisplayName(displayName);
+  if (db) await setDoc(doc(db, 'settings', 'broadcast_config'), { displayName: safeDisplayName }, { merge: true }).catch(() => {});
+  runStealthBroadcast(phones, messageVariants, !!contactButton, images || [], 0, safeDelayMinutes, safeActiveFromHour, safeActiveToHour, safeDisplayName);
   res.json({ success: true, total: phones.length, delayMinutes: safeDelayMinutes, activeFromHour: safeActiveFromHour, activeToHour: safeActiveToHour });
 });
 
@@ -1655,9 +1700,9 @@ app.post('/api/broadcast/stealth-resume', async (req, res) => {
   if (!db) return res.status(500).json({ error: 'DB не подключена' });
   const dataSnap = await getDoc(doc(db, 'settings', 'stealth_job_data')).catch(() => null);
   if (!dataSnap?.exists()) return res.status(400).json({ error: 'Данные задания не найдены' });
-  const { phones, messageVariants, contactButton, imageFiles, delayMinutes, activeFromHour, activeToHour } = dataSnap.data() as any;
+  const { phones, messageVariants, contactButton, imageFiles, delayMinutes, activeFromHour, activeToHour, displayName } = dataSnap.data() as any;
   const resumeFrom = stealthJob.currentIndex;
-  runStealthBroadcast(phones, messageVariants, !!contactButton, imageFiles || [], resumeFrom, delayMinutes || stealthJob.delayMinutes || 2, activeFromHour || stealthJob.activeFromHour || 8, activeToHour || stealthJob.activeToHour || 21);
+  runStealthBroadcast(phones, messageVariants, !!contactButton, imageFiles || [], resumeFrom, delayMinutes || stealthJob.delayMinutes || 2, activeFromHour || stealthJob.activeFromHour || 8, activeToHour || stealthJob.activeToHour || 21, normalizeBroadcastDisplayName(displayName));
   res.json({ success: true, resumeFrom, total: phones.length });
 });
 
@@ -1864,7 +1909,6 @@ app.post("/api/broadcast/gramjs", async (req, res) => {
           continue;
         }
         const variant = getVariant(i);
-        const textMsg = contactButton ? `${variant}\n\nНаписать менеджеру: ${BROADCAST_MANAGER_BOT_URL}` : variant;
         if (imageFiles.length > 0) {
           const { CustomFile } = await import("telegram/client/uploads");
           const fileObjs = await Promise.all(imageFiles.map(async f => {
@@ -1878,9 +1922,9 @@ app.post("/api/broadcast/gramjs", async (req, res) => {
           } else {
             await client.sendFile(entity as any, { file: fileObjs as any, forceDocument: false });
           }
-          await client.sendMessage(entity as any, { message: textMsg });
+          await sendBroadcastMessage(client, entity as any, variant, !!contactButton);
         } else {
-          await client.sendMessage(entity as any, { message: textMsg });
+          await sendBroadcastMessage(client, entity as any, variant, !!contactButton);
         }
         results.push({ phone: rawPhone, status: "sent", account: accounts[accIdx].phone });
         msgCount++;
