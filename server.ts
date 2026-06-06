@@ -19,7 +19,6 @@ import { createRequire } from "module";
 import { TelegramClient } from "telegram";
 import { StringSession } from "telegram/sessions";
 import { Api } from "telegram";
-import { Button } from "telegram/tl/custom/button";
 import { Telegraf, Markup } from "telegraf";
 import { GoogleGenAI, Modality } from "@google/genai";
 import sharp from "sharp";
@@ -63,24 +62,31 @@ const DEFAULT_BROADCAST_DISPLAY_NAME = "YAASBAE Brand";
 
 const pendingTgClients = new Map<string, { client: TelegramClient; phoneCodeHash: string }>();
 
-function escapeTelegramHtml(value: string) {
-  return String(value || "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+function buildBroadcastMessageText(message: string, contactButton: boolean, fallbackUrl = false) {
+  const cleanMessage = String(message || "").trim();
+  if (!contactButton) return cleanMessage;
+  const suffix = fallbackUrl
+    ? `${BROADCAST_MANAGER_BUTTON_TEXT}: ${BROADCAST_MANAGER_BOT_URL}`
+    : BROADCAST_MANAGER_BUTTON_TEXT;
+  return `${cleanMessage}\n\n${suffix}`;
 }
 
-function buildBroadcastMessageText(message: string, contactButton: boolean) {
-  const cleanMessage = String(message || "").trim();
-  if (!contactButton) return escapeTelegramHtml(cleanMessage);
-  return `${escapeTelegramHtml(cleanMessage)}\n\n<a href="${BROADCAST_MANAGER_BOT_URL}">${BROADCAST_MANAGER_BUTTON_TEXT}</a>`;
+function buildBroadcastManagerLinkEntity(message: string) {
+  const offset = message.lastIndexOf(BROADCAST_MANAGER_BUTTON_TEXT);
+  if (offset < 0) return [];
+  return [
+    new Api.MessageEntityTextUrl({
+      offset,
+      length: BROADCAST_MANAGER_BUTTON_TEXT.length,
+      url: BROADCAST_MANAGER_BOT_URL,
+    }),
+  ];
 }
 
 async function sendBroadcastMessage(client: TelegramClient, entity: any, message: string, contactButton: boolean) {
   const preparedMessage = buildBroadcastMessageText(message, contactButton);
   const baseParams: any = {
     message: preparedMessage,
-    parseMode: "html",
     linkPreview: false,
   };
   if (!contactButton) return client.sendMessage(entity, baseParams);
@@ -88,12 +94,15 @@ async function sendBroadcastMessage(client: TelegramClient, entity: any, message
   try {
     return await client.sendMessage(entity, {
       ...baseParams,
-      buttons: Button.url(BROADCAST_MANAGER_BUTTON_TEXT, BROADCAST_MANAGER_BOT_URL),
+      formattingEntities: buildBroadcastManagerLinkEntity(preparedMessage),
     } as any);
   } catch (error: any) {
     const msg = String(error?.message || error || "");
-    if (msg.includes("BUTTON") || msg.includes("REPLY_MARKUP") || msg.includes("markup")) {
-      return client.sendMessage(entity, baseParams);
+    if (msg.includes("ENTITY") || msg.includes("parse") || msg.includes("entities")) {
+      return client.sendMessage(entity, {
+        message: buildBroadcastMessageText(message, contactButton, true),
+        linkPreview: false,
+      } as any);
     }
     throw error;
   }
