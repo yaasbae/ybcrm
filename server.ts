@@ -65,22 +65,8 @@ const pendingTgClients = new Map<string, { client: TelegramClient; phoneCodeHash
 function buildBroadcastMessageText(message: string, contactButton: boolean, fallbackUrl = false) {
   const cleanMessage = String(message || "").trim();
   if (!contactButton) return cleanMessage;
-  const suffix = fallbackUrl
-    ? `${BROADCAST_MANAGER_BUTTON_TEXT}: ${BROADCAST_MANAGER_BOT_URL}`
-    : BROADCAST_MANAGER_BUTTON_TEXT;
+  const suffix = `${BROADCAST_MANAGER_BUTTON_TEXT}\n${BROADCAST_MANAGER_BOT_URL}`;
   return `${cleanMessage}\n\n${suffix}`;
-}
-
-function buildBroadcastManagerLinkEntity(message: string) {
-  const offset = message.lastIndexOf(BROADCAST_MANAGER_BUTTON_TEXT);
-  if (offset < 0) return [];
-  return [
-    new Api.MessageEntityTextUrl({
-      offset,
-      length: BROADCAST_MANAGER_BUTTON_TEXT.length,
-      url: BROADCAST_MANAGER_BOT_URL,
-    }),
-  ];
 }
 
 async function sendBroadcastMessage(client: TelegramClient, entity: any, message: string, contactButton: boolean) {
@@ -92,10 +78,7 @@ async function sendBroadcastMessage(client: TelegramClient, entity: any, message
   if (!contactButton) return client.sendMessage(entity, baseParams);
 
   try {
-    return await client.sendMessage(entity, {
-      ...baseParams,
-      formattingEntities: buildBroadcastManagerLinkEntity(preparedMessage),
-    } as any);
+    return await client.sendMessage(entity, baseParams);
   } catch (error: any) {
     const msg = String(error?.message || error || "");
     if (msg.includes("ENTITY") || msg.includes("parse") || msg.includes("entities")) {
