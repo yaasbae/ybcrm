@@ -2914,19 +2914,27 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
         const todaySales = todayOrders.filter(isPaidSale);
         const monthRevenue = monthSales.reduce((sum, order) => sum + (Number(order.paidAmount) || 0), 0);
         const todayRevenue = todaySales.reduce((sum, order) => sum + (Number(order.paidAmount) || 0), 0);
+        const basePlan = Number(plan.basePlan) || MANAGER_PLAN_DEFAULTS.basePlan;
+        const dayPlan = Number(plan.dayPlan) || MANAGER_PLAN_DEFAULTS.dayPlan;
+        const monthPlan = Number(plan.monthPlan) || MANAGER_PLAN_DEFAULTS.monthPlan;
+        const revenuePlan = Number(plan.revenuePlan) || MANAGER_PLAN_DEFAULTS.revenuePlan;
+        const dueExtra = monthOrders.reduce((sum, order) => sum + Math.max(0, (Number(order.revenue) || 0) + (Number(order.deliveryPrice) || 0) - (Number(order.paidAmount) || 0)), 0);
 
         return {
           name: manager,
           baseWorked: monthOrders.length,
-          basePlan: Number(plan.basePlan) || MANAGER_PLAN_DEFAULTS.basePlan,
+          basePlan,
+          remainingBase: Math.max(0, basePlan - monthOrders.length),
           daySales: todaySales.length,
-          dayPlan: Number(plan.dayPlan) || MANAGER_PLAN_DEFAULTS.dayPlan,
+          dayPlan,
           todayRevenue,
           monthSales: monthSales.length,
-          monthPlan: Number(plan.monthPlan) || MANAGER_PLAN_DEFAULTS.monthPlan,
+          monthPlan,
+          remainingSales: Math.max(0, monthPlan - monthSales.length),
           monthRevenue,
-          revenuePlan: Number(plan.revenuePlan) || MANAGER_PLAN_DEFAULTS.revenuePlan,
-          dueExtra: monthOrders.reduce((sum, order) => sum + Math.max(0, (Number(order.revenue) || 0) + (Number(order.deliveryPrice) || 0) - (Number(order.paidAmount) || 0)), 0),
+          revenuePlan,
+          remainingRevenue: Math.max(0, revenuePlan - monthRevenue),
+          dueExtra,
         };
       }),
     };
@@ -3287,7 +3295,8 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                     </div>
                   </div>
                   <div className="text-right">
-                    <p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">факт месяц</p>
+                    <p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">план / факт</p>
+                    <p className="text-[13px] font-black text-zinc-950">{formatCurrency(manager.revenuePlan)}</p>
                     <p className="text-[18px] font-black text-emerald-600">{formatCurrency(manager.monthRevenue)}</p>
                   </div>
                 </div>
@@ -3296,52 +3305,58 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                   <div className="mb-3 flex items-center justify-between gap-3">
                     <div>
                       <p className="text-[10px] font-black uppercase tracking-[0.18em] text-zinc-400">План</p>
-                      <p className="text-[12px] font-bold text-zinc-500">что должен сделать менеджер</p>
+                      <p className="text-[12px] font-bold text-zinc-500">что должен сделать менеджер за месяц</p>
                     </div>
                     <div className="text-right">
-                      <p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">план сумма</p>
+                      <p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">цель по деньгам</p>
                       <p className="text-[17px] font-black text-zinc-950">{formatCurrency(manager.revenuePlan)}</p>
                     </div>
                   </div>
-                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                  {[
-                    { label: 'План день', field: 'dayPlan' as const, value: manager.dayPlan },
-                    { label: 'План месяц', field: 'monthPlan' as const, value: manager.monthPlan },
-                    { label: 'План база', field: 'basePlan' as const, value: manager.basePlan },
-                    { label: 'План сумма', field: 'revenuePlan' as const, value: manager.revenuePlan },
-                  ].map((planField) => (
-                    <label key={planField.field} className="block">
-                      <span className="mb-1 block text-[8px] font-black uppercase tracking-[0.14em] text-zinc-400">{planField.label}</span>
-                      <input
-                        type="number"
-                        min={0}
-                        value={planField.value}
-                        onChange={(event) => updateManagerPlanSetting(manager.name, planField.field, Number(event.target.value))}
-                        className="h-10 w-full rounded-xl border border-zinc-100 bg-white px-3 text-[13px] font-black text-zinc-900 outline-none transition-all focus:border-zinc-300 focus:bg-white focus:ring-2 focus:ring-zinc-500/10"
-                      />
-                    </label>
-                  ))}
+                  <div className="grid gap-2 sm:grid-cols-[1.2fr_1fr_1fr_1fr]">
+                    {[
+                      { label: 'Сумма плана за месяц, ₽', field: 'revenuePlan' as const, value: manager.revenuePlan },
+                      { label: 'Продаж за месяц, шт', field: 'monthPlan' as const, value: manager.monthPlan },
+                      { label: 'Продаж в день, шт', field: 'dayPlan' as const, value: manager.dayPlan },
+                      { label: 'Работа по базе, шт', field: 'basePlan' as const, value: manager.basePlan },
+                    ].map((planField) => (
+                      <label key={planField.field} className="block">
+                        <span className="mb-1 block text-[8px] font-black uppercase tracking-[0.14em] text-zinc-400">{planField.label}</span>
+                        <input
+                          type="number"
+                          min={0}
+                          value={planField.value}
+                          onChange={(event) => updateManagerPlanSetting(manager.name, planField.field, Number(event.target.value))}
+                          className="h-10 w-full rounded-xl border border-zinc-100 bg-white px-3 text-[13px] font-black text-zinc-900 outline-none transition-all focus:border-zinc-300 focus:bg-white focus:ring-2 focus:ring-zinc-500/10"
+                        />
+                      </label>
+                    ))}
                   </div>
                 </div>
 
                 <div className="mb-3">
                   <p className="text-[10px] font-black uppercase tracking-[0.18em] text-zinc-400">Факт</p>
-                  <p className="text-[12px] font-bold text-zinc-500">что уже сделано по заказам</p>
+                  <p className="text-[12px] font-bold text-zinc-500">что уже сделано и сколько осталось добить</p>
                 </div>
-                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                <div className="grid grid-cols-2 gap-2 xl:grid-cols-5">
                   <div className="rounded-xl border border-zinc-100 bg-white p-3">
-                    <p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">Продажи день</p>
+                    <p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">Сегодня</p>
                     <p className="mt-1 text-[20px] font-black text-zinc-950">{manager.daySales}</p>
-                    <p className="text-[10px] font-bold text-zinc-400">план {manager.dayPlan}</p>
-                  </div>
-                  <div className="rounded-xl border border-zinc-100 bg-white p-3">
-                    <p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">Сумма день</p>
-                    <p className="mt-1 text-[15px] font-black text-zinc-950">{formatCurrency(manager.todayRevenue)}</p>
+                    <p className="text-[10px] font-bold text-zinc-400">план {manager.dayPlan} · {formatCurrency(manager.todayRevenue)}</p>
                   </div>
                   <div className="rounded-xl border border-zinc-100 bg-white p-3">
                     <p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">Продажи мес.</p>
                     <p className="mt-1 text-[20px] font-black text-zinc-950">{manager.monthSales}</p>
-                    <p className="text-[10px] font-bold text-zinc-400">план {manager.monthPlan}</p>
+                    <p className="text-[10px] font-bold text-zinc-400">осталось {manager.remainingSales}</p>
+                  </div>
+                  <div className="rounded-xl border border-zinc-100 bg-white p-3">
+                    <p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">Сумма мес.</p>
+                    <p className="mt-1 text-[15px] font-black text-emerald-600">{formatCurrency(manager.monthRevenue)}</p>
+                    <p className="text-[10px] font-bold text-zinc-400">осталось {formatCurrency(manager.remainingRevenue)}</p>
+                  </div>
+                  <div className="rounded-xl border border-zinc-100 bg-white p-3">
+                    <p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">База</p>
+                    <p className="mt-1 text-[20px] font-black text-zinc-950">{manager.baseWorked}</p>
+                    <p className="text-[10px] font-bold text-zinc-400">осталось {manager.remainingBase}</p>
                   </div>
                   <div className="rounded-xl border border-zinc-100 bg-white p-3">
                     <p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">К доплате</p>
