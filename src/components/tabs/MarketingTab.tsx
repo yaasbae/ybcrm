@@ -40,6 +40,15 @@ type BloggerPerformance = {
   orderIds: string[];
 };
 
+type ManualBloggerProfile = {
+  id: string;
+  name: string;
+  phone: string;
+  instagram: string;
+  city: string;
+  createdAt?: string;
+};
+
 const normalizeBloggerName = (value: string) => (
   String(value || '')
     .toLowerCase()
@@ -56,6 +65,9 @@ export const MarketingTab: React.FC<MarketingTabProps> = ({
   const [bloggerSearch, setBloggerSearch] = useState('');
   const [handbookProducts, setHandbookProducts] = useState<string[]>([]);
   const [handbookBloggers, setHandbookBloggers] = useState<string[]>([]);
+  const [manualBloggers, setManualBloggers] = useState<ManualBloggerProfile[]>([]);
+  const [showAddBlogger, setShowAddBlogger] = useState(false);
+  const [newBloggerDraft, setNewBloggerDraft] = useState({ name: '', phone: '', instagram: '', city: '' });
   const [calendarEvents, setCalendarEvents] = useState<BloggerCalendarEvent[]>([]);
   const [calendarDraft, setCalendarDraft] = useState({
     date: `${selectedMonth}-01`,
@@ -76,10 +88,15 @@ export const MarketingTab: React.FC<MarketingTabProps> = ({
       setHandbookProducts(Array.isArray(productNames) ? productNames.filter(Boolean) : []);
       setHandbookBloggers(Array.isArray(bloggers) ? bloggers.filter(Boolean) : []);
     });
+    const unsubManualBloggers = onSnapshot(doc(db, 'settings', 'marketingBloggers'), (snap) => {
+      const bloggers = snap.exists() ? snap.data().bloggers : [];
+      setManualBloggers(Array.isArray(bloggers) ? bloggers.filter((item) => item?.name) : []);
+    });
 
     return () => {
       unsubCalendar();
       unsubHandbook();
+      unsubManualBloggers();
     };
   }, [selectedMonth]);
 
@@ -95,15 +112,43 @@ export const MarketingTab: React.FC<MarketingTabProps> = ({
     await setDoc(doc(db, 'marketing_blogger_calendar', selectedMonth), { events }, { merge: true });
   };
 
+  const addManualBlogger = async () => {
+    const name = newBloggerDraft.name.trim();
+    if (!name) return;
+
+    const normalizedName = normalizeBloggerName(name);
+    const profile: ManualBloggerProfile = {
+      id: `manual-${normalizedName || Date.now()}`,
+      name,
+      phone: newBloggerDraft.phone.trim(),
+      instagram: newBloggerDraft.instagram.trim(),
+      city: newBloggerDraft.city.trim(),
+      createdAt: new Date().toISOString(),
+    };
+    const withoutDuplicate = manualBloggers.filter((item) => normalizeBloggerName(item.name) !== normalizedName);
+    const nextManualBloggers = [...withoutDuplicate, profile].sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+    const nextHandbookBloggers = Array.from(new Set([...handbookBloggers, name].map((item) => item.trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b, 'ru'));
+
+    await setDoc(doc(db, 'settings', 'marketingBloggers'), { bloggers: nextManualBloggers }, { merge: true });
+    await setDoc(doc(db, 'settings', 'handbook'), { bloggers: nextHandbookBloggers }, { merge: true });
+    setNewBloggerDraft({ name: '', phone: '', instagram: '', city: '' });
+    setShowAddBlogger(false);
+  };
+
   const allBloggerOptions = useMemo(() => {
     const options = YAASBAE_BLOGGERS.map((blogger) => ({ id: blogger.id, name: blogger.name }));
+    manualBloggers.forEach((blogger) => {
+      const key = normalizeBloggerName(blogger.name);
+      if (!key || options.some((item) => normalizeBloggerName(item.name) === key)) return;
+      options.push({ id: blogger.id, name: blogger.name });
+    });
     handbookBloggers.forEach((name) => {
       const key = normalizeBloggerName(name);
       if (!key || options.some((item) => normalizeBloggerName(item.name) === key)) return;
       options.push({ id: `handbook-${key}`, name });
     });
     return options;
-  }, [handbookBloggers]);
+  }, [handbookBloggers, manualBloggers]);
 
   const addCalendarEvent = async () => {
     const blogger = allBloggerOptions.find((item) => item.id === calendarDraft.bloggerId);
@@ -198,10 +243,32 @@ export const MarketingTab: React.FC<MarketingTabProps> = ({
         orderIds: performance?.orderIds || [],
       };
     });
+    const savedRows: BloggerPerformance[] = manualBloggers
+      .filter((blogger) => {
+        const key = normalizeBloggerName(blogger.name);
+        return key && !baseRows.some((item) => normalizeBloggerName(item.name) === key);
+      })
+      .map((blogger) => {
+        const performance = Array.from(bloggerPerformance.values())
+          .find((item) => normalizeBloggerName(item.name) === normalizeBloggerName(blogger.name));
+        return {
+          id: blogger.id,
+          name: blogger.name,
+          phone: blogger.phone,
+          instagram: blogger.instagram,
+          city: blogger.city,
+          sourceOrders: 0,
+          crmOrders: performance?.crmOrders || 0,
+          total: performance?.total || 0,
+          orderIds: performance?.orderIds || [],
+        };
+      });
     const manualRows: BloggerPerformance[] = handbookBloggers
       .filter((name) => {
         const key = normalizeBloggerName(name);
-        return key && !baseRows.some((item) => normalizeBloggerName(item.name) === key);
+        return key
+          && !baseRows.some((item) => normalizeBloggerName(item.name) === key)
+          && !savedRows.some((item) => normalizeBloggerName(item.name) === key);
       })
       .map((name) => {
         const id = `handbook-${normalizeBloggerName(name)}`;
@@ -219,10 +286,10 @@ export const MarketingTab: React.FC<MarketingTabProps> = ({
           orderIds: [],
         };
       });
-    const manualIds = new Set(manualRows.map((item) => item.id));
+    const manualIds = new Set([...savedRows, ...manualRows].map((item) => item.id));
     const extraRows = Array.from(bloggerPerformance.values())
       .filter((blogger) => !YAASBAE_BLOGGERS.some((item) => item.id === blogger.id) && !manualIds.has(blogger.id));
-    return [...baseRows, ...manualRows, ...extraRows]
+    return [...baseRows, ...savedRows, ...manualRows, ...extraRows]
       .filter((blogger) => !query || [
         blogger.name,
         blogger.phone,
@@ -230,7 +297,7 @@ export const MarketingTab: React.FC<MarketingTabProps> = ({
         blogger.city,
       ].some((value) => value?.toLowerCase().includes(query)))
       .sort((a, b) => b.total - a.total || b.crmOrders - a.crmOrders || b.sourceOrders - a.sourceOrders || a.name.localeCompare(b.name, 'ru'));
-  }, [bloggerPerformance, bloggerSearch, handbookBloggers]);
+  }, [bloggerPerformance, bloggerSearch, handbookBloggers, manualBloggers]);
 
   const monthDays = useMemo(() => {
     const [year, month] = selectedMonth.split('-').map(Number);
@@ -268,17 +335,72 @@ export const MarketingTab: React.FC<MarketingTabProps> = ({
               </p>
             </div>
           </div>
-          <div className="relative w-full lg:w-80">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-zinc-300" />
-            <input
-              type="text"
-              placeholder="Поиск по имени, телефону, Instagram..."
-              value={bloggerSearch}
-              onChange={(e) => setBloggerSearch(e.target.value)}
-              className="w-full pl-9 pr-3 py-3 bg-zinc-50 border border-zinc-100 rounded-xl text-[12px] font-semibold focus:outline-none focus:ring-2 focus:ring-zinc-200 transition-all"
-            />
+          <div className="flex w-full flex-col gap-2 sm:flex-row lg:w-auto">
+            <button
+              type="button"
+              onClick={() => setShowAddBlogger((value) => !value)}
+              className="inline-flex h-11 shrink-0 items-center justify-center gap-2 rounded-xl bg-zinc-900 px-4 text-[10px] font-black uppercase tracking-widest text-white shadow-sm transition-colors hover:bg-black"
+            >
+              <Plus className="h-4 w-4" />
+              Новый блогер
+            </button>
+            <div className="relative w-full lg:w-80">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-zinc-300" />
+              <input
+                type="text"
+                placeholder="Поиск по имени, телефону, Instagram..."
+                value={bloggerSearch}
+                onChange={(e) => setBloggerSearch(e.target.value)}
+                className="w-full pl-9 pr-3 py-3 bg-zinc-50 border border-zinc-100 rounded-xl text-[12px] font-semibold focus:outline-none focus:ring-2 focus:ring-zinc-200 transition-all"
+              />
+            </div>
           </div>
         </div>
+        {showAddBlogger && (
+          <div className="grid gap-3 border-b border-zinc-100 bg-zinc-50/40 p-4 md:grid-cols-[minmax(0,1.4fr)_160px_190px_160px_140px]">
+            <input
+              type="text"
+              placeholder="ФИО блогера"
+              value={newBloggerDraft.name}
+              onChange={(e) => setNewBloggerDraft((prev) => ({ ...prev, name: e.target.value }))}
+              className="h-11 rounded-xl border border-zinc-200 bg-white px-4 text-[12px] font-bold text-zinc-900 outline-none focus:ring-2 focus:ring-zinc-200"
+            />
+            <input
+              type="text"
+              placeholder="Телефон"
+              value={newBloggerDraft.phone}
+              onChange={(e) => setNewBloggerDraft((prev) => ({ ...prev, phone: e.target.value }))}
+              className="h-11 rounded-xl border border-zinc-200 bg-white px-4 text-[12px] font-bold text-zinc-900 outline-none focus:ring-2 focus:ring-zinc-200"
+            />
+            <input
+              type="text"
+              placeholder="Instagram"
+              value={newBloggerDraft.instagram}
+              onChange={(e) => setNewBloggerDraft((prev) => ({ ...prev, instagram: e.target.value }))}
+              className="h-11 rounded-xl border border-zinc-200 bg-white px-4 text-[12px] font-bold text-zinc-900 outline-none focus:ring-2 focus:ring-zinc-200"
+            />
+            <input
+              type="text"
+              placeholder="Город"
+              value={newBloggerDraft.city}
+              onChange={(e) => setNewBloggerDraft((prev) => ({ ...prev, city: e.target.value }))}
+              className="h-11 rounded-xl border border-zinc-200 bg-white px-4 text-[12px] font-bold text-zinc-900 outline-none focus:ring-2 focus:ring-zinc-200"
+            />
+            <button
+              type="button"
+              onClick={addManualBlogger}
+              disabled={!newBloggerDraft.name.trim()}
+              className={cn(
+                'h-11 rounded-xl px-4 text-[10px] font-black uppercase tracking-widest transition-colors',
+                newBloggerDraft.name.trim()
+                  ? 'bg-blue-600 text-white hover:bg-blue-700'
+                  : 'cursor-not-allowed bg-zinc-100 text-zinc-300'
+              )}
+            >
+              Добавить
+            </button>
+          </div>
+        )}
         <div className="overflow-x-auto max-h-[520px]">
           <table className="w-full text-left border-collapse">
             <thead className="sticky top-0 z-10 bg-white">

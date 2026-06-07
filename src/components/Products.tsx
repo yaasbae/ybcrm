@@ -939,13 +939,19 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
                       <label className="text-[11px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2">
                         <Ruler size={14} /> Рост
                       </label>
-                      <input 
-                        type="text" 
-                        placeholder="170-185 см"
+                      <select
                         value={newProduct.height}
                         onChange={(e) => setNewProduct({...newProduct, height: e.target.value})}
                         className="w-full px-4 py-3 bg-slate-50 border border-slate-100 rounded-2xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all"
-                      />
+                      >
+                        <option value="">Выберите рост...</option>
+                        {['150-155', '160-165', '170-175', '180-185'].map(opt => (
+                          <option key={opt} value={opt}>{opt}</option>
+                        ))}
+                        {newProduct.height && !['150-155', '160-165', '170-175', '180-185'].includes(newProduct.height) && (
+                          <option value={newProduct.height}>{newProduct.height}</option>
+                        )}
+                      </select>
                     </div>
                     <div className="space-y-2">
                       <label className="text-[11px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2">

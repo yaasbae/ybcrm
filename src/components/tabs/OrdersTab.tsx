@@ -2542,6 +2542,8 @@ interface OrdersTabProps {
   setOrdersFilterMonth: (n: number) => void;
   orderStatusFilter: string;
   setOrderStatusFilter: (s: string) => void;
+  orderBloggerFilter: string;
+  setOrderBloggerFilter: (s: string) => void;
   slaFilterMonth: number;
   setSlaFilterMonth: (n: number) => void;
   filteredSlaStats: any;
@@ -2583,6 +2585,8 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
   setOrdersFilterMonth,
   orderStatusFilter,
   setOrderStatusFilter,
+  orderBloggerFilter,
+  setOrderBloggerFilter,
   slaFilterMonth,
   setSlaFilterMonth,
   filteredSlaStats,
@@ -2656,7 +2660,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
 
   useEffect(() => {
     setSelectedOrderKeys(new Set());
-  }, [ordersFilterMonth, orderStatusFilter, searchTerm]);
+  }, [ordersFilterMonth, orderStatusFilter, orderBloggerFilter, searchTerm]);
 
   useEffect(() => {
     const unsubscribe = onSnapshot(
@@ -3634,6 +3638,18 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                       )}
                     </AnimatePresence>
                   </div>
+                  <div className="relative">
+                    <input
+                      type="text"
+                      list="blogger-list"
+                      placeholder="ФИО блогера"
+                      value={newOrder.blogger || ''}
+                      onChange={(e) => setNewOrder({...newOrder, blogger: e.target.value})}
+                      className={newOrderFieldClass}
+                      autoComplete="off"
+                    />
+                    <Star className="pointer-events-none absolute right-4 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-300" />
+                  </div>
                 </div>
               </div>
 
@@ -3645,7 +3661,6 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
 
               <div className="min-w-0 space-y-3">
                 {renderNewOrderSelect('Менеджмент', newOrder.manager || '', handbookManagers, (v) => setNewOrder({...newOrder, manager: v}), 'Менеджер')}
-                {renderNewOrderSelect(' ', newOrder.blogger || '', handbookBloggers, (v) => setNewOrder({...newOrder, blogger: v}), 'Блогер')}
               </div>
             </div>
           </section>
@@ -4289,15 +4304,17 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
               </select>
             </div>
           </div>
-          <div className="relative">
-            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-zinc-300" />
-            <input
-              type="text"
-              placeholder="Поиск..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="pl-7 pr-3 py-1.5 bg-zinc-50 border border-zinc-100 rounded-lg text-[10px] font-medium focus:outline-none focus:ring-1 focus:ring-zinc-200 transition-all w-full sm:w-48"
-            />
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+            <div className="relative">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-zinc-300" />
+              <input
+                type="text"
+                placeholder="Поиск..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="pl-7 pr-3 py-1.5 bg-zinc-50 border border-zinc-100 rounded-lg text-[10px] font-medium focus:outline-none focus:ring-1 focus:ring-zinc-200 transition-all w-full sm:w-48"
+              />
+            </div>
           </div>
         </div>
         <div className="px-3 py-2 border-b border-zinc-100 flex gap-1.5 overflow-x-auto">
@@ -4320,6 +4337,25 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
               </button>
             );
           })}
+          <div className="relative shrink-0">
+            <Star className="pointer-events-none absolute left-3 top-1/2 h-3 w-3 -translate-y-1/2 text-zinc-400" />
+            <select
+              value={orderBloggerFilter}
+              onChange={(e) => setOrderBloggerFilter(e.target.value)}
+              className={cn(
+                'h-[31px] max-w-[220px] appearance-none rounded-lg border bg-white py-1.5 pl-8 pr-7 text-[8px] font-black uppercase tracking-widest outline-none transition-colors',
+                orderBloggerFilter
+                  ? 'border-violet-200 bg-violet-50 text-violet-700'
+                  : 'border-zinc-100 text-zinc-500 hover:bg-zinc-50'
+              )}
+            >
+              <option value="">Блогер</option>
+              {optionList(handbookBloggers).map(blogger => (
+                <option key={blogger} value={blogger}>{blogger}</option>
+              ))}
+            </select>
+            <ChevronRight className="pointer-events-none absolute right-2.5 top-1/2 h-3 w-3 -translate-y-1/2 rotate-90 text-zinc-400" />
+          </div>
         </div>
         <div className="hidden items-center justify-between gap-3 border-b border-zinc-100 bg-zinc-50/40 px-3 py-2 md:flex">
           <div className="flex items-center gap-3">

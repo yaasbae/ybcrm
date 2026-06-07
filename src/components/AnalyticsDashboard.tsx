@@ -161,20 +161,17 @@ const manualReturnOperations = [
 const getManualReturnKey = (date: Date) => `${date.getFullYear()}-${date.getMonth() + 1}`;
 
 const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
-  sheetId: initialSheetId,
   initialTab = 'analytics',
   onBack,
   onNavigate,
   selectedMonth,
   setSelectedMonth
 }) => {
-  const [sheetId, setSheetId] = useState(initialSheetId);
   const [activeTab, setActiveTab] = useState<'analytics' | 'clients' | 'marketing' | 'orders'>(initialTab ?? 'analytics');
   const [data, setData] = useState<OrderData[]>([]);
-  const [sheetOrders, setSheetOrders] = useState<OrderData[]>([]);
   const [firebaseOrders, setFirebaseOrders] = useState<OrderData[]>([]);
   const [loading, setLoading] = useState(true);
-  const [loadingStep, setLoadingStep] = useState<string>('Инициализация...');
+  const [loadingStep, setLoadingStep] = useState<string>('Загрузка заказов CRM...');
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [sheetWarning, setSheetWarning] = useState<string | null>(null);
@@ -182,6 +179,7 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [ordersFilterMonth, setOrdersFilterMonth] = useState<number>(-1);
   const [orderStatusFilter, setOrderStatusFilter] = useState<string>('');
+  const [orderBloggerFilter, setOrderBloggerFilter] = useState<string>('');
   const [slaFilterMonth, setSlaFilterMonth] = useState<number>(-1);
   const [searchTerm, setSearchTerm] = useState("");
   const [displayCount, setDisplayCount] = useState(50);
@@ -207,6 +205,8 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
     items: [],
     itemPrices: [],
     itemColors: [],
+    itemSizes: [],
+    itemHeights: [],
     status: 'Новый',
     revenue: 0,
     paidAmount: 0,
@@ -220,11 +220,6 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
     blogger: '',
     rawRow: Array(30).fill('')
   });
-
-  // Sync prop with state if it changes
-  useEffect(() => {
-    setSheetId(initialSheetId);
-  }, [initialSheetId]);
 
   useEffect(() => {
     const unsub = onSnapshot(doc(db, 'settings', 'handbook'), (snap) => {
@@ -300,6 +295,8 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
             paidAmount: ['prepaymentAmount'],
             height: ['height'],
             manager: ['manager'],
+            blogger: ['blogger'],
+            isBlogger: ['isBlogger'],
             paymentUrl: ['paymentUrl'],
             finalPaymentUrl: ['finalPaymentUrl'],
             finalPaymentId: ['finalPaymentId'],
@@ -322,6 +319,12 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
           (orderFieldMap[String(field)] || []).forEach(target => {
             ordersPatch[target] = finalValue;
           });
+          if (field === 'blogger') {
+            const hasBlogger = Boolean(String(finalValue || '').trim());
+            const sourceLooksBlogger = String(order.source || '').toLowerCase().includes('блогер');
+            ordersNewPatch.isBlogger = hasBlogger || sourceLooksBlogger;
+            ordersPatch.isBlogger = hasBlogger || sourceLooksBlogger;
+          }
         }
 
         await updateDoc(doc(db, 'orders_new', orderId), ordersNewPatch);
@@ -332,23 +335,11 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
         console.error("Firebase update failed", err);
       }
     } else {
-      setSheetOrders(prevData => {
-        return prevData.map(order => {
-          if (order.orderId === orderId) {
-            if (field in order || (typeof field === 'string' && !field.startsWith('rawRow['))) {
-              if (field === 'isRecommended') return { ...order, isRecommended: !order.isRecommended };
-              return { ...order, [field]: value };
-            }
-            if (typeof field === 'string' && field.startsWith('rawRow[')) {
-              const index = parseInt(field.match(/\[(\d+)\]/)![1]);
-              const newRawRow = [...(order.rawRow || [])];
-              newRawRow[index] = value;
-              return { ...order, rawRow: newRawRow };
-            }
-          }
-          return order;
-        });
-      });
+      setData(prevData => prevData.map(existingOrder => (
+        existingOrder.orderId === orderId
+          ? { ...existingOrder, [field]: field === 'isRecommended' ? !existingOrder.isRecommended : value }
+          : existingOrder
+      )));
     }
   };
 
@@ -401,6 +392,8 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
         : fullInvoiceAmount * 0.5;
 
     const orderDate = orderDraft.date || new Date();
+    const bloggerName = String(orderDraft.blogger || '').trim();
+    const isBloggerOrder = Boolean(bloggerName) || String(orderDraft.source || '').toLowerCase().includes('блогер');
     const orderToCreate: OrderData = {
       orderId: orderDraft.orderId || '',
       date: orderDate,
@@ -424,7 +417,7 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
       invoiceType,
       year: orderDate.getFullYear(),
       month: orderDate.getMonth(),
-      isBlogger: false,
+      isBlogger: isBloggerOrder,
       isRecommended: false,
       deadlineDate: addBusinessDays(orderDate, 7),
       isShipped: false,
@@ -434,7 +427,7 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
       height: orderDraft.height || '',
       label: orderDraft.label || '',
       manager: orderDraft.manager || '',
-      blogger: orderDraft.blogger || '',
+      blogger: bloggerName,
       isFirebase: true
     };
 
@@ -479,6 +472,8 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
         remainingAmount: paymentDue,
         paymentStatus: 'pending',
         manager: orderToCreate.manager || '',
+        blogger: orderToCreate.blogger || '',
+        isBlogger: orderToCreate.isBlogger,
         rawRow: orderToCreate.rawRow,
       }, { merge: true });
       const createdId = orderToCreate.orderId;
@@ -491,6 +486,8 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
         items: [],
         itemPrices: [],
         itemColors: [],
+        itemSizes: [],
+        itemHeights: [],
         status: 'Новый',
         revenue: 0,
         paidAmount: 0,
@@ -516,157 +513,17 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
     if (isManual) setRefreshing(true);
     else {
       setLoading(true);
-      setLoadingStep('Загрузка из таблицы...');
+      setLoadingStep('Загрузка заказов CRM...');
     }
 
     try {
-      const finalSheetId = sheetId && sheetId !== 'your_sheet_id_here' ? sheetId : '1xTDxiOMqJR-KBnLdbikKp2--ZBQBDkII-xMCoO2lSbM';
-      const url = `/api/sheet/export?sheetId=${encodeURIComponent(finalSheetId)}`;
-
-      const response = await fetch(url);
-      if (!response.ok) throw new Error('Failed to fetch spreadsheet');
-      const csvText = await response.text();
-
-      const parsed = Papa.parse(csvText, { header: false, skipEmptyLines: true });
-      const rows = parsed.data as string[][];
-
-      if (rows.length < 1) {
-        setSheetWarning("Google-таблица вернула пустой ответ. Старые данные оставлены на экране.");
-        return;
-      }
-
-      const headerRow = rows[0];
-      const headerMap: Record<string, number> = {};
-      for (let j = 0; j < headerRow.length; j++) {
-        const v = String(headerRow[j]).trim().toLowerCase().replace(/\s+/g, ' ');
-        headerMap[v] = j;
-      }
-
-      const getVal = (rowArr: string[], colNames: string[], defaultIdx: number) => {
-        for (const c of colNames) {
-          const idx = headerMap[c.toLowerCase()];
-          if (idx !== undefined && rowArr[idx] !== undefined) return String(rowArr[idx]).replace(/\r/g, '').replace(/\n/g, ' ').trim();
-        }
-        return rowArr[defaultIdx] !== undefined ? String(rowArr[defaultIdx]).replace(/\r/g, '').replace(/\n/g, ' ').trim() : "";
-      };
-
-      const parsedOrders: OrderData[] = [];
-      let lastOrderId = "";
-      let lastDate = new Date();
-      let lastStatus = "";
-      let lastSource = "";
-
-      for (let i = 1; i < rows.length; i++) {
-        const rawRow = rows[i];
-        if (!rawRow || rawRow.length < 5) continue;
-
-        let rawOrderId = getVal(rawRow, ['номер заказа', '№ заказа'], 0);
-        if (rawOrderId && !rawOrderId.toLowerCase().includes('номер') && !rawOrderId.toLowerCase().includes('column')) {
-          lastOrderId = rawOrderId.replace('#', '').trim();
-
-          let dateStr = getVal(rawRow, ['дата заявки', 'дата'], 4).trim().toLowerCase();
-          if (dateStr === 'сегодня') lastDate = new Date();
-          else if (dateStr === 'вчера') lastDate = new Date(Date.now() - 86400000);
-          else {
-            const parts = dateStr.replace(/,/g, '.').split('.');
-            if (parts.length === 3) {
-              const day = parseInt(parts[0], 10);
-              const month = parseInt(parts[1], 10) - 1;
-              let year = parseInt(parts[2], 10);
-              if (year < 100) year += 2000;
-              const orderNumber = parseInt(lastOrderId.replace(/\D/g, ''), 10);
-              if (year === 2025 && orderNumber >= 6800) year = 2026;
-              if (!isNaN(day) && !isNaN(month) && !isNaN(year)) {
-                lastDate = new Date(year, month, day);
-              }
-            }
-          }
-          lastStatus = getVal(rawRow, ['статус заказа', 'статус'], 6);
-          lastSource = getVal(rawRow, ['откуда продажа (как узнали)', 'какая продажа', 'источник'], 17);
-        }
-
-        if (!lastOrderId) continue;
-
-        let clientName = getVal(rawRow, ['фио заказчика', 'фио', 'покупатель', 'клиент'], 18);
-        let phone = getVal(rawRow, ['телефон заказчика', 'телефон'], 19).replace(/[^0-9]/g, '');
-        if (phone.length === 10) phone = '7' + phone;
-        else if (phone.length === 11 && phone.startsWith('8')) phone = '7' + phone.substring(1);
-        else if (phone.length > 11 && phone.startsWith('77')) phone = phone.substring(1);
-
-        let insta = getVal(rawRow, ['соц.сети', 'инстаграм', 'ник', 'соцсети'], 21);
-        if (insta.toLowerCase() === "undefined" || insta === "—" || insta === "-") insta = "";
-        if (insta.includes('instagram.com/')) {
-          const parts = insta.split('instagram.com/');
-          if (parts.length > 1) insta = parts[1].split('/')[0].split('?')[0];
-        }
-        insta = insta.replace('@', '');
-
-        const address = getVal(rawRow, ['адрес доставки', 'адрес'], 22) || "";
-        let city = address.includes(',') ? address.split(',')[0].trim() : address.trim();
-        if (city.toLowerCase().startsWith('г.')) city = city.substring(2).trim();
-        else if (city.toLowerCase().includes('г.')) {
-          const splitRes = city.split('г.');
-          if (splitRes.length > 1 && splitRes[1]) {
-            city = splitRes[1].trim();
-          }
-        }
-
-        const item = getVal(rawRow, ['заказ наименование', 'наименование', 'товар'], 7);
-        const deliveryMethod = getVal(rawRow, ['метод доставки', 'тк', 'доставка'], 23);
-
-        let cleanRevenue = getVal(rawRow, ['сумма заказа', 'сумма'], 14).replace(/\s/g, '').replace(',', '.').replace('₽', '').replace('(', '-').replace(')', '');
-        const revenue = Math.abs(parseFloat(cleanRevenue) || 0);
-
-        let cleanDelivery = getVal(rawRow, ['цена доставки'], 15).replace(/\s/g, '').replace(',', '.').replace('₽', '').replace('(', '-').replace(')', '');
-        const deliveryPrice = Math.abs(parseFloat(cleanDelivery) || 0);
-
-        let cleanPayment = getVal(rawRow, ['фактические поступления', 'оплата'], 16).replace(/\s/g, '').replace(',', '.').replace('₽', '').replace('(', '-').replace(')', '');
-        const paidAmount = Math.abs(parseFloat(cleanPayment) || 0);
-
-        const deadlineDate = addBusinessDays(lastDate, 7);
-
-        const normalizedStatus = lastStatus.toLowerCase();
-        const isShipped = normalizedStatus === 'отправлен' || normalizedStatus === 'готов' || normalizedStatus.includes('отгруж') || normalizedStatus.includes('достав');
-        const isOverdue = !isShipped && new Date() > deadlineDate;
-        const isBlogger = lastSource.toLowerCase().includes('блогер') || lastSource.toLowerCase().includes('перезаказ');
-
-        while (rawRow.length < 30) rawRow.push("");
-
-        parsedOrders.push({
-          orderId: lastOrderId,
-          date: lastDate,
-          revenue,
-          deliveryPrice,
-          paidAmount,
-          clientName,
-          clientPhone: phone,
-          clientInsta: insta,
-          clientCity: city,
-          status: lastStatus,
-          source: lastSource,
-          item,
-          deliveryMethod,
-          year: lastDate.getFullYear(),
-          month: lastDate.getMonth(),
-          isBlogger,
-          isOverdue,
-          isLate: isOverdue,
-          isShipped,
-          isRecommended: false,
-          deadlineDate: deadlineDate,
-          rawRow: rawRow
-        });
-      }
-
-      parsedOrders.sort((a, b) => b.date.getTime() - a.date.getTime());
-      setSheetOrders(parsedOrders);
+      setData(firebaseOrders.slice().sort((a, b) => b.date.getTime() - a.date.getTime()));
       setError(null);
       setSheetWarning(null);
     } catch (err: any) {
-      console.error('[sheet] Не удалось загрузить/разобрать Google-таблицу:', err);
+      console.error('[orders_new] Не удалось обновить локальный список заказов:', err);
       setError(null);
-      const reason = err?.message ? ` (${err.message})` : '';
-      setSheetWarning(`Google-таблица сейчас не загрузилась${reason}. Старые данные оставлены на экране, попробуй обновить еще раз.`);
+      setSheetWarning('Не удалось обновить локальный список заказов. Данные из таблицы больше не подтягиваются.');
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -681,7 +538,7 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
     initFetch();
     return () => {
     };
-  }, [sheetId]);
+  }, []);
 
   useEffect(() => {
     const q = query(collection(db, 'orders_new'));
@@ -692,6 +549,7 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
         const orderDate = d.date ? new Date(d.date) : new Date();
         const deadlineDate = addBusinessDays(orderDate, 7);
         const normalizedStatus = String(d.status || '').toLowerCase();
+        const hasBlogger = Boolean(String(d.blogger || '').trim()) || String(d.source || '').toLowerCase().includes('блогер');
         const isShipped = Boolean(d.isShipped) || normalizedStatus === 'отправлен' || normalizedStatus === 'готов' || normalizedStatus.includes('отгруж') || normalizedStatus.includes('достав');
         const isOverdue = !isShipped && new Date() > deadlineDate;
         fbOrders.push({
@@ -699,6 +557,7 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
           isFirebase: true,
           date: orderDate,
           deadlineDate,
+          isBlogger: Boolean(d.isBlogger) || hasBlogger,
           isShipped,
           isOverdue,
           isLate: isOverdue
@@ -712,11 +571,10 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
   }, []);
 
   useEffect(() => {
-    const firebaseOrderIds = new Set(firebaseOrders.map(order => order.orderId));
-    const sheetOnlyOrders = sheetOrders.filter(order => !firebaseOrderIds.has(order.orderId));
-    const combined = [...firebaseOrders, ...sheetOnlyOrders].sort((a, b) => b.date.getTime() - a.date.getTime());
-    setData(combined);
-  }, [firebaseOrders, sheetOrders]);
+    setData(firebaseOrders.slice().sort((a, b) => b.date.getTime() - a.date.getTime()));
+    setLoading(false);
+    setLastUpdated(new Date());
+  }, [firebaseOrders]);
 
   useEffect(() => {
     let interval: any;
@@ -724,27 +582,40 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
       interval = setInterval(() => fetchData(true), 60000);
     }
     return () => clearInterval(interval);
-  }, [autoRefresh, sheetId]);
+  }, [autoRefresh, firebaseOrders]);
 
   const exportToCsv = () => {
     if (data.length === 0) return;
 
-    const columnLabels = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X'];
-
-    const csvData = data.map(o => {
-      const row: any = {};
-      columnLabels.forEach((label, idx) => {
-        row[`Колонка ${label}`] = o.rawRow?.[idx] || '';
-      });
-      return row;
-    });
+    const csvData = data.map(o => ({
+      'Дата': o.date ? o.date.toLocaleDateString('ru-RU') : '',
+      'ID заказа': o.orderId || '',
+      'Клиент': o.clientName || '',
+      'Телефон': o.clientPhone || '',
+      'Статус': o.status || '',
+      'Доставка': o.deliveryMethod || '',
+      'Стоимость 100%': Number(o.revenue) || 0,
+      'Стоимость доставки': Number(o.deliveryPrice) || 0,
+      'Оплачено / счет': Number(o.paidAmount) || 0,
+      'К доплате': Math.max(0, (Number(o.revenue) || 0) + (Number(o.deliveryPrice) || 0) - (Number(o.paidAmount) || 0)),
+      'Изделия': Array.isArray(o.items) && o.items.length ? o.items.join(', ') : o.item || '',
+      'Цены изделий': Array.isArray(o.itemPrices) ? o.itemPrices.join(', ') : '',
+      'Цвета': Array.isArray(o.itemColors) ? o.itemColors.join(', ') : String(o.rawRow?.[1] || ''),
+      'Размеры': Array.isArray(o.itemSizes) ? o.itemSizes.join(', ') : String(o.rawRow?.[8] || ''),
+      'Рост': Array.isArray(o.itemHeights) ? o.itemHeights.join(', ') : o.height || '',
+      'Источник': o.source || '',
+      'Блогер': o.blogger || '',
+      'Менеджер': o.manager || '',
+      'Срок': o.deadlineDate ? o.deadlineDate.toLocaleDateString('ru-RU') : '',
+      'Заметки': o.notes || '',
+    }));
 
     const csv = Papa.unparse(csvData);
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const link = document.createElement('a');
     const url = URL.createObjectURL(blob);
     link.setAttribute('href', url);
-    link.setAttribute('download', `analytics_export_${new Date().toISOString().split('T')[0]}.csv`);
+    link.setAttribute('download', `orders_export_${new Date().toISOString().split('T')[0]}.csv`);
     link.style.visibility = 'hidden';
     document.body.appendChild(link);
     link.click();
@@ -892,7 +763,8 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
         salesByPeriod[key].salesCount += 1;
         salesByPeriod[key].dueExtra += Math.max(0, (o.revenue + o.deliveryPrice) - o.paidAmount);
       }
-      if (o.source?.toLowerCase().includes('блогер')) salesByPeriod[key].bloggers.add(o.source);
+      if (o.blogger) salesByPeriod[key].bloggers.add(o.blogger);
+      else if (o.source?.toLowerCase().includes('блогер')) salesByPeriod[key].bloggers.add(o.source);
     });
 
     manualReturnOperations.forEach(operation => {
@@ -1011,16 +883,18 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
       .filter((o: OrderData) => {
         const matchesMonth = ordersFilterMonth === -1 || o.month === ordersFilterMonth;
         const matchesStatus = !orderStatusFilter || String(o.status || '').toLowerCase() === orderStatusFilter.toLowerCase();
+        const matchesBlogger = !orderBloggerFilter || String(o.blogger || '').trim() === orderBloggerFilter;
         const search = searchTerm.toLowerCase();
         const matchesSearch = !searchTerm ||
           o.orderId.toLowerCase().includes(search) ||
           o.clientName.toLowerCase().includes(search) ||
           String(o.item || '').toLowerCase().includes(search) ||
+          String(o.blogger || '').toLowerCase().includes(search) ||
           (Array.isArray(o.items) && o.items.some(item => String(item || '').toLowerCase().includes(search))) ||
           (o.clientPhone && o.clientPhone.includes(search));
-        return matchesMonth && matchesStatus && matchesSearch;
+        return matchesMonth && matchesStatus && matchesBlogger && matchesSearch;
       });
-  }, [stats?.uniqueOrders, searchTerm, ordersFilterMonth, orderStatusFilter]);
+  }, [stats?.uniqueOrders, searchTerm, ordersFilterMonth, orderStatusFilter, orderBloggerFilter]);
 
   const pagedOrders = useMemo(() => {
     return filteredOrders.slice(0, displayCount);
@@ -1135,6 +1009,8 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
             setOrdersFilterMonth={setOrdersFilterMonth}
             orderStatusFilter={orderStatusFilter}
             setOrderStatusFilter={setOrderStatusFilter}
+            orderBloggerFilter={orderBloggerFilter}
+            setOrderBloggerFilter={setOrderBloggerFilter}
             slaFilterMonth={slaFilterMonth}
             setSlaFilterMonth={setSlaFilterMonth}
             filteredSlaStats={filteredSlaStats}

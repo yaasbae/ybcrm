@@ -7,7 +7,6 @@ import {
   QrCode, Copy, ExternalLink, Send
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import Papa from 'papaparse';
 import { QRCodeSVG } from 'qrcode.react';
 import { cn, formatCurrency } from '../lib/utils';
 import { db, OperationType, handleFirestoreError, storage } from '../firebase';
@@ -32,9 +31,8 @@ const RAW_REVENUE_INDEX = 14;
 const RAW_DELIVERY_INDEX = 15;
 const RAW_PAID_INDEX = 16;
 
-export const OrderForm: React.FC<OrderFormProps> = ({ onBack, sheetId, initialClient }) => {
+export const OrderForm: React.FC<OrderFormProps> = ({ onBack, initialClient }) => {
   const [loading, setLoading] = useState(false);
-  const [fetchingSuggestions, setFetchingSuggestions] = useState(false);
   const [success, setSuccess] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savedOrderId, setSavedOrderId] = useState<string | null>(null);
@@ -43,7 +41,6 @@ export const OrderForm: React.FC<OrderFormProps> = ({ onBack, sheetId, initialCl
   const [isCreatingQr, setIsCreatingQr] = useState(false);
   const [qrError, setQrError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
-  const [suggestions, setSuggestions] = useState<string[]>([]);
   const [appProducts, setAppProducts] = useState<any[]>([]);
   const [handbookProducts, setHandbookProducts] = useState<string[]>([]);
   const [handbookColors, setHandbookColors] = useState<string[]>([]);
@@ -117,52 +114,11 @@ export const OrderForm: React.FC<OrderFormProps> = ({ onBack, sheetId, initialCl
     return () => unsubscribe();
   }, []);
 
-  // Fetch suggestions from Google Sheets (справочник tab)
-  useEffect(() => {
-    const fetchSuggestions = async () => {
-      setFetchingSuggestions(true);
-      try {
-        // Using gid=1235690567 for the 'справочник' sheet
-        const url = `/api/sheet/export?sheetId=${encodeURIComponent(sheetId)}&gid=1235690567`;
-        const response = await fetch(url);
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const csvText = await response.text();
-
-        Papa.parse(csvText, {
-          complete: (results) => {
-            const names = new Set<string>();
-            // Column G is index 6
-            results.data.slice(1).forEach((row: any) => {
-              if (row[6]) {
-                const productName = String(row[6]).trim();
-                if (productName && productName !== "Наименование") {
-                  names.add(productName);
-                }
-              }
-            });
-            setSuggestions(Array.from(names).sort());
-          }
-        });
-      } catch (err) {
-        console.error('Failed to fetch suggestions:', err);
-      } finally {
-        setFetchingSuggestions(false);
-      }
-    };
-
-    fetchSuggestions();
-  }, [sheetId]);
-
-  // Combined suggestions (Google Sheets + Local Products)
+  // Combined suggestions (local products + handbook)
   const allSuggestions = useMemo(() => {
     const productSuggestions = appProducts.map(p => ({
       name: p.name,
       display: `${p.name}${p.color ? ` (${p.color})` : ''}`
-    }));
-    
-    const sheetSuggestions = suggestions.map(s => ({
-      name: s,
-      display: s
     }));
 
     const handbookSuggestions = handbookProducts.map(s => ({
@@ -172,7 +128,7 @@ export const OrderForm: React.FC<OrderFormProps> = ({ onBack, sheetId, initialCl
 
     // Merge and remove duplicates by name
     const seen = new Set();
-    const combined = [...productSuggestions, ...handbookSuggestions, ...sheetSuggestions].filter(item => {
+    const combined = [...productSuggestions, ...handbookSuggestions].filter(item => {
       const key = item.name.trim().toLowerCase();
       if (seen.has(key)) return false;
       seen.add(key);
@@ -180,7 +136,7 @@ export const OrderForm: React.FC<OrderFormProps> = ({ onBack, sheetId, initialCl
     });
 
     return combined.sort((a, b) => a.name.localeCompare(b.name));
-  }, [suggestions, appProducts, handbookProducts]);
+  }, [appProducts, handbookProducts]);
 
   // Form State
   const [orderNumber, setOrderNumber] = useState('');
@@ -280,7 +236,7 @@ export const OrderForm: React.FC<OrderFormProps> = ({ onBack, sheetId, initialCl
         }
       }
 
-      // Prepare data for Google Sheets
+      // Prepare raw CRM fields used by the order card.
       const currentPrice = parseFloat(price) || 0;
       const currentPrepayment = parseFloat(prepaymentAmount) || 0;
       const currentShippingCost = parseFloat(shippingCost) || 0;
@@ -569,7 +525,7 @@ export const OrderForm: React.FC<OrderFormProps> = ({ onBack, sheetId, initialCl
 
               <div className="space-y-4">
                 <label className="text-[10px] font-semibold text-zinc-400 uppercase tracking-widest ml-1">
-                  Изделия {fetchingSuggestions && <span className="animate-pulse text-[9px] lowercase">(загрузка подсказок...)</span>}
+                  Изделия
                 </label>
                 {products.map((product, index) => (
                   <div key={product.id} className="flex gap-3">
