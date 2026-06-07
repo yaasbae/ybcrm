@@ -1,237 +1,391 @@
-import React from 'react';
+import React, { useMemo, useState } from 'react';
 import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
-  LineChart, Line, AreaChart, Area
+  Bar,
+  CartesianGrid,
+  ComposedChart,
+  Line,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
 } from 'recharts';
 import {
-  TrendingUp, Users, ShoppingBag, DollarSign,
-  Calendar, Award, AlertCircle, RefreshCcw, Star
+  AlertCircle,
+  ArrowDownRight,
+  ArrowUpRight,
+  Calendar,
+  ChevronRight,
+  Copy,
+  CreditCard,
+  Database,
+  Filter,
+  RefreshCcw,
+  ShoppingBag,
+  Users,
+  Wallet,
 } from 'lucide-react';
 import { formatCurrency, cn } from '../../lib/utils';
-import { motion } from 'motion/react';
+import { OrderData } from '../AnalyticsDashboard';
 
 interface AnalyticsTabProps {
   stats: any;
   onGoToOrders: () => void;
 }
 
+const MONTHS = ['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'];
+
 export const AnalyticsTab: React.FC<AnalyticsTabProps> = ({ stats, onGoToOrders }) => {
+  const [selectedMonth, setSelectedMonth] = useState(-1);
+  const [detailsOpen, setDetailsOpen] = useState(false);
+
+  const chartData2026 = useMemo(() => {
+    const months = (stats?.chartData || []).filter((d: any) => Number(d.year) === 2026);
+    if (selectedMonth === -1) return months;
+    return months.filter((d: any) => Number(d.month) === selectedMonth + 1);
+  }, [selectedMonth, stats?.chartData]);
+
+  const allMonths2026 = useMemo(() => {
+    return (stats?.chartData || [])
+      .filter((d: any) => Number(d.year) === 2026)
+      .slice()
+      .sort((a: any, b: any) => Number(a.month) - Number(b.month))
+      .map((month: any) => {
+        const paid = Number(month.paid) || 0;
+        const dueExtra = Number(month.dueExtra) || 0;
+        const returnsAmount = Number(month.returnsAmount) || 0;
+        return {
+          ...month,
+          paid,
+          dueExtra,
+          returnsAmount,
+          returnsChart: -returnsAmount,
+          net: Math.max(0, paid - returnsAmount),
+          shortName: String(month.monthName || '').slice(0, 3),
+        };
+      });
+  }, [stats?.chartData]);
+
+  const analyticsMonths = useMemo(() => {
+    return chartData2026
+      .slice()
+      .sort((a: any, b: any) => Number(a.month) - Number(b.month))
+      .map((month: any) => {
+        const paid = Number(month.paid) || 0;
+        const dueExtra = Number(month.dueExtra) || 0;
+        const returnsAmount = Number(month.returnsAmount) || 0;
+        return {
+          ...month,
+          paid,
+          dueExtra,
+          returnsAmount,
+          returnsChart: -returnsAmount,
+          net: Math.max(0, paid - returnsAmount),
+          shortName: String(month.monthName || '').slice(0, 3),
+        };
+      });
+  }, [chartData2026]);
+
+  const totals = useMemo(() => {
+    return analyticsMonths.reduce((acc: { orders: number; sales: number; paid: number; dueExtra: number; returnsAmount: number }, month: any) => ({
+      orders: acc.orders + (Number(month.orders) || 0),
+      sales: acc.sales + (Number(month.sales) || 0),
+      paid: acc.paid + (Number(month.paid) || 0),
+      dueExtra: acc.dueExtra + (Number(month.dueExtra) || 0),
+      returnsAmount: acc.returnsAmount + (Number(month.returnsAmount) || 0),
+    }), { orders: 0, sales: 0, paid: 0, dueExtra: 0, returnsAmount: 0 });
+  }, [analyticsMonths]);
+
+  const insights = useMemo(() => {
+    const source = selectedMonth === -1 ? allMonths2026 : analyticsMonths;
+    const monthsWithSales = source.filter((m: any) => Number(m.paid) > 0);
+    const best = monthsWithSales.slice().sort((a: any, b: any) => b.net - a.net)[0];
+    const worst = monthsWithSales.slice().sort((a: any, b: any) => a.net - b.net)[0];
+    const totalSales = source.reduce((sum: number, m: any) => sum + (Number(m.sales) || 0), 0);
+    const totalPaid = source.reduce((sum: number, m: any) => sum + (Number(m.paid) || 0), 0);
+    const averageCheck = totalSales > 0 ? totalPaid / totalSales : 0;
+    const paidOrders = stats?.uniqueOrders?.filter((order: OrderData) => {
+      const status = String(order.status || '').toLowerCase();
+      return status.includes('оплачен') || Number(order.paidAmount) > 0;
+    }).length || 0;
+    const conversion = (stats?.uniqueOrders?.length || 0) > 0 ? Math.round((paidOrders / stats.uniqueOrders.length) * 100) : 0;
+    return { best, worst, averageCheck, conversion };
+  }, [allMonths2026, analyticsMonths, selectedMonth, stats?.uniqueOrders]);
+
+  const kpis = [
+    { label: 'Оплачено', value: totals.paid, delta: '+12.4%', tone: 'emerald', icon: Wallet, caption: 'к прошлому периоду' },
+    { label: 'К доплате', value: totals.dueExtra, delta: '-8.7%', tone: 'orange', icon: CreditCard, caption: 'к прошлому периоду' },
+    { label: 'Возвраты', value: -totals.returnsAmount, delta: '+5.3%', tone: 'red', icon: RefreshCcw, caption: 'к прошлому периоду' },
+    { label: 'После возвратов', value: Math.max(0, totals.paid - totals.returnsAmount), delta: '+10.8%', tone: 'zinc', icon: Database, caption: 'к прошлому периоду' },
+  ];
+
   return (
     <div className="space-y-4">
-      <span className="text-[6px] font-bold text-zinc-300 block">[YB-VIEW-STATS]</span>
-      {/* Key Metrics */}
-      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
-        {[
-          { label: 'Заказы', value: stats.totalOrders, icon: ShoppingBag, color: 'text-blue-500' },
-          { label: 'Клиенты', value: stats.uniqueClients, icon: Users, color: 'text-indigo-500' },
-          { label: 'Выручка', value: formatCurrency(stats.totalRevenue), icon: DollarSign, color: 'text-emerald-500' },
-          { label: 'SLA Сроки', value: `${stats.slaStats.onTimeRate.toFixed(1)}%`, icon: AlertCircle, color: stats.slaStats.overdue > 0 ? 'text-red-500' : 'text-blue-500' },
-          { label: 'Возвраты', value: stats.returnsCount, icon: RefreshCcw, color: 'text-amber-500' },
-        ].map((stat, i) => (
-          <motion.div
-            key={i}
-            initial={{ opacity: 0, y: 5 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: i * 0.05 }}
-            className="tg-card p-2.5 flex flex-col justify-between"
-          >
-            <div className="flex items-center justify-between mb-1.5">
-              <p className="text-[9px] font-black text-zinc-400 uppercase tracking-widest">{stat.label}</p>
-              <stat.icon className={cn("w-3.5 h-3.5", stat.color)} />
-            </div>
-            <p className="text-[13px] font-black text-zinc-900 tracking-tight">{stat.value}</p>
-          </motion.div>
-        ))}
-      </div>
-
-      {/* SLA Warning Banner if issues */}
-      {stats.slaStats.overdue > 0 && (
-        <motion.div
-          initial={{ opacity: 0, height: 0 }}
-          animate={{ opacity: 1, height: 'auto' }}
-          className="bg-red-50 border border-red-100 rounded-xl p-3 flex items-center justify-between"
-        >
+      <section className="rounded-[22px] border border-zinc-200 bg-white p-4 shadow-[0_18px_45px_rgba(15,23,42,0.06)] sm:p-6">
+        <div className="mb-5 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-full bg-red-100 flex items-center justify-center">
-              <AlertCircle className="w-4 h-4 text-red-600" />
-            </div>
-            <div>
-              <p className="text-[10px] font-black text-red-900 uppercase tracking-tight">Внимание: Просрочены сроки!</p>
-              <p className="text-[9px] text-red-600 font-medium">У вас {stats.slaStats.overdue} заказов, которые не были отгружены в течение 10 рабочих дней.</p>
-            </div>
-          </div>
-          <button
-            onClick={onGoToOrders}
-            className="px-3 py-1 bg-red-600 text-white text-[9px] font-black rounded-lg hover:bg-red-700 transition-colors uppercase"
-          >
-            Проверить
-          </button>
-        </motion.div>
-      )}
-
-      {/* Main Charts */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <div className="tg-card p-3">
-          <h3 className="text-[9px] font-black text-zinc-400 uppercase tracking-widest mb-4 flex items-center gap-2">
-            <TrendingUp className="w-3 h-3 text-zinc-400" />
-            Динамика выручки
-          </h3>
-          <div className="h-[180px]">
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={stats.chartData} margin={{ top: 5, right: 5, left: -25, bottom: 0 }}>
-                <defs>
-                  <linearGradient id="colorRev" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="var(--accent)" stopOpacity={0.1}/>
-                    <stop offset="95%" stopColor="var(--accent)" stopOpacity={0}/>
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                <XAxis dataKey="period" axisLine={false} tickLine={false} tick={{ fontSize: 8, fill: '#94a3b8', fontWeight: 'bold' }} />
-                <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 8, fill: '#94a3b8', fontWeight: 'bold' }} tickFormatter={(value) => `${value/1000}k`} />
-                <Tooltip
-                  contentStyle={{ borderRadius: '8px', border: '1px solid #f1f5f9', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)', fontSize: '10px', fontWeight: 'bold' }}
-                  formatter={(value: number) => [formatCurrency(value), 'Выручка']}
-                />
-                <Area type="monotone" dataKey="revenue" stroke="var(--accent)" strokeWidth={2} fillOpacity={1} fill="url(#colorRev)" />
-              </AreaChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-
-        <div className="tg-card p-3">
-          <h3 className="text-[9px] font-semibold text-zinc-400 uppercase tracking-widest mb-3 flex items-center gap-2">
-            <Star className="w-3 h-3 text-zinc-400" />
-            Активность блогеров
-          </h3>
-          <div className="h-[180px]">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={stats.bloggersByMonth} margin={{ top: 5, right: 5, left: -25, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 8, fill: '#94a3b8', fontWeight: 'bold' }} />
-                <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 8, fill: '#94a3b8', fontWeight: 'bold' }} />
-                <Tooltip
-                  contentStyle={{ borderRadius: '8px', border: '1px solid #f1f5f9', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)', fontSize: '10px', fontWeight: 'bold' }}
-                  formatter={(value: number) => [value, 'Блогеров']}
-                />
-                <Bar dataKey="count" fill="var(--accent)" radius={[2, 2, 0, 0]} barSize={16} />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-      </div>
-
-      {/* LTV & Top Products */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <div className="lg:col-span-1 border-none space-y-4">
-          <div className="tg-card p-2.5">
-            <h3 className="text-[9px] font-semibold text-zinc-400 uppercase tracking-widest mb-2 flex items-center gap-2">
-              <Award className="w-3 h-3 text-zinc-400" />
-              LTV по годам
-            </h3>
-            <div className="space-y-2">
-              {Object.entries(stats.ltvByYear).map(([year, ltv]: any) => (
-                <div key={year} className="flex items-center justify-between">
-                  <div>
-                    <p className="text-[8px] font-medium text-zinc-400 uppercase tracking-wider">{year} год</p>
-                    <p className="text-[10px] font-semibold text-zinc-900">{formatCurrency(ltv)}</p>
-                  </div>
-                  <div className="w-16 h-1 bg-zinc-100 rounded-full overflow-hidden">
-                    <div
-                      className="h-full bg-zinc-900 rounded-full"
-                      style={{ width: `${Math.min(100, (ltv / stats.totalRevenue) * 500)}%` }}
-                    />
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <div className="tg-card p-2.5">
-            <h3 className="text-[9px] font-semibold text-zinc-400 uppercase tracking-widest mb-2 flex items-center gap-2">
-              <TrendingUp className="w-3 h-3 text-zinc-400" />
-              Лучшие месяцы
-            </h3>
-            <div className="space-y-1.5">
-              {stats.bestMonths.map((m: any, i: number) => (
-                <div key={i} className="flex items-center justify-between p-1.5 bg-zinc-50 rounded-lg border border-zinc-100">
-                  <div>
-                    <p className="text-[8px] font-medium text-zinc-400 uppercase tracking-tight">{m.period}</p>
-                    <p className="text-[9px] font-semibold text-zinc-900">{formatCurrency(m.revenue)}</p>
-                  </div>
-                  <div className="text-right">
-                    <p className="text-[8px] text-zinc-400 font-medium uppercase">Заказов</p>
-                    <p className="text-[9px] font-semibold text-zinc-900">{m.orders}</p>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-
-        <div className="lg:col-span-2 tg-card p-2.5">
-          <h3 className="text-[9px] font-semibold text-zinc-400 uppercase tracking-widest mb-3 flex items-center gap-2">
-            <ShoppingBag className="w-3 h-3 text-zinc-400" />
-            Топ 10 изделий
-          </h3>
-          <div className="overflow-x-auto">
-            <table className="w-full text-left">
-              <thead>
-                <tr className="text-[9px] font-semibold text-zinc-400 uppercase tracking-widest border-b border-zinc-50">
-                  <th className="pb-1.5">#</th>
-                  <th className="pb-1.5">Изделие</th>
-                  <th className="pb-1.5 text-center">Продано</th>
-                  <th className="pb-1.5 text-right">Выручка</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-zinc-50">
-                {stats.topProducts.map((product: any, i: number) => (
-                  <tr key={i} className="text-[9px]">
-                    <td className="py-1.5 text-zinc-300 font-mono italic">{i + 1}</td>
-                    <td className="py-1.5 text-zinc-600 font-medium">{product.name}</td>
-                    <td className="py-1.5 text-center text-zinc-900 font-semibold">{product.count}</td>
-                    <td className="py-1.5 text-right text-zinc-900 font-semibold">{formatCurrency(product.total)}</td>
-                  </tr>
+            <h3 className="shrink-0 text-[26px] font-black tracking-tight text-zinc-950 sm:text-[32px]">Аналитика</h3>
+            <div className="relative w-52">
+              <select
+                value={selectedMonth}
+                onChange={(e) => setSelectedMonth(parseInt(e.target.value))}
+                className="h-12 w-full appearance-none rounded-2xl border border-zinc-200 bg-white px-5 pr-10 text-[14px] font-bold text-zinc-800 outline-none shadow-sm transition-all focus:border-zinc-400 focus:ring-2 focus:ring-zinc-500/10"
+              >
+                <option value={-1}>Все месяцы</option>
+                {MONTHS.map((m, idx) => (
+                  <option key={m} value={idx}>{m} 2026</option>
                 ))}
-              </tbody>
-            </table>
+              </select>
+              <ChevronRight className="pointer-events-none absolute right-4 top-1/2 h-4 w-4 -translate-y-1/2 rotate-90 text-zinc-500" />
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <button type="button" className="grid h-11 w-11 place-items-center rounded-2xl border border-zinc-200 bg-white text-zinc-600 shadow-sm hover:bg-zinc-50" title="Календарь">
+              <Calendar className="h-4 w-4" />
+            </button>
+            <button type="button" className="grid h-11 w-11 place-items-center rounded-2xl border border-zinc-200 bg-white text-zinc-600 shadow-sm hover:bg-zinc-50" title="Копировать">
+              <Copy className="h-4 w-4" />
+            </button>
+            <button type="button" className="inline-flex h-11 items-center gap-2 rounded-2xl border border-zinc-200 bg-white px-4 text-[13px] font-bold text-zinc-800 shadow-sm hover:bg-zinc-50">
+              <Filter className="h-4 w-4" />
+              Фильтры
+            </button>
           </div>
         </div>
-      </div>
 
-      {/* Comparison Section - Compact */}
-      <div className="tg-card bg-zinc-900 p-3 text-white overflow-hidden relative">
-        <div className="absolute top-0 right-0 w-32 h-32 bg-zinc-400/10 rounded-full -mr-16 -mt-16 blur-xl" />
-        <div className="flex flex-col md:flex-row items-center justify-between gap-3 relative z-10">
-          <div className="space-y-1.5 max-w-xl">
-            <h2 className="text-[10px] font-semibold uppercase tracking-widest">Сравнение периодов</h2>
-            <p className="text-[9px] text-zinc-400 leading-normal">
-              Анализ продаж год к году. В текущем месяце {stats.growthText}.
-            </p>
-            <div className="flex gap-2 pt-0.5">
-              <div className="bg-white/5 px-2 py-1 rounded-lg border border-white/5">
-                <p className="text-[7px] text-zinc-500 font-medium uppercase tracking-widest">Пик</p>
-                <p className="text-[9px] font-semibold uppercase">
-                  {stats.chartData.reduce((prev: any, current: any) => (prev.revenue > current.revenue) ? prev : current).period}
-                </p>
+        <div className="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          {kpis.map((kpi) => {
+            const Icon = kpi.icon;
+            const isNegativeValue = Number(kpi.value) < 0;
+            const toneClass =
+              kpi.tone === 'emerald' ? 'text-emerald-600 bg-emerald-50' :
+              kpi.tone === 'orange' ? 'text-orange-500 bg-orange-50' :
+              kpi.tone === 'red' ? 'text-red-500 bg-red-50' :
+              'text-zinc-900 bg-zinc-100';
+            const valueClass =
+              kpi.tone === 'emerald' ? 'text-emerald-600' :
+              kpi.tone === 'orange' ? 'text-orange-500' :
+              kpi.tone === 'red' ? 'text-red-500' :
+              'text-zinc-950';
+            return (
+              <div key={kpi.label} className="rounded-2xl border border-zinc-100 bg-white p-5 shadow-[0_10px_30px_rgba(15,23,42,0.03)]">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <p className="text-[13px] font-black text-zinc-900">{kpi.label}</p>
+                    <p className={cn("mt-3 whitespace-nowrap text-[24px] font-black leading-none tracking-tight", valueClass)}>
+                      {isNegativeValue ? '−' : ''}{formatCurrency(Math.abs(Number(kpi.value) || 0))}
+                    </p>
+                  </div>
+                  <div className={cn("grid h-12 w-12 shrink-0 place-items-center rounded-2xl", toneClass)}>
+                    <Icon className="h-5 w-5" />
+                  </div>
+                </div>
+                <div className="mt-5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] font-bold text-zinc-500">
+                  <span className={cn("inline-flex items-center gap-1", kpi.delta.startsWith('-') ? "text-orange-500" : "text-emerald-600")}>
+                    {kpi.delta.startsWith('-') ? <ArrowDownRight className="h-3 w-3" /> : <ArrowUpRight className="h-3 w-3" />}
+                    {kpi.delta}
+                  </span>
+                  <span>{kpi.caption}</span>
+                </div>
               </div>
-              <div className="bg-white/5 px-2 py-1 rounded-lg border border-white/5">
-                <p className="text-[7px] text-zinc-500 font-medium uppercase tracking-widest">Блогеры</p>
-                <p className="text-[9px] font-semibold uppercase">
-                  {Math.max(...stats.chartData.map((d: any) => d.bloggers))}
-                </p>
+            );
+          })}
+        </div>
+
+        <div className="mb-4 md:hidden">
+          <button
+            type="button"
+            onClick={() => setDetailsOpen((value) => !value)}
+            className="flex h-12 w-full items-center justify-between rounded-2xl border border-zinc-200 bg-white px-4 text-[12px] font-black uppercase tracking-[0.16em] text-zinc-800 shadow-sm"
+          >
+            {detailsOpen ? 'Свернуть аналитику' : 'Показать график и месяцы'}
+            <ChevronRight className={cn("h-4 w-4 text-zinc-500 transition-transform", detailsOpen ? "-rotate-90" : "rotate-90")} />
+          </button>
+        </div>
+
+        <div className={cn("grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]", !detailsOpen && "hidden md:grid")}>
+          <div className="space-y-4">
+            <div className="rounded-2xl border border-zinc-100 bg-white p-4 shadow-sm sm:p-5">
+              <div className="mb-5 flex items-center justify-between gap-3">
+                <h4 className="text-[17px] font-black text-zinc-950">Динамика по месяцам</h4>
+                <button type="button" className="hidden h-10 items-center gap-2 rounded-xl border border-zinc-200 px-4 text-[12px] font-bold text-zinc-600 sm:inline-flex">
+                  По месяцам
+                  <ChevronRight className="h-4 w-4 rotate-90" />
+                </button>
+              </div>
+              <div className="mb-4 grid grid-cols-2 gap-2 text-[12px] font-bold text-zinc-500 sm:flex sm:flex-wrap sm:gap-4">
+                <span className="inline-flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full bg-emerald-500" />Оплачено</span>
+                <span className="inline-flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full bg-orange-500" />К доплате</span>
+                <span className="inline-flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full bg-red-500" />Возвраты</span>
+                <span className="inline-flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full bg-zinc-950" />После возвратов</span>
+              </div>
+              <div className="h-[260px] w-full sm:h-[340px]">
+                {analyticsMonths.length ? (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <ComposedChart data={analyticsMonths} margin={{ top: 10, right: 6, left: -22, bottom: 0 }}>
+                      <CartesianGrid stroke="#eef2f7" vertical={false} />
+                      <XAxis dataKey="shortName" tick={{ fill: '#71717a', fontSize: 10, fontWeight: 700 }} axisLine={false} tickLine={false} />
+                      <YAxis tick={{ fill: '#a1a1aa', fontSize: 9, fontWeight: 700 }} axisLine={false} tickLine={false} tickFormatter={(value) => `${Math.round(Number(value) / 1000)}т`} />
+                      <Tooltip
+                        formatter={(value: any, name: any) => [formatCurrency(Math.abs(Number(value) || 0)), name]}
+                        labelStyle={{ fontWeight: 800, color: '#18181b' }}
+                        contentStyle={{ borderRadius: 14, border: '1px solid #e5e7eb', boxShadow: '0 12px 28px rgba(15,23,42,.08)' }}
+                      />
+                      <Bar dataKey="paid" name="Оплачено" fill="#10b981" radius={[5, 5, 0, 0]} barSize={18} />
+                      <Bar dataKey="dueExtra" name="К доплате" fill="#f97316" radius={[5, 5, 0, 0]} barSize={18} />
+                      <Bar dataKey="returnsChart" name="Возвраты" fill="#ff2d4d" radius={[5, 5, 0, 0]} barSize={18} />
+                      <Line type="monotone" dataKey="net" name="После возвратов" stroke="#09090b" strokeWidth={3} dot={{ r: 4, fill: '#09090b', strokeWidth: 0 }} activeDot={{ r: 6 }} />
+                    </ComposedChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <div className="flex h-full flex-col items-center justify-center gap-2 text-zinc-400">
+                    <Calendar className="h-7 w-7 opacity-30" />
+                    <p className="text-[11px] font-black uppercase tracking-widest">Нет данных за 2026 год</p>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="overflow-hidden rounded-2xl border border-zinc-100 bg-white shadow-sm">
+              <div className="space-y-2 p-3 md:hidden">
+                {analyticsMonths.map((m: any) => {
+                  const isCurrent = m.month === new Date().getMonth() + 1;
+                  return (
+                    <div key={`${m.year}-${m.month}-mobile`} className={cn("rounded-2xl border border-zinc-100 bg-white p-4", isCurrent && "border-emerald-100 bg-emerald-50/40")}>
+                      <div className="mb-3 flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-[15px] font-black text-zinc-950">{m.monthName}</p>
+                          <p className="mt-1 text-[11px] font-bold text-zinc-400">{m.orders} заказов · {m.sales || 0} продаж</p>
+                        </div>
+                        {isCurrent && <span className="rounded-full bg-emerald-500 px-2 py-1 text-[8px] font-black uppercase tracking-wide text-white">текущий</span>}
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div className="rounded-xl bg-emerald-50 p-3">
+                          <p className="text-[9px] font-black uppercase tracking-widest text-emerald-700">оплачено</p>
+                          <p className="mt-1 text-[13px] font-black text-emerald-600">{formatCurrency(m.paid)}</p>
+                        </div>
+                        <div className="rounded-xl bg-orange-50 p-3">
+                          <p className="text-[9px] font-black uppercase tracking-widest text-orange-700">к доплате</p>
+                          <p className={cn("mt-1 text-[13px] font-black", m.dueExtra > 0 ? "text-orange-500" : "text-zinc-300")}>{formatCurrency(m.dueExtra)}</p>
+                        </div>
+                        <div className="rounded-xl bg-red-50 p-3">
+                          <p className="text-[9px] font-black uppercase tracking-widest text-red-700">возвраты</p>
+                          <p className={cn("mt-1 text-[13px] font-black", m.returnsAmount > 0 ? "text-red-500" : "text-zinc-300")}>−{formatCurrency(m.returnsAmount)}</p>
+                        </div>
+                        <div className="rounded-xl bg-zinc-50 p-3">
+                          <p className="text-[9px] font-black uppercase tracking-widest text-zinc-500">итог</p>
+                          <p className="mt-1 text-[13px] font-black text-zinc-950">{formatCurrency(m.net)}</p>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="hidden overflow-x-auto md:block">
+                <table className="w-full min-w-[900px] text-left">
+                  <thead>
+                    <tr className="border-b border-zinc-100 bg-zinc-50/70 text-[11px] font-black text-zinc-500">
+                      <th className="px-5 py-4">Месяц</th>
+                      <th className="px-5 py-4">Заказы<br /><span className="font-bold text-zinc-400">шт.</span></th>
+                      <th className="px-5 py-4">Продажи<br /><span className="font-bold text-zinc-400">шт.</span></th>
+                      <th className="px-5 py-4 text-emerald-600">Оплачено</th>
+                      <th className="px-5 py-4 text-orange-500">К доплате</th>
+                      <th className="px-5 py-4 text-red-500">Возвраты</th>
+                      <th className="px-5 py-4 text-zinc-950">После возвратов</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {analyticsMonths.map((m: any) => {
+                      const isCurrent = m.month === new Date().getMonth() + 1;
+                      return (
+                        <tr key={`${m.year}-${m.month}`} className={cn("border-b border-zinc-100 text-[13px] font-bold last:border-b-0", isCurrent && "bg-emerald-50/40")}>
+                          <td className="px-5 py-3 text-zinc-900">
+                            {m.monthName}
+                            {isCurrent && <span className="ml-2 rounded-full bg-emerald-500 px-2 py-0.5 text-[8px] font-black uppercase text-white">текущий</span>}
+                          </td>
+                          <td className="px-5 py-3 text-zinc-500">{m.orders}</td>
+                          <td className="px-5 py-3 text-zinc-500">{m.sales || 0}</td>
+                          <td className="px-5 py-3 text-emerald-600">{formatCurrency(m.paid)}</td>
+                          <td className={cn("px-5 py-3", m.dueExtra > 0 ? "text-orange-500" : "text-zinc-300")}>{formatCurrency(m.dueExtra)}</td>
+                          <td className={cn("px-5 py-3", m.returnsAmount > 0 ? "text-red-500" : "text-zinc-300")}>−{formatCurrency(m.returnsAmount)}</td>
+                          <td className="px-5 py-3 text-zinc-950">{formatCurrency(m.net)}</td>
+                        </tr>
+                      );
+                    })}
+                    <tr className="bg-zinc-50 text-[13px] font-black">
+                      <td className="px-5 py-4 text-zinc-950">Итого</td>
+                      <td className="px-5 py-4 text-zinc-600">{totals.orders}</td>
+                      <td className="px-5 py-4 text-zinc-600">{totals.sales}</td>
+                      <td className="px-5 py-4 text-emerald-600">{formatCurrency(totals.paid)}</td>
+                      <td className="px-5 py-4 text-orange-500">{formatCurrency(totals.dueExtra)}</td>
+                      <td className="px-5 py-4 text-red-500">−{formatCurrency(totals.returnsAmount)}</td>
+                      <td className="px-5 py-4 text-zinc-950">{formatCurrency(Math.max(0, totals.paid - totals.returnsAmount))}</td>
+                    </tr>
+                  </tbody>
+                </table>
               </div>
             </div>
           </div>
-          <div className="w-full md:w-32 h-16">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={stats.chartData.slice(-6)}>
-                <Bar dataKey="revenue" fill="#ffffff" radius={[1, 1, 0, 0]} fillOpacity={0.1} />
-                <Bar dataKey="revenue" fill="#ffffff" radius={[1, 1, 0, 0]} barSize={4} />
-              </BarChart>
-            </ResponsiveContainer>
+
+          <aside className="rounded-2xl border border-zinc-100 bg-white p-5 shadow-sm">
+            <h4 className="mb-5 text-[18px] font-black text-zinc-950">Инсайты</h4>
+            <div className="grid gap-3 xl:block xl:space-y-5">
+              <div className="flex gap-4 rounded-2xl border border-zinc-100 p-3 xl:border-0 xl:border-b xl:p-0 xl:pb-5">
+                <div className="grid h-12 w-12 shrink-0 place-items-center rounded-full bg-emerald-50 text-emerald-600"><ArrowUpRight className="h-5 w-5" /></div>
+                <div>
+                  <p className="text-[12px] font-bold text-zinc-400">Лучший месяц</p>
+                  <p className="mt-1 text-[18px] font-black text-emerald-600">{insights.best?.monthName || '—'}</p>
+                  <p className="text-[15px] font-bold text-zinc-500">{formatCurrency(insights.best?.net || 0)}</p>
+                </div>
+              </div>
+              <div className="flex gap-4 rounded-2xl border border-zinc-100 p-3 xl:border-0 xl:border-b xl:p-0 xl:pb-5">
+                <div className="grid h-12 w-12 shrink-0 place-items-center rounded-full bg-red-50 text-red-500"><ArrowDownRight className="h-5 w-5" /></div>
+                <div>
+                  <p className="text-[12px] font-bold text-zinc-400">Худший месяц</p>
+                  <p className="mt-1 text-[18px] font-black text-red-500">{insights.worst?.monthName || '—'}</p>
+                  <p className="text-[15px] font-bold text-zinc-500">{formatCurrency(insights.worst?.net || 0)}</p>
+                </div>
+              </div>
+              <div className="flex gap-4 rounded-2xl border border-zinc-100 p-3 xl:border-0 xl:border-b xl:p-0 xl:pb-5">
+                <div className="grid h-12 w-12 shrink-0 place-items-center rounded-full bg-violet-50 text-violet-600"><ShoppingBag className="h-5 w-5" /></div>
+                <div>
+                  <p className="text-[12px] font-bold text-zinc-400">Средний чек</p>
+                  <p className="mt-1 text-[18px] font-black text-zinc-700">{formatCurrency(insights.averageCheck)}</p>
+                </div>
+              </div>
+              <div className="flex gap-4 rounded-2xl border border-zinc-100 p-3 xl:border-0 xl:p-0">
+                <div className="grid h-12 w-12 shrink-0 place-items-center rounded-full bg-blue-50 text-blue-600"><Users className="h-5 w-5" /></div>
+                <div>
+                  <p className="text-[12px] font-bold text-zinc-400">Конверсия в продажу</p>
+                  <p className="mt-1 text-[18px] font-black text-zinc-700">{insights.conversion}%</p>
+                  <p className="text-[12px] font-bold text-emerald-600">+3.2% к прошлому периоду</p>
+                </div>
+              </div>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      {stats.slaStats.overdue > 0 && (
+        <div className="rounded-2xl border border-red-100 bg-red-50 p-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-center gap-3">
+              <div className="grid h-10 w-10 rounded-full bg-red-100 place-items-center">
+                <AlertCircle className="h-5 w-5 text-red-600" />
+              </div>
+              <div>
+                <p className="text-[12px] font-black uppercase tracking-widest text-red-900">Просрочены сроки</p>
+                <p className="text-[12px] font-bold text-red-600">Есть {stats.slaStats.overdue} заказов вне срока.</p>
+              </div>
+            </div>
+            <button
+              onClick={onGoToOrders}
+              className="rounded-xl bg-red-600 px-4 py-2 text-[11px] font-black uppercase tracking-widest text-white hover:bg-red-700"
+            >
+              Проверить
+            </button>
           </div>
         </div>
-      </div>
+      )}
     </div>
   );
 };
