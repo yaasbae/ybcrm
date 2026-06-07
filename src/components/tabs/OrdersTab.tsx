@@ -27,6 +27,7 @@ const MANAGER_PLAN_DEFAULTS = {
   dayPlan: 3,
   monthPlan: 60,
   basePlan: 120,
+  revenuePlan: 0,
 };
 const RAW_COLOR_INDEX = 1;
 const RAW_SIZE_INDEX = 8;
@@ -48,6 +49,7 @@ type ManagerPlanSettings = Record<string, {
   dayPlan: number;
   monthPlan: number;
   basePlan: number;
+  revenuePlan: number;
 }>;
 
 type CdekCityOption = {
@@ -2682,11 +2684,13 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
           dayPlan: Number(managers['Менеджер 1']?.dayPlan) || MANAGER_PLAN_DEFAULTS.dayPlan,
           monthPlan: Number(managers['Менеджер 1']?.monthPlan) || MANAGER_PLAN_DEFAULTS.monthPlan,
           basePlan: Number(managers['Менеджер 1']?.basePlan) || MANAGER_PLAN_DEFAULTS.basePlan,
+          revenuePlan: Number(managers['Менеджер 1']?.revenuePlan) || MANAGER_PLAN_DEFAULTS.revenuePlan,
         },
         'Менеджер 2': {
           dayPlan: Number(managers['Менеджер 2']?.dayPlan) || MANAGER_PLAN_DEFAULTS.dayPlan,
           monthPlan: Number(managers['Менеджер 2']?.monthPlan) || MANAGER_PLAN_DEFAULTS.monthPlan,
           basePlan: Number(managers['Менеджер 2']?.basePlan) || MANAGER_PLAN_DEFAULTS.basePlan,
+          revenuePlan: Number(managers['Менеджер 2']?.revenuePlan) || MANAGER_PLAN_DEFAULTS.revenuePlan,
         },
       });
     });
@@ -2695,7 +2699,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
 
   const updateManagerPlanSetting = async (
     manager: string,
-    field: 'dayPlan' | 'monthPlan' | 'basePlan',
+    field: 'dayPlan' | 'monthPlan' | 'basePlan' | 'revenuePlan',
     value: number
   ) => {
     const normalizedValue = Math.max(0, Number(value) || 0);
@@ -2921,6 +2925,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
           monthSales: monthSales.length,
           monthPlan: Number(plan.monthPlan) || MANAGER_PLAN_DEFAULTS.monthPlan,
           monthRevenue,
+          revenuePlan: Number(plan.revenuePlan) || MANAGER_PLAN_DEFAULTS.revenuePlan,
           dueExtra: monthOrders.reduce((sum, order) => sum + Math.max(0, (Number(order.revenue) || 0) + (Number(order.deliveryPrice) || 0) - (Number(order.paidAmount) || 0)), 0),
         };
       }),
@@ -3268,9 +3273,10 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
             const monthProgress = manager.monthPlan > 0 ? Math.min(100, Math.round((manager.monthSales / manager.monthPlan) * 100)) : 0;
             const baseProgress = manager.basePlan > 0 ? Math.min(100, Math.round((manager.baseWorked / manager.basePlan) * 100)) : 0;
             const dayProgress = manager.dayPlan > 0 ? Math.min(100, Math.round((manager.daySales / manager.dayPlan) * 100)) : 0;
+            const revenueProgress = manager.revenuePlan > 0 ? Math.min(100, Math.round((manager.monthRevenue / manager.revenuePlan) * 100)) : 0;
             return (
-              <div key={manager.name} className="rounded-2xl border border-zinc-100 bg-zinc-50/40 p-4 sm:p-5">
-                <div className="mb-4 flex items-start justify-between gap-3">
+              <div key={manager.name} className="rounded-2xl border border-zinc-100 bg-white p-4 shadow-[0_14px_34px_rgba(15,23,42,0.04)] sm:p-5">
+                <div className="mb-4 flex items-start justify-between gap-3 border-b border-zinc-100 pb-4">
                   <div className="flex items-center gap-3">
                     <div className={cn("grid h-11 w-11 shrink-0 place-items-center rounded-2xl text-[14px] font-black", index === 0 ? "bg-blue-50 text-blue-600" : "bg-violet-50 text-violet-600")}>
                       {index + 1}
@@ -3281,16 +3287,28 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                     </div>
                   </div>
                   <div className="text-right">
-                    <p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">месяц</p>
+                    <p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">факт месяц</p>
                     <p className="text-[18px] font-black text-emerald-600">{formatCurrency(manager.monthRevenue)}</p>
                   </div>
                 </div>
 
-                <div className="mb-4 grid grid-cols-3 gap-2 rounded-2xl border border-zinc-100 bg-white p-2">
+                <div className="mb-4 rounded-2xl border border-zinc-100 bg-zinc-50/70 p-3">
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-[10px] font-black uppercase tracking-[0.18em] text-zinc-400">План</p>
+                      <p className="text-[12px] font-bold text-zinc-500">что должен сделать менеджер</p>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">план сумма</p>
+                      <p className="text-[17px] font-black text-zinc-950">{formatCurrency(manager.revenuePlan)}</p>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                   {[
                     { label: 'План день', field: 'dayPlan' as const, value: manager.dayPlan },
                     { label: 'План месяц', field: 'monthPlan' as const, value: manager.monthPlan },
                     { label: 'План база', field: 'basePlan' as const, value: manager.basePlan },
+                    { label: 'План сумма', field: 'revenuePlan' as const, value: manager.revenuePlan },
                   ].map((planField) => (
                     <label key={planField.field} className="block">
                       <span className="mb-1 block text-[8px] font-black uppercase tracking-[0.14em] text-zinc-400">{planField.label}</span>
@@ -3299,12 +3317,17 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                         min={0}
                         value={planField.value}
                         onChange={(event) => updateManagerPlanSetting(manager.name, planField.field, Number(event.target.value))}
-                        className="h-9 w-full rounded-xl border border-zinc-100 bg-zinc-50 px-2 text-[13px] font-black text-zinc-900 outline-none transition-all focus:border-zinc-300 focus:bg-white focus:ring-2 focus:ring-zinc-500/10"
+                        className="h-10 w-full rounded-xl border border-zinc-100 bg-white px-3 text-[13px] font-black text-zinc-900 outline-none transition-all focus:border-zinc-300 focus:bg-white focus:ring-2 focus:ring-zinc-500/10"
                       />
                     </label>
                   ))}
+                  </div>
                 </div>
 
+                <div className="mb-3">
+                  <p className="text-[10px] font-black uppercase tracking-[0.18em] text-zinc-400">Факт</p>
+                  <p className="text-[12px] font-bold text-zinc-500">что уже сделано по заказам</p>
+                </div>
                 <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                   <div className="rounded-xl border border-zinc-100 bg-white p-3">
                     <p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">Продажи день</p>
@@ -3326,11 +3349,12 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                   </div>
                 </div>
 
-                <div className="mt-4 grid gap-3 sm:grid-cols-3">
+                <div className="mt-4 grid gap-3 sm:grid-cols-4">
                   {[
                     { label: 'День', value: dayProgress, color: 'bg-blue-500' },
                     { label: 'Месяц', value: monthProgress, color: 'bg-emerald-500' },
                     { label: 'База', value: baseProgress, color: 'bg-violet-500' },
+                    { label: 'Сумма', value: revenueProgress, color: 'bg-zinc-900' },
                   ].map(item => (
                     <div key={item.label}>
                       <div className="mb-1 flex items-center justify-between text-[9px] font-black uppercase tracking-widest text-zinc-400">
