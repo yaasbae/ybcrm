@@ -16,13 +16,18 @@ import { formatCurrency, cn } from '../../lib/utils';
 import { motion, AnimatePresence } from 'motion/react';
 import { OrderData } from '../AnalyticsDashboard';
 import { db } from '../../firebase';
-import { collection, getDocs, onSnapshot, orderBy, query } from 'firebase/firestore';
+import { collection, doc, getDocs, onSnapshot, orderBy, query, setDoc } from 'firebase/firestore';
 
 const STATUS_OPTIONS = ['Новый', 'В работе', 'Оплачен', 'Отгружен', 'Доставлен', 'Возврат', 'Отмена', 'Обмен'];
 const DELIVERY_OPTIONS = ['СДЭК', 'Почта РФ', 'Боксберри', 'Самовывоз', 'Курьер', 'DBS'];
 const SOURCE_OPTIONS = ['Instagram', 'WhatsApp', 'ТГ', 'Блогер', 'Контент', 'Сарафан', 'Повторный'];
 const PAYMENT_TYPE_OPTIONS = ['QR код', 'Сплитами', 'Долями', 'Наличкой', 'Наложенный СДЭК'];
 const INVOICE_PAYMENT_OPTIONS = ['Предоплата 50%', 'Полная оплата', 'Оплата с примеркой'];
+const MANAGER_PLAN_DEFAULTS = {
+  dayPlan: 3,
+  monthPlan: 60,
+  basePlan: 120,
+};
 const RAW_COLOR_INDEX = 1;
 const RAW_SIZE_INDEX = 8;
 const RAW_REVENUE_INDEX = 14;
@@ -38,6 +43,12 @@ interface ProductCatalogItem {
   weight?: string;
   sellingPrice?: number;
 }
+
+type ManagerPlanSettings = Record<string, {
+  dayPlan: number;
+  monthPlan: number;
+  basePlan: number;
+}>;
 
 type CdekCityOption = {
   code: number;
@@ -2641,6 +2652,10 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
   const [expandedOrderId, setExpandedOrderId] = useState<string | null>(null);
   const [analyticsDetailsOpen, setAnalyticsDetailsOpen] = useState(false);
   const [selectedOrderKeys, setSelectedOrderKeys] = useState<Set<string>>(() => new Set());
+  const [managerPlanSettings, setManagerPlanSettings] = useState<ManagerPlanSettings>({
+    'Менеджер 1': MANAGER_PLAN_DEFAULTS,
+    'Менеджер 2': MANAGER_PLAN_DEFAULTS,
+  });
   const createdQrRef = useRef<HTMLDivElement>(null);
 
   const visibleOrderKeys = useMemo(
@@ -2657,6 +2672,43 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
   useEffect(() => {
     fetch('/api/tochka/status').then(r => r.json()).then(d => setTochkaConfigured(!!d.configured)).catch(() => {});
   }, []);
+
+  useEffect(() => {
+    const unsubscribe = onSnapshot(doc(db, 'settings', 'manager_sales_plan'), (snap) => {
+      const data = snap.data() || {};
+      const managers = data.managers || {};
+      setManagerPlanSettings({
+        'Менеджер 1': {
+          dayPlan: Number(managers['Менеджер 1']?.dayPlan) || MANAGER_PLAN_DEFAULTS.dayPlan,
+          monthPlan: Number(managers['Менеджер 1']?.monthPlan) || MANAGER_PLAN_DEFAULTS.monthPlan,
+          basePlan: Number(managers['Менеджер 1']?.basePlan) || MANAGER_PLAN_DEFAULTS.basePlan,
+        },
+        'Менеджер 2': {
+          dayPlan: Number(managers['Менеджер 2']?.dayPlan) || MANAGER_PLAN_DEFAULTS.dayPlan,
+          monthPlan: Number(managers['Менеджер 2']?.monthPlan) || MANAGER_PLAN_DEFAULTS.monthPlan,
+          basePlan: Number(managers['Менеджер 2']?.basePlan) || MANAGER_PLAN_DEFAULTS.basePlan,
+        },
+      });
+    });
+    return () => unsubscribe();
+  }, []);
+
+  const updateManagerPlanSetting = async (
+    manager: string,
+    field: 'dayPlan' | 'monthPlan' | 'basePlan',
+    value: number
+  ) => {
+    const normalizedValue = Math.max(0, Number(value) || 0);
+    const nextSettings = {
+      ...managerPlanSettings,
+      [manager]: {
+        ...(managerPlanSettings[manager] || MANAGER_PLAN_DEFAULTS),
+        [field]: normalizedValue,
+      },
+    };
+    setManagerPlanSettings(nextSettings);
+    await setDoc(doc(db, 'settings', 'manager_sales_plan'), { managers: nextSettings }, { merge: true });
+  };
 
   useEffect(() => {
     setSelectedOrderKeys(new Set());
@@ -2834,9 +2886,6 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
     const targetYear = today.getFullYear();
     const monthLabel = ['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'][targetMonth] || 'Месяц';
     const managerNames = ['Менеджер 1', 'Менеджер 2'];
-    const dayPlan = 3;
-    const monthPlan = 60;
-    const basePlan = 120;
 
     const isSameDay = (date: Date) => (
       date.getFullYear() === today.getFullYear()
@@ -2851,6 +2900,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
     return {
       monthLabel,
       managers: managerNames.map((manager) => {
+        const plan = managerPlanSettings[manager] || MANAGER_PLAN_DEFAULTS;
         const managerOrders = sourceOrders.filter((order) => String(order.manager || '').trim() === manager);
         const monthOrders = managerOrders.filter((order) => (
           order.date.getFullYear() === targetYear && order.date.getMonth() === targetMonth
@@ -2864,18 +2914,18 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
         return {
           name: manager,
           baseWorked: monthOrders.length,
-          basePlan,
+          basePlan: Number(plan.basePlan) || MANAGER_PLAN_DEFAULTS.basePlan,
           daySales: todaySales.length,
-          dayPlan,
+          dayPlan: Number(plan.dayPlan) || MANAGER_PLAN_DEFAULTS.dayPlan,
           todayRevenue,
           monthSales: monthSales.length,
-          monthPlan,
+          monthPlan: Number(plan.monthPlan) || MANAGER_PLAN_DEFAULTS.monthPlan,
           monthRevenue,
           dueExtra: monthOrders.reduce((sum, order) => sum + Math.max(0, (Number(order.revenue) || 0) + (Number(order.deliveryPrice) || 0) - (Number(order.paidAmount) || 0)), 0),
         };
       }),
     };
-  }, [data, ordersFilterMonth, stats?.uniqueOrders]);
+  }, [data, managerPlanSettings, ordersFilterMonth, stats?.uniqueOrders]);
 
   const syncNewOrderItems = (
     items: string[],
@@ -3195,7 +3245,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
             <p className="text-[10px] font-black uppercase tracking-[0.22em] text-zinc-400">План менеджеров</p>
             <h3 className="mt-1 text-[22px] font-black tracking-tight text-zinc-950 sm:text-[28px]">Продажи и работа по базе</h3>
             <p className="mt-1 text-[12px] font-bold text-zinc-400">
-              {managerSalesPlan.monthLabel} 2026 · дневной план 3 продажи · месячный план 60 продаж
+              {managerSalesPlan.monthLabel} 2026 · планы заполняются в карточке менеджера
             </p>
           </div>
           <div className="relative w-full sm:w-52">
@@ -3215,9 +3265,9 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
 
         <div className="grid gap-3 lg:grid-cols-2">
           {managerSalesPlan.managers.map((manager, index) => {
-            const monthProgress = Math.min(100, Math.round((manager.monthSales / manager.monthPlan) * 100));
-            const baseProgress = Math.min(100, Math.round((manager.baseWorked / manager.basePlan) * 100));
-            const dayProgress = Math.min(100, Math.round((manager.daySales / manager.dayPlan) * 100));
+            const monthProgress = manager.monthPlan > 0 ? Math.min(100, Math.round((manager.monthSales / manager.monthPlan) * 100)) : 0;
+            const baseProgress = manager.basePlan > 0 ? Math.min(100, Math.round((manager.baseWorked / manager.basePlan) * 100)) : 0;
+            const dayProgress = manager.dayPlan > 0 ? Math.min(100, Math.round((manager.daySales / manager.dayPlan) * 100)) : 0;
             return (
               <div key={manager.name} className="rounded-2xl border border-zinc-100 bg-zinc-50/40 p-4 sm:p-5">
                 <div className="mb-4 flex items-start justify-between gap-3">
@@ -3234,6 +3284,25 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                     <p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">месяц</p>
                     <p className="text-[18px] font-black text-emerald-600">{formatCurrency(manager.monthRevenue)}</p>
                   </div>
+                </div>
+
+                <div className="mb-4 grid grid-cols-3 gap-2 rounded-2xl border border-zinc-100 bg-white p-2">
+                  {[
+                    { label: 'План день', field: 'dayPlan' as const, value: manager.dayPlan },
+                    { label: 'План месяц', field: 'monthPlan' as const, value: manager.monthPlan },
+                    { label: 'План база', field: 'basePlan' as const, value: manager.basePlan },
+                  ].map((planField) => (
+                    <label key={planField.field} className="block">
+                      <span className="mb-1 block text-[8px] font-black uppercase tracking-[0.14em] text-zinc-400">{planField.label}</span>
+                      <input
+                        type="number"
+                        min={0}
+                        value={planField.value}
+                        onChange={(event) => updateManagerPlanSetting(manager.name, planField.field, Number(event.target.value))}
+                        className="h-9 w-full rounded-xl border border-zinc-100 bg-zinc-50 px-2 text-[13px] font-black text-zinc-900 outline-none transition-all focus:border-zinc-300 focus:bg-white focus:ring-2 focus:ring-zinc-500/10"
+                      />
+                    </label>
+                  ))}
                 </div>
 
                 <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
