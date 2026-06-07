@@ -2827,6 +2827,56 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
     },
   ]), [totals2026.dueExtra, totals2026.paid, totals2026.returnsAmount]);
 
+  const managerSalesPlan = useMemo(() => {
+    const sourceOrders: OrderData[] = Array.isArray(stats?.uniqueOrders) ? stats.uniqueOrders : data;
+    const today = new Date();
+    const targetMonth = ordersFilterMonth === -1 ? today.getMonth() : ordersFilterMonth;
+    const targetYear = today.getFullYear();
+    const monthLabel = ['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'][targetMonth] || 'Месяц';
+    const managerNames = ['Менеджер 1', 'Менеджер 2'];
+    const dayPlan = 3;
+    const monthPlan = 60;
+    const basePlan = 120;
+
+    const isSameDay = (date: Date) => (
+      date.getFullYear() === today.getFullYear()
+      && date.getMonth() === today.getMonth()
+      && date.getDate() === today.getDate()
+    );
+    const isPaidSale = (order: OrderData) => {
+      const status = String(order.status || '').toLowerCase();
+      return status.includes('оплачен') || Number(order.paidAmount) > 0;
+    };
+
+    return {
+      monthLabel,
+      managers: managerNames.map((manager) => {
+        const managerOrders = sourceOrders.filter((order) => String(order.manager || '').trim() === manager);
+        const monthOrders = managerOrders.filter((order) => (
+          order.date.getFullYear() === targetYear && order.date.getMonth() === targetMonth
+        ));
+        const todayOrders = managerOrders.filter((order) => isSameDay(order.date));
+        const monthSales = monthOrders.filter(isPaidSale);
+        const todaySales = todayOrders.filter(isPaidSale);
+        const monthRevenue = monthSales.reduce((sum, order) => sum + (Number(order.paidAmount) || 0), 0);
+        const todayRevenue = todaySales.reduce((sum, order) => sum + (Number(order.paidAmount) || 0), 0);
+
+        return {
+          name: manager,
+          baseWorked: monthOrders.length,
+          basePlan,
+          daySales: todaySales.length,
+          dayPlan,
+          todayRevenue,
+          monthSales: monthSales.length,
+          monthPlan,
+          monthRevenue,
+          dueExtra: monthOrders.reduce((sum, order) => sum + Math.max(0, (Number(order.revenue) || 0) + (Number(order.deliveryPrice) || 0) - (Number(order.paidAmount) || 0)), 0),
+        };
+      }),
+    };
+  }, [data, ordersFilterMonth, stats?.uniqueOrders]);
+
   const syncNewOrderItems = (
     items: string[],
     prices = newOrderItemPrices,
@@ -3139,7 +3189,98 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
 
   return (
     <div className="space-y-6">
-      <div className="rounded-2xl border border-zinc-100 bg-white p-3 shadow-sm sm:p-6">
+      <div className="rounded-2xl border border-zinc-100 bg-white p-4 shadow-sm sm:p-6">
+        <div className="mb-5 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <p className="text-[10px] font-black uppercase tracking-[0.22em] text-zinc-400">План менеджеров</p>
+            <h3 className="mt-1 text-[22px] font-black tracking-tight text-zinc-950 sm:text-[28px]">Продажи и работа по базе</h3>
+            <p className="mt-1 text-[12px] font-bold text-zinc-400">
+              {managerSalesPlan.monthLabel} 2026 · дневной план 3 продажи · месячный план 60 продаж
+            </p>
+          </div>
+          <div className="relative w-full sm:w-52">
+            <select
+              value={ordersFilterMonth}
+              onChange={(e) => setOrdersFilterMonth(parseInt(e.target.value))}
+              className="h-11 w-full appearance-none rounded-xl border border-zinc-200 bg-white px-4 pr-10 text-[12px] font-black text-zinc-800 outline-none shadow-[0_12px_30px_rgba(15,23,42,0.04)] transition-all focus:border-zinc-400 focus:ring-2 focus:ring-zinc-500/10"
+            >
+              <option value={-1}>Текущий месяц</option>
+              {['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'].map((m, idx) => (
+                <option key={m} value={idx}>{m} 2026</option>
+              ))}
+            </select>
+            <ChevronRight className="pointer-events-none absolute right-4 top-1/2 h-4 w-4 -translate-y-1/2 rotate-90 text-zinc-500" />
+          </div>
+        </div>
+
+        <div className="grid gap-3 lg:grid-cols-2">
+          {managerSalesPlan.managers.map((manager, index) => {
+            const monthProgress = Math.min(100, Math.round((manager.monthSales / manager.monthPlan) * 100));
+            const baseProgress = Math.min(100, Math.round((manager.baseWorked / manager.basePlan) * 100));
+            const dayProgress = Math.min(100, Math.round((manager.daySales / manager.dayPlan) * 100));
+            return (
+              <div key={manager.name} className="rounded-2xl border border-zinc-100 bg-zinc-50/40 p-4 sm:p-5">
+                <div className="mb-4 flex items-start justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <div className={cn("grid h-11 w-11 shrink-0 place-items-center rounded-2xl text-[14px] font-black", index === 0 ? "bg-blue-50 text-blue-600" : "bg-violet-50 text-violet-600")}>
+                      {index + 1}
+                    </div>
+                    <div>
+                      <h4 className="text-[17px] font-black text-zinc-950">{manager.name}</h4>
+                      <p className="text-[11px] font-bold text-zinc-400">Работа по базе: {manager.baseWorked}/{manager.basePlan}</p>
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">месяц</p>
+                    <p className="text-[18px] font-black text-emerald-600">{formatCurrency(manager.monthRevenue)}</p>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                  <div className="rounded-xl border border-zinc-100 bg-white p-3">
+                    <p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">Продажи день</p>
+                    <p className="mt-1 text-[20px] font-black text-zinc-950">{manager.daySales}</p>
+                    <p className="text-[10px] font-bold text-zinc-400">план {manager.dayPlan}</p>
+                  </div>
+                  <div className="rounded-xl border border-zinc-100 bg-white p-3">
+                    <p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">Сумма день</p>
+                    <p className="mt-1 text-[15px] font-black text-zinc-950">{formatCurrency(manager.todayRevenue)}</p>
+                  </div>
+                  <div className="rounded-xl border border-zinc-100 bg-white p-3">
+                    <p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">Продажи мес.</p>
+                    <p className="mt-1 text-[20px] font-black text-zinc-950">{manager.monthSales}</p>
+                    <p className="text-[10px] font-bold text-zinc-400">план {manager.monthPlan}</p>
+                  </div>
+                  <div className="rounded-xl border border-zinc-100 bg-white p-3">
+                    <p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">К доплате</p>
+                    <p className="mt-1 text-[15px] font-black text-orange-500">{formatCurrency(manager.dueExtra)}</p>
+                  </div>
+                </div>
+
+                <div className="mt-4 grid gap-3 sm:grid-cols-3">
+                  {[
+                    { label: 'День', value: dayProgress, color: 'bg-blue-500' },
+                    { label: 'Месяц', value: monthProgress, color: 'bg-emerald-500' },
+                    { label: 'База', value: baseProgress, color: 'bg-violet-500' },
+                  ].map(item => (
+                    <div key={item.label}>
+                      <div className="mb-1 flex items-center justify-between text-[9px] font-black uppercase tracking-widest text-zinc-400">
+                        <span>{item.label}</span>
+                        <span>{item.value}%</span>
+                      </div>
+                      <div className="h-2 overflow-hidden rounded-full bg-white">
+                        <div className={cn("h-full rounded-full", item.color)} style={{ width: `${item.value}%` }} />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="hidden">
         <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex items-center gap-3 sm:flex-row">
             <h3 className="shrink-0 text-[24px] font-black tracking-tight text-zinc-950 sm:text-[28px]">Аналитика</h3>
