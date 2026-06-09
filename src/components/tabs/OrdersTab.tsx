@@ -3270,6 +3270,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
           </button>
           <button
             type="button"
+            onClick={() => alert('Импорт заказов из таблицы отключен. Заказы ведем на сайте, выгрузка доступна через кнопку Экспорт.')}
             className="inline-flex h-10 items-center gap-2 rounded-lg border border-zinc-200 bg-white px-4 text-[11px] font-bold text-zinc-600 shadow-sm transition-colors hover:bg-zinc-50"
           >
             <Upload className="h-4 w-4" />
