@@ -3084,10 +3084,11 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
     });
   };
 
-  const newOrderFieldClass = "h-11 min-w-0 w-full rounded-lg border border-zinc-200 bg-white px-3 text-[12px] font-bold text-zinc-900 shadow-[0_10px_24px_rgba(15,23,42,0.03)] outline-none transition-all placeholder:text-zinc-400 focus:border-zinc-400 focus:bg-white focus:ring-2 focus:ring-zinc-500/10 sm:h-12 sm:px-4 sm:text-[13px]";
-  const newOrderDateIdFieldClass = cn(newOrderFieldClass, "px-2 text-[10px] leading-none sm:px-4 sm:text-[13px]");
+  const softCardClass = "rounded-[8px] border border-[#E6E9EF] bg-white shadow-[0_10px_28px_rgba(31,41,55,0.035)]";
+  const newOrderFieldClass = "h-9 min-w-0 w-full rounded-[6px] border border-[#E6E9EF] bg-white px-3 text-[12px] font-medium text-[#1F2937] outline-none transition-all placeholder:text-[#9CA3AF] focus:border-[#7D7DE6] focus:ring-2 focus:ring-[#7D7DE6]/10";
+  const newOrderDateIdFieldClass = cn(newOrderFieldClass, "px-2 text-[11px] leading-none sm:px-3 sm:text-[12px]");
   const newOrderSelectClass = cn(newOrderFieldClass, "appearance-none cursor-pointer pr-10");
-  const newOrderLabelClass = "mb-2 flex min-w-0 items-center gap-2 text-[9px] font-black uppercase tracking-[0.14em] text-zinc-400 sm:text-[10px] sm:tracking-[0.16em]";
+  const newOrderLabelClass = "mb-1.5 flex min-w-0 items-center gap-1.5 text-[10px] font-medium uppercase tracking-[0.16em] text-[#9CA3AF]";
   const renderNewOrderSelect = (
     label: string,
     value: string,
@@ -3251,11 +3252,11 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
   };
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-3 text-[#1F2937]">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
         <div>
-          <h2 className="text-[22px] font-medium tracking-tight text-zinc-950 sm:text-[28px]">Продажи и работа по базе</h2>
-          <p className="mt-1 text-[12px] font-medium text-zinc-400">
+          <h2 className="text-[26px] font-medium leading-10 tracking-normal text-[#1F2937] sm:text-[34px]">Продажи и работа по базе</h2>
+          <p className="mt-0.5 text-[12px] font-medium leading-4 text-[#6B7280]">
             {managerSalesPlan.monthLabel} 2026 · планы менеджеров и мониторинг заказов
           </p>
         </div>
@@ -3263,7 +3264,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
           <button
             type="button"
             onClick={exportToCsv}
-            className="inline-flex h-10 items-center gap-2 rounded-lg border border-zinc-200 bg-white px-4 text-[11px] font-bold text-zinc-600 shadow-sm transition-colors hover:bg-zinc-50"
+            className="inline-flex h-10 items-center gap-2 rounded-[6px] border border-[#E6E9EF] bg-white px-4 text-[12px] font-medium text-[#6B7280] transition-colors hover:bg-[#F6F7F9]"
           >
             <Copy className="h-4 w-4" />
             Экспорт
@@ -3271,7 +3272,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
           <button
             type="button"
             onClick={() => alert('Импорт заказов из таблицы отключен. Заказы ведем на сайте, выгрузка доступна через кнопку Экспорт.')}
-            className="inline-flex h-10 items-center gap-2 rounded-lg border border-zinc-200 bg-white px-4 text-[11px] font-bold text-zinc-600 shadow-sm transition-colors hover:bg-zinc-50"
+            className="inline-flex h-10 items-center gap-2 rounded-[6px] border border-[#E6E9EF] bg-white px-4 text-[12px] font-medium text-[#6B7280] transition-colors hover:bg-[#F6F7F9]"
           >
             <Upload className="h-4 w-4" />
             Импорт
@@ -3279,7 +3280,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
           <button
             type="button"
             onClick={() => document.querySelector('[data-new-order-form]')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
-            className="inline-flex h-10 items-center gap-2 rounded-lg bg-indigo-500 px-5 text-[11px] font-bold text-white shadow-sm transition-colors hover:bg-indigo-600"
+            className="inline-flex h-10 items-center gap-2 rounded-[6px] bg-[#7D7DE6] px-5 text-[12px] font-medium text-white transition-colors hover:bg-[#6F6FE0]"
           >
             <Plus className="h-4 w-4" />
             Новый заказ
@@ -3311,107 +3312,97 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
           </div>
         </div>
 
-        <div className="grid gap-3 xl:grid-cols-[1fr_1fr_1.18fr]">
+        <div className="grid gap-3 xl:grid-cols-[1fr_1fr_1.05fr]">
           {managerSalesPlan.managers.map((manager, index) => {
-            const monthProgress = manager.monthPlan > 0 ? Math.min(100, Math.round((manager.monthSales / manager.monthPlan) * 100)) : 0;
             const baseProgress = manager.basePlan > 0 ? Math.min(100, Math.round((manager.baseWorked / manager.basePlan) * 100)) : 0;
             const dayProgress = manager.dayPlan > 0 ? Math.min(100, Math.round((manager.daySales / manager.dayPlan) * 100)) : 0;
             const revenueProgress = manager.revenuePlan > 0 ? Math.min(100, Math.round((manager.monthRevenue / manager.revenuePlan) * 100)) : 0;
             return (
-              <div key={manager.name} className="rounded-2xl border border-zinc-100 bg-white p-4 shadow-[0_14px_34px_rgba(15,23,42,0.04)] sm:p-5">
-                <div className="mb-4 flex items-start justify-between gap-3 border-b border-zinc-100 pb-4">
-                  <div className="flex items-center gap-3">
-                    <div className={cn("grid h-11 w-11 shrink-0 place-items-center rounded-2xl text-[14px] font-black", index === 0 ? "bg-blue-50 text-blue-600" : "bg-violet-50 text-violet-600")}>
-                      {index + 1}
-                    </div>
+              <div key={manager.name} className={cn(softCardClass, "p-4")}>
+                <div className="mb-3 flex items-start justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    <UserCircle className="h-4 w-4 text-[#6B7280]" />
                     <div>
-                      <h4 className="text-[17px] font-black text-zinc-950">{manager.name}</h4>
-                      <p className="text-[11px] font-bold text-zinc-400">Работа по базе: {manager.baseWorked}/{manager.basePlan}</p>
+                      <h4 className="text-[16px] font-medium leading-[22px] text-[#1F2937]">{manager.name}</h4>
+                      <p className="text-[11px] font-medium leading-[14px] text-[#9CA3AF]">Работа по базе: {manager.baseWorked}/{manager.basePlan}</p>
                     </div>
                   </div>
-                  <div className="text-right">
-                    <p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">план / факт</p>
-                    <p className="text-[13px] font-black text-zinc-950">{formatCurrency(manager.revenuePlan)}</p>
-                    <p className="text-[18px] font-black text-emerald-600">{formatCurrency(manager.monthRevenue)}</p>
+                  <button type="button" className="text-[11px] font-medium text-[#7D7DE6]">Подробнее</button>
+                </div>
+
+                <div className="grid grid-cols-3 gap-3 border-b border-[#E6E9EF] pb-3">
+                  <div>
+                    <p className="text-[11px] font-medium leading-[14px] text-[#9CA3AF]">План</p>
+                    <p className="mt-1 text-[14px] font-medium leading-5 text-[#1F2937]">{formatCurrency(manager.revenuePlan)}</p>
+                  </div>
+                  <div>
+                    <p className="text-[11px] font-medium leading-[14px] text-[#9CA3AF]">Факт</p>
+                    <p className="mt-1 text-[14px] font-medium leading-5 text-[#2EBA7F]">{formatCurrency(manager.monthRevenue)}</p>
+                  </div>
+                  <div>
+                    <p className="text-[11px] font-medium leading-[14px] text-[#9CA3AF]">Выполнение</p>
+                    <p className="mt-1 text-[14px] font-medium leading-5 text-[#1F2937]">{revenueProgress}%</p>
                   </div>
                 </div>
 
-                <div className="mb-4 rounded-2xl border border-zinc-100 bg-zinc-50/70 p-3">
-                  <div className="mb-3 flex items-center justify-between gap-3">
-                    <div>
-                      <p className="text-[10px] font-black uppercase tracking-[0.18em] text-zinc-400">План</p>
-                      <p className="text-[12px] font-bold text-zinc-500">что должен сделать менеджер за месяц</p>
-                    </div>
-                    <div className="text-right">
-                      <p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">цель по деньгам</p>
-                      <p className="text-[17px] font-black text-zinc-950">{formatCurrency(manager.revenuePlan)}</p>
-                    </div>
+                <div className="grid grid-cols-4 divide-x divide-[#E6E9EF] border-b border-[#E6E9EF] py-3">
+                  <div className="pr-3">
+                    <p className="text-[10px] font-medium text-[#9CA3AF]">Сумма плана</p>
+                    <p className="mt-1 text-[12px] font-medium text-[#1F2937]">{formatCurrency(manager.revenuePlan)}</p>
                   </div>
-                  <div className="grid gap-2 sm:grid-cols-[1.2fr_1fr_1fr_1fr]">
-                    {[
-                      { label: 'Сумма плана за месяц, ₽', field: 'revenuePlan' as const, value: manager.revenuePlan },
-                      { label: 'Продаж за месяц, шт', field: 'monthPlan' as const, value: manager.monthPlan },
-                      { label: 'Продаж в день, шт', field: 'dayPlan' as const, value: manager.dayPlan },
-                      { label: 'Работа по базе, шт', field: 'basePlan' as const, value: manager.basePlan },
-                    ].map((planField) => (
-                      <label key={planField.field} className="block">
-                        <span className="mb-1 block text-[8px] font-black uppercase tracking-[0.14em] text-zinc-400">{planField.label}</span>
-                        <input
-                          type="number"
-                          min={0}
-                          value={planField.value}
-                          onChange={(event) => updateManagerPlanSetting(manager.name, planField.field, Number(event.target.value))}
-                          className="h-10 w-full rounded-xl border border-zinc-100 bg-white px-3 text-[13px] font-black text-zinc-900 outline-none transition-all focus:border-zinc-300 focus:bg-white focus:ring-2 focus:ring-zinc-500/10"
-                        />
-                      </label>
-                    ))}
+                  <div className="px-3">
+                    <p className="text-[10px] font-medium text-[#9CA3AF]">Продаж в мес.</p>
+                    <p className="mt-1 text-[12px] font-medium text-[#1F2937]">{manager.monthPlan} шт.</p>
+                  </div>
+                  <div className="px-3">
+                    <p className="text-[10px] font-medium text-[#9CA3AF]">Продаж в день</p>
+                    <p className="mt-1 text-[12px] font-medium text-[#1F2937]">{formatCurrency(manager.revenuePlan / Math.max(1, manager.monthPlan))}</p>
+                  </div>
+                  <div className="pl-3">
+                    <p className="text-[10px] font-medium text-[#9CA3AF]">База по базе</p>
+                    <p className="mt-1 text-[12px] font-medium text-[#1F2937]">{manager.basePlan.toLocaleString('ru-RU')} шт.</p>
                   </div>
                 </div>
 
-                <div className="mb-3">
-                  <p className="text-[10px] font-black uppercase tracking-[0.18em] text-zinc-400">Факт</p>
-                  <p className="text-[12px] font-bold text-zinc-500">что уже сделано и сколько осталось добить</p>
-                </div>
-                <div className="grid grid-cols-2 gap-2 xl:grid-cols-5">
-                  <div className="rounded-xl border border-zinc-100 bg-white p-3">
-                    <p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">Сегодня</p>
-                    <p className="mt-1 text-[20px] font-black text-zinc-950">{manager.daySales}</p>
-                    <p className="text-[10px] font-bold text-zinc-400">план {manager.dayPlan} · {formatCurrency(manager.todayRevenue)}</p>
+                <div className="mt-3 grid grid-cols-5 overflow-hidden rounded-[8px] border border-[#E6E9EF]">
+                  <div className="border-r border-[#E6E9EF] p-2">
+                    <p className="text-[10px] font-medium text-[#9CA3AF]">Сегодня</p>
+                    <p className="mt-1 text-[14px] font-medium text-[#1F2937]">{formatCurrency(manager.todayRevenue)}</p>
+                    <p className="text-[9px] text-[#9CA3AF]">план {formatCurrency(manager.revenuePlan / Math.max(1, manager.monthPlan))}</p>
                   </div>
-                  <div className="rounded-xl border border-zinc-100 bg-white p-3">
-                    <p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">Продажи мес.</p>
-                    <p className="mt-1 text-[20px] font-black text-zinc-950">{manager.monthSales}</p>
-                    <p className="text-[10px] font-bold text-zinc-400">осталось {manager.remainingSales}</p>
+                  <div className="border-r border-[#E6E9EF] p-2">
+                    <p className="text-[10px] font-medium text-[#9CA3AF]">Продажи мес.</p>
+                    <p className="mt-1 text-[14px] font-medium text-[#1F2937]">{manager.monthSales}</p>
+                    <p className="text-[9px] text-[#9CA3AF]">осталось {manager.remainingSales}</p>
                   </div>
-                  <div className="rounded-xl border border-zinc-100 bg-white p-3">
-                    <p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">Сумма мес.</p>
-                    <p className="mt-1 text-[15px] font-black text-emerald-600">{formatCurrency(manager.monthRevenue)}</p>
-                    <p className="text-[10px] font-bold text-zinc-400">осталось {formatCurrency(manager.remainingRevenue)}</p>
+                  <div className="border-r border-[#E6E9EF] p-2">
+                    <p className="text-[10px] font-medium text-[#9CA3AF]">Сумма мес.</p>
+                    <p className="mt-1 text-[14px] font-medium text-[#2EBA7F]">{formatCurrency(manager.monthRevenue)}</p>
+                    <p className="text-[9px] text-[#9CA3AF]">осталось {formatCurrency(manager.remainingRevenue)}</p>
                   </div>
-                  <div className="rounded-xl border border-zinc-100 bg-white p-3">
-                    <p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">База</p>
-                    <p className="mt-1 text-[20px] font-black text-zinc-950">{manager.baseWorked}</p>
-                    <p className="text-[10px] font-bold text-zinc-400">осталось {manager.remainingBase}</p>
+                  <div className="border-r border-[#E6E9EF] p-2">
+                    <p className="text-[10px] font-medium text-[#9CA3AF]">База</p>
+                    <p className="mt-1 text-[14px] font-medium text-[#1F2937]">{manager.baseWorked}</p>
+                    <p className="text-[9px] text-[#9CA3AF]">осталось {manager.remainingBase}</p>
                   </div>
-                  <div className="rounded-xl border border-zinc-100 bg-white p-3">
-                    <p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">К доплате</p>
-                    <p className="mt-1 text-[15px] font-black text-orange-500">{formatCurrency(manager.dueExtra)}</p>
+                  <div className="p-2">
+                    <p className="text-[10px] font-medium text-[#9CA3AF]">К оплате</p>
+                    <p className="mt-1 text-[14px] font-medium text-[#F5A623]">{formatCurrency(manager.dueExtra)}</p>
                   </div>
                 </div>
 
-                <div className="mt-4 grid gap-3 sm:grid-cols-4">
+                <div className="mt-3 grid gap-2 sm:grid-cols-3">
                   {[
                     { label: 'День', value: dayProgress, color: 'bg-blue-500' },
-                    { label: 'Месяц', value: monthProgress, color: 'bg-emerald-500' },
                     { label: 'База', value: baseProgress, color: 'bg-violet-500' },
                     { label: 'Сумма', value: revenueProgress, color: 'bg-zinc-900' },
                   ].map(item => (
                     <div key={item.label}>
-                      <div className="mb-1 flex items-center justify-between text-[9px] font-black uppercase tracking-widest text-zinc-400">
+                      <div className="mb-1 flex items-center justify-between text-[10px] font-medium uppercase tracking-[0.12em] text-[#9CA3AF]">
                         <span>{item.label}</span>
                         <span>{item.value}%</span>
                       </div>
-                      <div className="h-2 overflow-hidden rounded-full bg-white">
+                      <div className="h-1 overflow-hidden rounded-full bg-[#E6E9EF]">
                         <div className={cn("h-full rounded-full", item.color)} style={{ width: `${item.value}%` }} />
                       </div>
                     </div>
@@ -3420,65 +3411,93 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
               </div>
             );
           })}
-          <div className="rounded-2xl border border-zinc-100 bg-white p-4 shadow-[0_14px_34px_rgba(15,23,42,0.04)] sm:p-5">
-            <div className="mb-4 flex items-start justify-between gap-3">
+          <div className={cn(softCardClass, "p-4")}>
+            <div className="mb-3 flex items-start justify-between gap-3">
               <div>
-                <h3 className="text-[15px] font-medium text-zinc-950">Мониторинг исполнения заказов</h3>
+                <div className="flex items-center gap-2">
+                  <h3 className="text-[16px] font-medium leading-[22px] text-[#1F2937]">Мониторинг исполнения заказов</h3>
+                  <AlertCircle className="h-3.5 w-3.5 text-[#9CA3AF]" />
+                </div>
                 <div className="mt-2 flex flex-wrap items-center gap-2">
-                  <span className="text-[11px] font-medium text-zinc-400">Целевой срок: 7 рабочих дней</span>
+                  <span className="text-[11px] font-medium text-[#6B7280]">Целевой срок: 7 рабочих дней</span>
                   <div className="relative">
                     <select
                       value={slaFilterMonth}
                       onChange={(e) => setSlaFilterMonth(parseInt(e.target.value))}
-                      className="h-8 appearance-none rounded-lg border border-zinc-200 bg-white px-3 pr-8 text-[10px] font-bold text-zinc-700 outline-none"
+                      className="h-8 appearance-none rounded-[6px] border border-[#E6E9EF] bg-white px-3 pr-8 text-[11px] font-medium text-[#1F2937] outline-none"
                     >
                       <option value={-1}>Все месяцы</option>
                       {['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'].map((m, idx) => (
                         <option key={m} value={idx}>{m}</option>
                       ))}
                     </select>
-                    <ChevronRight className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 rotate-90 text-zinc-400" />
+                    <ChevronRight className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 rotate-90 text-[#9CA3AF]" />
                   </div>
-                  <span className="text-[10px] font-bold text-zinc-400">2026</span>
+                  <span className="text-[11px] font-medium text-[#6B7280]">2026</span>
                 </div>
               </div>
               <div className="text-right">
-                <p className="text-[18px] font-medium text-zinc-900">{filteredSlaStats?.onTimeRate.toFixed(1)}%</p>
-                <p className="text-[9px] font-bold uppercase tracking-widest text-zinc-400">SLA</p>
+                <p className="text-[20px] font-medium leading-[26px] text-[#1F2937]">{filteredSlaStats?.onTimeRate.toFixed(1)}%</p>
+                <p className="text-[10px] font-medium uppercase tracking-[0.14em] text-[#6B7280]">SLA</p>
               </div>
             </div>
 
-            <div className="mb-5 flex h-3 overflow-hidden rounded-full bg-zinc-100">
+            <div className="mb-4 flex h-3 overflow-hidden rounded-full bg-[#E6E9EF]">
               <div
-                className="h-full bg-emerald-500 transition-all"
+                className="h-full bg-[#2EBA7F] transition-all"
                 style={{ width: `${(filteredSlaStats?.onTime || 0) / (filteredSlaStats?.totalOrders || 1) * 100}%` }}
               />
               <div
-                className="h-full bg-zinc-300 transition-all"
+                className="h-full bg-[#D1D5DB] transition-all"
                 style={{ width: `${(filteredSlaStats?.shipped || 0) / (filteredSlaStats?.totalOrders || 1) * 100}%` }}
               />
               <div
-                className="h-full bg-red-500 transition-all"
+                className="h-full bg-[#F06B6B] transition-all"
                 style={{ width: `${(filteredSlaStats?.overdue || 0) / (filteredSlaStats?.totalOrders || 1) * 100}%` }}
               />
             </div>
 
-            <div className="grid gap-2 sm:grid-cols-4">
-              <div className="rounded-lg border border-emerald-100 bg-emerald-50 p-3">
-                <p className="text-[9px] font-bold text-emerald-600">В производстве</p>
-                <p className="mt-1 text-[18px] font-medium text-emerald-700">{filteredSlaStats?.onTime}</p>
+            <div className="grid gap-4 lg:grid-cols-[1fr_108px] lg:items-center">
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                <div className="rounded-[6px] border border-emerald-100 bg-emerald-50 p-3">
+                  <p className="text-[10px] font-medium text-[#2EBA7F]">В производстве</p>
+                  <p className="mt-1 text-[20px] font-medium text-[#2EBA7F]">{filteredSlaStats?.onTime}</p>
+                </div>
+                <div className="rounded-[6px] border border-[#E6E9EF] bg-[#F6F7F9] p-3">
+                  <p className="text-[10px] font-medium text-[#6B7280]">Отгружено</p>
+                  <p className="mt-1 text-[20px] font-medium text-[#1F2937]">{filteredSlaStats?.shipped}</p>
+                </div>
+                <div className="rounded-[6px] border border-red-100 bg-red-50 p-3">
+                  <p className="text-[10px] font-medium text-[#F06B6B]">Просрочено</p>
+                  <p className="mt-1 text-[20px] font-medium text-[#F06B6B]">{filteredSlaStats?.overdue}</p>
+                </div>
+                <div className="rounded-[6px] border border-orange-100 bg-orange-50 p-3">
+                  <p className="text-[10px] font-medium text-[#F5A623]">Утв. задержка</p>
+                  <p className="mt-1 text-[16px] font-medium text-[#F5A623]">{formatCurrency(filteredSlaStats?.lostRevenue || 0)}</p>
+                </div>
               </div>
-              <div className="rounded-lg border border-zinc-100 bg-zinc-50 p-3">
-                <p className="text-[9px] font-bold text-zinc-500">Отгружено</p>
-                <p className="mt-1 text-[18px] font-medium text-zinc-800">{filteredSlaStats?.shipped}</p>
-              </div>
-              <div className="rounded-lg border border-red-100 bg-red-50 p-3">
-                <p className="text-[9px] font-bold text-red-500">Просрочено</p>
-                <p className="mt-1 text-[18px] font-medium text-red-600">{filteredSlaStats?.overdue}</p>
-              </div>
-              <div className="rounded-lg border border-orange-100 bg-orange-50 p-3">
-                <p className="text-[9px] font-bold text-orange-500">Утв. задержка</p>
-                <p className="mt-1 text-[16px] font-medium text-orange-600">{formatCurrency(filteredSlaStats?.lostRevenue || 0)}</p>
+              <div className="hidden h-[104px] lg:block">
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie
+                      data={[
+                        { name: 'В производстве', value: filteredSlaStats?.onTime || 0 },
+                        { name: 'Отгружено', value: filteredSlaStats?.shipped || 0 },
+                        { name: 'Просрочено', value: filteredSlaStats?.overdue || 0 },
+                      ]}
+                      innerRadius={34}
+                      outerRadius={48}
+                      paddingAngle={2}
+                      dataKey="value"
+                      stroke="none"
+                    >
+                      <Cell fill="#7CC6A4" />
+                      <Cell fill="#D1D5DB" />
+                      <Cell fill="#F06B6B" />
+                    </Pie>
+                  </PieChart>
+                </ResponsiveContainer>
+                <p className="text-center text-[10px] font-medium text-[#9CA3AF]">Готовность</p>
               </div>
             </div>
           </div>
@@ -3856,27 +3875,27 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
       </div>
 
       {/* New Order Form Block */}
-      <div data-new-order-form className="overflow-hidden rounded-2xl border border-zinc-200 bg-white p-4 text-zinc-900 shadow-[0_18px_45px_rgba(15,23,42,0.04)]">
-        <div className="mb-4 flex min-w-0 items-center gap-3">
-          <div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-zinc-900 shadow-[0_18px_30px_rgba(15,23,42,0.18)]">
-            <Plus className="h-5 w-5 text-white" />
+      <div data-new-order-form className={cn(softCardClass, "overflow-hidden p-4 text-[#1F2937]")}>
+        <div className="mb-3 flex min-w-0 items-center gap-3">
+          <div className="grid h-9 w-9 shrink-0 place-items-center rounded-[8px] bg-[#1F2937] shadow-[0_12px_22px_rgba(31,41,55,0.16)]">
+            <Plus className="h-4 w-4 text-white" />
           </div>
           <div className="min-w-0">
-            <h3 className="text-[15px] font-black uppercase leading-tight tracking-[0.18em]">Новый заказ</h3>
-            <p className="mt-1 text-[9px] font-black uppercase tracking-[0.14em] text-zinc-400">Добавить запись в список</p>
+            <h3 className="text-[16px] font-medium leading-[22px] text-[#1F2937]">Новый заказ</h3>
+            <p className="text-[11px] font-medium leading-[14px] text-[#9CA3AF]">Добавить запись в список</p>
           </div>
         </div>
 
-        <div className="space-y-3">
-          <section className="overflow-hidden rounded-xl border border-zinc-200 bg-white p-4">
+        <div className="grid gap-3 lg:grid-cols-[1.05fr_1.25fr_1fr] lg:gap-0 lg:divide-x lg:divide-[#E6E9EF]">
+          <section className="overflow-hidden rounded-[8px] border border-[#E6E9EF] bg-white p-4 lg:rounded-none lg:border-0 lg:py-2 lg:pl-0 lg:pr-5">
             <div className="mb-3 flex min-w-0 items-center gap-3">
-              <div className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-violet-100 text-[14px] font-black text-violet-900">1</div>
+              <div className="grid h-7 w-7 shrink-0 place-items-center rounded-[8px] bg-[#7D7DE6]/12 text-[13px] font-medium text-[#7D7DE6]">1</div>
               <div className="min-w-0">
-                <h4 className="text-[12px] font-black uppercase tracking-[0.18em] text-zinc-950">Клиент и заказ</h4>
-                <p className="mt-0.5 text-[10px] font-semibold text-zinc-400">Основная информация</p>
+                <h4 className="text-[14px] font-medium leading-5 text-[#1F2937]">Клиент и заказ</h4>
+                <p className="text-[11px] font-medium leading-[14px] text-[#9CA3AF]">Основная информация</p>
               </div>
             </div>
-            <div className="grid min-w-0 gap-3 lg:grid-cols-4">
+            <div className="grid min-w-0 gap-3 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
               <div className="min-w-0">
                 <label className={newOrderLabelClass}>
                   <Calendar className="h-4 w-4" /> Дата и ID
@@ -4011,17 +4030,17 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
             </div>
           </section>
 
-          <section className="overflow-hidden rounded-xl border border-zinc-200 bg-white p-4">
+          <section className="overflow-hidden rounded-[8px] border border-[#E6E9EF] bg-white p-4 lg:rounded-none lg:border-0 lg:px-5 lg:py-2">
             <div className="mb-3 flex min-w-0 items-center gap-3">
-              <div className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-violet-100 text-[14px] font-black text-violet-900">2</div>
+              <div className="grid h-7 w-7 shrink-0 place-items-center rounded-[8px] bg-[#7D7DE6]/12 text-[13px] font-medium text-[#7D7DE6]">2</div>
               <div className="min-w-0">
-                <h4 className="text-[12px] font-black uppercase tracking-[0.18em] text-zinc-950">Изделие</h4>
-                <p className="mt-0.5 text-[10px] font-semibold text-zinc-400">Информация об изделии</p>
+                <h4 className="text-[14px] font-medium leading-5 text-[#1F2937]">Изделие</h4>
+                <p className="text-[11px] font-medium leading-[14px] text-[#9CA3AF]">Информация об изделии</p>
               </div>
             </div>
             <div className="space-y-3">
               {newOrderItems.map((item, index) => (
-                <div key={index} className="grid min-w-0 gap-2 lg:grid-cols-[minmax(0,1.35fr)_130px_130px_130px_130px_44px]">
+                <div key={index} className="grid min-w-0 gap-2 sm:grid-cols-2 xl:grid-cols-[minmax(0,1.35fr)_94px_94px_94px_94px_40px]">
                   <label className="block min-w-0">
                     <span className={newOrderLabelClass}>Наименование</span>
                     <input
@@ -4055,7 +4074,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                       <button
                         type="button"
                         onClick={() => removeNewOrderItem(index)}
-                        className="grid h-11 w-11 place-items-center rounded-lg border border-red-100 bg-red-50 text-red-500 transition-colors hover:bg-red-100"
+                        className="grid h-9 w-9 place-items-center rounded-[6px] border border-red-100 bg-red-50 text-red-500 transition-colors hover:bg-red-100"
                         title="Удалить позицию"
                       >
                         <X className="h-5 w-5" />
@@ -4065,7 +4084,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                       <button
                         type="button"
                         onClick={addNewOrderItem}
-                        className="grid h-11 w-11 place-items-center rounded-lg border border-zinc-200 bg-white text-zinc-600 transition-colors hover:bg-zinc-900 hover:text-white"
+                        className="grid h-9 w-9 place-items-center rounded-[6px] border border-[#E6E9EF] bg-white text-[#6B7280] transition-colors hover:bg-[#1F2937] hover:text-white"
                         title="Добавить позицию"
                       >
                         <Plus className="h-5 w-5" />
@@ -4080,52 +4099,53 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
             </div>
           </section>
 
-          <section className="rounded-xl border border-zinc-200 bg-white p-4">
+          <section className="rounded-[8px] border border-[#E6E9EF] bg-white p-4 lg:rounded-none lg:border-0 lg:py-2 lg:pl-5 lg:pr-0">
             <div className="mb-3 flex items-center gap-3">
-              <div className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-violet-100 text-[14px] font-black text-violet-900">3</div>
+              <div className="grid h-7 w-7 shrink-0 place-items-center rounded-[8px] bg-[#7D7DE6]/12 text-[13px] font-medium text-[#7D7DE6]">3</div>
               <div>
-                <h4 className="text-[12px] font-black uppercase tracking-[0.18em] text-zinc-950">Расчет стоимости</h4>
-                <p className="mt-0.5 text-[10px] font-semibold text-zinc-400">Финальная сумма заказа</p>
+                <h4 className="text-[14px] font-medium leading-5 text-[#1F2937]">Расчет стоимости</h4>
+                <p className="text-[11px] font-medium leading-[14px] text-[#9CA3AF]">Финальная сумма заказа</p>
               </div>
             </div>
-            <div className="grid items-end gap-4 lg:grid-cols-[minmax(0,1fr)_32px_minmax(0,1fr)_32px_minmax(0,1fr)]">
-              <div className="rounded-xl border border-violet-100 bg-violet-50/60 p-4">
-                <p className="text-[10px] font-black uppercase tracking-[0.16em] text-zinc-400">Стоимость 100%</p>
-                <div className="mt-3 flex items-center justify-between gap-4 text-[18px] font-black text-zinc-950">
-                  <span className="text-zinc-400">₽</span>
+            <div className="grid items-end gap-2 xl:grid-cols-[minmax(0,1fr)_20px_minmax(0,1fr)_20px_minmax(0,1fr)]">
+              <div className="rounded-[8px] border border-[#E6E9EF] bg-[#F6F7F9] p-3">
+                <p className="text-[10px] font-medium uppercase tracking-[0.14em] text-[#9CA3AF]">Стоимость 100%</p>
+                <div className="mt-2 flex items-center justify-between gap-3 text-[16px] font-medium text-[#1F2937]">
+                  <span className="text-[#9CA3AF]">₽</span>
                   <span>{Number(newOrder.revenue || 0).toLocaleString('ru-RU')}</span>
                 </div>
               </div>
-              <div className="hidden pb-6 text-center text-2xl font-bold text-zinc-400 lg:block">+</div>
-              <div className="rounded-xl border border-blue-100 bg-blue-50/60 p-4">
-                <p className="text-[10px] font-black uppercase tracking-[0.16em] text-zinc-400">Стоимость доставки</p>
+              <div className="hidden pb-5 text-center text-[18px] font-medium text-[#9CA3AF] xl:block">+</div>
+              <div className="rounded-[8px] border border-[#E6E9EF] bg-[#F6F7F9] p-3">
+                <p className="text-[10px] font-medium uppercase tracking-[0.14em] text-[#9CA3AF]">Доставка</p>
                 <label className="relative mt-3 block">
-                  <span className="absolute left-0 top-1/2 -translate-y-1/2 text-[18px] font-black text-zinc-400">₽</span>
+                  <span className="absolute left-0 top-1/2 -translate-y-1/2 text-[16px] font-medium text-[#9CA3AF]">₽</span>
                   <input
                     type="number"
                     placeholder="0.00"
                     value={Number.isNaN(newOrder.deliveryPrice) ? "" : newOrder.deliveryPrice || ""}
                     onChange={(e) => updateNewOrderDeliveryPrice(parseFloat(e.target.value) || 0)}
-                    className="h-8 w-full bg-transparent pl-8 text-right text-[18px] font-black text-zinc-950 outline-none placeholder:text-zinc-300"
+                    className="h-7 w-full bg-transparent pl-7 text-right text-[16px] font-medium text-[#1F2937] outline-none placeholder:text-[#9CA3AF]"
                   />
                 </label>
               </div>
-              <div className="hidden pb-6 text-center text-2xl font-bold text-zinc-400 lg:block">=</div>
-              <div className="rounded-xl border border-emerald-100 bg-emerald-50/70 p-4">
-                <p className="text-[10px] font-black uppercase tracking-[0.16em] text-emerald-600">Счет к оплате</p>
-                <div className="mt-3 flex items-center justify-between gap-4 text-[18px] font-black text-emerald-700">
-                  <span className="text-zinc-400">₽</span>
+              <div className="hidden pb-5 text-center text-[18px] font-medium text-[#9CA3AF] xl:block">=</div>
+              <div className="rounded-[8px] border border-emerald-100 bg-emerald-50/70 p-3">
+                <p className="text-[10px] font-medium uppercase tracking-[0.14em] text-[#2EBA7F]">Счет к оплате</p>
+                <div className="mt-2 flex items-center justify-between gap-3 text-[16px] font-medium text-[#2EBA7F]">
+                  <span className="text-[#9CA3AF]">₽</span>
                   <span>{Number(newOrder.paidAmount || 0).toLocaleString('ru-RU')}</span>
                 </div>
               </div>
             </div>
           </section>
+        </div>
 
-          <div className="flex flex-col gap-3 pt-1 md:flex-row md:items-center md:justify-between">
+          <div className="mt-3 flex flex-col gap-3 border-t border-[#E6E9EF] pt-3 md:flex-row md:items-center md:justify-between">
             <button
               type="button"
               onClick={resetNewOrderForm}
-              className="inline-flex h-10 items-center justify-center gap-3 rounded-lg border border-zinc-200 bg-white px-6 text-[11px] font-black text-zinc-400 transition-colors hover:bg-zinc-50"
+              className="inline-flex h-9 items-center justify-center gap-2 rounded-[6px] border border-[#E6E9EF] bg-white px-4 text-[11px] font-medium text-[#6B7280] transition-colors hover:bg-[#F6F7F9]"
             >
               Очистить форму
               <RefreshCcw className="h-4 w-4" />
@@ -4133,13 +4153,12 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
             <button
               type="button"
               onClick={createNewOrder}
-              className="inline-flex h-11 w-full items-center justify-center gap-4 rounded-lg bg-indigo-500 px-10 text-[11px] font-black uppercase tracking-[0.18em] text-white shadow-sm transition-all hover:bg-indigo-600 active:scale-[0.99] md:w-[300px]"
+              className="inline-flex h-10 w-full items-center justify-center gap-3 rounded-[6px] bg-[#7D7DE6] px-8 text-[11px] font-medium uppercase tracking-[0.16em] text-white shadow-sm transition-all hover:bg-[#6F6FE0] active:scale-[0.99] md:w-[260px]"
             >
               Создать заказ
               <CheckCircle2 className="h-5 w-5" />
             </button>
           </div>
-        </div>
 
         {false && (
         <div className="hidden">
@@ -4632,16 +4651,16 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
       </div>
 
       {/* Orders List Table */}
-      <div className="tg-card overflow-hidden">
-        <div className="p-3 border-b border-zinc-100 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+      <div className={cn(softCardClass, "overflow-hidden")}>
+        <div className="flex flex-col justify-between gap-3 border-b border-[#E6E9EF] p-3 sm:flex-row sm:items-center">
           <div className="flex items-center gap-3">
-            <h3 className="text-[10px] font-semibold text-zinc-900 uppercase tracking-widest">Список заказов</h3>
-            <div className="flex items-center gap-1.5 px-2 py-0.5 bg-zinc-50 border border-zinc-100 rounded-md">
-              <Calendar className="w-2.5 h-2.5 text-zinc-400" />
+            <h3 className="text-[14px] font-medium leading-5 text-[#1F2937]">Список заказов</h3>
+            <div className="flex h-8 items-center gap-1.5 rounded-[6px] border border-[#E6E9EF] bg-white px-2.5">
+              <Calendar className="h-3.5 w-3.5 text-[#9CA3AF]" />
               <select
                 value={ordersFilterMonth}
                 onChange={(e) => setOrdersFilterMonth(parseInt(e.target.value))}
-                className="text-[9px] font-bold text-blue-600 bg-transparent focus:outline-none cursor-pointer uppercase tracking-tight"
+                className="cursor-pointer bg-transparent text-[11px] font-medium text-[#7D7DE6] outline-none"
               >
                 <option value={-1}>Все месяцы</option>
                 {['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'].map((m, idx) => (
@@ -4652,18 +4671,18 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
           </div>
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
             <div className="relative">
-              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-zinc-300" />
+              <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#9CA3AF]" />
               <input
                 type="text"
                 placeholder="Поиск..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                className="pl-7 pr-3 py-1.5 bg-zinc-50 border border-zinc-100 rounded-lg text-[10px] font-medium focus:outline-none focus:ring-1 focus:ring-zinc-200 transition-all w-full sm:w-48"
+                className="h-8 w-full rounded-[6px] border border-[#E6E9EF] bg-white pl-9 pr-3 text-[11px] font-medium text-[#1F2937] outline-none transition-all placeholder:text-[#9CA3AF] focus:border-[#7D7DE6] focus:ring-2 focus:ring-[#7D7DE6]/10 sm:w-56"
               />
             </div>
           </div>
         </div>
-        <div className="px-3 py-2 border-b border-zinc-100 flex gap-1.5 overflow-x-auto">
+        <div className="flex gap-1.5 overflow-x-auto border-b border-[#E6E9EF] px-3 py-2">
           {['Все', ...optionList(handbookStatuses, STATUS_OPTIONS)].map(status => {
             const value = status === 'Все' ? '' : status;
             const active = orderStatusFilter === value;
@@ -4673,10 +4692,10 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                 type="button"
                 onClick={() => setOrderStatusFilter(value)}
                 className={cn(
-                  'shrink-0 px-3 py-1.5 rounded-lg border text-[8px] font-black uppercase tracking-widest transition-colors',
+                  'h-8 shrink-0 rounded-[6px] border px-3 text-[10px] font-medium uppercase tracking-[0.12em] transition-colors',
                   active
-                    ? 'bg-zinc-900 text-white border-zinc-900'
-                    : 'bg-white text-zinc-500 border-zinc-100 hover:bg-zinc-50'
+                    ? 'border-[#1F2937] bg-[#1F2937] text-white'
+                    : 'border-[#E6E9EF] bg-white text-[#6B7280] hover:bg-[#F6F7F9]'
                 )}
               >
                 {status}
@@ -4689,10 +4708,10 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
               value={orderBloggerFilter}
               onChange={(e) => setOrderBloggerFilter(e.target.value)}
               className={cn(
-                'h-[31px] max-w-[220px] appearance-none rounded-lg border bg-white py-1.5 pl-8 pr-7 text-[8px] font-black uppercase tracking-widest outline-none transition-colors',
+                'h-8 max-w-[220px] appearance-none rounded-[6px] border bg-white py-1.5 pl-8 pr-7 text-[10px] font-medium uppercase tracking-[0.12em] outline-none transition-colors',
                 orderBloggerFilter
-                  ? 'border-violet-200 bg-violet-50 text-violet-700'
-                  : 'border-zinc-100 text-zinc-500 hover:bg-zinc-50'
+                  ? 'border-[#7D7DE6]/30 bg-[#7D7DE6]/10 text-[#7D7DE6]'
+                  : 'border-[#E6E9EF] text-[#6B7280] hover:bg-[#F6F7F9]'
               )}
             >
               <option value="">Блогер</option>
@@ -4703,19 +4722,19 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
             <ChevronRight className="pointer-events-none absolute right-2.5 top-1/2 h-3 w-3 -translate-y-1/2 rotate-90 text-zinc-400" />
           </div>
         </div>
-        <div className="hidden items-center justify-between gap-3 border-b border-zinc-100 bg-zinc-50/40 px-3 py-2 md:flex">
+        <div className="hidden items-center justify-between gap-3 border-b border-[#E6E9EF] bg-[#F6F7F9] px-3 py-2 md:flex">
           <div className="flex items-center gap-3">
-            <label className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-zinc-200 bg-white px-3 py-2 text-[9px] font-black uppercase tracking-widest text-zinc-600">
+            <label className="inline-flex h-8 cursor-pointer items-center gap-2 rounded-[6px] border border-[#E6E9EF] bg-white px-3 text-[10px] font-medium uppercase tracking-[0.12em] text-[#6B7280]">
               <input
                 type="checkbox"
                 checked={allVisibleOrdersSelected}
                 onChange={toggleAllVisibleOrders}
-                className="h-4 w-4 rounded border-zinc-300 accent-zinc-900"
+                className="h-3.5 w-3.5 rounded border-[#E6E9EF] accent-[#7D7DE6]"
               />
               Все видимые
             </label>
-            <span className="text-[10px] font-bold text-zinc-400">
-              выбрано: <b className="text-zinc-900">{selectedPrintOrders.length}</b>
+            <span className="text-[11px] font-medium text-[#9CA3AF]">
+              выбрано: <b className="text-[#1F2937]">{selectedPrintOrders.length}</b>
             </span>
           </div>
           <div className="flex items-center gap-2">
@@ -4723,7 +4742,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
               <button
                 type="button"
                 onClick={() => setSelectedOrderKeys(new Set())}
-                className="h-9 rounded-lg border border-zinc-200 bg-white px-4 text-[9px] font-black uppercase tracking-widest text-zinc-500 transition-colors hover:bg-zinc-50"
+                className="h-8 rounded-[6px] border border-[#E6E9EF] bg-white px-3 text-[10px] font-medium uppercase tracking-[0.12em] text-[#6B7280] transition-colors hover:bg-white"
               >
                 Очистить
               </button>
@@ -4733,10 +4752,10 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
               onClick={printSelectedOrders}
               disabled={!selectedPrintOrders.length}
               className={cn(
-                "inline-flex h-9 items-center gap-2 rounded-lg px-4 text-[9px] font-black uppercase tracking-widest transition-all",
+                "inline-flex h-8 items-center gap-2 rounded-[6px] px-3 text-[10px] font-medium uppercase tracking-[0.12em] transition-all",
                 selectedPrintOrders.length
-                  ? "bg-zinc-900 text-white hover:bg-black"
-                  : "cursor-not-allowed bg-zinc-100 text-zinc-300"
+                  ? "bg-[#1F2937] text-white hover:bg-black"
+                  : "cursor-not-allowed bg-white text-[#9CA3AF]"
               )}
             >
               <Printer className="h-3.5 w-3.5" />
@@ -4746,25 +4765,25 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
         </div>
         <div className="overflow-x-auto print:overflow-visible">
           {/* Desktop Table View */}
-          <table className="w-full text-left border-collapse hidden md:table">
+          <table className="hidden w-full border-collapse text-left md:table">
             <thead>
-              <tr className="border-b border-zinc-100 bg-zinc-50/50 text-[9px] font-black uppercase tracking-widest text-zinc-400">
-                <th className="px-4 py-3 border-none w-[44px]">
+              <tr className="border-b border-[#E6E9EF] bg-white text-[10px] font-medium uppercase tracking-[0.14em] text-[#9CA3AF]">
+                <th className="w-[44px] border-none px-4 py-3">
                   <input
                     type="checkbox"
                     checked={allVisibleOrdersSelected}
                     onChange={toggleAllVisibleOrders}
-                    className="h-4 w-4 rounded border-zinc-300 accent-zinc-900"
+                    className="h-3.5 w-3.5 rounded border-[#E6E9EF] accent-[#7D7DE6]"
                     title="Выбрать все видимые строки"
                   />
                 </th>
-                <th className="px-5 py-3 border-none w-[150px]">Дата / ID</th>
-                <th className="px-5 py-3 border-none w-[240px]">Клиент / Контакт</th>
-                <th className="px-5 py-3 border-none w-[220px]">Статус / Доставка</th>
-                <th className="px-5 py-3 border-none w-[170px]">Финансы</th>
-                <th className="px-5 py-3 border-none min-w-[320px]">Изделие</th>
-                <th className="px-5 py-3 border-none w-[150px]">Срок</th>
-                <th className="px-5 py-3 border-none w-[80px] text-right">Открыть</th>
+                <th className="w-[140px] border-none px-5 py-3">Дата / ID</th>
+                <th className="w-[220px] border-none px-5 py-3">Клиент / Контакт</th>
+                <th className="w-[190px] border-none px-5 py-3">Статус</th>
+                <th className="w-[160px] border-none px-5 py-3">Финансы</th>
+                <th className="min-w-[320px] border-none px-5 py-3">Изделие</th>
+                <th className="w-[140px] border-none px-5 py-3">Срок</th>
+                <th className="w-[80px] border-none px-5 py-3 text-right">Открыть</th>
               </tr>
             </thead>
             <tbody>
@@ -4805,10 +4824,10 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
           </table>
 
           {filteredOrders.length > displayCount && (
-            <div className="p-4 flex justify-center bg-zinc-50/30 border-t border-zinc-100">
+            <div className="flex justify-center border-t border-[#E6E9EF] bg-[#F6F7F9] p-4">
               <button
                 onClick={() => setDisplayCount(displayCount + 50)}
-                className="px-6 py-2 bg-white border border-zinc-200 rounded-xl text-[10px] font-black uppercase tracking-widest text-zinc-600 hover:bg-zinc-50 transition-all shadow-sm flex items-center gap-2"
+                className="flex h-9 items-center gap-2 rounded-[6px] border border-[#E6E9EF] bg-white px-5 text-[10px] font-medium uppercase tracking-[0.12em] text-[#6B7280] transition-all hover:bg-white"
               >
                 <Plus className="w-3 h-3" />
                 Показать еще ({filteredOrders.length - displayCount})
@@ -4818,7 +4837,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
         </div>
 
         {/* Mobile Card View */}
-        <div className="md:hidden flex flex-col divide-y divide-zinc-100">
+        <div className="flex flex-col divide-y divide-[#E6E9EF] md:hidden">
           {pagedOrders.map((order, i) => (
             <OrderCard
               key={`${order.orderId}-${i}`}
@@ -4840,10 +4859,10 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
           ))}
 
           {filteredOrders.length > displayCount && (
-            <div className="p-6 flex justify-center bg-zinc-50/30 border-t border-zinc-100">
+            <div className="flex justify-center border-t border-[#E6E9EF] bg-[#F6F7F9] p-4">
               <button
                 onClick={() => setDisplayCount(displayCount + 50)}
-                className="w-full py-4 bg-white border border-zinc-200 rounded-2xl text-[10px] font-black uppercase tracking-widest text-zinc-600 hover:bg-zinc-50 transition-all shadow-sm flex items-center justify-center gap-2"
+                className="flex h-10 w-full items-center justify-center gap-2 rounded-[6px] border border-[#E6E9EF] bg-white text-[10px] font-medium uppercase tracking-[0.12em] text-[#6B7280] transition-all hover:bg-white"
               >
                 <Plus className="w-3 h-3" />
                 Показать еще ({filteredOrders.length - displayCount})
