@@ -9,7 +9,7 @@ import {
   X, MapPin, Star, RefreshCcw,
   Tag, Trash2, Phone, UserCircle, ChevronRight, QrCode as QrCodeIcon,
   CheckCircle2, Copy, Send, Truck, Wallet, CreditCard, Database, Filter,
-  ArrowUpRight, ArrowDownRight, Printer
+  ArrowUpRight, ArrowDownRight, Printer, Upload
 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { formatCurrency, cn } from '../../lib/utils';
@@ -3251,9 +3251,43 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
   };
 
   return (
-    <div className="space-y-6">
-      <div className="rounded-2xl border border-zinc-100 bg-white p-4 shadow-sm sm:p-6">
-        <div className="mb-5 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+    <div className="space-y-3">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+        <div>
+          <h2 className="text-[22px] font-medium tracking-tight text-zinc-950 sm:text-[28px]">Продажи и работа по базе</h2>
+          <p className="mt-1 text-[12px] font-medium text-zinc-400">
+            {managerSalesPlan.monthLabel} 2026 · планы менеджеров и мониторинг заказов
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={exportToCsv}
+            className="inline-flex h-10 items-center gap-2 rounded-lg border border-zinc-200 bg-white px-4 text-[11px] font-bold text-zinc-600 shadow-sm transition-colors hover:bg-zinc-50"
+          >
+            <Copy className="h-4 w-4" />
+            Экспорт
+          </button>
+          <button
+            type="button"
+            className="inline-flex h-10 items-center gap-2 rounded-lg border border-zinc-200 bg-white px-4 text-[11px] font-bold text-zinc-600 shadow-sm transition-colors hover:bg-zinc-50"
+          >
+            <Upload className="h-4 w-4" />
+            Импорт
+          </button>
+          <button
+            type="button"
+            onClick={() => document.querySelector('[data-new-order-form]')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+            className="inline-flex h-10 items-center gap-2 rounded-lg bg-indigo-500 px-5 text-[11px] font-bold text-white shadow-sm transition-colors hover:bg-indigo-600"
+          >
+            <Plus className="h-4 w-4" />
+            Новый заказ
+          </button>
+        </div>
+      </div>
+
+      <div>
+        <div className="hidden">
           <div>
             <p className="text-[10px] font-black uppercase tracking-[0.22em] text-zinc-400">План менеджеров</p>
             <h3 className="mt-1 text-[22px] font-black tracking-tight text-zinc-950 sm:text-[28px]">Продажи и работа по базе</h3>
@@ -3276,7 +3310,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
           </div>
         </div>
 
-        <div className="grid gap-3 lg:grid-cols-2">
+        <div className="grid gap-3 xl:grid-cols-[1fr_1fr_1.18fr]">
           {managerSalesPlan.managers.map((manager, index) => {
             const monthProgress = manager.monthPlan > 0 ? Math.min(100, Math.round((manager.monthSales / manager.monthPlan) * 100)) : 0;
             const baseProgress = manager.basePlan > 0 ? Math.min(100, Math.round((manager.baseWorked / manager.basePlan) * 100)) : 0;
@@ -3385,6 +3419,68 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
               </div>
             );
           })}
+          <div className="rounded-2xl border border-zinc-100 bg-white p-4 shadow-[0_14px_34px_rgba(15,23,42,0.04)] sm:p-5">
+            <div className="mb-4 flex items-start justify-between gap-3">
+              <div>
+                <h3 className="text-[15px] font-medium text-zinc-950">Мониторинг исполнения заказов</h3>
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <span className="text-[11px] font-medium text-zinc-400">Целевой срок: 7 рабочих дней</span>
+                  <div className="relative">
+                    <select
+                      value={slaFilterMonth}
+                      onChange={(e) => setSlaFilterMonth(parseInt(e.target.value))}
+                      className="h-8 appearance-none rounded-lg border border-zinc-200 bg-white px-3 pr-8 text-[10px] font-bold text-zinc-700 outline-none"
+                    >
+                      <option value={-1}>Все месяцы</option>
+                      {['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'].map((m, idx) => (
+                        <option key={m} value={idx}>{m}</option>
+                      ))}
+                    </select>
+                    <ChevronRight className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 rotate-90 text-zinc-400" />
+                  </div>
+                  <span className="text-[10px] font-bold text-zinc-400">2026</span>
+                </div>
+              </div>
+              <div className="text-right">
+                <p className="text-[18px] font-medium text-zinc-900">{filteredSlaStats?.onTimeRate.toFixed(1)}%</p>
+                <p className="text-[9px] font-bold uppercase tracking-widest text-zinc-400">SLA</p>
+              </div>
+            </div>
+
+            <div className="mb-5 flex h-3 overflow-hidden rounded-full bg-zinc-100">
+              <div
+                className="h-full bg-emerald-500 transition-all"
+                style={{ width: `${(filteredSlaStats?.onTime || 0) / (filteredSlaStats?.totalOrders || 1) * 100}%` }}
+              />
+              <div
+                className="h-full bg-zinc-300 transition-all"
+                style={{ width: `${(filteredSlaStats?.shipped || 0) / (filteredSlaStats?.totalOrders || 1) * 100}%` }}
+              />
+              <div
+                className="h-full bg-red-500 transition-all"
+                style={{ width: `${(filteredSlaStats?.overdue || 0) / (filteredSlaStats?.totalOrders || 1) * 100}%` }}
+              />
+            </div>
+
+            <div className="grid gap-2 sm:grid-cols-4">
+              <div className="rounded-lg border border-emerald-100 bg-emerald-50 p-3">
+                <p className="text-[9px] font-bold text-emerald-600">В производстве</p>
+                <p className="mt-1 text-[18px] font-medium text-emerald-700">{filteredSlaStats?.onTime}</p>
+              </div>
+              <div className="rounded-lg border border-zinc-100 bg-zinc-50 p-3">
+                <p className="text-[9px] font-bold text-zinc-500">Отгружено</p>
+                <p className="mt-1 text-[18px] font-medium text-zinc-800">{filteredSlaStats?.shipped}</p>
+              </div>
+              <div className="rounded-lg border border-red-100 bg-red-50 p-3">
+                <p className="text-[9px] font-bold text-red-500">Просрочено</p>
+                <p className="mt-1 text-[18px] font-medium text-red-600">{filteredSlaStats?.overdue}</p>
+              </div>
+              <div className="rounded-lg border border-orange-100 bg-orange-50 p-3">
+                <p className="text-[9px] font-bold text-orange-500">Утв. задержка</p>
+                <p className="mt-1 text-[16px] font-medium text-orange-600">{formatCurrency(filteredSlaStats?.lostRevenue || 0)}</p>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -3643,7 +3739,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
       </div>
 
       {/* SLA Deadline Tracking Card */}
-      <div className="rounded-2xl border border-zinc-100 bg-white p-7 shadow-sm flex flex-col md:flex-row gap-8 items-center">
+      <div className="hidden rounded-2xl border border-zinc-100 bg-white p-7 shadow-sm flex-col md:flex-row gap-8 items-center">
         <div className="flex-1 w-full space-y-4">
           <div className="flex items-center justify-between">
             <div>
@@ -3759,27 +3855,27 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
       </div>
 
       {/* New Order Form Block */}
-      <div className="overflow-hidden rounded-2xl border border-zinc-200 bg-white p-4 text-zinc-900 shadow-[0_18px_45px_rgba(15,23,42,0.04)] sm:p-7">
-        <div className="mb-6 flex min-w-0 items-center gap-3 sm:gap-4">
-          <div className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-zinc-900 shadow-[0_18px_30px_rgba(15,23,42,0.18)] sm:h-14 sm:w-14">
-            <Plus className="h-5 w-5 text-white sm:h-7 sm:w-7" />
+      <div data-new-order-form className="overflow-hidden rounded-2xl border border-zinc-200 bg-white p-4 text-zinc-900 shadow-[0_18px_45px_rgba(15,23,42,0.04)]">
+        <div className="mb-4 flex min-w-0 items-center gap-3">
+          <div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-zinc-900 shadow-[0_18px_30px_rgba(15,23,42,0.18)]">
+            <Plus className="h-5 w-5 text-white" />
           </div>
           <div className="min-w-0">
-            <h3 className="text-[15px] font-black uppercase leading-tight tracking-[0.18em] sm:text-[19px] sm:leading-none sm:tracking-[0.22em]">Новый заказ</h3>
-            <p className="mt-1 text-[8px] font-black uppercase tracking-[0.14em] text-zinc-400 sm:mt-2 sm:text-[10px] sm:tracking-[0.18em]">Добавить запись в список</p>
+            <h3 className="text-[15px] font-black uppercase leading-tight tracking-[0.18em]">Новый заказ</h3>
+            <p className="mt-1 text-[9px] font-black uppercase tracking-[0.14em] text-zinc-400">Добавить запись в список</p>
           </div>
         </div>
 
-        <div className="space-y-4">
-          <section className="overflow-hidden rounded-xl border border-zinc-200 bg-white p-3 sm:p-6">
-            <div className="mb-5 flex min-w-0 items-center gap-3 sm:gap-4">
-              <div className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-violet-100 text-[15px] font-black text-violet-900 sm:h-10 sm:w-10 sm:text-[17px]">1</div>
+        <div className="space-y-3">
+          <section className="overflow-hidden rounded-xl border border-zinc-200 bg-white p-4">
+            <div className="mb-3 flex min-w-0 items-center gap-3">
+              <div className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-violet-100 text-[14px] font-black text-violet-900">1</div>
               <div className="min-w-0">
-                <h4 className="text-[13px] font-black uppercase tracking-[0.18em] text-zinc-950 sm:text-[15px] sm:tracking-[0.22em]">Клиент и заказ</h4>
-                <p className="mt-1 text-[10px] font-semibold text-zinc-400 sm:text-[11px]">Основная информация о клиенте и заказе</p>
+                <h4 className="text-[12px] font-black uppercase tracking-[0.18em] text-zinc-950">Клиент и заказ</h4>
+                <p className="mt-0.5 text-[10px] font-semibold text-zinc-400">Основная информация</p>
               </div>
             </div>
-            <div className="grid min-w-0 gap-4 sm:gap-5 lg:grid-cols-4">
+            <div className="grid min-w-0 gap-3 lg:grid-cols-4">
               <div className="min-w-0">
                 <label className={newOrderLabelClass}>
                   <Calendar className="h-4 w-4" /> Дата и ID
@@ -3914,17 +4010,17 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
             </div>
           </section>
 
-          <section className="overflow-hidden rounded-xl border border-zinc-200 bg-white p-3 sm:p-6">
-            <div className="mb-5 flex min-w-0 items-center gap-3 sm:gap-4">
-              <div className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-violet-100 text-[15px] font-black text-violet-900 sm:h-10 sm:w-10 sm:text-[17px]">2</div>
+          <section className="overflow-hidden rounded-xl border border-zinc-200 bg-white p-4">
+            <div className="mb-3 flex min-w-0 items-center gap-3">
+              <div className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-violet-100 text-[14px] font-black text-violet-900">2</div>
               <div className="min-w-0">
-                <h4 className="text-[13px] font-black uppercase tracking-[0.18em] text-zinc-950 sm:text-[15px] sm:tracking-[0.22em]">Изделие</h4>
-                <p className="mt-1 text-[11px] font-semibold text-zinc-400">Информация об изделии</p>
+                <h4 className="text-[12px] font-black uppercase tracking-[0.18em] text-zinc-950">Изделие</h4>
+                <p className="mt-0.5 text-[10px] font-semibold text-zinc-400">Информация об изделии</p>
               </div>
             </div>
-            <div className="space-y-4">
+            <div className="space-y-3">
               {newOrderItems.map((item, index) => (
-                <div key={index} className="grid min-w-0 gap-3 lg:grid-cols-[minmax(0,1.35fr)_170px_170px_170px_170px_52px]">
+                <div key={index} className="grid min-w-0 gap-2 lg:grid-cols-[minmax(0,1.35fr)_130px_130px_130px_130px_44px]">
                   <label className="block min-w-0">
                     <span className={newOrderLabelClass}>Наименование</span>
                     <input
@@ -3958,7 +4054,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                       <button
                         type="button"
                         onClick={() => removeNewOrderItem(index)}
-                        className="grid h-11 w-11 place-items-center rounded-lg border border-red-100 bg-red-50 text-red-500 transition-colors hover:bg-red-100 sm:h-12 sm:w-12"
+                        className="grid h-11 w-11 place-items-center rounded-lg border border-red-100 bg-red-50 text-red-500 transition-colors hover:bg-red-100"
                         title="Удалить позицию"
                       >
                         <X className="h-5 w-5" />
@@ -3968,7 +4064,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                       <button
                         type="button"
                         onClick={addNewOrderItem}
-                        className="grid h-11 w-11 place-items-center rounded-lg border border-zinc-200 bg-white text-zinc-600 transition-colors hover:bg-zinc-900 hover:text-white sm:h-12 sm:w-12"
+                        className="grid h-11 w-11 place-items-center rounded-lg border border-zinc-200 bg-white text-zinc-600 transition-colors hover:bg-zinc-900 hover:text-white"
                         title="Добавить позицию"
                       >
                         <Plus className="h-5 w-5" />
@@ -3983,40 +4079,40 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
             </div>
           </section>
 
-          <section className="rounded-xl border border-zinc-200 bg-white p-4 sm:p-6">
-            <div className="mb-5 flex items-center gap-4">
-              <div className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-violet-100 text-[17px] font-black text-violet-900">3</div>
+          <section className="rounded-xl border border-zinc-200 bg-white p-4">
+            <div className="mb-3 flex items-center gap-3">
+              <div className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-violet-100 text-[14px] font-black text-violet-900">3</div>
               <div>
-                <h4 className="text-[15px] font-black uppercase tracking-[0.22em] text-zinc-950">Расчет стоимости</h4>
-                <p className="mt-1 text-[11px] font-semibold text-zinc-400">Финальная сумма заказа</p>
+                <h4 className="text-[12px] font-black uppercase tracking-[0.18em] text-zinc-950">Расчет стоимости</h4>
+                <p className="mt-0.5 text-[10px] font-semibold text-zinc-400">Финальная сумма заказа</p>
               </div>
             </div>
             <div className="grid items-end gap-4 lg:grid-cols-[minmax(0,1fr)_32px_minmax(0,1fr)_32px_minmax(0,1fr)]">
-              <div className="rounded-xl border border-violet-100 bg-violet-50/60 p-5">
+              <div className="rounded-xl border border-violet-100 bg-violet-50/60 p-4">
                 <p className="text-[10px] font-black uppercase tracking-[0.16em] text-zinc-400">Стоимость 100%</p>
-                <div className="mt-5 flex items-center justify-between gap-4 text-[24px] font-black text-zinc-950">
+                <div className="mt-3 flex items-center justify-between gap-4 text-[18px] font-black text-zinc-950">
                   <span className="text-zinc-400">₽</span>
                   <span>{Number(newOrder.revenue || 0).toLocaleString('ru-RU')}</span>
                 </div>
               </div>
-              <div className="hidden pb-8 text-center text-3xl font-bold text-zinc-400 lg:block">+</div>
-              <div className="rounded-xl border border-blue-100 bg-blue-50/60 p-5">
+              <div className="hidden pb-6 text-center text-2xl font-bold text-zinc-400 lg:block">+</div>
+              <div className="rounded-xl border border-blue-100 bg-blue-50/60 p-4">
                 <p className="text-[10px] font-black uppercase tracking-[0.16em] text-zinc-400">Стоимость доставки</p>
-                <label className="relative mt-5 block">
-                  <span className="absolute left-0 top-1/2 -translate-y-1/2 text-[24px] font-black text-zinc-400">₽</span>
+                <label className="relative mt-3 block">
+                  <span className="absolute left-0 top-1/2 -translate-y-1/2 text-[18px] font-black text-zinc-400">₽</span>
                   <input
                     type="number"
                     placeholder="0.00"
                     value={Number.isNaN(newOrder.deliveryPrice) ? "" : newOrder.deliveryPrice || ""}
                     onChange={(e) => updateNewOrderDeliveryPrice(parseFloat(e.target.value) || 0)}
-                    className="h-9 w-full bg-transparent pl-10 text-right text-[24px] font-black text-zinc-950 outline-none placeholder:text-zinc-300"
+                    className="h-8 w-full bg-transparent pl-8 text-right text-[18px] font-black text-zinc-950 outline-none placeholder:text-zinc-300"
                   />
                 </label>
               </div>
-              <div className="hidden pb-8 text-center text-3xl font-bold text-zinc-400 lg:block">=</div>
-              <div className="rounded-xl border border-emerald-100 bg-emerald-50/70 p-5">
+              <div className="hidden pb-6 text-center text-2xl font-bold text-zinc-400 lg:block">=</div>
+              <div className="rounded-xl border border-emerald-100 bg-emerald-50/70 p-4">
                 <p className="text-[10px] font-black uppercase tracking-[0.16em] text-emerald-600">Счет к оплате</p>
-                <div className="mt-5 flex items-center justify-between gap-4 text-[24px] font-black text-emerald-700">
+                <div className="mt-3 flex items-center justify-between gap-4 text-[18px] font-black text-emerald-700">
                   <span className="text-zinc-400">₽</span>
                   <span>{Number(newOrder.paidAmount || 0).toLocaleString('ru-RU')}</span>
                 </div>
@@ -4024,11 +4120,11 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
             </div>
           </section>
 
-          <div className="flex flex-col gap-4 pt-3 md:flex-row md:items-center md:justify-between">
+          <div className="flex flex-col gap-3 pt-1 md:flex-row md:items-center md:justify-between">
             <button
               type="button"
               onClick={resetNewOrderForm}
-              className="inline-flex h-14 items-center justify-center gap-3 rounded-lg border border-zinc-200 bg-white px-8 text-[12px] font-black text-zinc-400 transition-colors hover:bg-zinc-50"
+              className="inline-flex h-10 items-center justify-center gap-3 rounded-lg border border-zinc-200 bg-white px-6 text-[11px] font-black text-zinc-400 transition-colors hover:bg-zinc-50"
             >
               Очистить форму
               <RefreshCcw className="h-4 w-4" />
@@ -4036,7 +4132,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
             <button
               type="button"
               onClick={createNewOrder}
-              className="inline-flex h-14 w-full items-center justify-center gap-4 rounded-lg bg-zinc-900 px-10 text-[12px] font-black uppercase tracking-[0.22em] text-white shadow-[0_20px_35px_rgba(15,23,42,0.18)] transition-all hover:bg-black active:scale-[0.99] md:w-[390px]"
+              className="inline-flex h-11 w-full items-center justify-center gap-4 rounded-lg bg-indigo-500 px-10 text-[11px] font-black uppercase tracking-[0.18em] text-white shadow-sm transition-all hover:bg-indigo-600 active:scale-[0.99] md:w-[300px]"
             >
               Создать заказ
               <CheckCircle2 className="h-5 w-5" />
