@@ -12,6 +12,7 @@ const PublicProductView = lazy(() => import("./components/PublicProductView").th
 const FinanceDashboard = lazy(() => import("./components/FinanceDashboard").then(m => ({ default: m.FinanceDashboard })));
 const HandbookPage = lazy(() => import("./components/HandbookPage").then(m => ({ default: m.HandbookPage })));
 const BroadcastPage = lazy(() => import("./components/BroadcastPage").then(m => ({ default: m.BroadcastPage })));
+const BroadcastV2Page = lazy(() => import("./components/BroadcastV2Page").then(m => ({ default: m.BroadcastV2Page })));
 const BotPage = lazy(() => import("./components/BotPage").then(m => ({ default: m.BotPage })));
 const ContentPage = lazy(() => import("./components/ContentPage").then(m => ({ default: m.ContentPage })));
 const ContentStudioPage = lazy(() => import("./components/ContentStudioPage").then(m => ({ default: m.ContentStudioPage })));
@@ -27,7 +28,7 @@ import {
 } from "lucide-react";
 import { motion } from "motion/react";
 
-type AppView = 'home' | 'calculator' | 'analytics' | 'orders' | 'clients' | 'marketing' | 'order-form' | 'products' | 'ai-agent' | 'public-product' | 'public-payment' | 'finance' | 'handbook' | 'broadcast' | 'bot' | 'content' | 'studio' | 'cdek';
+type AppView = 'home' | 'calculator' | 'analytics' | 'orders' | 'clients' | 'marketing' | 'order-form' | 'products' | 'ai-agent' | 'public-product' | 'public-payment' | 'finance' | 'handbook' | 'broadcast' | 'broadcast-v2' | 'bot' | 'content' | 'studio' | 'cdek';
 
 const viewRoutes: Record<Exclude<AppView, 'public-product' | 'public-payment'>, string> = {
   home: '/',
@@ -42,6 +43,7 @@ const viewRoutes: Record<Exclude<AppView, 'public-product' | 'public-payment'>, 
   finance: '/finance',
   handbook: '/handbook',
   broadcast: '/broadcast',
+  'broadcast-v2': '/broadcast-v2',
   bot: '/bot',
   content: '/content',
   studio: '/studio',
@@ -53,6 +55,7 @@ const routeViews = Object.fromEntries(
 ) as Record<string, AppView>;
 
 function getViewFromPath(path: string): AppView {
+  if (path.startsWith('/broadcast-v2')) return 'broadcast-v2';
   if (path.startsWith('/broadcast')) return 'broadcast';
   return routeViews[path] || 'home';
 }
@@ -126,6 +129,35 @@ export default function App() {
     document.documentElement.setAttribute('data-theme', theme);
   }, [theme]);
 
+  // Chatwoot live-чат: грузим виджет только на публичных страницах (витрина / оплата)
+  useEffect(() => {
+    const token = import.meta.env.VITE_CHATWOOT_WEBSITE_TOKEN as string | undefined;
+    const baseUrl = (import.meta.env.VITE_CHATWOOT_BASE_URL as string | undefined)?.replace(/\/$/, '');
+    if (!token || !baseUrl) return;
+    const isPublic = view === 'public-product' || view === 'public-payment';
+
+    if (!isPublic) {
+      (window as any).$chatwoot?.toggleBubbleVisibility?.('hide');
+      return;
+    }
+
+    if ((window as any).$chatwoot) {
+      (window as any).$chatwoot.toggleBubbleVisibility('show');
+      return;
+    }
+    if (document.getElementById('chatwoot-sdk')) return;
+
+    const script = document.createElement('script');
+    script.id = 'chatwoot-sdk';
+    script.src = `${baseUrl}/packs/js/sdk.js`;
+    script.async = true;
+    script.defer = true;
+    script.onload = () => {
+      (window as any).chatwootSDK?.run({ websiteToken: token, baseUrl });
+    };
+    document.body.appendChild(script);
+  }, [view]);
+
   useEffect(() => {
     completeGoogleRedirectSignIn().catch((err) => {
       console.error("Google redirect auth error:", err);
@@ -170,7 +202,7 @@ export default function App() {
     };
   }, []);
 
-  const handleNavigate = (newView: 'calculator' | 'analytics' | 'orders' | 'clients' | 'marketing' | 'order-form' | 'products' | 'ai-agent' | 'finance' | 'handbook' | 'broadcast' | 'bot' | 'content' | 'studio' | 'cdek' | 'home', clientData?: any) => {
+  const handleNavigate = (newView: 'calculator' | 'analytics' | 'orders' | 'clients' | 'marketing' | 'order-form' | 'products' | 'ai-agent' | 'finance' | 'handbook' | 'broadcast' | 'broadcast-v2' | 'bot' | 'content' | 'studio' | 'cdek' | 'home', clientData?: any) => {
     if (clientData) setInitialClient(clientData);
     else setInitialClient(null);
     setView(newView);
@@ -310,21 +342,21 @@ export default function App() {
   return (
     <ErrorBoundary>
       <div className="min-h-screen font-sans" style={{ backgroundColor: 'var(--bg)' }}>
-        <header className="sticky top-0 z-[100] h-12" style={{ backgroundColor: 'var(--card-bg)', borderBottom: '1px solid var(--card-border)' }}>
-          <div className="max-w-7xl mx-auto px-4 h-full flex items-center justify-between">
+        <header className="sticky top-0 z-[100] h-14 border-b border-[#E6E9EF] bg-white/95 backdrop-blur" style={{ backgroundColor: 'var(--card-bg)' }}>
+          <div className="mx-auto flex h-full max-w-[1760px] items-center justify-between px-4 sm:px-6">
             <div className="flex items-center gap-6">
               <div className="flex items-center gap-2 cursor-pointer shrink-0" onClick={() => handleNavigate('home')}>
-                <div className="w-7 h-7 bg-zinc-900 rounded-lg flex items-center justify-center text-white font-semibold text-[10px]">Y.</div>
-                <span className="hidden md:inline text-[10px] font-semibold tracking-widest uppercase" style={{ color: 'var(--text)' }}>YBCRM</span>
+                <div className="flex h-8 w-8 items-center justify-center rounded-[8px] bg-[#1F2937] text-[10px] font-medium text-white shadow-sm">Y.</div>
+                <span className="hidden text-[12px] font-medium tracking-[0.14em] uppercase text-[#1F2937] md:inline">YBCRM</span>
               </div>
             </div>
             
             <div className="flex items-center gap-4">
               {/* Theme Toggle */}
-              <div className="flex items-center gap-1 p-1 rounded-lg border" style={{ backgroundColor: 'var(--bg)', borderColor: 'var(--card-border)' }}>
+              <div className="flex items-center gap-1 rounded-[8px] border border-[#E6E9EF] bg-[#F6F7F9] p-1">
                 <button 
                   onClick={() => setTheme('grey')}
-                  className={`w-6 h-6 rounded-md flex items-center justify-center transition-all ${theme === 'grey' ? 'shadow-sm ring-1 ring-zinc-200' : 'hover:opacity-80'}`}
+                  className={`flex h-6 w-6 items-center justify-center rounded-[6px] transition-all ${theme === 'grey' ? 'bg-white shadow-sm ring-1 ring-[#E6E9EF]' : 'hover:opacity-80'}`}
                   style={{ backgroundColor: theme === 'grey' ? 'var(--card-bg)' : 'transparent' }}
                   title="Grey Theme"
                 >
@@ -332,7 +364,7 @@ export default function App() {
                 </button>
                 <button 
                   onClick={() => setTheme('pink')}
-                  className={`w-6 h-6 rounded-md flex items-center justify-center transition-all ${theme === 'pink' ? 'shadow-sm ring-1 ring-pink-200' : 'hover:opacity-80'}`}
+                  className={`flex h-6 w-6 items-center justify-center rounded-[6px] transition-all ${theme === 'pink' ? 'bg-white shadow-sm ring-1 ring-pink-100' : 'hover:opacity-80'}`}
                   style={{ backgroundColor: theme === 'pink' ? 'var(--card-bg)' : 'transparent' }}
                   title="Pink Theme"
                 >
@@ -340,13 +372,13 @@ export default function App() {
                 </button>
               </div>
 
-              <div className="hidden sm:flex items-center gap-2 px-2 py-0.5 rounded-full border" style={{ backgroundColor: 'var(--bg)', borderColor: 'var(--card-border)' }}>
-                {user.photoURL && <img src={user.photoURL} alt="User" className="w-4 h-4 rounded-full" />}
-                <span className="text-[9px] font-bold" style={{ color: 'var(--text-muted)' }}>{user.displayName || user.email}</span>
+              <div className="hidden h-8 items-center gap-2 rounded-[8px] border border-[#E6E9EF] bg-[#F6F7F9] px-2.5 sm:flex">
+                {user.photoURL && <img src={user.photoURL} alt="User" className="h-5 w-5 rounded-full" />}
+                <span className="max-w-[180px] truncate text-[11px] font-medium text-[#6B7280]">{user.displayName || user.email}</span>
               </div>
               <button 
                 onClick={logOut}
-                className="p-1.5 hover:bg-red-50 text-zinc-400 hover:text-red-500 rounded-lg transition-colors"
+                className="rounded-[8px] p-2 text-[#9CA3AF] transition-colors hover:bg-red-50 hover:text-red-500"
                 title="Выйти"
               >
                 <LogOut size={16} />
@@ -357,19 +389,19 @@ export default function App() {
 
         <main className="min-h-[calc(100vh-48px)]">
           <Suspense fallback={<div className="flex items-center justify-center min-h-[60vh]"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-slate-900" /></div>}>
-          <div className="max-w-5xl mx-auto px-4 pt-6 space-y-3">
-            <div className="flex items-center justify-between px-1">
+          <div className="mx-auto max-w-[1760px] px-4 pt-6 sm:px-6">
+            <div className="mb-3 flex items-center justify-between px-1">
               <div className="flex items-center gap-2">
-                <h1 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-500">YBCRM Brand</h1>
+                <h1 className="text-[10px] font-medium uppercase tracking-[0.22em] text-[#6B7280]">YBCRM Brand</h1>
                 <div className="h-px w-8 bg-slate-100 hidden sm:block" />
               </div>
-              <div className="flex items-center gap-1.5 text-slate-400">
+              <div className="flex items-center gap-1.5 text-[#6B7280]">
                 <CalendarIcon className="w-2.5 h-2.5" />
                 <input 
                   type="month" 
                   value={selectedMonth}
                   onChange={(e) => setSelectedMonth(e.target.value)}
-                  className="bg-transparent text-[9px] font-bold uppercase tracking-tighter focus:outline-none cursor-pointer hover:text-slate-900 transition-colors"
+                  className="cursor-pointer bg-transparent text-[10px] font-medium uppercase tracking-[0.08em] transition-colors hover:text-[#1F2937] focus:outline-none"
                 />
               </div>
             </div>
@@ -377,7 +409,7 @@ export default function App() {
             <motion.div
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
-              className="grid grid-cols-5 sm:flex sm:flex-wrap gap-1 justify-center sm:justify-end bg-white p-1 rounded-xl border border-slate-100 shadow-sm"
+              className="flex flex-wrap items-center justify-center gap-1.5 rounded-[10px] border border-[#E6E9EF] bg-white p-2 shadow-[0_8px_24px_rgba(31,41,55,0.04)] lg:justify-end"
             >
               {[
                 { id: 'home',      label: 'Главная',  icon: LayoutDashboard },
@@ -402,15 +434,15 @@ export default function App() {
                     key={idx}
                     onClick={() => handleNavigate(item.id as any)}
                     className={cn(
-                      "flex flex-col sm:flex-row items-center justify-center gap-0.5 sm:gap-1.5 h-9 sm:h-7 px-1 sm:px-2.5 rounded-lg text-[7px] sm:text-[9px] font-bold uppercase transition-all active:scale-95",
+                      "flex h-8 min-w-[72px] items-center justify-center gap-1.5 rounded-[8px] border px-2.5 text-[10px] font-medium uppercase tracking-[0.08em] transition-all active:scale-95 sm:min-w-0",
                       item.special
-                        ? "bg-purple-600 text-white border-transparent hover:bg-purple-700"
+                        ? "border-transparent bg-[#8A2BEF] text-white hover:bg-[#7b22d8]"
                         : isActive
-                          ? "bg-zinc-900 text-white border-transparent"
+                          ? "border-[#1F2937] bg-[#1F2937] text-white"
                           : "bg-zinc-50/50 sm:bg-transparent text-slate-600 hover:bg-zinc-50 border border-transparent sm:border-slate-100"
                     )}
                   >
-                    <item.icon size={11} className={cn("shrink-0", (isActive || item.special) ? "text-white" : "text-slate-400")} />
+                    <item.icon size={13} className={cn("shrink-0", (isActive || item.special) ? "text-white" : "text-[#8B95A5]")} />
                     <span className="truncate">{item.label}</span>
                   </button>
                 );
@@ -510,6 +542,10 @@ export default function App() {
 
           {view === 'broadcast' && (
             <BroadcastPage sheetId={activeSheetId} initialTab={window.location.pathname.endsWith('/settings') ? 'settings' : 'compose'} />
+          )}
+
+          {view === 'broadcast-v2' && (
+            <BroadcastV2Page />
           )}
 
           {view === 'bot' && (

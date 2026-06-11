@@ -1213,6 +1213,7 @@ const OrderSummaryRow = React.memo(({
     order.status?.toLowerCase().includes('отгружен') || order.status?.toLowerCase().includes('доставлен') ? 'text-blue-700' :
     order.status?.toLowerCase().includes('возврат') || order.status?.toLowerCase().includes('отмена') ? 'text-red-600' :
     'text-zinc-500';
+  const displayOrderId = String(order.orderId || '').replace(/^#+/, '');
 
   return (
     <tr className={cn(
@@ -1233,7 +1234,7 @@ const OrderSummaryRow = React.memo(({
       </td>
       <td className="px-5 py-5 align-top">
         <p className="text-[12px] font-semibold text-zinc-400 tabular-nums">{order.date.toLocaleDateString('ru-RU')}</p>
-        <p className="mt-2 text-[13px] font-black text-zinc-950">#{order.orderId}</p>
+        <p className="mt-2 text-[13px] font-black text-zinc-950">#{displayOrderId}</p>
       </td>
       <td className="px-5 py-5 align-top">
         <p className="max-w-[210px] truncate text-[13px] font-bold text-zinc-950">{order.clientName || '—'}</p>
@@ -1530,11 +1531,11 @@ const OrderRow = React.memo(({
       "min-w-0 border-0 bg-transparent p-0"
     )}>
       <span className={cn(
-        "block text-[8px] 2xl:text-[9px] font-black uppercase tracking-wide leading-none whitespace-nowrap",
-        tone === 'paid' ? "text-emerald-500" :
-        tone === 'prepaid' ? "text-orange-500" :
-        tone === 'due' ? "text-blue-500" :
-        "text-zinc-400"
+        "block truncate text-[10px] font-medium uppercase tracking-[0.14em] leading-[14px]",
+        tone === 'paid' ? "text-[#2EBA7F]" :
+        tone === 'prepaid' ? "text-[#F5A623]" :
+        tone === 'due' ? "text-[#7D7DE6]" :
+        "text-[#9CA3AF]"
       )}>{label}</span>
       {onChange ? (
         <input
@@ -1542,18 +1543,19 @@ const OrderRow = React.memo(({
           value={value ?? ''}
           onChange={(e) => onChange(parseFloat(e.target.value) || 0)}
           className={cn(
-            "mt-2.5 w-full border-0 border-b border-zinc-200 bg-transparent px-0 pb-2 text-[14px] 2xl:text-[16px] font-semibold tabular-nums outline-none focus:border-blue-300",
-            tone === 'paid' ? "text-emerald-700" : tone === 'prepaid' ? "text-orange-600" : "text-zinc-900"
+            "mt-2 w-full border-0 border-b border-[#E6E9EF] bg-transparent px-0 pb-2 text-[18px] font-medium tabular-nums outline-none focus:border-[#7D7DE6]",
+            tone === 'paid' ? "text-[#2EBA7F]" : tone === 'prepaid' ? "text-[#F5A623]" : "text-[#1F2937]"
           )}
         />
       ) : (
         <span className={cn(
-          "mt-2.5 block whitespace-nowrap text-[14px] 2xl:text-[16px] font-semibold tabular-nums",
-          tone === 'due' ? "text-blue-700" : tone === 'paid' ? "text-emerald-700" : tone === 'prepaid' ? "text-orange-600" : "text-zinc-900"
+          "mt-2 block truncate text-[18px] font-medium tabular-nums",
+          tone === 'due' ? "text-[#2563EB]" : tone === 'paid' ? "text-[#2EBA7F]" : tone === 'prepaid' ? "text-[#F5A623]" : "text-[#1F2937]"
         )}>{formatCurrency(value)}</span>
       )}
     </label>
   );
+  const displayOrderId = String(order.orderId || '').replace(/^#+/, '');
 
   return (
     <tr className={cn(
@@ -1561,14 +1563,14 @@ const OrderRow = React.memo(({
       order.isOverdue && !order.isShipped && "bg-red-50/20"
     )}>
       <td colSpan={8} className="px-0 py-0">
-        <div className="grid min-w-[1060px] grid-cols-[300px_minmax(760px,1fr)] items-stretch border border-zinc-100 bg-white">
-          <aside className="border-r border-zinc-100 bg-white p-5 space-y-5">
-            <div className="flex items-center justify-between gap-3 border-b border-zinc-100 pb-6">
+        <div className="grid min-w-[1180px] grid-cols-[320px_minmax(860px,1fr)] items-stretch border border-[#E6E9EF] bg-white">
+          <aside className="space-y-5 border-r border-[#E6E9EF] bg-white p-5">
+            <div className="flex items-center justify-between gap-3 border-b border-[#E6E9EF] pb-5">
               <select
                 value={order.status}
                 onChange={(e) => updateOrderData(order.orderId, 'status', e.target.value)}
                 className={cn(
-                  "h-10 max-w-[150px] rounded-md border px-3 text-[11px] font-black uppercase tracking-wide outline-none cursor-pointer",
+                  "h-9 max-w-[150px] rounded-[6px] border px-3 text-[11px] font-medium uppercase tracking-[0.12em] outline-none cursor-pointer",
                   statusColor
                 )}
               >
@@ -1579,7 +1581,7 @@ const OrderRow = React.memo(({
                   onClick={() => {
                     if (window.confirm(`Удалить заказ ${order.orderId}?`)) onDelete(order.orderId);
                   }}
-                  className="inline-flex items-center gap-2 px-1 py-2 text-[11px] font-black text-red-500 hover:text-red-600 transition-colors"
+                  className="inline-flex items-center gap-2 px-1 py-2 text-[11px] font-medium text-red-500 transition-colors hover:text-red-600"
                   title="Удалить заказ"
                 >
                   <Trash2 size={15} /> Удалить заказ
@@ -1587,15 +1589,15 @@ const OrderRow = React.memo(({
               )}
             </div>
 
-            <div className="border-b border-zinc-100 pb-7">
-              <p className="text-[13px] font-bold text-zinc-500">Заказ</p>
+            <div className="border-b border-[#E6E9EF] pb-6">
+              <p className="text-[13px] font-medium text-[#6B7280]">Заказ</p>
               <div className="mt-1 flex items-center gap-1">
-                <span className="text-[34px] font-black leading-none text-zinc-950">#</span>
+                <span className="text-[34px] font-medium leading-none text-[#1F2937]">#</span>
                 <input
                   type="text"
-                  value={order.orderId}
-                  onChange={(e) => updateOrderData(order.orderId, 'orderId', e.target.value)}
-                  className="min-w-0 w-full bg-transparent text-[34px] font-black leading-none text-zinc-950 tracking-tight outline-none"
+                  value={displayOrderId}
+                  onChange={(e) => updateOrderData(order.orderId, 'orderId', e.target.value.replace(/^#+/, '').toUpperCase())}
+                  className="min-w-0 w-full bg-transparent text-[34px] font-medium leading-none tracking-tight text-[#1F2937] outline-none"
                 />
               </div>
               <input
@@ -1608,11 +1610,11 @@ const OrderRow = React.memo(({
                     if (!isNaN(d.getTime())) updateOrderData(order.orderId, 'date', d);
                   }
                 }}
-                className="mt-3 w-full bg-transparent text-[12px] font-semibold text-zinc-400 outline-none"
+                className="mt-3 w-full bg-transparent text-[12px] font-medium text-[#9CA3AF] outline-none"
               />
             </div>
 
-            <div className="border-b border-zinc-100 pb-7 space-y-4">
+            <div className="space-y-4 border-b border-[#E6E9EF] pb-6">
               <div className="flex items-center gap-2">
                 <Users size={17} className="text-zinc-500 shrink-0" />
                 <input
@@ -1620,7 +1622,7 @@ const OrderRow = React.memo(({
                   value={order.clientName || ''}
                   onChange={(e) => updateOrderData(order.orderId, 'clientName', e.target.value)}
                   placeholder="ФИО клиента"
-                  className="min-w-0 flex-1 bg-transparent text-[15px] font-bold text-zinc-950 outline-none truncate"
+                  className="min-w-0 flex-1 truncate bg-transparent text-[15px] font-medium text-[#1F2937] outline-none"
                 />
               </div>
               <div className="flex items-center gap-2">
@@ -1630,7 +1632,7 @@ const OrderRow = React.memo(({
                   value={order.clientPhone}
                   onChange={(e) => updateOrderData(order.orderId, 'clientPhone', e.target.value.replace(/[^0-9]/g, ''))}
                   placeholder="телефон"
-                  className="min-w-0 flex-1 bg-transparent text-[14px] font-semibold text-zinc-700 outline-none truncate"
+                  className="min-w-0 flex-1 truncate bg-transparent text-[14px] font-medium text-[#6B7280] outline-none"
                 />
                 {order.clientPhone && (
                   <a
@@ -1659,14 +1661,14 @@ const OrderRow = React.memo(({
           </aside>
 
           <section className="min-w-0 bg-white px-6 py-6">
-            <div className="border-b border-zinc-100 pb-6">
-              <div className="grid grid-cols-1 xl:grid-cols-[minmax(330px,1fr)_minmax(330px,360px)] 2xl:grid-cols-[minmax(400px,1fr)_minmax(360px,390px)] gap-5 2xl:gap-6 items-start">
+            <div className="border-b border-[#E6E9EF] pb-6">
+              <div className="grid grid-cols-1 items-start gap-6 xl:grid-cols-[minmax(420px,1fr)_minmax(360px,420px)]">
                 <div className="min-w-0">
-                  <span className="block text-[11px] font-black text-zinc-500 uppercase tracking-widest">Изделие</span>
-                  <div className="mt-6 divide-y divide-zinc-100 border-y border-zinc-100">
+                  <span className="block text-[11px] font-medium uppercase tracking-[0.16em] text-[#6B7280]">Изделие</span>
+                  <div className="mt-5 divide-y divide-[#E6E9EF] border-y border-[#E6E9EF]">
                     {editItems.map((item, index) => (
                       <div key={index} className="grid gap-2 py-3.5">
-                        <div className="grid grid-cols-[minmax(0,1fr)_92px_20px] 2xl:grid-cols-[minmax(0,1fr)_104px_24px] gap-3 items-center">
+                        <div className="grid grid-cols-[minmax(0,1fr)_110px_24px] items-center gap-3">
                           <input
                             type="text"
                             list="product-list"
@@ -1674,14 +1676,14 @@ const OrderRow = React.memo(({
                             onChange={(e) => applyProductCharacteristics(e.target.value, index)}
                             placeholder={index === 0 ? 'Название изделия...' : `Позиция ${index + 1}`}
                             title={item}
-                            className="min-w-0 border-0 bg-transparent px-0 py-0 text-[clamp(12px,0.85vw,14px)] font-semibold leading-tight text-zinc-950 outline-none"
+                            className="min-w-0 border-0 bg-transparent px-0 py-0 text-[14px] font-medium leading-tight text-[#1F2937] outline-none"
                           />
                           <input
                             type="number"
                             value={editItemPrices[index] || ''}
                             onChange={(e) => updateOrderItemPrice(index, parseFloat(e.target.value) || 0)}
                             placeholder="Цена"
-                            className="w-full border-0 bg-transparent px-0 py-0 text-right text-[clamp(12px,0.85vw,14px)] font-semibold text-zinc-950 outline-none placeholder:text-zinc-300"
+                            className="w-full border-0 bg-transparent px-0 py-0 text-right text-[14px] font-medium text-[#1F2937] outline-none placeholder:text-[#9CA3AF]"
                           />
                           <div className="flex justify-end">
                             {editItems.length > 1 && (
@@ -1696,11 +1698,11 @@ const OrderRow = React.memo(({
                             )}
                           </div>
                         </div>
-                        <div className="grid grid-cols-3 gap-3">
+                        <div className="grid grid-cols-3 gap-4">
                           <select
                             value={editItemColors[index] || ''}
                             onChange={(e) => updateOrderItemColor(index, e.target.value)}
-                            className="min-w-0 border-0 border-b border-zinc-100 bg-transparent px-0 py-1 text-[11px] font-semibold text-zinc-600 outline-none focus:border-blue-300"
+                            className="min-w-0 border-0 border-b border-[#E6E9EF] bg-transparent px-0 py-1 text-[12px] font-medium text-[#6B7280] outline-none focus:border-[#7D7DE6]"
                             title="Цвет позиции"
                           >
                             <option value="">Цвет</option>
@@ -1711,7 +1713,7 @@ const OrderRow = React.memo(({
                           <select
                             value={editItemSizes[index] || ''}
                             onChange={(e) => updateOrderItemSize(index, e.target.value)}
-                            className="min-w-0 border-0 border-b border-zinc-100 bg-transparent px-0 py-1 text-[11px] font-semibold text-zinc-600 outline-none focus:border-blue-300"
+                            className="min-w-0 border-0 border-b border-[#E6E9EF] bg-transparent px-0 py-1 text-[12px] font-medium text-[#6B7280] outline-none focus:border-[#7D7DE6]"
                             title="Размер позиции"
                           >
                             <option value="">Размер</option>
@@ -1722,7 +1724,7 @@ const OrderRow = React.memo(({
                           <select
                             value={editItemHeights[index] || ''}
                             onChange={(e) => updateOrderItemHeight(index, e.target.value)}
-                            className="min-w-0 border-0 border-b border-zinc-100 bg-transparent px-0 py-1 text-[11px] font-semibold text-zinc-600 outline-none focus:border-blue-300"
+                            className="min-w-0 border-0 border-b border-[#E6E9EF] bg-transparent px-0 py-1 text-[12px] font-medium text-[#6B7280] outline-none focus:border-[#7D7DE6]"
                             title="Рост позиции"
                           >
                             <option value="">Рост</option>
@@ -1737,14 +1739,14 @@ const OrderRow = React.memo(({
                   <button
                     type="button"
                     onClick={addOrderItem}
-                    className="mt-4 inline-flex items-center gap-3 text-[13px] font-semibold text-zinc-500 hover:text-zinc-950 transition-colors"
+                    className="mt-4 inline-flex items-center gap-3 text-[13px] font-medium text-[#6B7280] transition-colors hover:text-[#1F2937]"
                   >
                     <Plus className="w-4 h-4" />
                     Добавить изделие
                   </button>
                 </div>
                 <div className="min-w-0">
-                  <div className="grid grid-cols-[minmax(0,1fr)_74px_minmax(0,1fr)] 2xl:grid-cols-[minmax(0,1fr)_84px_minmax(0,1fr)] gap-3 2xl:gap-4">
+                  <div className="grid min-w-0 grid-cols-3 gap-5">
                     {financeTile('Стоимость 100%', liveRevenue)}
                     {financeTile('Доставка', order.deliveryPrice || 0, 'plain', updateOrderDeliveryPrice)}
                     {financeTile(
@@ -1760,9 +1762,9 @@ const OrderRow = React.memo(({
                 </div>
               </div>
 
-              <div className="my-7 h-px bg-zinc-100" />
+              <div className="my-7 h-px bg-[#E6E9EF]" />
 
-              <div className="grid grid-cols-4 gap-x-8 gap-y-7">
+              <div className="grid grid-cols-2 gap-x-7 gap-y-7 xl:grid-cols-4">
                 {fieldSelect('Размер', order.rawRow?.[RAW_SIZE_INDEX] || '', optionsWithCurrent(handbookSizes, order.rawRow?.[RAW_SIZE_INDEX] || ''), (v) => updateOrderData(order.orderId, `rawRow[${RAW_SIZE_INDEX}]`, v))}
                 {fieldSelect('Рост', order.height || '', optionsWithCurrent(handbookHeights, order.height || ''), (v) => updateOrderData(order.orderId, 'height', v))}
                 {fieldSelect('Источник', order.source || '', optionsWithCurrent(handbookSources, order.source || '', SOURCE_OPTIONS), (v) => updateOrderData(order.orderId, 'source', v))}
@@ -1774,7 +1776,7 @@ const OrderRow = React.memo(({
                 {fieldSelect('Тип оплаты', getInvoicePaymentLabel(liveInvoiceType), INVOICE_PAYMENT_OPTIONS, updateOrderInvoiceType)}
                 {financeTile('К оплате', dueAmount, 'due')}
                 <span className={cn(
-                  "self-end border-b border-zinc-200 pb-2 text-[18px] font-semibold flex items-center",
+                  "self-end flex items-center border-b border-[#E6E9EF] pb-2 text-[18px] font-medium",
                   order.isOverdue && !order.isShipped
                     ? "text-red-600"
                     : order.isShipped
@@ -1787,16 +1789,16 @@ const OrderRow = React.memo(({
             </div>
 
             <div className="pt-8">
-              <div className="flex items-center justify-between border-b border-zinc-100 pb-6">
-                <span className="text-[11px] font-black text-zinc-500 uppercase tracking-widest">Заметки</span>
-                <span className="text-[10px] font-black text-zinc-300">{String(order.notes || '').length} / 500</span>
+              <div className="flex items-center justify-between border-b border-[#E6E9EF] pb-6">
+                <span className="text-[11px] font-medium uppercase tracking-[0.16em] text-[#6B7280]">Заметки</span>
+                <span className="text-[10px] font-medium text-[#9CA3AF]">{String(order.notes || '').length} / 500</span>
               </div>
               <textarea
                 value={order.notes || ''}
                 onChange={(e) => updateOrderData(order.orderId, 'notes', e.target.value.slice(0, 500))}
                 maxLength={500}
                 placeholder="Добавить заметку..."
-                className="mt-4 min-h-[110px] w-full resize-none border-0 bg-transparent p-0 text-[14px] font-medium text-zinc-700 outline-none placeholder:text-zinc-400"
+                className="mt-4 min-h-[110px] w-full resize-none border-0 bg-transparent p-0 text-[14px] font-medium text-[#6B7280] outline-none placeholder:text-[#9CA3AF]"
               />
             </div>
           </section>
@@ -3252,7 +3254,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
   };
 
   return (
-    <div className="space-y-3 text-[#1F2937]">
+    <div className="space-y-4 text-[#1F2937]">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
         <div>
           <h2 className="text-[26px] font-medium leading-10 tracking-normal text-[#1F2937] sm:text-[34px]">Продажи и работа по базе</h2>
@@ -3312,13 +3314,13 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
           </div>
         </div>
 
-        <div className="grid gap-3 xl:grid-cols-[1fr_1fr_1.05fr]">
+        <div className="grid gap-3 xl:grid-cols-2 2xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(460px,1.04fr)]">
           {managerSalesPlan.managers.map((manager, index) => {
             const baseProgress = manager.basePlan > 0 ? Math.min(100, Math.round((manager.baseWorked / manager.basePlan) * 100)) : 0;
             const dayProgress = manager.dayPlan > 0 ? Math.min(100, Math.round((manager.daySales / manager.dayPlan) * 100)) : 0;
             const revenueProgress = manager.revenuePlan > 0 ? Math.min(100, Math.round((manager.monthRevenue / manager.revenuePlan) * 100)) : 0;
             return (
-              <div key={manager.name} className={cn(softCardClass, "p-4")}>
+              <div key={manager.name} className={cn(softCardClass, "min-w-0 p-4")}>
                 <div className="mb-3 flex items-start justify-between gap-3">
                   <div className="flex items-center gap-2">
                     <UserCircle className="h-4 w-4 text-[#6B7280]" />
@@ -3330,14 +3332,14 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                   <button type="button" className="text-[11px] font-medium text-[#7D7DE6]">Подробнее</button>
                 </div>
 
-                <div className="grid grid-cols-3 gap-3 border-b border-[#E6E9EF] pb-3">
+                <div className="grid min-w-0 grid-cols-3 gap-3 border-b border-[#E6E9EF] pb-3">
                   <div>
                     <p className="text-[11px] font-medium leading-[14px] text-[#9CA3AF]">План</p>
-                    <p className="mt-1 text-[14px] font-medium leading-5 text-[#1F2937]">{formatCurrency(manager.revenuePlan)}</p>
+                    <p className="mt-1 truncate text-[14px] font-medium leading-5 text-[#1F2937]" title={formatCurrency(manager.revenuePlan)}>{formatCurrency(manager.revenuePlan)}</p>
                   </div>
                   <div>
                     <p className="text-[11px] font-medium leading-[14px] text-[#9CA3AF]">Факт</p>
-                    <p className="mt-1 text-[14px] font-medium leading-5 text-[#2EBA7F]">{formatCurrency(manager.monthRevenue)}</p>
+                    <p className="mt-1 truncate text-[14px] font-medium leading-5 text-[#2EBA7F]" title={formatCurrency(manager.monthRevenue)}>{formatCurrency(manager.monthRevenue)}</p>
                   </div>
                   <div>
                     <p className="text-[11px] font-medium leading-[14px] text-[#9CA3AF]">Выполнение</p>
@@ -3345,49 +3347,49 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                   </div>
                 </div>
 
-                <div className="grid grid-cols-4 divide-x divide-[#E6E9EF] border-b border-[#E6E9EF] py-3">
-                  <div className="pr-3">
+                <div className="grid min-w-0 grid-cols-4 divide-x divide-[#E6E9EF] border-b border-[#E6E9EF] py-3">
+                  <div className="min-w-0 pr-3">
                     <p className="text-[10px] font-medium text-[#9CA3AF]">Сумма плана</p>
-                    <p className="mt-1 text-[12px] font-medium text-[#1F2937]">{formatCurrency(manager.revenuePlan)}</p>
+                    <p className="mt-1 truncate text-[12px] font-medium text-[#1F2937]" title={formatCurrency(manager.revenuePlan)}>{formatCurrency(manager.revenuePlan)}</p>
                   </div>
-                  <div className="px-3">
+                  <div className="min-w-0 px-3">
                     <p className="text-[10px] font-medium text-[#9CA3AF]">Продаж в мес.</p>
-                    <p className="mt-1 text-[12px] font-medium text-[#1F2937]">{manager.monthPlan} шт.</p>
+                    <p className="mt-1 truncate text-[12px] font-medium text-[#1F2937]">{manager.monthPlan} шт.</p>
                   </div>
-                  <div className="px-3">
+                  <div className="min-w-0 px-3">
                     <p className="text-[10px] font-medium text-[#9CA3AF]">Продаж в день</p>
-                    <p className="mt-1 text-[12px] font-medium text-[#1F2937]">{formatCurrency(manager.revenuePlan / Math.max(1, manager.monthPlan))}</p>
+                    <p className="mt-1 truncate text-[12px] font-medium text-[#1F2937]" title={formatCurrency(manager.revenuePlan / Math.max(1, manager.monthPlan))}>{formatCurrency(manager.revenuePlan / Math.max(1, manager.monthPlan))}</p>
                   </div>
-                  <div className="pl-3">
+                  <div className="min-w-0 pl-3">
                     <p className="text-[10px] font-medium text-[#9CA3AF]">База по базе</p>
-                    <p className="mt-1 text-[12px] font-medium text-[#1F2937]">{manager.basePlan.toLocaleString('ru-RU')} шт.</p>
+                    <p className="mt-1 truncate text-[12px] font-medium text-[#1F2937]">{manager.basePlan.toLocaleString('ru-RU')} шт.</p>
                   </div>
                 </div>
 
-                <div className="mt-3 grid grid-cols-5 overflow-hidden rounded-[8px] border border-[#E6E9EF]">
-                  <div className="border-r border-[#E6E9EF] p-2">
+                <div className="mt-3 grid min-w-0 grid-cols-5 overflow-hidden rounded-[8px] border border-[#E6E9EF]">
+                  <div className="min-w-0 border-r border-[#E6E9EF] p-2">
                     <p className="text-[10px] font-medium text-[#9CA3AF]">Сегодня</p>
-                    <p className="mt-1 text-[14px] font-medium text-[#1F2937]">{formatCurrency(manager.todayRevenue)}</p>
+                    <p className="mt-1 truncate text-[13px] font-medium text-[#1F2937]" title={formatCurrency(manager.todayRevenue)}>{formatCurrency(manager.todayRevenue)}</p>
                     <p className="text-[9px] text-[#9CA3AF]">план {formatCurrency(manager.revenuePlan / Math.max(1, manager.monthPlan))}</p>
                   </div>
-                  <div className="border-r border-[#E6E9EF] p-2">
+                  <div className="min-w-0 border-r border-[#E6E9EF] p-2">
                     <p className="text-[10px] font-medium text-[#9CA3AF]">Продажи мес.</p>
                     <p className="mt-1 text-[14px] font-medium text-[#1F2937]">{manager.monthSales}</p>
                     <p className="text-[9px] text-[#9CA3AF]">осталось {manager.remainingSales}</p>
                   </div>
-                  <div className="border-r border-[#E6E9EF] p-2">
+                  <div className="min-w-0 border-r border-[#E6E9EF] p-2">
                     <p className="text-[10px] font-medium text-[#9CA3AF]">Сумма мес.</p>
-                    <p className="mt-1 text-[14px] font-medium text-[#2EBA7F]">{formatCurrency(manager.monthRevenue)}</p>
+                    <p className="mt-1 truncate text-[13px] font-medium text-[#2EBA7F]" title={formatCurrency(manager.monthRevenue)}>{formatCurrency(manager.monthRevenue)}</p>
                     <p className="text-[9px] text-[#9CA3AF]">осталось {formatCurrency(manager.remainingRevenue)}</p>
                   </div>
-                  <div className="border-r border-[#E6E9EF] p-2">
+                  <div className="min-w-0 border-r border-[#E6E9EF] p-2">
                     <p className="text-[10px] font-medium text-[#9CA3AF]">База</p>
                     <p className="mt-1 text-[14px] font-medium text-[#1F2937]">{manager.baseWorked}</p>
                     <p className="text-[9px] text-[#9CA3AF]">осталось {manager.remainingBase}</p>
                   </div>
-                  <div className="p-2">
+                  <div className="min-w-0 p-2">
                     <p className="text-[10px] font-medium text-[#9CA3AF]">К оплате</p>
-                    <p className="mt-1 text-[14px] font-medium text-[#F5A623]">{formatCurrency(manager.dueExtra)}</p>
+                    <p className="mt-1 truncate text-[13px] font-medium text-[#F5A623]" title={formatCurrency(manager.dueExtra)}>{formatCurrency(manager.dueExtra)}</p>
                   </div>
                 </div>
 
@@ -3411,7 +3413,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
               </div>
             );
           })}
-          <div className={cn(softCardClass, "p-4")}>
+          <div className={cn(softCardClass, "min-w-0 p-4 xl:col-span-2 2xl:col-span-1")}>
             <div className="mb-3 flex items-start justify-between gap-3">
               <div>
                 <div className="flex items-center gap-2">
@@ -3457,8 +3459,8 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
               />
             </div>
 
-            <div className="grid gap-4 lg:grid-cols-[1fr_108px] lg:items-center">
-              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_112px] lg:items-center">
+              <div className="grid min-w-0 grid-cols-2 gap-2 sm:grid-cols-4">
                 <div className="rounded-[6px] border border-emerald-100 bg-emerald-50 p-3">
                   <p className="text-[10px] font-medium text-[#2EBA7F]">В производстве</p>
                   <p className="mt-1 text-[20px] font-medium text-[#2EBA7F]">{filteredSlaStats?.onTime}</p>
@@ -3473,7 +3475,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                 </div>
                 <div className="rounded-[6px] border border-orange-100 bg-orange-50 p-3">
                   <p className="text-[10px] font-medium text-[#F5A623]">Утв. задержка</p>
-                  <p className="mt-1 text-[16px] font-medium text-[#F5A623]">{formatCurrency(filteredSlaStats?.lostRevenue || 0)}</p>
+                  <p className="mt-1 truncate text-[15px] font-medium text-[#F5A623]" title={formatCurrency(filteredSlaStats?.lostRevenue || 0)}>{formatCurrency(filteredSlaStats?.lostRevenue || 0)}</p>
                 </div>
               </div>
               <div className="hidden h-[104px] lg:block">

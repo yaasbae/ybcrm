@@ -955,7 +955,7 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
   if (!stats) return null;
 
   return (
-    <div className="max-w-7xl mx-auto px-4 py-4 space-y-4 font-sans text-zinc-900">
+    <div className="mx-auto max-w-[1760px] space-y-4 px-4 py-4 font-sans text-zinc-900 sm:px-6">
       {sheetWarning && (
         <div className="flex items-center justify-between gap-3 rounded-lg border border-amber-100 bg-amber-50 px-4 py-3 text-[12px] font-semibold text-amber-700">
           <span>{sheetWarning}</span>

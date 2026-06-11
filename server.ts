@@ -1726,6 +1726,451 @@ app.get('/api/broadcast/stealth-status', async (_req, res) => {
   res.json({ ...stealthJob, logCount: stealthJob.log.length });
 });
 
+type BroadcastV2JobStatus = 'idle'|'running'|'sleeping'|'stopping'|'stopped'|'done'|'waiting_accounts'|'error';
+type BroadcastV2AccountStatus = 'idle'|'running'|'sleeping'|'flood_wait'|'limit_done'|'dead'|'done'|'error';
+type BroadcastV2LogEntry = {
+  at: string;
+  phone: string;
+  status: string;
+  account?: string;
+  variant?: number;
+  error?: string;
+};
+
+const BROADCAST_V2_INTERVALS_MS = [63_000, 76_000, 91_000, 108_000, 195_000];
+const BROADCAST_V2_MESSAGES_PER_ACCOUNT = 25;
+
+let broadcastV2Job: {
+  status: BroadcastV2JobStatus;
+  campaignId: string;
+  total: number;
+  sent: number;
+  failed: number;
+  noTg: number;
+  checked: number;
+  nextIndex: number;
+  startedAt: string;
+  finishedAt?: string;
+  wakeAt?: string;
+  error?: string;
+  stopRequested: boolean;
+  maxAccounts: number;
+  messagesPerAccount: number;
+  activeFromHour: number;
+  activeToHour: number;
+  accounts: Array<{
+    phone: string;
+    status: BroadcastV2AccountStatus;
+    sent: number;
+    failed: number;
+    currentPhone?: string;
+    wakeAt?: string;
+    error?: string;
+  }>;
+  log: BroadcastV2LogEntry[];
+} = {
+  status: 'idle',
+  campaignId: '',
+  total: 0,
+  sent: 0,
+  failed: 0,
+  noTg: 0,
+  checked: 0,
+  nextIndex: 0,
+  startedAt: '',
+  stopRequested: false,
+  maxAccounts: 5,
+  messagesPerAccount: BROADCAST_V2_MESSAGES_PER_ACCOUNT,
+  activeFromHour: 8,
+  activeToHour: 21,
+  accounts: [],
+  log: [],
+};
+
+const saveBroadcastV2Progress = async () => {
+  if (!db) return;
+  await setDoc(doc(db, 'settings', 'broadcast_v2_job'), {
+    ...broadcastV2Job,
+    log: broadcastV2Job.log.slice(-800),
+  }).catch(() => {});
+};
+
+function randomBroadcastV2IntervalMs() {
+  return BROADCAST_V2_INTERVALS_MS[Math.floor(Math.random() * BROADCAST_V2_INTERVALS_MS.length)];
+}
+
+function parseTelegramFloodWaitMs(error: string) {
+  const match = String(error || '').match(/FLOOD_WAIT_?(\d+)/i);
+  if (!match) return 0;
+  return Math.max(1, Number(match[1]) || 0) * 1000;
+}
+
+async function sleepBroadcastV2(ms: number, accountState?: { status: BroadcastV2AccountStatus; wakeAt?: string }) {
+  const safeMs = Math.max(0, ms);
+  if (accountState && safeMs > 0) {
+    accountState.wakeAt = new Date(Date.now() + safeMs).toISOString();
+    await saveBroadcastV2Progress();
+  }
+  const steps = Math.ceil(safeMs / 10_000);
+  for (let i = 0; i < steps && !broadcastV2Job.stopRequested; i++) {
+    await new Promise(r => setTimeout(r, Math.min(10_000, safeMs - i * 10_000)));
+  }
+}
+
+async function waitForBroadcastV2Window(accountState?: { status: BroadcastV2AccountStatus; wakeAt?: string }) {
+  const fromMinutes = broadcastV2Job.activeFromHour * 60;
+  const toMinutes = broadcastV2Job.activeToHour * 60;
+
+  while (!broadcastV2Job.stopRequested) {
+    const currentMinutes = getMoscowMinutesOfDay();
+    if (currentMinutes >= fromMinutes && currentMinutes < toMinutes) {
+      if (broadcastV2Job.status === 'sleeping') {
+        broadcastV2Job.status = 'running';
+        broadcastV2Job.wakeAt = undefined;
+      }
+      if (accountState && accountState.status === 'sleeping') {
+        accountState.status = 'running';
+        accountState.wakeAt = undefined;
+      }
+      await saveBroadcastV2Progress();
+      return;
+    }
+
+    const waitMs = msUntilMoscowHour(broadcastV2Job.activeFromHour);
+    broadcastV2Job.status = 'sleeping';
+    broadcastV2Job.wakeAt = new Date(Date.now() + waitMs).toISOString();
+    if (accountState) {
+      accountState.status = 'sleeping';
+      accountState.wakeAt = broadcastV2Job.wakeAt;
+    }
+    await saveBroadcastV2Progress();
+    await sleepBroadcastV2(waitMs, accountState);
+  }
+}
+
+function getNextBroadcastV2Phone(phones: string[]) {
+  if (broadcastV2Job.nextIndex >= phones.length) return null;
+  const phone = phones[broadcastV2Job.nextIndex];
+  broadcastV2Job.nextIndex++;
+  return phone;
+}
+
+function getBroadcastV2Variant(messageVariants: string[], previousIndex: number | null) {
+  if (messageVariants.length <= 1) return 0;
+  let index = Math.floor(Math.random() * messageVariants.length);
+  if (previousIndex != null && index === previousIndex) {
+    index = (index + 1 + Math.floor(Math.random() * (messageVariants.length - 1))) % messageVariants.length;
+  }
+  return index;
+}
+
+async function resolveBroadcastV2Entity(client: TelegramClient, phone: string, accountPhone: string) {
+  let resolveErr = '';
+  const resolved = await client.invoke(new Api.contacts.ResolvePhone({ phone })).catch((e: any) => {
+    resolveErr = e?.message || String(e);
+    return null;
+  }) as any;
+  if (resolved?.users?.[0]) return { entity: resolved.users[0], error: '' };
+  if (resolveErr && !resolveErr.includes('FROZEN')) return { entity: null, error: resolveErr };
+
+  let importErr = '';
+  const imported = await client.invoke(new Api.contacts.ImportContacts({
+    contacts: [new Api.InputPhoneContact({ clientId: BigInt(Date.now()) as any, phone, firstName: 'YB', lastName: '' })]
+  })).catch((e: any) => {
+    importErr = e?.message || String(e);
+    return null;
+  }) as any;
+  if (imported?.users?.[0]) return { entity: imported.users[0], error: '' };
+  const uid = imported?.importedContacts?.[0]?.userId;
+  if (uid && Number(uid) > 0) {
+    const entity = await client.getEntity(uid).catch(() => null);
+    if (entity) return { entity, error: '' };
+  }
+
+  const error = importErr || resolveErr;
+  if (error) console.log(`[broadcast-v2] resolve ${phone} via ${accountPhone}: ${error}`);
+  return { entity: null, error };
+}
+
+async function runBroadcastV2Worker(
+  account: any,
+  accountState: typeof broadcastV2Job.accounts[number],
+  phones: string[],
+  messageVariants: string[],
+  imageFiles: Array<{base64:string;name:string}>,
+  contactButton: boolean,
+  displayName: string
+) {
+  let client: TelegramClient | null = null;
+  let previousVariantIndex: number | null = null;
+
+  try {
+    accountState.status = 'running';
+    await saveBroadcastV2Progress();
+    client = new TelegramClient(new StringSession(account.sessionString), TG_API_ID, TG_API_HASH, {
+      connectionRetries: 3,
+      autoReconnect: false,
+      ...buildProxyOpts(account),
+    });
+    await client.connect();
+    if (displayName) {
+      const parts = displayName.trim().split(' ');
+      await client.invoke(new Api.account.UpdateProfile({
+        firstName: parts[0] || '',
+        lastName: parts.slice(1).join(' ') || '',
+      })).catch(() => {});
+    }
+
+    while (!broadcastV2Job.stopRequested && accountState.sent < broadcastV2Job.messagesPerAccount) {
+      await waitForBroadcastV2Window(accountState);
+      if (broadcastV2Job.stopRequested) break;
+
+      const rawPhone = getNextBroadcastV2Phone(phones);
+      if (!rawPhone) break;
+      const cleanPhone = normalizeBroadcastPhone(rawPhone);
+      const phone = toTelegramPhone(rawPhone);
+      accountState.currentPhone = cleanPhone;
+      await saveBroadcastV2Progress();
+
+      try {
+        const resolved = await resolveBroadcastV2Entity(client, phone, account.phone || '');
+        const err = resolved.error || '';
+        if (err.includes('AUTH_KEY_UNREGISTERED') || err.includes('USER_DEACTIVATED') || err.includes('SESSION_REVOKED')) {
+          accountState.status = 'dead';
+          accountState.error = err;
+          broadcastV2Job.log.push({ at: new Date().toISOString(), phone: cleanPhone, account: account.phone, status: 'account_dead', error: err });
+          break;
+        }
+
+        const floodMs = parseTelegramFloodWaitMs(err);
+        if (floodMs > 0) {
+          accountState.status = 'flood_wait';
+          accountState.error = err;
+          broadcastV2Job.log.push({ at: new Date().toISOString(), phone: cleanPhone, account: account.phone, status: 'flood_wait', error: err });
+          await sleepBroadcastV2(floodMs, accountState);
+          if (!broadcastV2Job.stopRequested) {
+            accountState.status = 'running';
+          }
+          continue;
+        }
+
+        if (!resolved.entity) {
+          broadcastV2Job.failed++;
+          broadcastV2Job.noTg++;
+          broadcastV2Job.checked++;
+          accountState.failed++;
+          broadcastV2Job.log.push({ at: new Date().toISOString(), phone: cleanPhone, account: account.phone, status: 'no_tg', error: err || 'Нет Telegram' });
+          await saveBroadcastV2Progress();
+          continue;
+        }
+
+        const variantIndex = getBroadcastV2Variant(messageVariants, previousVariantIndex);
+        previousVariantIndex = variantIndex;
+        if (imageFiles.length > 0) {
+          const { CustomFile } = await import('telegram/client/uploads');
+          const fileObjs = await Promise.all(imageFiles.map(async f => {
+            const raw = Buffer.from(f.base64, 'base64');
+            const jpg = await sharp(raw).jpeg({ quality: 90 }).toBuffer().catch(() => raw);
+            return new CustomFile(f.name.replace(/\.[^.]+$/, '.jpg'), jpg.length, '', jpg);
+          }));
+          await client.sendFile(resolved.entity, { file: fileObjs.length === 1 ? fileObjs[0] : fileObjs as any, forceDocument: false });
+        }
+        await sendBroadcastMessage(client, resolved.entity, messageVariants[variantIndex], contactButton);
+
+        broadcastV2Job.sent++;
+        broadcastV2Job.checked++;
+        accountState.sent++;
+        broadcastV2Job.log.push({ at: new Date().toISOString(), phone: cleanPhone, account: account.phone, status: 'sent', variant: variantIndex + 1 });
+        await saveBroadcastV2Progress();
+
+        if (accountState.sent < broadcastV2Job.messagesPerAccount && broadcastV2Job.nextIndex < phones.length) {
+          await sleepBroadcastV2(randomBroadcastV2IntervalMs(), accountState);
+        }
+      } catch (e: any) {
+        const err = e?.message || String(e);
+        const floodMs = parseTelegramFloodWaitMs(err);
+        if (floodMs > 0) {
+          accountState.status = 'flood_wait';
+          accountState.error = err;
+          broadcastV2Job.log.push({ at: new Date().toISOString(), phone: cleanPhone, account: account.phone, status: 'flood_wait', error: err });
+          await sleepBroadcastV2(floodMs, accountState);
+          if (!broadcastV2Job.stopRequested) accountState.status = 'running';
+          continue;
+        }
+        if (err.includes('AUTH_KEY_UNREGISTERED') || err.includes('USER_DEACTIVATED') || err.includes('SESSION_REVOKED')) {
+          accountState.status = 'dead';
+          accountState.error = err;
+          broadcastV2Job.log.push({ at: new Date().toISOString(), phone: cleanPhone, account: account.phone, status: 'account_dead', error: err });
+          break;
+        }
+        broadcastV2Job.failed++;
+        broadcastV2Job.checked++;
+        accountState.failed++;
+        accountState.error = err;
+        broadcastV2Job.log.push({ at: new Date().toISOString(), phone: cleanPhone, account: account.phone, status: 'error', error: err });
+        await saveBroadcastV2Progress();
+      }
+    }
+
+    if (broadcastV2Job.stopRequested) {
+      accountState.status = 'done';
+    } else if (accountState.sent >= broadcastV2Job.messagesPerAccount) {
+      accountState.status = 'limit_done';
+      accountState.wakeAt = new Date(Date.now() + msUntilMoscowHour(broadcastV2Job.activeFromHour)).toISOString();
+    } else if (accountState.status !== 'dead') {
+      accountState.status = 'done';
+    }
+  } catch (e: any) {
+    accountState.status = 'error';
+    accountState.error = e?.message || String(e);
+    broadcastV2Job.log.push({ at: new Date().toISOString(), phone: accountState.currentPhone || '', account: account.phone, status: 'worker_error', error: accountState.error });
+  } finally {
+    await client?.destroy().catch(() => {});
+    accountState.currentPhone = undefined;
+    await saveBroadcastV2Progress();
+  }
+}
+
+async function runBroadcastV2(
+  phones: string[],
+  messageVariants: string[],
+  imageFiles: Array<{base64:string;name:string}>,
+  contactButton: boolean,
+  maxAccounts: number,
+  activeFromHour: number,
+  activeToHour: number,
+  displayName: string
+) {
+  if (!db) return;
+  const accounts = (await readTgAccounts()).filter((a: any) => a.sessionString && a.active !== false).slice(0, maxAccounts);
+  if (!accounts.length) {
+    broadcastV2Job.status = 'waiting_accounts';
+    broadcastV2Job.error = 'Нет активных Telegram аккаунтов';
+    await saveBroadcastV2Progress();
+    return;
+  }
+
+  broadcastV2Job.accounts = accounts.map((account: any) => ({
+    phone: account.phone || '',
+    status: 'idle',
+    sent: 0,
+    failed: 0,
+  }));
+  await saveBroadcastV2Progress();
+
+  await Promise.all(accounts.map((account: any, index: number) =>
+    runBroadcastV2Worker(account, broadcastV2Job.accounts[index], phones, messageVariants, imageFiles, contactButton, displayName)
+  ));
+
+  if (broadcastV2Job.stopRequested) {
+    broadcastV2Job.status = 'stopped';
+  } else if (broadcastV2Job.checked >= broadcastV2Job.total || broadcastV2Job.nextIndex >= broadcastV2Job.total) {
+    broadcastV2Job.status = 'done';
+  } else {
+    broadcastV2Job.status = 'waiting_accounts';
+  }
+  broadcastV2Job.finishedAt = new Date().toISOString();
+  await saveBroadcastV2Progress();
+}
+
+app.post('/api/broadcast-v2/start', async (req, res) => {
+  const rawPhones = Array.isArray(req.body?.phones) ? req.body.phones : [];
+  const phones: string[] = Array.from(new Set<string>(rawPhones.map((p: string) => normalizeBroadcastPhone(p)).filter(Boolean)));
+  const rawMessageVariants = Array.isArray(req.body?.messageVariants) ? req.body.messageVariants : [];
+  const messageVariants: string[] = rawMessageVariants.map((m: string) => String(m || '').trim()).filter(Boolean).slice(0, 10);
+  const imageFiles: Array<{base64:string;name:string}> = Array.isArray(req.body?.images) ? req.body.images.slice(0, 6) : [];
+  if (!phones.length || !messageVariants.length) return res.status(400).json({ error: 'Нужны phones и messageVariants' });
+  if (['running', 'sleeping', 'stopping'].includes(broadcastV2Job.status)) return res.status(400).json({ error: 'Рассылка v2 уже идёт' });
+
+  const safeMaxAccounts = Math.min(10, Math.max(1, Number(req.body?.maxAccounts) || 5));
+  const safeActiveFromHour = Number.isFinite(Number(req.body?.activeFromHour)) ? Math.min(23, Math.max(0, Number(req.body.activeFromHour))) : 8;
+  const safeActiveToHour = Number.isFinite(Number(req.body?.activeToHour)) ? Math.min(24, Math.max(1, Number(req.body.activeToHour))) : 21;
+  const displayName = normalizeBroadcastDisplayName(req.body?.displayName || DEFAULT_BROADCAST_DISPLAY_NAME);
+
+  broadcastV2Job = {
+    status: 'running',
+    campaignId: `v2_${Date.now()}`,
+    total: phones.length,
+    sent: 0,
+    failed: 0,
+    noTg: 0,
+    checked: 0,
+    nextIndex: 0,
+    startedAt: new Date().toISOString(),
+    stopRequested: false,
+    maxAccounts: safeMaxAccounts,
+    messagesPerAccount: BROADCAST_V2_MESSAGES_PER_ACCOUNT,
+    activeFromHour: safeActiveFromHour,
+    activeToHour: safeActiveToHour,
+    accounts: [],
+    log: [],
+  };
+  await setDoc(doc(db, 'settings', 'broadcast_v2_data'), {
+    phones,
+    messageVariants,
+    imageFiles,
+    contactButton: !!req.body?.contactButton,
+    maxAccounts: safeMaxAccounts,
+    activeFromHour: safeActiveFromHour,
+    activeToHour: safeActiveToHour,
+    displayName,
+    startedAt: broadcastV2Job.startedAt,
+  }).catch(() => {});
+  await saveBroadcastV2Progress();
+
+  runBroadcastV2(phones, messageVariants, imageFiles, !!req.body?.contactButton, safeMaxAccounts, safeActiveFromHour, safeActiveToHour, displayName);
+  res.json({ success: true, total: phones.length, maxAccounts: safeMaxAccounts, messagesPerAccount: BROADCAST_V2_MESSAGES_PER_ACCOUNT });
+});
+
+app.post('/api/broadcast-v2/stop', (_req, res) => {
+  if (!['running', 'sleeping'].includes(broadcastV2Job.status)) return res.status(400).json({ error: 'Рассылка v2 не запущена' });
+  broadcastV2Job.status = 'stopping';
+  broadcastV2Job.stopRequested = true;
+  saveBroadcastV2Progress().catch(() => {});
+  res.json({ success: true });
+});
+
+app.post('/api/broadcast-v2/clear', async (_req, res) => {
+  if (['running', 'sleeping'].includes(broadcastV2Job.status)) return res.status(400).json({ error: 'Сначала останови рассылку v2' });
+  broadcastV2Job = {
+    status: 'idle',
+    campaignId: '',
+    total: 0,
+    sent: 0,
+    failed: 0,
+    noTg: 0,
+    checked: 0,
+    nextIndex: 0,
+    startedAt: '',
+    stopRequested: false,
+    maxAccounts: 5,
+    messagesPerAccount: BROADCAST_V2_MESSAGES_PER_ACCOUNT,
+    activeFromHour: 8,
+    activeToHour: 21,
+    accounts: [],
+    log: [],
+  };
+  await saveBroadcastV2Progress();
+  res.json({ success: true });
+});
+
+app.get('/api/broadcast-v2/status', async (_req, res) => {
+  if (broadcastV2Job.status === 'idle' && db) {
+    const snap = await getDoc(doc(db, 'settings', 'broadcast_v2_job')).catch(() => null);
+    if (snap?.exists()) {
+      const d = snap.data() as any;
+      if (['sleeping', 'stopped', 'done', 'waiting_accounts', 'error'].includes(d.status)) {
+        broadcastV2Job = { ...broadcastV2Job, ...d, stopRequested: false, log: d.log || [] };
+      }
+    }
+  }
+  res.json({
+    ...broadcastV2Job,
+    intervalsSec: BROADCAST_V2_INTERVALS_MS.map(ms => ms / 1000),
+    log: broadcastV2Job.log.slice(-120),
+  });
+});
+
 app.post('/api/broadcast/check-tg-start', async (req, res) => {
   const { phones } = req.body;
   if (!phones?.length) return res.status(400).json({ error: 'Нужны phones' });
