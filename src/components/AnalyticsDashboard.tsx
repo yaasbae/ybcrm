@@ -897,8 +897,8 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
   }, [stats?.uniqueOrders, searchTerm, ordersFilterMonth, orderStatusFilter, orderBloggerFilter]);
 
   const pagedOrders = useMemo(() => {
-    return filteredOrders.slice(0, displayCount);
-  }, [filteredOrders, displayCount]);
+    return filteredOrders;
+  }, [filteredOrders]);
 
   const filteredSlaStats = useMemo(() => {
     if (!stats) return null;

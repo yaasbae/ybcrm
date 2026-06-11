@@ -4825,7 +4825,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
             </tbody>
           </table>
 
-          {filteredOrders.length > displayCount && (
+          {pagedOrders.length < filteredOrders.length && (
             <div className="flex justify-center border-t border-[#E6E9EF] bg-[#F6F7F9] p-4">
               <button
                 onClick={() => setDisplayCount(displayCount + 50)}
@@ -4860,7 +4860,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
             />
           ))}
 
-          {filteredOrders.length > displayCount && (
+          {pagedOrders.length < filteredOrders.length && (
             <div className="flex justify-center border-t border-[#E6E9EF] bg-[#F6F7F9] p-4">
               <button
                 onClick={() => setDisplayCount(displayCount + 50)}
