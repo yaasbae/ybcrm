@@ -17,10 +17,17 @@ export const PaymentPage: React.FC<PaymentPageProps> = ({ orderId }) => {
   const [paid, setPaid] = useState(false);
 
   useEffect(() => {
-    getDoc(doc(db, 'orders', orderId))
-      .then(snap => {
-        if (!snap.exists()) { setError('Заказ не найден'); return; }
-        setOrder(snap.data());
+    getDoc(doc(db, 'orders_new', orderId))
+      .then(async snap => {
+        if (snap.exists()) {
+          setOrder(snap.data());
+          return;
+        }
+
+        // Legacy fallback for old payment links created before orders_new became primary.
+        const legacySnap = await getDoc(doc(db, 'orders', orderId));
+        if (!legacySnap.exists()) { setError('Заказ не найден'); return; }
+        setOrder(legacySnap.data());
       })
       .catch(() => setError('Ошибка загрузки заказа'))
       .finally(() => setLoading(false));
@@ -79,8 +86,8 @@ export const PaymentPage: React.FC<PaymentPageProps> = ({ orderId }) => {
               <ShoppingBag className="w-4 h-4" />
               <span className="text-[10px] font-black uppercase tracking-widest">Состав заказа</span>
             </div>
-            {order.products && (
-              <p className="text-sm font-bold text-zinc-900">{order.products}</p>
+            {(order.products || order.item) && (
+              <p className="text-sm font-bold text-zinc-900">{order.products || order.item}</p>
             )}
             <div className="flex flex-wrap gap-2 mt-2">
               {order.color && (
@@ -88,9 +95,9 @@ export const PaymentPage: React.FC<PaymentPageProps> = ({ orderId }) => {
                   Цвет: {order.color}
                 </span>
               )}
-              {order.size && (
+              {(order.size || order.itemSizes?.[0]) && (
                 <span className="text-[10px] bg-zinc-50 border border-zinc-100 rounded-lg px-2 py-1 font-medium text-zinc-600">
-                  Размер: {order.size}
+                  Размер: {order.size || order.itemSizes?.[0]}
                 </span>
               )}
               {order.height && (
@@ -106,7 +113,7 @@ export const PaymentPage: React.FC<PaymentPageProps> = ({ orderId }) => {
             <div className="px-5 py-3 border-b border-slate-50">
               <p className="text-[10px] text-zinc-400 uppercase tracking-widest mb-0.5">Клиент</p>
               <p className="text-sm font-semibold text-zinc-900">{order.clientName}</p>
-              {order.phone && <p className="text-[11px] text-zinc-400 font-mono">+{order.phone}</p>}
+              {(order.phone || order.clientPhone) && <p className="text-[11px] text-zinc-400 font-mono">+{order.phone || order.clientPhone}</p>}
             </div>
           )}
 

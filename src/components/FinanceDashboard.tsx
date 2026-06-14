@@ -58,14 +58,13 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack }) =>
       setExpenses(exData);
     });
 
-    // Fetch Orders for Incomes
-    const qOrders = query(collection(db, 'orders'));
+    // Fetch Orders for Incomes from the CRM source of truth.
+    const qOrders = query(collection(db, 'orders_new'));
     const unsubscribeOrders = onSnapshot(qOrders, (snapshot) => {
       let ordData = snapshot.docs.map(doc => ({
         id: doc.id,
         ...doc.data(),
-        // Normalize date from OrderForm (usually string "DD.MM.YYYY" or ISO)
-        date: doc.data().orderDate ? new Date(doc.data().orderDate) : (doc.data().date ? new Date(doc.data().date) : new Date())
+        date: doc.data().date ? new Date(doc.data().date) : (doc.data().orderDate ? new Date(doc.data().orderDate) : new Date())
       }));
       // Sort client side
       ordData.sort((a: any, b: any) => {

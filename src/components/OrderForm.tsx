@@ -282,14 +282,7 @@ export const OrderForm: React.FC<OrderFormProps> = ({ onBack, initialClient }) =
         date: new Date().toLocaleDateString('ru-RU')
       };
 
-      const orderData = {
-        ...formData,
-        id
-      };
-
-      await setDoc(doc(db, 'orders', id), orderData);
-
-      // Also write to orders_new so it appears in the order list
+      // Write new orders only to the CRM source of truth.
       const orderNewData = {
         orderId: id,
         isFirebase: true,

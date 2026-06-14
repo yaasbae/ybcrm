@@ -341,9 +341,9 @@ export default function App() {
 
   return (
     <ErrorBoundary>
-      <div className="min-h-screen font-sans" style={{ backgroundColor: 'var(--bg)' }}>
+      <div className="ybcrm-app min-h-screen font-sans" style={{ backgroundColor: 'var(--bg)' }}>
         <header className="sticky top-0 z-[100] h-14 border-b border-[#E6E9EF] bg-white/95 backdrop-blur" style={{ backgroundColor: 'var(--card-bg)' }}>
-          <div className="mx-auto flex h-full max-w-[1760px] items-center justify-between px-4 sm:px-6">
+          <div className="mx-auto flex h-full max-w-[1920px] items-center justify-between px-4 sm:px-6 xl:px-8">
             <div className="flex items-center gap-6">
               <div className="flex items-center gap-2 cursor-pointer shrink-0" onClick={() => handleNavigate('home')}>
                 <div className="flex h-8 w-8 items-center justify-center rounded-[8px] bg-[#1F2937] text-[10px] font-medium text-white shadow-sm">Y.</div>
@@ -389,7 +389,7 @@ export default function App() {
 
         <main className="min-h-[calc(100vh-48px)]">
           <Suspense fallback={<div className="flex items-center justify-center min-h-[60vh]"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-slate-900" /></div>}>
-          <div className="mx-auto max-w-[1760px] px-4 pt-6 sm:px-6">
+          <div className="mx-auto max-w-[1920px] px-4 pt-6 sm:px-6 xl:px-8">
             <div className="mb-3 flex items-center justify-between px-1">
               <div className="flex items-center gap-2">
                 <h1 className="text-[10px] font-medium uppercase tracking-[0.22em] text-[#6B7280]">YBCRM Brand</h1>
@@ -436,7 +436,7 @@ export default function App() {
                     className={cn(
                       "flex h-8 min-w-[72px] items-center justify-center gap-1.5 rounded-[8px] border px-2.5 text-[10px] font-medium uppercase tracking-[0.08em] transition-all active:scale-95 sm:min-w-0",
                       item.special
-                        ? "border-transparent bg-[#8A2BEF] text-white hover:bg-[#7b22d8]"
+                        ? "border-transparent bg-[#7D7DE6] text-white hover:bg-[#6f6fd8]"
                         : isActive
                           ? "border-[#1F2937] bg-[#1F2937] text-white"
                           : "bg-zinc-50/50 sm:bg-transparent text-slate-600 hover:bg-zinc-50 border border-transparent sm:border-slate-100"

@@ -127,3 +127,75 @@
 .field {
   @apply w-full rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2.5 text-[11px] font-bold text-zinc-900 outline-none transition-all focus:border-zinc-400 focus:bg-white focus:ring-2 focus:ring-zinc-500/10 disabled:opacity-50;
 }
+
+@layer components {
+  .ybcrm-app {
+    color: var(--text);
+    background: var(--bg);
+  }
+
+  .ybcrm-app .bg-\[\#FBFBFD\],
+  .ybcrm-app .bg-zinc-50,
+  .ybcrm-app .bg-slate-50 {
+    background-color: var(--bg);
+  }
+
+  .ybcrm-app .bg-white {
+    background-color: var(--card-bg);
+  }
+
+  .ybcrm-app .border-zinc-100,
+  .ybcrm-app .border-zinc-200,
+  .ybcrm-app .border-slate-100,
+  .ybcrm-app .border-slate-200 {
+    border-color: var(--card-border);
+  }
+
+  .ybcrm-app .text-\[\#1D1D1F\],
+  .ybcrm-app .text-zinc-900,
+  .ybcrm-app .text-slate-900 {
+    color: var(--text);
+  }
+
+  .ybcrm-app .text-zinc-400,
+  .ybcrm-app .text-zinc-500,
+  .ybcrm-app .text-slate-400,
+  .ybcrm-app .text-slate-500,
+  .ybcrm-app .text-slate-600 {
+    color: var(--text-muted);
+  }
+
+  .ybcrm-app .rounded-\[2\.5rem\],
+  .ybcrm-app .rounded-\[2rem\],
+  .ybcrm-app .rounded-3xl,
+  .ybcrm-app .rounded-2xl {
+    border-radius: 10px;
+  }
+
+  .ybcrm-app .shadow-2xl,
+  .ybcrm-app .shadow-xl,
+  .ybcrm-app .shadow-lg,
+  .ybcrm-app .shadow-md,
+  .ybcrm-app .shadow-sm {
+    box-shadow: 0 8px 24px rgba(31, 41, 55, 0.04);
+  }
+
+  .ybcrm-app input,
+  .ybcrm-app select,
+  .ybcrm-app textarea {
+    border-color: var(--card-border);
+    background-color: #fff;
+    color: var(--text);
+  }
+
+  .ybcrm-app input:focus,
+  .ybcrm-app select:focus,
+  .ybcrm-app textarea:focus {
+    border-color: #9aa4b2;
+    box-shadow: 0 0 0 2px rgba(31, 41, 55, 0.08);
+  }
+
+  .ybcrm-app table tr {
+    border-color: var(--card-border);
+  }
+}

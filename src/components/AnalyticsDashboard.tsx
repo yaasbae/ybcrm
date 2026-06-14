@@ -263,74 +263,22 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
         if (field === 'isRecommended') finalValue = !order.isRecommended;
 
         const ordersNewPatch: Record<string, any> = {};
-        const ordersPatch: Record<string, any> = {};
 
         if (typeof field === 'string' && field.startsWith('rawRow[')) {
           const index = parseInt(field.match(/\[(\d+)\]/)![1], 10);
           const rawRow = [...(order.rawRow || Array(30).fill(''))];
           rawRow[index] = finalValue;
           ordersNewPatch.rawRow = rawRow;
-          if (index === 1) ordersPatch.color = finalValue;
-          if (index === 8) ordersPatch.size = finalValue;
         } else {
           ordersNewPatch[field] = finalValue;
-          const orderFieldMap: Record<string, string[]> = {
-            clientName: ['clientName'],
-            clientPhone: ['phone'],
-            clientInsta: ['socialLink'],
-            clientCity: ['city'],
-            status: ['status'],
-            source: ['saleSource'],
-            item: ['products'],
-            items: ['items'],
-            itemPrices: ['itemPrices'],
-            itemColors: ['itemColors'],
-            itemSizes: ['itemSizes'],
-            itemHeights: ['itemHeights'],
-            deliveryMethod: ['shipping'],
-            paymentType: ['paymentType'],
-            invoiceType: ['invoiceType'],
-            revenue: ['price', 'revenue'],
-            deliveryPrice: ['shippingCost', 'deliveryPrice'],
-            paidAmount: ['prepaymentAmount'],
-            height: ['height'],
-            manager: ['manager'],
-            blogger: ['blogger'],
-            isBlogger: ['isBlogger'],
-            paymentUrl: ['paymentUrl'],
-            finalPaymentUrl: ['finalPaymentUrl'],
-            finalPaymentId: ['finalPaymentId'],
-            finalPaymentAmount: ['finalPaymentAmount'],
-            finalPaymentStatus: ['finalPaymentStatus'],
-            finalPaymentPaidAt: ['finalPaymentPaidAt'],
-            paymentAmount: ['paymentAmount'],
-            paymentId: ['paymentId'],
-            paymentPaidAt: ['paymentPaidAt'],
-            refundAmount: ['refundAmount'],
-            refundStatus: ['refundStatus'],
-            refundId: ['refundId'],
-            refundPaymentId: ['refundPaymentId'],
-            refundReason: ['refundReason'],
-            refundedAt: ['refundedAt'],
-            tochkaPaymentFoundAt: ['tochkaPaymentFoundAt'],
-            tochkaPaymentData: ['tochkaPaymentData'],
-            paymentStatus: ['paymentStatus'],
-          };
-          (orderFieldMap[String(field)] || []).forEach(target => {
-            ordersPatch[target] = finalValue;
-          });
           if (field === 'blogger') {
             const hasBlogger = Boolean(String(finalValue || '').trim());
             const sourceLooksBlogger = String(order.source || '').toLowerCase().includes('блогер');
             ordersNewPatch.isBlogger = hasBlogger || sourceLooksBlogger;
-            ordersPatch.isBlogger = hasBlogger || sourceLooksBlogger;
           }
         }
 
         await updateDoc(doc(db, 'orders_new', orderId), ordersNewPatch);
-        if (Object.keys(ordersPatch).length > 0) {
-          await updateDoc(doc(db, 'orders', orderId), ordersPatch).catch(() => {});
-        }
       } catch (err) {
         console.error("Firebase update failed", err);
       }
@@ -432,50 +380,11 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
     };
 
     try {
-      const color = orderToCreate.rawRow?.[1] || '';
-      const size = orderToCreate.rawRow?.[8] || '';
-      const paymentDue = orderToCreate.paidAmount > 0
-        ? orderToCreate.paidAmount
-        : Math.max(0, orderToCreate.revenue + orderToCreate.deliveryPrice);
       await setDoc(doc(db, 'orders_new', orderToCreate.orderId), {
         ...orderToCreate,
         date: orderToCreate.date.toISOString(),
         deadlineDate: orderToCreate.deadlineDate.toISOString()
       });
-      await setDoc(doc(db, 'orders', orderToCreate.orderId), {
-        id: orderToCreate.orderId,
-        orderNumber: orderToCreate.orderId,
-        orderDate: orderToCreate.date.toISOString().slice(0, 10),
-        date: new Date().toLocaleDateString('ru-RU'),
-        products: orderToCreate.item,
-        items: orderToCreate.items || [],
-        itemPrices: orderToCreate.itemPrices || [],
-        itemColors: orderToCreate.itemColors || [],
-        itemSizes: orderToCreate.itemSizes || [],
-        itemHeights: orderToCreate.itemHeights || [],
-        color,
-        size,
-        height: orderToCreate.height || '',
-        clientName: orderToCreate.clientName,
-        phone: orderToCreate.clientPhone,
-        city: orderToCreate.clientCity,
-        status: orderToCreate.status,
-        saleSource: orderToCreate.source,
-        shipping: orderToCreate.deliveryMethod,
-        paymentType: orderToCreate.paymentType || '',
-        invoiceType: orderToCreate.invoiceType || 'prepayment',
-        price: orderToCreate.revenue,
-        revenue: orderToCreate.revenue,
-        shippingCost: orderToCreate.deliveryPrice,
-        deliveryPrice: orderToCreate.deliveryPrice,
-        prepaymentAmount: orderToCreate.paidAmount,
-        remainingAmount: paymentDue,
-        paymentStatus: 'pending',
-        manager: orderToCreate.manager || '',
-        blogger: orderToCreate.blogger || '',
-        isBlogger: orderToCreate.isBlogger,
-        rawRow: orderToCreate.rawRow,
-      }, { merge: true });
       const createdId = orderToCreate.orderId;
       setNewOrder({
         date: new Date(),

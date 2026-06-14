@@ -594,7 +594,6 @@ app.post("/api/cdek/create-order", async (req, res) => {
     };
 
     if (db && orderId) {
-      await updateDoc(doc(db, "orders", orderId), cdekFields).catch(() => {});
       await updateDoc(doc(db, "orders_new", orderId), cdekFields).catch(() => {});
     }
 
@@ -643,7 +642,6 @@ app.get("/api/cdek/order/:uuid", async (req, res) => {
     });
 
     if (db && orderId) {
-      await updateDoc(doc(db, "orders", orderId), patch).catch(() => {});
       await updateDoc(doc(db, "orders_new", orderId), patch).catch(() => {});
     }
 
@@ -3217,7 +3215,7 @@ app.post('/api/tochka/create-payment', async (req, res) => {
       return res.status(502).json({ error: 'Точка не вернула ссылку оплаты', details: paymentData });
     }
 
-    // Сохраняем ссылку оплаты в заказ (обе коллекции).
+    // Сохраняем ссылку оплаты в основной заказ CRM.
     // orderId с суффиксом -final означает отдельный счет на доплату.
     if (orderId && paymentUrl) {
       const target = getTochkaPaymentTarget(orderId);
@@ -3237,7 +3235,6 @@ app.post('/api/tochka/create-payment', async (req, res) => {
             paymentCreatedAt: createdAt,
             paymentAmount,
           };
-      await updateDoc(doc(db, 'orders', target.cleanOrderId), paymentFields).catch(() => {});
       await updateDoc(doc(db, 'orders_new', target.cleanOrderId), paymentFields).catch(() => {});
     }
     console.log(`[tochka] create-payment success order=${orderId} paymentId=${paymentId || 'n/a'}`);
@@ -3292,7 +3289,6 @@ app.get('/api/tochka/find-payment', async (req, res) => {
     const paymentStatus = getTochkaOperationStatus(operation) || 'found';
     const paymentFields = buildTochkaPaymentFields(target, operationId, paymentStatus, paymentAmount, operation);
 
-    await updateDoc(doc(db, 'orders', target.cleanOrderId), paymentFields).catch(() => {});
     await updateDoc(doc(db, 'orders_new', target.cleanOrderId), paymentFields).catch(() => {});
     await addDoc(collection(db, 'tochka_logs'), {
       orderId,
@@ -3389,7 +3385,6 @@ app.post('/api/tochka/refund-payment', async (req, res) => {
       refundResponse: JSON.stringify(refundData).slice(0, 2000),
     };
 
-    await updateDoc(doc(db, 'orders', cleanOrderId), refundFields).catch(() => {});
     await updateDoc(doc(db, 'orders_new', cleanOrderId), refundFields).catch(() => {});
     await addDoc(collection(db, 'tochka_logs'), {
       orderId: cleanOrderId,
@@ -3456,21 +3451,37 @@ app.post('/api/tochka/webhook', async (req, res) => {
       if (body.paymentLinkId) {
         const target = getTochkaPaymentTarget(body.paymentLinkId);
         const patch = buildTochkaPaymentFields(target, body.operationId || '', status, normalizeTochkaAmount(body.amount));
-        await updateDoc(doc(db, 'orders', target.cleanOrderId), patch).catch(() => {});
         await updateDoc(doc(db, 'orders_new', target.cleanOrderId), patch).catch(() => {});
       }
       if (body.operationId) {
-        const ordersSnap = await getDocs(query(collection(db, 'orders'), where('paymentId', '==', body.operationId)));
+        const ordersSnap = await getDocs(query(collection(db, 'orders_new'), where('paymentId', '==', body.operationId)));
         for (const d of ordersSnap.docs) {
           const patch = buildTochkaPaymentFields({ isFinal: false }, body.operationId, status, normalizeTochkaAmount(body.amount));
           await updateDoc(d.ref, patch);
-          await updateDoc(doc(db, 'orders_new', d.id), patch).catch(() => {});
         }
-        const finalSnap = await getDocs(query(collection(db, 'orders'), where('finalPaymentId', '==', body.operationId)));
+        const legacyOrdersSnap = ordersSnap.empty
+          ? await getDocs(query(collection(db, 'orders'), where('paymentId', '==', body.operationId))).catch(() => null)
+          : null;
+        if (legacyOrdersSnap) {
+          for (const d of legacyOrdersSnap.docs) {
+            const patch = buildTochkaPaymentFields({ isFinal: false }, body.operationId, status, normalizeTochkaAmount(body.amount));
+            await updateDoc(doc(db, 'orders_new', d.id), patch).catch(() => {});
+          }
+        }
+
+        const finalSnap = await getDocs(query(collection(db, 'orders_new'), where('finalPaymentId', '==', body.operationId)));
         for (const d of finalSnap.docs) {
           const patch = buildTochkaPaymentFields({ isFinal: true }, body.operationId, status, normalizeTochkaAmount(body.amount));
           await updateDoc(d.ref, patch);
-          await updateDoc(doc(db, 'orders_new', d.id), patch).catch(() => {});
+        }
+        const legacyFinalSnap = finalSnap.empty
+          ? await getDocs(query(collection(db, 'orders'), where('finalPaymentId', '==', body.operationId))).catch(() => null)
+          : null;
+        if (legacyFinalSnap) {
+          for (const d of legacyFinalSnap.docs) {
+            const patch = buildTochkaPaymentFields({ isFinal: true }, body.operationId, status, normalizeTochkaAmount(body.amount));
+            await updateDoc(doc(db, 'orders_new', d.id), patch).catch(() => {});
+          }
         }
       }
     }
@@ -3510,7 +3521,7 @@ async function buildChatwootClientSummary(phone: string) {
   if (!db || !phone) return null;
   const contactSnap = await getDoc(doc(db, "contacts", phone)).catch(() => null);
   const ordersSnap = await getDocs(
-    query(collection(db, "orders"), where("clientPhone", "==", phone))
+    query(collection(db, "orders_new"), where("clientPhone", "==", phone))
   ).catch(() => null);
 
   const contact = contactSnap?.exists() ? contactSnap.data() : null;

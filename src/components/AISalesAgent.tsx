@@ -1206,14 +1206,31 @@ export const AISalesAgent: React.FC<AISalesAgentProps> = ({ onBack }) => {
               <button 
                 onClick={async () => {
                   try {
-                    const price = Math.round((products.find(p => p.id === orderForm.productId)?.sellingPrice || 0) * orderForm.quantity * (1 - (selectedContact.currentDiscount || 5) / 100));
-                    await addDoc(collection(db, 'orders'), {
-                      ...orderForm,
+                    const product = products.find(p => p.id === orderForm.productId);
+                    const price = Math.round((product?.sellingPrice || 0) * orderForm.quantity * (1 - (selectedContact.currentDiscount || 5) / 100));
+                    await addDoc(collection(db, 'orders_new'), {
+                      isFirebase: true,
+                      date: new Date().toISOString(),
+                      deadlineDate: new Date().toISOString(),
+                      revenue: price,
+                      deliveryPrice: 0,
+                      paidAmount: 0,
+                      clientName: selectedContact.fullName || '',
+                      clientPhone: selectedContact.phone || selectedContact.userId || '',
+                      status: 'Новый',
+                      source: 'AI',
+                      item: product?.name || orderForm.productId || '',
+                      items: [product?.name || orderForm.productId || ''].filter(Boolean),
+                      itemPrices: [price],
+                      deliveryMethod: '',
+                      paymentType: '',
+                      manager: '',
                       userId: selectedContact.userId,
+                      quantity: orderForm.quantity,
+                      notes: orderForm.notes,
                       finalPrice: price,
                       discountApplied: selectedContact.currentDiscount || 5,
                       createdAt: new Date().toISOString(),
-                      status: 'new'
                     });
                     setIsOrderModalOpen(false);
                     alert("Заказ успешно создан!");

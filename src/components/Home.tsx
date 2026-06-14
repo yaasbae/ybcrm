@@ -57,8 +57,8 @@ export const Home: React.FC<HomeProps> = ({ sheetId, onNavigate, selectedMonth, 
       setExpenses(exData);
     });
 
-    // Fetch Firestore Orders
-    const qOrders = query(collection(db, 'orders'));
+    // Fetch Firestore Orders from the CRM source of truth.
+    const qOrders = query(collection(db, 'orders_new'));
     const unsubscribeOrders = onSnapshot(qOrders, (snapshot) => {
       let ords = snapshot.docs.map(doc => ({
         id: doc.id,
