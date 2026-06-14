@@ -120,32 +120,32 @@ export const AnalyticsTab: React.FC<AnalyticsTabProps> = ({ stats, onGoToOrders 
 
   return (
     <div className="space-y-4">
-      <section className="rounded-[22px] border border-zinc-200 bg-white p-4 shadow-[0_18px_45px_rgba(15,23,42,0.06)] sm:p-6">
+      <section className="rounded-[10px] border border-[#E6E9EF] bg-white p-4 shadow-[0_10px_28px_rgba(31,41,55,0.05)] sm:p-6">
         <div className="mb-5 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex items-center gap-3">
-            <h3 className="shrink-0 text-[26px] font-black tracking-tight text-zinc-950 sm:text-[32px]">Аналитика</h3>
+            <h3 className="shrink-0 text-[28px] font-medium leading-[1.15] tracking-[-0.01em] text-[#1F2937] sm:text-[34px]">Аналитика</h3>
             <div className="relative w-52">
               <select
                 value={selectedMonth}
                 onChange={(e) => setSelectedMonth(parseInt(e.target.value))}
-                className="h-12 w-full appearance-none rounded-2xl border border-zinc-200 bg-white px-5 pr-10 text-[14px] font-bold text-zinc-800 outline-none shadow-sm transition-all focus:border-zinc-400 focus:ring-2 focus:ring-zinc-500/10"
+                className="h-12 w-full appearance-none rounded-[8px] border border-[#E6E9EF] bg-white px-5 pr-10 text-[14px] font-medium text-[#1F2937] outline-none transition-all focus:border-[#7D7DE6] focus:ring-2 focus:ring-[#7D7DE6]/10"
               >
                 <option value={-1}>Все месяцы</option>
                 {MONTHS.map((m, idx) => (
                   <option key={m} value={idx}>{m} 2026</option>
                 ))}
               </select>
-              <ChevronRight className="pointer-events-none absolute right-4 top-1/2 h-4 w-4 -translate-y-1/2 rotate-90 text-zinc-500" />
+              <ChevronRight className="pointer-events-none absolute right-4 top-1/2 h-4 w-4 -translate-y-1/2 rotate-90 text-[#6B7280]" />
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <button type="button" className="grid h-11 w-11 place-items-center rounded-2xl border border-zinc-200 bg-white text-zinc-600 shadow-sm hover:bg-zinc-50" title="Календарь">
+            <button type="button" className="grid h-11 w-11 place-items-center rounded-[8px] border border-[#E6E9EF] bg-white text-[#6B7280] hover:bg-[#F6F7F9]" title="Календарь">
               <Calendar className="h-4 w-4" />
             </button>
-            <button type="button" className="grid h-11 w-11 place-items-center rounded-2xl border border-zinc-200 bg-white text-zinc-600 shadow-sm hover:bg-zinc-50" title="Копировать">
+            <button type="button" className="grid h-11 w-11 place-items-center rounded-[8px] border border-[#E6E9EF] bg-white text-[#6B7280] hover:bg-[#F6F7F9]" title="Копировать">
               <Copy className="h-4 w-4" />
             </button>
-            <button type="button" className="inline-flex h-11 items-center gap-2 rounded-2xl border border-zinc-200 bg-white px-4 text-[13px] font-bold text-zinc-800 shadow-sm hover:bg-zinc-50">
+            <button type="button" className="inline-flex h-11 items-center gap-2 rounded-[8px] border border-[#E6E9EF] bg-white px-4 text-[13px] font-medium text-[#1F2937] hover:bg-[#F6F7F9]">
               <Filter className="h-4 w-4" />
               Фильтры
             </button>
@@ -160,26 +160,26 @@ export const AnalyticsTab: React.FC<AnalyticsTabProps> = ({ stats, onGoToOrders 
               kpi.tone === 'emerald' ? 'text-emerald-600 bg-emerald-50' :
               kpi.tone === 'orange' ? 'text-orange-500 bg-orange-50' :
               kpi.tone === 'red' ? 'text-red-500 bg-red-50' :
-              'text-zinc-900 bg-zinc-100';
+              'text-[#1F2937] bg-[#F6F7F9]';
             const valueClass =
               kpi.tone === 'emerald' ? 'text-emerald-600' :
               kpi.tone === 'orange' ? 'text-orange-500' :
               kpi.tone === 'red' ? 'text-red-500' :
-              'text-zinc-950';
+              'text-[#1F2937]';
             return (
-              <div key={kpi.label} className="rounded-2xl border border-zinc-100 bg-white p-5 shadow-[0_10px_30px_rgba(15,23,42,0.03)]">
+              <div key={kpi.label} className="rounded-[10px] border border-[#E6E9EF] bg-white p-5 shadow-[0_8px_22px_rgba(31,41,55,0.035)]">
                 <div className="flex items-start justify-between gap-4">
                   <div>
-                    <p className="text-[13px] font-black text-zinc-900">{kpi.label}</p>
-                    <p className={cn("mt-3 whitespace-nowrap text-[24px] font-black leading-none tracking-tight", valueClass)}>
+                    <p className="text-[13px] font-semibold text-[#1F2937]">{kpi.label}</p>
+                    <p className={cn("mt-3 whitespace-nowrap text-[24px] font-semibold leading-none tracking-tight", valueClass)}>
                       {isNegativeValue ? '−' : ''}{formatCurrency(Math.abs(Number(kpi.value) || 0))}
                     </p>
                   </div>
-                  <div className={cn("grid h-12 w-12 shrink-0 place-items-center rounded-2xl", toneClass)}>
+                  <div className={cn("grid h-12 w-12 shrink-0 place-items-center rounded-[10px]", toneClass)}>
                     <Icon className="h-5 w-5" />
                   </div>
                 </div>
-                <div className="mt-5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] font-bold text-zinc-500">
+                <div className="mt-5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] font-medium text-[#6B7280]">
                   <span className={cn("inline-flex items-center gap-1", kpi.delta.startsWith('-') ? "text-orange-500" : "text-emerald-600")}>
                     {kpi.delta.startsWith('-') ? <ArrowDownRight className="h-3 w-3" /> : <ArrowUpRight className="h-3 w-3" />}
                     {kpi.delta}
@@ -195,7 +195,7 @@ export const AnalyticsTab: React.FC<AnalyticsTabProps> = ({ stats, onGoToOrders 
           <button
             type="button"
             onClick={() => setDetailsOpen((value) => !value)}
-            className="flex h-12 w-full items-center justify-between rounded-2xl border border-zinc-200 bg-white px-4 text-[12px] font-black uppercase tracking-[0.16em] text-zinc-800 shadow-sm"
+            className="flex h-12 w-full items-center justify-between rounded-[8px] border border-[#E6E9EF] bg-white px-4 text-[12px] font-semibold uppercase tracking-[0.16em] text-[#1F2937]"
           >
             {detailsOpen ? 'Свернуть аналитику' : 'Показать график и месяцы'}
             <ChevronRight className={cn("h-4 w-4 text-zinc-500 transition-transform", detailsOpen ? "-rotate-90" : "rotate-90")} />
@@ -204,15 +204,15 @@ export const AnalyticsTab: React.FC<AnalyticsTabProps> = ({ stats, onGoToOrders 
 
         <div className={cn("grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]", !detailsOpen && "hidden md:grid")}>
           <div className="space-y-4">
-            <div className="rounded-2xl border border-zinc-100 bg-white p-4 shadow-sm sm:p-5">
+            <div className="rounded-[10px] border border-[#E6E9EF] bg-white p-4 shadow-[0_8px_22px_rgba(31,41,55,0.03)] sm:p-5">
               <div className="mb-5 flex items-center justify-between gap-3">
-                <h4 className="text-[17px] font-black text-zinc-950">Динамика по месяцам</h4>
-                <button type="button" className="hidden h-10 items-center gap-2 rounded-xl border border-zinc-200 px-4 text-[12px] font-bold text-zinc-600 sm:inline-flex">
+                <h4 className="text-[20px] font-medium leading-[26px] text-[#1F2937]">Динамика по месяцам</h4>
+                <button type="button" className="hidden h-10 items-center gap-2 rounded-[8px] border border-[#E6E9EF] px-4 text-[12px] font-medium text-[#6B7280] sm:inline-flex">
                   По месяцам
                   <ChevronRight className="h-4 w-4 rotate-90" />
                 </button>
               </div>
-              <div className="mb-4 grid grid-cols-2 gap-2 text-[12px] font-bold text-zinc-500 sm:flex sm:flex-wrap sm:gap-4">
+              <div className="mb-4 grid grid-cols-2 gap-2 text-[12px] font-medium text-[#6B7280] sm:flex sm:flex-wrap sm:gap-4">
                 <span className="inline-flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full bg-emerald-500" />Оплачено</span>
                 <span className="inline-flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full bg-orange-500" />К доплате</span>
                 <span className="inline-flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full bg-red-500" />Возвраты</span>

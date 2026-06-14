@@ -79,6 +79,7 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
   const handleInlineSave = async (client: any) => {
     if (!inlineNote.trim()) return;
     const phone = client.phone || client.userId;
+    if (!phone) return;
     const manager = auth.currentUser;
     setInlineSaving(true);
     try {
@@ -98,11 +99,13 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
         lastContactAt: entry.date,
         lastContactStatus: inlineStatus,
         lastContactManager: entry.managerName,
+        lastContactTag: inlineTag.trim() || null,
+        lastContactNote: inlineNote.trim(),
       }).catch(() => {});
       // Update local fbClients state
       setFbClients(prev => prev.map(c =>
         (c.phone || c.userId) === phone
-          ? { ...c, lastContactAt: entry.date, lastContactStatus: inlineStatus }
+          ? { ...c, lastContactAt: entry.date, lastContactStatus: inlineStatus, lastContactManager: entry.managerName, lastContactTag: inlineTag.trim() || null, lastContactNote: inlineNote.trim() }
           : c
       ));
       setInlineNote('');
@@ -324,6 +327,8 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
         lastContactAt: entry.date,
         lastContactStatus: newContactStatus,
         lastContactManager: entry.managerName,
+        lastContactTag: newContactTag.trim() || null,
+        lastContactNote: newContactNote.trim(),
       }).catch(() => {});
       setNewContactNote('');
       setNewContactTag('');
@@ -401,6 +406,27 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
     const time = new Date(client.lastContactAt).getTime();
     if (Number.isNaN(time)) return null;
     return Math.floor((Date.now() - time) / 86400000);
+  };
+
+  const formatContactDate = (value?: string) => {
+    if (!value) return 'даты нет';
+    const time = new Date(value).getTime();
+    if (Number.isNaN(time)) return 'даты нет';
+    return new Date(value).toLocaleDateString('ru-RU');
+  };
+
+  const getContactSummary = (client: any) => {
+    const days = getContactDays(client);
+    const broadcasts = getClientBroadcasts(client);
+    return {
+      days,
+      date: formatContactDate(client.lastContactAt),
+      status: client.lastContactStatus || 'не было касания',
+      manager: client.lastContactManager || 'менеджер не указан',
+      tag: client.lastContactTag || client.tag || '',
+      note: client.lastContactNote || '',
+      broadcast: broadcasts[0],
+    };
   };
 
   const filteredClients = useMemo(() => {
@@ -559,24 +585,23 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
           ) : (
             <>
               <div className="hidden overflow-x-auto lg:block">
-                <table className="w-full min-w-[1080px] table-fixed">
+                <table className="w-full min-w-[1320px] table-fixed">
                   <thead>
                     <tr className="border-b border-[#E6E9EF] bg-[#F6F7F9] text-left">
                       <th className="w-[70px] px-4 py-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#9CA3AF]">#</th>
                       <th className="w-[280px] px-4 py-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#9CA3AF]">Клиент</th>
                       <th className="w-[220px] px-4 py-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#9CA3AF]">Контакты</th>
                       <th className="w-[160px] px-4 py-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#9CA3AF]">Город</th>
-                      <th className="w-[170px] px-4 py-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#9CA3AF]">Касание</th>
+                      <th className="w-[380px] px-4 py-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#9CA3AF]">Касание</th>
                       <th className="w-[140px] px-4 py-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#9CA3AF]">Заказы</th>
                       <th className="w-[170px] px-4 py-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#9CA3AF]">Сумма</th>
-                      <th className="w-[150px] px-4 py-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#9CA3AF]">Действие</th>
                     </tr>
                   </thead>
                   <tbody>
                     {visibleClients.map((client: any, i: number) => {
                       const phone = client.phone || client.userId;
-                      const days = getContactDays(client);
-                      const broadcasts = getClientBroadcasts(client);
+                      const contact = getContactSummary(client);
+                      const isInlineActive = inlineExpandedPhone === phone;
                       return (
                         <tr
                           key={`${phone || client.fullName || i}-${i}`}
@@ -640,33 +665,85 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
                           </td>
                           <td className="px-4 py-4 text-[13px] font-medium text-[#6B7280]">{client.city || '-'}</td>
                           <td className="px-4 py-4">
-                            <div className="space-y-2">
+                            <div className="space-y-3" onClick={e => e.stopPropagation()}>
                               <span className={cn(
                                 "inline-flex rounded-[6px] px-2 py-1 text-[11px] font-semibold",
-                                days === null ? "bg-[#F6F7F9] text-[#9CA3AF]" :
-                                days >= 30 ? "bg-[#F06B6B]/10 text-[#F06B6B]" :
-                                days >= 14 ? "bg-[#F5A623]/10 text-[#F5A623]" :
+                                contact.days === null ? "bg-[#F6F7F9] text-[#9CA3AF]" :
+                                contact.days >= 30 ? "bg-[#F06B6B]/10 text-[#F06B6B]" :
+                                contact.days >= 14 ? "bg-[#F5A623]/10 text-[#F5A623]" :
                                 "bg-[#2EBA7F]/10 text-[#0A9B62]"
                               )}>
-                                {days === null ? 'Не писали' : days === 0 ? 'сегодня' : `${days} дн.`}
+                                {contact.days === null ? 'Не писали' : contact.days === 0 ? 'сегодня' : `${contact.days} дн.`}
                               </span>
-                              {client.lastContactStatus && <p className="text-[12px] text-[#6B7280]">{client.lastContactStatus}</p>}
-                              {broadcasts[0] && <p className="text-[11px] text-[#9CA3AF]">рассылка {new Date(broadcasts[0].sentAt).toLocaleDateString('ru-RU')}</p>}
+                              <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[11px] font-medium text-[#6B7280]">
+                                <span>статус: <b className="font-semibold text-[#1F2937]">{contact.status}</b></span>
+                                <span>дата: <b className="font-semibold text-[#1F2937]">{contact.date}</b></span>
+                                <span className="truncate">менеджер: <b className="font-semibold text-[#1F2937]">{contact.manager}</b></span>
+                                <span className="truncate">метка: <b className="font-semibold text-[#1F2937]">{contact.tag || 'нет'}</b></span>
+                              </div>
+                              {contact.note && (
+                                <p className="line-clamp-2 rounded-[8px] bg-[#F6F7F9] px-2 py-1.5 text-[12px] font-medium text-[#1F2937]">
+                                  {contact.note}
+                                </p>
+                              )}
+                              {contact.broadcast && (
+                                <p className="text-[11px] font-medium text-[#9CA3AF]">
+                                  рассылка: {new Date(contact.broadcast.sentAt).toLocaleDateString('ru-RU')} · {contact.broadcast.status}
+                                </p>
+                              )}
+                              <div className="grid gap-2 md:grid-cols-[110px_120px_1fr_auto]">
+                                <select
+                                  value={isInlineActive ? inlineStatus : 'написали'}
+                                  onFocus={() => setInlineExpandedPhone(phone)}
+                                  onChange={e => {
+                                    setInlineExpandedPhone(phone);
+                                    setInlineStatus(e.target.value as typeof inlineStatus);
+                                  }}
+                                  className="h-9 rounded-[8px] border border-[#E6E9EF] bg-white px-2 text-[12px] font-medium outline-none focus:border-[#7D7DE6]"
+                                >
+                                  <option value="написали">написали</option>
+                                  <option value="ответил">ответил</option>
+                                  <option value="не ответил">не ответил</option>
+                                  <option value="отказ">отказ</option>
+                                  <option value="перезвонить">перезвонить</option>
+                                </select>
+                                <select
+                                  value={isInlineActive ? inlineTag : ''}
+                                  onFocus={() => setInlineExpandedPhone(phone)}
+                                  onChange={e => {
+                                    setInlineExpandedPhone(phone);
+                                    setInlineTag(e.target.value);
+                                  }}
+                                  className="h-9 rounded-[8px] border border-[#E6E9EF] bg-white px-2 text-[12px] font-medium outline-none focus:border-[#7D7DE6]"
+                                >
+                                  <option value="">метка</option>
+                                  {handbookLabels.map(l => <option key={l} value={l}>{l}</option>)}
+                                </select>
+                                <input
+                                  type="text"
+                                  value={isInlineActive ? inlineNote : ''}
+                                  onFocus={() => setInlineExpandedPhone(phone)}
+                                  onChange={e => {
+                                    setInlineExpandedPhone(phone);
+                                    setInlineNote(e.target.value);
+                                  }}
+                                  onKeyDown={e => e.key === 'Enter' && isInlineActive && handleInlineSave(client)}
+                                  placeholder="Новое касание..."
+                                  className="h-9 rounded-[8px] border border-[#E6E9EF] bg-white px-3 text-[12px] font-medium outline-none focus:border-[#7D7DE6]"
+                                />
+                                <button
+                                  onClick={() => handleInlineSave(client)}
+                                  disabled={!isInlineActive || inlineSaving || !inlineNote.trim()}
+                                  className="inline-flex h-9 items-center justify-center gap-1 rounded-[8px] bg-[#1F2937] px-3 text-[11px] font-semibold text-white disabled:opacity-35"
+                                >
+                                  {inlineSaving && isInlineActive ? <RefreshCcw size={13} className="animate-spin" /> : <Send size={13} />}
+                                  OK
+                                </button>
+                              </div>
                             </div>
                           </td>
                           <td className="px-4 py-4 text-[15px] font-semibold text-[#1F2937]">{client.ordersCount ?? client.count ?? 0}</td>
                           <td className="px-4 py-4 text-[15px] font-semibold text-[#2EBA7F]">{formatCurrency(client.totalSpent ?? client.total ?? 0)}</td>
-                          <td className="px-4 py-4">
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setInlineExpandedPhone(inlineExpandedPhone === phone ? null : phone);
-                              }}
-                              className="inline-flex h-9 items-center justify-center gap-2 rounded-[8px] border border-[#E6E9EF] bg-white px-3 text-[12px] font-semibold text-[#6B7280] transition hover:border-[#CBD5E1] hover:text-[#1F2937]"
-                            >
-                              <MessageCircle size={14} /> Касание
-                            </button>
-                          </td>
                         </tr>
                       );
                     })}
@@ -677,7 +754,8 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
               <div className="divide-y divide-[#E6E9EF] lg:hidden">
                 {visibleClients.map((client: any, i: number) => {
                   const phone = client.phone || client.userId;
-                  const days = getContactDays(client);
+                  const contact = getContactSummary(client);
+                  const isInlineActive = inlineExpandedPhone === phone;
                   return (
                     <div
                       key={`${phone || client.fullName || i}-mobile`}
@@ -699,7 +777,51 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
                         </div>
                         <div className="rounded-[8px] border border-[#E6E9EF] p-3">
                           <p className="text-[10px] font-semibold uppercase tracking-[0.15em] text-[#9CA3AF]">Касание</p>
-                          <p className="mt-1 text-[14px] font-semibold text-[#1F2937]">{days === null ? 'Не писали' : days === 0 ? 'сегодня' : `${days} дн.`}</p>
+                          <p className="mt-1 text-[14px] font-semibold text-[#1F2937]">{contact.days === null ? 'Не писали' : contact.days === 0 ? 'сегодня' : `${contact.days} дн.`}</p>
+                        </div>
+                      </div>
+                      <div className="mt-3 rounded-[8px] border border-[#E6E9EF] bg-[#F6F7F9] p-3" onClick={e => e.stopPropagation()}>
+                        <div className="grid grid-cols-2 gap-2 text-[11px] font-medium text-[#6B7280]">
+                          <span>статус: <b className="text-[#1F2937]">{contact.status}</b></span>
+                          <span>дата: <b className="text-[#1F2937]">{contact.date}</b></span>
+                          <span className="col-span-2 truncate">менеджер: <b className="text-[#1F2937]">{contact.manager}</b></span>
+                          {contact.tag && <span className="col-span-2 truncate">метка: <b className="text-[#1F2937]">{contact.tag}</b></span>}
+                        </div>
+                        {contact.note && <p className="mt-2 line-clamp-2 text-[12px] font-medium text-[#1F2937]">{contact.note}</p>}
+                        <div className="mt-3 grid gap-2">
+                          <select
+                            value={isInlineActive ? inlineStatus : 'написали'}
+                            onFocus={() => setInlineExpandedPhone(phone)}
+                            onChange={e => {
+                              setInlineExpandedPhone(phone);
+                              setInlineStatus(e.target.value as typeof inlineStatus);
+                            }}
+                            className="h-10 rounded-[8px] border border-[#E6E9EF] bg-white px-3 text-[13px] font-medium outline-none focus:border-[#7D7DE6]"
+                          >
+                            <option value="написали">написали</option>
+                            <option value="ответил">ответил</option>
+                            <option value="не ответил">не ответил</option>
+                            <option value="отказ">отказ</option>
+                            <option value="перезвонить">перезвонить</option>
+                          </select>
+                          <input
+                            type="text"
+                            value={isInlineActive ? inlineNote : ''}
+                            onFocus={() => setInlineExpandedPhone(phone)}
+                            onChange={e => {
+                              setInlineExpandedPhone(phone);
+                              setInlineNote(e.target.value);
+                            }}
+                            placeholder="Новое касание..."
+                            className="h-10 rounded-[8px] border border-[#E6E9EF] bg-white px-3 text-[13px] font-medium outline-none focus:border-[#7D7DE6]"
+                          />
+                          <button
+                            onClick={() => handleInlineSave(client)}
+                            disabled={!isInlineActive || inlineSaving || !inlineNote.trim()}
+                            className="h-10 rounded-[8px] bg-[#1F2937] text-[12px] font-semibold uppercase tracking-[0.12em] text-white disabled:opacity-35"
+                          >
+                            Сохранить касание
+                          </button>
                         </div>
                       </div>
                       <div className="mt-3 flex flex-wrap gap-2 text-[12px] font-semibold text-[#6B7280]">
@@ -710,41 +832,6 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
                   );
                 })}
               </div>
-
-              {visibleClients.map((client: any, i: number) => {
-                const phone = client.phone || client.userId;
-                if (inlineExpandedPhone !== phone) return null;
-                return (
-                  <div key={`contact-${phone || i}`} className="border-t border-[#E6E9EF] bg-[#F6F7F9] p-4" onClick={e => e.stopPropagation()}>
-                    <div className="grid gap-2 md:grid-cols-[180px_1fr_auto]">
-                      <select
-                        value={inlineTag}
-                        onChange={e => setInlineTag(e.target.value)}
-                        className="h-10 rounded-[8px] border border-[#E6E9EF] bg-white px-3 text-[13px] font-medium outline-none focus:border-[#7D7DE6]"
-                      >
-                        <option value="">Метка</option>
-                        {handbookLabels.map(l => <option key={l} value={l}>{l}</option>)}
-                      </select>
-                      <input
-                        type="text"
-                        value={inlineNote}
-                        onChange={e => setInlineNote(e.target.value)}
-                        placeholder="Заметка о касании..."
-                        onKeyDown={e => e.key === 'Enter' && handleInlineSave(client)}
-                        className="h-10 rounded-[8px] border border-[#E6E9EF] bg-white px-3 text-[13px] font-medium outline-none focus:border-[#7D7DE6]"
-                      />
-                      <button
-                        onClick={() => handleInlineSave(client)}
-                        disabled={inlineSaving || !inlineNote.trim()}
-                        className="inline-flex h-10 items-center justify-center gap-2 rounded-[8px] bg-[#1F2937] px-4 text-[12px] font-semibold uppercase tracking-[0.12em] text-white disabled:opacity-40"
-                      >
-                        {inlineSaving ? <RefreshCcw size={14} className="animate-spin" /> : <Send size={14} />}
-                        Сохранить
-                      </button>
-                    </div>
-                  </div>
-                );
-              })}
 
               {visibleClients.length === 0 && (
                 <div className="px-4 py-12 text-center text-[14px] font-medium text-[#9CA3AF]">
