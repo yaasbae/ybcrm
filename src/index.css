@@ -15,6 +15,9 @@
   --text-muted: #6b7280;
   --accent: #7d7de6;
   --accent-foreground: #ffffff;
+  --success: #2eba7f;
+  --warning: #f5a623;
+  --danger: #f06b6b;
 }
 
 [data-theme='pink'] {
@@ -134,42 +137,56 @@
     background: var(--bg);
   }
 
+  .ybcrm-app main {
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.68), rgba(246, 247, 249, 0) 220px),
+      var(--bg);
+  }
+
   .ybcrm-app .bg-\[\#FBFBFD\],
   .ybcrm-app .bg-zinc-50,
-  .ybcrm-app .bg-slate-50 {
-    background-color: var(--bg);
+  .ybcrm-app .bg-slate-50,
+  .ybcrm-app .bg-gray-50 {
+    background-color: var(--bg) !important;
   }
 
   .ybcrm-app .bg-white {
-    background-color: var(--card-bg);
+    background-color: var(--card-bg) !important;
   }
 
   .ybcrm-app .border-zinc-100,
   .ybcrm-app .border-zinc-200,
   .ybcrm-app .border-slate-100,
-  .ybcrm-app .border-slate-200 {
-    border-color: var(--card-border);
+  .ybcrm-app .border-slate-200,
+  .ybcrm-app .border-gray-100,
+  .ybcrm-app .border-gray-200 {
+    border-color: var(--card-border) !important;
   }
 
   .ybcrm-app .text-\[\#1D1D1F\],
   .ybcrm-app .text-zinc-900,
-  .ybcrm-app .text-slate-900 {
-    color: var(--text);
+  .ybcrm-app .text-slate-900,
+  .ybcrm-app .text-gray-900 {
+    color: var(--text) !important;
   }
 
   .ybcrm-app .text-zinc-400,
   .ybcrm-app .text-zinc-500,
   .ybcrm-app .text-slate-400,
   .ybcrm-app .text-slate-500,
-  .ybcrm-app .text-slate-600 {
-    color: var(--text-muted);
+  .ybcrm-app .text-slate-600,
+  .ybcrm-app .text-gray-400,
+  .ybcrm-app .text-gray-500,
+  .ybcrm-app .text-gray-600 {
+    color: var(--text-muted) !important;
   }
 
   .ybcrm-app .rounded-\[2\.5rem\],
   .ybcrm-app .rounded-\[2rem\],
   .ybcrm-app .rounded-3xl,
-  .ybcrm-app .rounded-2xl {
-    border-radius: 10px;
+  .ybcrm-app .rounded-2xl,
+  .ybcrm-app .rounded-xl {
+    border-radius: 10px !important;
   }
 
   .ybcrm-app .shadow-2xl,
@@ -177,25 +194,132 @@
   .ybcrm-app .shadow-lg,
   .ybcrm-app .shadow-md,
   .ybcrm-app .shadow-sm {
-    box-shadow: 0 8px 24px rgba(31, 41, 55, 0.04);
+    box-shadow: 0 8px 24px rgba(31, 41, 55, 0.04) !important;
   }
 
   .ybcrm-app input,
   .ybcrm-app select,
   .ybcrm-app textarea {
-    border-color: var(--card-border);
-    background-color: #fff;
-    color: var(--text);
+    border-color: var(--card-border) !important;
+    background-color: #fff !important;
+    color: var(--text) !important;
+    border-radius: 8px !important;
+    box-shadow: none !important;
   }
 
   .ybcrm-app input:focus,
   .ybcrm-app select:focus,
   .ybcrm-app textarea:focus {
-    border-color: #9aa4b2;
-    box-shadow: 0 0 0 2px rgba(31, 41, 55, 0.08);
+    border-color: #9aa4b2 !important;
+    box-shadow: 0 0 0 2px rgba(31, 41, 55, 0.08) !important;
   }
 
   .ybcrm-app table tr {
-    border-color: var(--card-border);
+    border-color: var(--card-border) !important;
+  }
+
+  .ybcrm-app [class*="text-emerald-"] {
+    --tw-text-opacity: 1;
+    color: var(--success) !important;
+  }
+
+  .ybcrm-app [class*="text-orange-"],
+  .ybcrm-app [class*="text-amber-"] {
+    --tw-text-opacity: 1;
+    color: var(--warning) !important;
+  }
+
+  .ybcrm-app [class*="text-red-"],
+  .ybcrm-app [class*="text-rose-"] {
+    --tw-text-opacity: 1;
+    color: var(--danger) !important;
+  }
+
+  .ybcrm-app [class*="bg-emerald-50"],
+  .ybcrm-app [class*="bg-emerald-100"] {
+    background-color: rgba(46, 186, 127, 0.09) !important;
+  }
+
+  .ybcrm-app [class*="bg-orange-50"],
+  .ybcrm-app [class*="bg-orange-100"],
+  .ybcrm-app [class*="bg-amber-50"],
+  .ybcrm-app [class*="bg-amber-100"] {
+    background-color: rgba(245, 166, 35, 0.1) !important;
+  }
+
+  .ybcrm-app [class*="bg-red-50"],
+  .ybcrm-app [class*="bg-red-100"],
+  .ybcrm-app [class*="bg-rose-50"],
+  .ybcrm-app [class*="bg-rose-100"] {
+    background-color: rgba(240, 107, 107, 0.1) !important;
+  }
+
+  .ybcrm-app button,
+  .ybcrm-app [role="button"] {
+    border-radius: 8px;
+  }
+
+  .ybcrm-app button[class*="bg-violet-"],
+  .ybcrm-app button[class*="bg-purple-"],
+  .ybcrm-app button[class*="bg-blue-"] {
+    background-color: var(--accent) !important;
+    color: #fff !important;
+  }
+
+  .ybcrm-app [class*="bg-violet-50"],
+  .ybcrm-app [class*="bg-purple-50"],
+  .ybcrm-app [class*="bg-blue-50"] {
+    background-color: rgba(125, 125, 230, 0.1) !important;
+  }
+
+  .ybcrm-app [class*="text-violet-"],
+  .ybcrm-app [class*="text-purple-"],
+  .ybcrm-app [class*="text-blue-"] {
+    color: var(--accent) !important;
+  }
+
+  .ybcrm-app [class*="tracking-"] {
+    letter-spacing: 0.08em;
+  }
+
+  .ybcrm-app table,
+  .ybcrm-app [class*="divide-"] {
+    border-color: var(--card-border) !important;
+  }
+
+  .ybcrm-app th {
+    color: #9ca3af !important;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+
+  .ybcrm-app td {
+    color: var(--text);
+    font-size: 13px;
+  }
+
+  .ybcrm-app label {
+    color: #9ca3af;
+  }
+
+  .ybcrm-app ::placeholder {
+    color: #9ca3af;
+    opacity: 1;
+  }
+
+  @media (max-width: 640px) {
+    .ybcrm-app main > div {
+      padding-left: 10px;
+      padding-right: 10px;
+    }
+
+    .ybcrm-app .rounded-\[2\.5rem\],
+    .ybcrm-app .rounded-\[2rem\],
+    .ybcrm-app .rounded-3xl,
+    .ybcrm-app .rounded-2xl {
+      border-radius: 10px !important;
+    }
   }
 }
