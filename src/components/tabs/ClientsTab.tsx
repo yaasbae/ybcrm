@@ -382,75 +382,159 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
     return (broadcastMap.get(phone) || []).sort((a, b) => b.sentAt.localeCompare(a.sentAt));
   };
 
+  const baseClients = useMemo(() => {
+    const source = fbClients.length > 0
+      ? fbClients
+      : (stats.topClients || []).map((c: any) => ({
+          fullName: c.name,
+          phone: c.phone,
+          insta: c.insta,
+          city: c.city,
+          totalSpent: c.total,
+          ordersCount: c.count,
+        }));
+    return source;
+  }, [fbClients, stats.topClients]);
+
+  const getContactDays = (client: any) => {
+    if (!client.lastContactAt) return null;
+    const time = new Date(client.lastContactAt).getTime();
+    if (Number.isNaN(time)) return null;
+    return Math.floor((Date.now() - time) / 86400000);
+  };
+
+  const filteredClients = useMemo(() => {
+    const q = searchTerm.trim().toLowerCase();
+    return baseClients.filter((client: any) => {
+      const matchesSearch = !q ||
+        (client.fullName || client.name || '').toLowerCase().includes(q) ||
+        String(client.phone || '').includes(q) ||
+        (client.insta || '').toLowerCase().includes(q) ||
+        (client.email || '').toLowerCase().includes(q) ||
+        (client.city || '').toLowerCase().includes(q);
+
+      if (!matchesSearch) return false;
+      if (contactFilter === 'all') return true;
+      if (contactFilter === 'never') return !client.lastContactAt;
+
+      const days = getContactDays(client);
+      return days !== null && days >= contactFilter;
+    });
+  }, [baseClients, contactFilter, searchTerm]);
+
+  const visibleClients = searchTerm ? filteredClients : filteredClients.slice(0, clientPage);
+
+  const clientStats = useMemo(() => {
+    const contacted = baseClients.filter((client: any) => client.lastContactAt).length;
+    const revenue = baseClients.reduce((sum: number, client: any) => sum + Number(client.totalSpent ?? client.total ?? 0), 0);
+    const orders = baseClients.reduce((sum: number, client: any) => sum + Number(client.ordersCount ?? client.count ?? 0), 0);
+    const needsContact = baseClients.filter((client: any) => {
+      const days = getContactDays(client);
+      return !client.lastContactAt || (days !== null && days >= 30);
+    }).length;
+
+    return {
+      total: baseClients.length || stats.uniqueClients || 0,
+      contacted,
+      revenue,
+      orders,
+      needsContact,
+    };
+  }, [baseClients, stats.uniqueClients]);
+
+  const contactFilters = [
+    { key: 'all', label: 'Все' },
+    { key: 'never', label: 'Не писали' },
+    { key: 5, label: '5 дн' },
+    { key: 10, label: '10 дн' },
+    { key: 20, label: '20 дн' },
+    { key: 30, label: '30 дн' },
+    { key: 60, label: '60 дн' },
+    { key: 90, label: '90 дн' },
+  ] as const;
+
   return (
     <>
-      <div className="tg-card overflow-hidden">
-        <div className="p-3 border-b border-zinc-100 flex flex-col gap-2">
-          {/* Top row: title + import + search */}
-          <div className="flex items-center justify-between gap-2">
+      <section className="space-y-4">
+        <div className="rounded-[10px] border border-[#E6E9EF] bg-white shadow-[0_10px_28px_rgba(31,41,55,0.05)]">
+          <div className="flex flex-col gap-4 border-b border-[#E6E9EF] p-4 lg:flex-row lg:items-center lg:justify-between">
             <div className="flex items-center gap-3">
-              <h3 className="text-[10px] font-semibold text-zinc-900 uppercase tracking-widest">Клиентская база</h3>
-              <p className="text-[8px] text-zinc-400 font-medium uppercase tracking-wider">Всего: <span className="text-zinc-900">{fbClients.length || stats.uniqueClients}</span></p>
+              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-[8px] bg-[#1F2937] text-white shadow-[0_10px_24px_rgba(31,41,55,0.18)]">
+                <Users size={19} />
+              </div>
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[#9CA3AF]">Клиенты</p>
+                <h2 className="text-[24px] font-medium leading-tight text-[#1F2937]">Клиентская база</h2>
+                <p className="mt-1 text-[13px] text-[#6B7280]">Контакты, касания, рассылки и история заказов</p>
+              </div>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+              <div className="relative min-w-0 sm:w-[280px]">
+                <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#9CA3AF]" />
+                <input
+                  type="text"
+                  placeholder="Поиск по имени, телефону, Instagram..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="h-11 w-full rounded-[8px] border border-[#E6E9EF] bg-[#F6F7F9] pl-9 pr-3 text-[14px] font-medium text-[#1F2937] outline-none transition focus:border-[#7D7DE6] focus:bg-white focus:ring-2 focus:ring-[#7D7DE6]/15"
+                />
+              </div>
               <button
                 onClick={() => setIsAddClientOpen(true)}
-                className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-widest bg-blue-500 text-white hover:bg-blue-600 transition-all"
+                className="inline-flex h-11 items-center justify-center gap-2 rounded-[8px] bg-[#7D7DE6] px-4 text-[13px] font-semibold text-white shadow-[0_10px_22px_rgba(125,125,230,0.22)] transition hover:bg-[#6969d7]"
               >
-                <Plus size={11} /> Клиент
+                <Plus size={16} /> Новый клиент
               </button>
               <button
                 onClick={handleImportAll}
                 disabled={isImporting}
                 className={cn(
-                  "flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all",
-                  importDone ? "bg-emerald-500 text-white" : "bg-zinc-900 text-white hover:bg-zinc-700"
+                  "inline-flex h-11 items-center justify-center gap-2 rounded-[8px] border px-4 text-[13px] font-semibold transition",
+                  importDone
+                    ? "border-[#2EBA7F]/25 bg-[#2EBA7F]/10 text-[#0A9B62]"
+                    : "border-[#E6E9EF] bg-white text-[#6B7280] hover:text-[#1F2937]"
                 )}
               >
                 {isImporting ? (
-                  <><RefreshCcw size={11} className="animate-spin" /> Импорт...</>
+                  <><RefreshCcw size={15} className="animate-spin" /> Импорт...</>
                 ) : importDone ? (
-                  <><CheckCircle size={11} /> Импортировано</>
+                  <><CheckCircle size={15} /> Импортировано</>
                 ) : (
-                  <><Upload size={11} /> В Firebase</>
+                  <><Upload size={15} /> Импорт</>
                 )}
               </button>
-              <div className="relative">
-                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-zinc-300" />
-                <input
-                  type="text"
-                  placeholder="Поиск..."
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
-                  className="pl-7 pr-3 py-1.5 bg-zinc-50 border border-zinc-100 rounded-lg text-[10px] font-medium focus:outline-none focus:ring-1 focus:ring-zinc-200 transition-all w-36 sm:w-48"
-                />
-              </div>
             </div>
           </div>
-          {/* Filter row */}
-          <div className="flex flex-wrap gap-1">
-            {([
-              { key: 'all',   label: 'Все' },
-              { key: 'never', label: 'Не писали' },
-              { key: 5,       label: '5 дн' },
-              { key: 10,      label: '10 дн' },
-              { key: 20,      label: '20 дн' },
-              { key: 30,      label: '30 дн' },
-              { key: 60,      label: '60 дн' },
-              { key: 90,      label: '90 дн' },
-            ] as const).map(f => (
+
+          <div className="grid grid-cols-2 divide-x divide-y divide-[#E6E9EF] md:grid-cols-4 md:divide-y-0">
+            <div className="p-4">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#9CA3AF]">Всего клиентов</p>
+              <p className="mt-2 text-[28px] font-semibold text-[#1F2937]">{clientStats.total}</p>
+            </div>
+            <div className="p-4">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#9CA3AF]">Заказов</p>
+              <p className="mt-2 text-[28px] font-semibold text-[#1F2937]">{clientStats.orders}</p>
+            </div>
+            <div className="p-4">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#9CA3AF]">Выручка</p>
+              <p className="mt-2 text-[24px] font-semibold text-[#2EBA7F]">{formatCurrency(clientStats.revenue)}</p>
+            </div>
+            <div className="p-4">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#9CA3AF]">Нужен контакт</p>
+              <p className="mt-2 text-[28px] font-semibold text-[#F5A623]">{clientStats.needsContact}</p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap gap-2 border-t border-[#E6E9EF] p-3">
+            {contactFilters.map(f => (
               <button
                 key={String(f.key)}
                 onClick={() => setContactFilter(f.key)}
                 className={cn(
-                  "px-2.5 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all",
+                  "h-9 rounded-[8px] border px-4 text-[12px] font-semibold uppercase tracking-[0.12em] transition",
                   contactFilter === f.key
-                    ? f.key === 'never' ? "bg-zinc-900 text-white"
-                      : f.key === 90 ? "bg-red-500 text-white"
-                      : f.key === 60 ? "bg-orange-500 text-white"
-                      : f.key === 30 ? "bg-amber-500 text-white"
-                      : "bg-zinc-900 text-white"
-                    : "bg-zinc-100 text-zinc-500 hover:bg-zinc-200"
+                    ? "border-[#1F2937] bg-[#1F2937] text-white"
+                    : "border-[#E6E9EF] bg-white text-[#6B7280] hover:border-[#CBD5E1] hover:text-[#1F2937]"
                 )}
               >
                 {f.label}
@@ -459,219 +543,229 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
           </div>
         </div>
 
-        <div className="divide-y divide-zinc-100">
-          {fbLoading ? (
-            <div className="px-3 py-8 text-center text-[10px] text-zinc-400">
-              <RefreshCcw size={14} className="animate-spin inline mr-2" />Загрузка клиентов...
+        <div className="rounded-[10px] border border-[#E6E9EF] bg-white shadow-[0_10px_28px_rgba(31,41,55,0.04)]">
+          <div className="flex flex-col gap-3 border-b border-[#E6E9EF] p-4 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[#9CA3AF]">Список клиентов</p>
+              <h3 className="mt-1 text-[20px] font-medium text-[#1F2937]">{filteredClients.length} контактов</h3>
             </div>
-          ) : (fbClients.length > 0 ? fbClients : stats.topClients.map((c: any) => ({ fullName: c.name, phone: c.phone, insta: c.insta, city: c.city, totalSpent: c.total, ordersCount: c.count })))
-            .filter((c: any) => {
-              // Search filter
-              const q = searchTerm.toLowerCase();
-              const matchesSearch = !searchTerm ||
-                (c.fullName || c.name)?.toLowerCase().includes(q) ||
-                c.phone?.includes(q) ||
-                c.insta?.toLowerCase().includes(q);
-              if (!matchesSearch) return false;
+            <p className="text-[13px] text-[#9CA3AF]">Открывай строку для карточки клиента, заказа и касаний</p>
+          </div>
 
-              // Contact time filter
-              if (contactFilter === 'all') return true;
-              if (contactFilter === 'never') return !c.lastContactAt;
-              const days = c.lastContactAt
-                ? Math.floor((Date.now() - new Date(c.lastContactAt).getTime()) / 86400000)
-                : null;
-              return days !== null && days >= contactFilter;
-            })
-            .slice(0, searchTerm ? undefined : clientPage)
-            .map((client: any, i: number) => (
-              <div key={i} className="border-b border-zinc-50 last:border-b-0">
-                {/* Main client row */}
-                <div
-                  onClick={() => setSelectedLoyaltyClient({ ...client, name: client.fullName || client.name })}
-                  className="px-3 py-3 flex items-start justify-between gap-2 cursor-pointer active:bg-zinc-50 transition-colors"
-                >
-                  {/* Left: number + info */}
-                  <div className="flex items-start gap-2 min-w-0 flex-1">
-                    <span className="text-[9px] text-zinc-300 font-mono mt-0.5 shrink-0 w-4">{i + 1}</span>
-                    <div className="flex flex-col gap-1 min-w-0">
-                      {/* Name */}
-                      <span className="text-[12px] font-semibold text-zinc-900 leading-tight">{client.fullName || client.name || 'Неизвестно'}</span>
-                      {/* Phone */}
-                      <span className="text-[11px] text-zinc-500 font-mono">+{client.phone}</span>
-                      {/* Instagram */}
-                      {client.insta && (
-                        <a
-                          href={`https://instagram.com/${client.insta.replace('@', '')}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          onClick={e => e.stopPropagation()}
-                          className="inline-flex items-center gap-1 text-[11px] font-semibold text-pink-400 hover:text-pink-600 w-fit"
+          {fbLoading ? (
+            <div className="flex items-center justify-center gap-2 px-4 py-10 text-[13px] font-medium text-[#9CA3AF]">
+              <RefreshCcw size={16} className="animate-spin" /> Загрузка клиентов...
+            </div>
+          ) : (
+            <>
+              <div className="hidden overflow-x-auto lg:block">
+                <table className="w-full min-w-[1080px] table-fixed">
+                  <thead>
+                    <tr className="border-b border-[#E6E9EF] bg-[#F6F7F9] text-left">
+                      <th className="w-[70px] px-4 py-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#9CA3AF]">#</th>
+                      <th className="w-[280px] px-4 py-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#9CA3AF]">Клиент</th>
+                      <th className="w-[220px] px-4 py-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#9CA3AF]">Контакты</th>
+                      <th className="w-[160px] px-4 py-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#9CA3AF]">Город</th>
+                      <th className="w-[170px] px-4 py-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#9CA3AF]">Касание</th>
+                      <th className="w-[140px] px-4 py-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#9CA3AF]">Заказы</th>
+                      <th className="w-[170px] px-4 py-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#9CA3AF]">Сумма</th>
+                      <th className="w-[150px] px-4 py-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#9CA3AF]">Действие</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {visibleClients.map((client: any, i: number) => {
+                      const phone = client.phone || client.userId;
+                      const days = getContactDays(client);
+                      const broadcasts = getClientBroadcasts(client);
+                      return (
+                        <tr
+                          key={`${phone || client.fullName || i}-${i}`}
+                          onClick={() => setSelectedLoyaltyClient({ ...client, name: client.fullName || client.name })}
+                          className="group cursor-pointer border-b border-[#EEF1F5] align-top transition hover:bg-[#F6F7F9]"
                         >
-                          <Instagram size={12} />@{client.insta.replace('@', '')}
-                        </a>
-                      )}
-                      {/* Email */}
-                      {client.email && (
-                        <span className="inline-flex items-center gap-1 text-[10px] text-blue-400 font-mono">
-                          <Mail size={10} />{client.email}
-                        </span>
-                      )}
-                      {/* Badges */}
-                      <div className="flex items-center gap-1.5 flex-wrap mt-0.5">
-                        {client.lastContactAt && (() => {
-                          const days = Math.floor((Date.now() - new Date(client.lastContactAt).getTime()) / 86400000);
-                          return (
-                            <span className={cn(
-                              "inline-flex items-center gap-0.5 text-[9px] font-black px-1.5 py-0.5 rounded",
-                              days > 30 ? "bg-red-50 text-red-500" :
-                              days > 14 ? "bg-amber-50 text-amber-500" :
-                              "bg-emerald-50 text-emerald-500"
-                            )}>
-                              <Clock size={8} />
-                              {days === 0 ? 'сегодня' : `${days}д`}
-                            </span>
-                          );
-                        })()}
-                        {client.lastContactStatus && (
-                          <span className={cn(
-                            "text-[9px] font-black px-1.5 py-0.5 rounded",
-                            client.lastContactStatus === 'ответил' ? "bg-emerald-50 text-emerald-600" :
-                            client.lastContactStatus === 'не ответил' ? "bg-amber-50 text-amber-600" :
-                            client.lastContactStatus === 'отказ' ? "bg-red-50 text-red-600" :
-                            "bg-zinc-100 text-zinc-500"
-                          )}>
-                            {client.lastContactStatus}
-                          </span>
-                        )}
-                        {client.city && (
-                          <span className="text-[9px] text-zinc-400 italic">{client.city}</span>
-                        )}
-                        {(() => {
-                          const entries = getClientBroadcasts(client);
-                          if (!entries.length) return null;
-                          const last = entries[0];
-                          const icon = last.status === 'sent' ? '✓' : last.status === 'no_tg' ? '∅' : '✗';
-                          const color = last.status === 'sent' ? 'text-emerald-600 bg-emerald-50'
-                            : last.status === 'no_tg' ? 'text-slate-400 bg-slate-100'
-                            : 'text-red-500 bg-red-50';
-                          return (
-                            <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[9px] font-bold ${color}`}>
-                              <Send size={8} /> {icon} {last.sentAt ? new Date(last.sentAt).toLocaleDateString('ru', { day: 'numeric', month: 'short' }) : '—'}
-                            </span>
-                          );
-                        })()}
+                          <td className="px-4 py-4 text-[13px] font-medium text-[#9CA3AF]">{i + 1}</td>
+                          <td className="px-4 py-4">
+                            <p className="truncate text-[15px] font-semibold text-[#1F2937]">{client.fullName || client.name || 'Неизвестно'}</p>
+                            <p className="mt-1 text-[13px] font-medium text-[#9CA3AF]">+{phone || 'нет телефона'}</p>
+                          </td>
+                          <td className="px-4 py-4">
+                            <div className="space-y-1">
+                              {client.insta ? (
+                                <a
+                                  href={`https://instagram.com/${client.insta.replace('@', '')}`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  onClick={e => e.stopPropagation()}
+                                  className="inline-flex max-w-full items-center gap-1 truncate text-[13px] font-semibold text-[#7D7DE6]"
+                                >
+                                  <Instagram size={13} />@{client.insta.replace('@', '')}
+                                </a>
+                              ) : (
+                                <span className="text-[13px] text-[#CBD5E1]">Instagram не указан</span>
+                              )}
+                              {client.email ? (
+                                <p className="truncate text-[12px] text-[#6B7280]">{client.email}</p>
+                              ) : inlineEmailPhone === phone ? (
+                                <div className="flex gap-1" onClick={e => e.stopPropagation()}>
+                                  <input
+                                    type="email"
+                                    value={inlineEmailValue}
+                                    onChange={e => setInlineEmailValue(e.target.value)}
+                                    onKeyDown={e => e.key === 'Enter' && handleEmailSave(client)}
+                                    autoFocus
+                                    placeholder="email"
+                                    className="h-8 w-full rounded-[8px] border border-[#E6E9EF] bg-white px-2 text-[12px] outline-none focus:border-[#7D7DE6]"
+                                  />
+                                  <button
+                                    onClick={() => handleEmailSave(client)}
+                                    disabled={inlineEmailSaving || !inlineEmailValue.trim()}
+                                    className="h-8 rounded-[8px] bg-[#1F2937] px-2 text-[10px] font-semibold text-white disabled:opacity-40"
+                                  >
+                                    OK
+                                  </button>
+                                </div>
+                              ) : (
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setInlineEmailPhone(phone);
+                                    setInlineEmailValue('');
+                                  }}
+                                  className="text-[12px] font-semibold text-[#7D7DE6]"
+                                >
+                                  + email
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                          <td className="px-4 py-4 text-[13px] font-medium text-[#6B7280]">{client.city || '-'}</td>
+                          <td className="px-4 py-4">
+                            <div className="space-y-2">
+                              <span className={cn(
+                                "inline-flex rounded-[6px] px-2 py-1 text-[11px] font-semibold",
+                                days === null ? "bg-[#F6F7F9] text-[#9CA3AF]" :
+                                days >= 30 ? "bg-[#F06B6B]/10 text-[#F06B6B]" :
+                                days >= 14 ? "bg-[#F5A623]/10 text-[#F5A623]" :
+                                "bg-[#2EBA7F]/10 text-[#0A9B62]"
+                              )}>
+                                {days === null ? 'Не писали' : days === 0 ? 'сегодня' : `${days} дн.`}
+                              </span>
+                              {client.lastContactStatus && <p className="text-[12px] text-[#6B7280]">{client.lastContactStatus}</p>}
+                              {broadcasts[0] && <p className="text-[11px] text-[#9CA3AF]">рассылка {new Date(broadcasts[0].sentAt).toLocaleDateString('ru-RU')}</p>}
+                            </div>
+                          </td>
+                          <td className="px-4 py-4 text-[15px] font-semibold text-[#1F2937]">{client.ordersCount ?? client.count ?? 0}</td>
+                          <td className="px-4 py-4 text-[15px] font-semibold text-[#2EBA7F]">{formatCurrency(client.totalSpent ?? client.total ?? 0)}</td>
+                          <td className="px-4 py-4">
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setInlineExpandedPhone(inlineExpandedPhone === phone ? null : phone);
+                              }}
+                              className="inline-flex h-9 items-center justify-center gap-2 rounded-[8px] border border-[#E6E9EF] bg-white px-3 text-[12px] font-semibold text-[#6B7280] transition hover:border-[#CBD5E1] hover:text-[#1F2937]"
+                            >
+                              <MessageCircle size={14} /> Касание
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="divide-y divide-[#E6E9EF] lg:hidden">
+                {visibleClients.map((client: any, i: number) => {
+                  const phone = client.phone || client.userId;
+                  const days = getContactDays(client);
+                  return (
+                    <div
+                      key={`${phone || client.fullName || i}-mobile`}
+                      onClick={() => setSelectedLoyaltyClient({ ...client, name: client.fullName || client.name })}
+                      className="p-4"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#9CA3AF]">#{i + 1}</p>
+                          <h4 className="mt-1 text-[17px] font-semibold text-[#1F2937]">{client.fullName || client.name || 'Неизвестно'}</h4>
+                          <p className="mt-1 text-[14px] font-medium text-[#9CA3AF]">+{phone || 'нет телефона'}</p>
+                        </div>
+                        <p className="shrink-0 text-right text-[16px] font-semibold text-[#2EBA7F]">{formatCurrency(client.totalSpent ?? client.total ?? 0)}</p>
+                      </div>
+                      <div className="mt-3 grid grid-cols-2 gap-2">
+                        <div className="rounded-[8px] border border-[#E6E9EF] p-3">
+                          <p className="text-[10px] font-semibold uppercase tracking-[0.15em] text-[#9CA3AF]">Заказы</p>
+                          <p className="mt-1 text-[18px] font-semibold text-[#1F2937]">{client.ordersCount ?? client.count ?? 0}</p>
+                        </div>
+                        <div className="rounded-[8px] border border-[#E6E9EF] p-3">
+                          <p className="text-[10px] font-semibold uppercase tracking-[0.15em] text-[#9CA3AF]">Касание</p>
+                          <p className="mt-1 text-[14px] font-semibold text-[#1F2937]">{days === null ? 'Не писали' : days === 0 ? 'сегодня' : `${days} дн.`}</p>
+                        </div>
+                      </div>
+                      <div className="mt-3 flex flex-wrap gap-2 text-[12px] font-semibold text-[#6B7280]">
+                        {client.city && <span className="rounded-[6px] bg-[#F6F7F9] px-2 py-1">{client.city}</span>}
+                        {client.insta && <span className="rounded-[6px] bg-[#F6F7F9] px-2 py-1">@{client.insta.replace('@', '')}</span>}
                       </div>
                     </div>
-                  </div>
-                  {/* Right: sum + orders */}
-                  <div className="flex flex-col items-end gap-1 shrink-0">
-                    <span className="text-[12px] font-bold text-zinc-900 tracking-tight whitespace-nowrap">{formatCurrency(client.totalSpent ?? client.total ?? 0)}</span>
-                    {(client.ordersCount ?? client.count) ? (
-                      <span className="text-[9px] text-zinc-400">{client.ordersCount ?? client.count} заказов</span>
-                    ) : null}
-                  </div>
-                </div>
+                  );
+                })}
+              </div>
 
-                {/* Inline email row */}
-                {!client.email && (
-                  <div className="px-3 pb-1" onClick={e => e.stopPropagation()}>
-                    {inlineEmailPhone === (client.phone || client.userId) ? (
-                      <div className="flex gap-2">
-                        <input
-                          type="email"
-                          value={inlineEmailValue}
-                          onChange={e => setInlineEmailValue(e.target.value)}
-                          onKeyDown={e => e.key === 'Enter' && handleEmailSave(client)}
-                          autoFocus
-                          placeholder="email@example.com"
-                          className="flex-1 px-3 py-1.5 bg-blue-50 border border-blue-200 rounded-lg text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-blue-400"
-                        />
-                        <button
-                          onClick={() => handleEmailSave(client)}
-                          disabled={inlineEmailSaving || !inlineEmailValue.trim()}
-                          className="px-3 py-1.5 bg-blue-500 text-white rounded-lg text-[10px] font-black disabled:opacity-40"
-                        >
-                          {inlineEmailSaving ? <RefreshCcw size={10} className="animate-spin" /> : 'OK'}
-                        </button>
-                        <button onClick={() => setInlineEmailPhone(null)} className="px-2 py-1.5 text-zinc-400 hover:text-zinc-700">
-                          <X size={12} />
-                        </button>
-                      </div>
-                    ) : (
-                      <button
-                        onClick={() => { setInlineEmailPhone(client.phone || client.userId); setInlineEmailValue(''); }}
-                        className="inline-flex items-center gap-1 text-[9px] font-bold text-blue-400 hover:text-blue-600 transition-colors"
+              {visibleClients.map((client: any, i: number) => {
+                const phone = client.phone || client.userId;
+                if (inlineExpandedPhone !== phone) return null;
+                return (
+                  <div key={`contact-${phone || i}`} className="border-t border-[#E6E9EF] bg-[#F6F7F9] p-4" onClick={e => e.stopPropagation()}>
+                    <div className="grid gap-2 md:grid-cols-[180px_1fr_auto]">
+                      <select
+                        value={inlineTag}
+                        onChange={e => setInlineTag(e.target.value)}
+                        className="h-10 rounded-[8px] border border-[#E6E9EF] bg-white px-3 text-[13px] font-medium outline-none focus:border-[#7D7DE6]"
                       >
-                        <Mail size={9} /> + добавить email
-                      </button>
-                    )}
-                  </div>
-                )}
-
-                {/* Inline contact row */}
-                <div className="px-3 pb-3 space-y-2" onClick={e => e.stopPropagation()}>
-                  <div className="flex items-center gap-2">
-                    <span className="inline-flex items-center gap-1 text-[9px] font-bold text-zinc-400 px-2 py-1.5 bg-zinc-50 border border-zinc-100 rounded-lg shrink-0">
-                      <Clock size={9} className="text-zinc-300" />
-                      {client.lastContactAt
-                        ? new Date(client.lastContactAt).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: '2-digit' })
-                        : 'Не писали'}
-                    </span>
-                    <select
-                      value={inlineExpandedPhone === (client.phone || client.userId) ? inlineTag : ''}
-                      onChange={e => {
-                        setInlineExpandedPhone(client.phone || client.userId);
-                        setInlineTag(e.target.value);
-                      }}
-                      onClick={() => setInlineExpandedPhone(client.phone || client.userId)}
-                      className="flex-1 px-2 py-1.5 bg-zinc-50 border border-zinc-200 rounded-lg text-[10px] font-medium focus:outline-none focus:ring-1 focus:ring-zinc-300"
-                    >
-                      <option value="">— Метка —</option>
-                      {handbookLabels.map(l => <option key={l} value={l}>{l}</option>)}
-                    </select>
-                  </div>
-                  <div className="flex gap-2">
-                    <input
-                      type="text"
-                      value={inlineExpandedPhone === (client.phone || client.userId) ? inlineNote : ''}
-                      onChange={e => {
-                        setInlineExpandedPhone(client.phone || client.userId);
-                        setInlineNote(e.target.value);
-                      }}
-                      onFocus={() => setInlineExpandedPhone(client.phone || client.userId)}
-                      placeholder="Заметка о касании..."
-                      onKeyDown={e => e.key === 'Enter' && inlineExpandedPhone === (client.phone || client.userId) && handleInlineSave(client)}
-                      className="flex-1 px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-lg text-[11px] font-medium focus:outline-none focus:ring-1 focus:ring-zinc-300 focus:bg-white"
-                    />
-                    {inlineExpandedPhone === (client.phone || client.userId) && inlineNote.trim() && (
+                        <option value="">Метка</option>
+                        {handbookLabels.map(l => <option key={l} value={l}>{l}</option>)}
+                      </select>
+                      <input
+                        type="text"
+                        value={inlineNote}
+                        onChange={e => setInlineNote(e.target.value)}
+                        placeholder="Заметка о касании..."
+                        onKeyDown={e => e.key === 'Enter' && handleInlineSave(client)}
+                        className="h-10 rounded-[8px] border border-[#E6E9EF] bg-white px-3 text-[13px] font-medium outline-none focus:border-[#7D7DE6]"
+                      />
                       <button
                         onClick={() => handleInlineSave(client)}
-                        disabled={inlineSaving}
-                        className="flex items-center gap-1 px-3 py-2 bg-zinc-900 text-white rounded-lg text-[10px] font-black uppercase tracking-widest hover:bg-zinc-700 transition-colors disabled:opacity-40 shrink-0"
+                        disabled={inlineSaving || !inlineNote.trim()}
+                        className="inline-flex h-10 items-center justify-center gap-2 rounded-[8px] bg-[#1F2937] px-4 text-[12px] font-semibold uppercase tracking-[0.12em] text-white disabled:opacity-40"
                       >
-                        {inlineSaving ? <RefreshCcw size={10} className="animate-spin" /> : <Send size={10} />}
-                        Сохр.
+                        {inlineSaving ? <RefreshCcw size={14} className="animate-spin" /> : <Send size={14} />}
+                        Сохранить
                       </button>
-                    )}
+                    </div>
                   </div>
+                );
+              })}
+
+              {visibleClients.length === 0 && (
+                <div className="px-4 py-12 text-center text-[14px] font-medium text-[#9CA3AF]">
+                  Клиенты не найдены
                 </div>
-              </div>
-            ))}
-        </div>
-        {(() => {
-          const total = fbClients.length || stats.topClients.length;
-          return clientPage < total ? (
-            <div className="p-3 border-t border-zinc-100 text-center">
+              )}
+            </>
+          )}
+
+          {clientPage < filteredClients.length && !searchTerm ? (
+            <div className="border-t border-[#E6E9EF] p-4 text-center">
               <button
                 onClick={() => setClientPage(p => p + PAGE_SIZE)}
-                className="text-[9px] font-black uppercase tracking-widest text-zinc-500 hover:text-zinc-900 transition-colors px-4 py-2 bg-zinc-50 hover:bg-zinc-100 rounded-lg border border-zinc-100"
+                className="rounded-[8px] border border-[#E6E9EF] bg-white px-5 py-2.5 text-[13px] font-semibold text-[#6B7280] transition hover:border-[#CBD5E1] hover:text-[#1F2937]"
               >
-                Показать ещё {Math.min(PAGE_SIZE, total - clientPage)} из {total - clientPage} оставшихся
+                Показать еще {Math.min(PAGE_SIZE, filteredClients.length - clientPage)} из {filteredClients.length - clientPage}
               </button>
             </div>
-          ) : null;
-        })()}
-      </div>
+          ) : null}
+        </div>
+      </section>
 
       {/* Client Detail Overlay */}
       <AnimatePresence>
