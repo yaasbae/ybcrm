@@ -2,14 +2,15 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { 
   ArrowLeft, DollarSign, TrendingUp, TrendingDown, 
   Plus, Calendar as CalendarIcon, PieChart, 
-  ArrowRight, Save, Trash2, AlertCircle, 
+  Trash2, AlertCircle,
   ChevronRight, ChevronLeft, Briefcase, CreditCard,
-  Building, UserCheck, Filter, Download
+  Building, UserCheck, Download, RefreshCcw,
+  Wallet, Database, ReceiptText
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn, formatCurrency } from '../lib/utils';
 import { db, OperationType, handleFirestoreError } from '../firebase';
-import { collection, onSnapshot, doc, setDoc, query, orderBy, deleteDoc, addDoc, serverTimestamp, getDocs } from 'firebase/firestore';
+import { collection, onSnapshot, doc, query, orderBy, deleteDoc, addDoc, serverTimestamp } from 'firebase/firestore';
 
 interface FinanceDashboardProps {
   onBack: () => void;
@@ -24,18 +25,54 @@ interface Expense {
   isRecurring?: boolean;
 }
 
-interface Income {
-  id: string;
-  source: string;
-  amount: number;
-  date: Date;
-}
+const monthNames = ['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'];
+
+const manualReturnOperations = [
+  { date: new Date(2026, 0, 26), amount: 17900 },
+  { date: new Date(2026, 0, 26), amount: 15000 },
+  { date: new Date(2026, 0, 13), amount: 5900 },
+  { date: new Date(2026, 2, 31), amount: 13550 },
+  { date: new Date(2026, 2, 11), amount: 11250 },
+  { date: new Date(2026, 2, 6), amount: 11900 },
+  { date: new Date(2026, 2, 6), amount: 10000 },
+  { date: new Date(2026, 3, 29), amount: 8450 },
+  { date: new Date(2026, 3, 20), amount: 11900 },
+  { date: new Date(2026, 3, 15), amount: 11900 },
+  { date: new Date(2026, 3, 13), amount: 10900 },
+  { date: new Date(2026, 3, 13), amount: 10000 },
+  { date: new Date(2026, 3, 2), amount: 17250 },
+  { date: new Date(2026, 4, 27), amount: 16250 },
+  { date: new Date(2026, 4, 22), amount: 9950 },
+  { date: new Date(2026, 4, 15), amount: 20550 },
+  { date: new Date(2026, 4, 12), amount: 6000 },
+  { date: new Date(2026, 4, 12), amount: 4400 },
+  { date: new Date(2026, 4, 11), amount: 15600 },
+  { date: new Date(2026, 4, 9), amount: 18900 },
+];
+
+const normalizeDate = (value: any): Date => {
+  if (value?.toDate) return value.toDate();
+  const date = value ? new Date(value) : new Date();
+  return Number.isNaN(date.getTime()) ? new Date() : date;
+};
+
+const getOrderRevenue = (order: any): number => {
+  if (Number(order.revenue) > 0) return Number(order.revenue) || 0;
+  if (Array.isArray(order.itemPrices)) {
+    return order.itemPrices.reduce((sum: number, value: any) => sum + (Number(value) || 0), 0);
+  }
+  return Number(order.price) || 0;
+};
+
+const isActiveSale = (order: any): boolean => {
+  const status = String(order.status || '').toLowerCase();
+  return getOrderRevenue(order) > 0 && !status.includes('возврат') && !status.includes('отмена');
+};
 
 export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack }) => {
   const [activeTab, setActiveTab] = useState<'dds' | 'calendar' | 'expenses'>('dds');
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [orders, setOrders] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [newExpense, setNewExpense] = useState({
     category: 'other' as const,
@@ -64,7 +101,7 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack }) =>
       let ordData = snapshot.docs.map(doc => ({
         id: doc.id,
         ...doc.data(),
-        date: doc.data().date ? new Date(doc.data().date) : (doc.data().orderDate ? new Date(doc.data().orderDate) : new Date())
+        date: normalizeDate(doc.data().date || doc.data().orderDate)
       }));
       // Sort client side
       ordData.sort((a: any, b: any) => {
@@ -73,7 +110,6 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack }) =>
         return dateB - dateA;
       });
       setOrders(ordData);
-      setLoading(false);
     });
 
     return () => {
@@ -113,56 +149,102 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack }) =>
   };
 
   const financialStats = useMemo(() => {
-    let totalReceived = 0;
-    let totalOwed = 0;
-    
-    orders.forEach(o => {
-      const prepayment = Number(o.prepaymentAmount) || 0;
-      const price = Number(o.price) || 0;
-      const remains = Number(o.remainingAmount) || (price - prepayment);
-      
-      totalReceived += prepayment;
-      if (o.paymentStatus === 'paid') {
-        totalReceived += remains;
-      } else {
-        totalOwed += remains;
+    const monthlyData: Record<string, {
+      year: number;
+      month: number;
+      label: string;
+      orders: number;
+      sales: number;
+      planned: number;
+      income: number;
+      owed: number;
+      delivery: number;
+      returns: number;
+      expense: number;
+      net: number;
+    }> = {};
+
+    const ensureMonth = (date: Date) => {
+      const year = date.getFullYear();
+      const month = date.getMonth();
+      const key = `${year}-${month + 1}`;
+      if (!monthlyData[key]) {
+        monthlyData[key] = {
+          year,
+          month,
+          label: `${monthNames[month]} ${year} г.`,
+          orders: 0,
+          sales: 0,
+          planned: 0,
+          income: 0,
+          owed: 0,
+          delivery: 0,
+          returns: 0,
+          expense: 0,
+          net: 0,
+        };
       }
+      return monthlyData[key];
+    };
+
+    orders.forEach(order => {
+      const orderDate = normalizeDate(order.date || order.orderDate);
+      const month = ensureMonth(orderDate);
+      const revenue = getOrderRevenue(order);
+      const delivery = Number(order.deliveryPrice ?? order.shippingCost) || 0;
+      const paid = Number(order.paidAmount ?? order.paymentAmount ?? order.prepaymentAmount) || 0;
+      const due = Math.max(0, revenue + delivery - paid);
+      const status = String(order.status || '').toLowerCase();
+
+      month.orders += 1;
+      if (status.includes('возврат')) {
+        month.returns += Number(order.refundAmount) || paid || revenue;
+        return;
+      }
+      if (!isActiveSale(order)) return;
+
+      month.sales += 1;
+      month.planned += revenue + delivery;
+      month.income += paid;
+      month.owed += due;
+      month.delivery += delivery;
     });
 
-    const totalExpenses = expenses.reduce((a, b) => a + b.amount, 0);
-    const balance = totalReceived - totalExpenses;
-
-    // Monthly breakdown
-    const monthlyData: { [key: string]: { income: number; expense: number; expected: number } } = {};
-    
-    orders.forEach(o => {
-      // Handle Order Date (Prepayment Month)
-      const orderDate = o.date ? (typeof o.date === 'string' ? new Date(o.date) : o.date) : new Date();
-      const oMonth = orderDate.toLocaleString('default', { month: 'short', year: 'numeric' });
-      
-      if (!monthlyData[oMonth]) monthlyData[oMonth] = { income: 0, expense: 0, expected: 0 };
-      const prepayment = Number(o.prepaymentAmount) || 0;
-      monthlyData[oMonth].income += prepayment;
-      monthlyData[oMonth].expected += (Number(o.price) || 0);
-      
-      // Handle Final Payment Date if paid
-      if (o.paymentStatus === 'paid' && o.finalPaymentDate) {
-        const finalDate = new Date(o.finalPaymentDate);
-        const finalMonth = finalDate.toLocaleString('default', { month: 'short', year: 'numeric' });
-        if (!monthlyData[finalMonth]) monthlyData[finalMonth] = { income: 0, expense: 0, expected: 0 };
-        monthlyData[finalMonth].income += (Number(o.price) || 0) - prepayment;
-      }
+    manualReturnOperations.forEach(operation => {
+      ensureMonth(operation.date).returns += operation.amount;
     });
 
-    expenses.forEach(e => {
-      const month = e.date?.toLocaleString('default', { month: 'short', year: 'numeric' });
-      if (month) {
-        if (!monthlyData[month]) monthlyData[month] = { income: 0, expense: 0, expected: 0 };
-        monthlyData[month].expense += e.amount;
-      }
+    expenses.forEach(expense => {
+      ensureMonth(expense.date).expense += Number(expense.amount) || 0;
     });
 
-    return { received: totalReceived, owed: totalOwed, expenses: totalExpenses, balance, monthlyData };
+    const monthlyRows = Object.values(monthlyData)
+      .map(month => ({
+        ...month,
+        net: month.income - month.returns - month.expense,
+      }))
+      .sort((a, b) => (b.year * 12 + b.month) - (a.year * 12 + a.month));
+
+    const totalReceived = monthlyRows.reduce((sum, month) => sum + month.income, 0);
+    const totalOwed = monthlyRows.reduce((sum, month) => sum + month.owed, 0);
+    const totalExpenses = monthlyRows.reduce((sum, month) => sum + month.expense, 0);
+    const totalReturns = monthlyRows.reduce((sum, month) => sum + month.returns, 0);
+    const totalPlanned = monthlyRows.reduce((sum, month) => sum + month.planned, 0);
+    const totalSales = monthlyRows.reduce((sum, month) => sum + month.sales, 0);
+    const totalOrders = monthlyRows.reduce((sum, month) => sum + month.orders, 0);
+    const balance = totalReceived - totalReturns - totalExpenses;
+
+    return {
+      received: totalReceived,
+      owed: totalOwed,
+      expenses: totalExpenses,
+      returns: totalReturns,
+      planned: totalPlanned,
+      sales: totalSales,
+      orders: totalOrders,
+      balance,
+      monthlyRows,
+    };
   }, [orders, expenses]);
 
   const categories = {
@@ -246,6 +328,41 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack }) =>
           </div>
         </div>
 
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+          <div className="rounded-2xl border border-slate-100 bg-white p-4 shadow-sm">
+            <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-slate-400">
+              <ReceiptText size={14} />
+              Заказы CRM
+            </div>
+            <p className="mt-2 text-xl font-black text-slate-900">{financialStats.orders}</p>
+            <p className="text-[11px] font-bold text-slate-400">{financialStats.sales} продаж</p>
+          </div>
+          <div className="rounded-2xl border border-slate-100 bg-white p-4 shadow-sm">
+            <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-slate-400">
+              <Wallet size={14} />
+              Сумма заказов
+            </div>
+            <p className="mt-2 text-xl font-black text-slate-900">{formatCurrency(financialStats.planned)}</p>
+            <p className="text-[11px] font-bold text-slate-400">товары + доставка</p>
+          </div>
+          <div className="rounded-2xl border border-red-100 bg-red-50/40 p-4 shadow-sm">
+            <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-red-400">
+              <RefreshCcw size={14} />
+              Возвраты
+            </div>
+            <p className="mt-2 text-xl font-black text-red-500">-{formatCurrency(financialStats.returns)}</p>
+            <p className="text-[11px] font-bold text-red-300">учтены в чистом итоге</p>
+          </div>
+          <div className="rounded-2xl border border-slate-100 bg-white p-4 shadow-sm">
+            <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-slate-400">
+              <Database size={14} />
+              После возвратов
+            </div>
+            <p className="mt-2 text-xl font-black text-slate-900">{formatCurrency(Math.max(0, financialStats.received - financialStats.returns))}</p>
+            <p className="text-[11px] font-bold text-slate-400">до ручных расходов</p>
+          </div>
+        </div>
+
         {/* Tabs */}
         <div className="flex gap-2 p-1 bg-slate-100/50 rounded-2xl w-fit">
           {[
@@ -287,24 +404,40 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack }) =>
                     <thead>
                       <tr className="bg-slate-50/50">
                         <th className="px-6 py-4 text-left text-[10px] font-bold text-slate-400 uppercase tracking-widest">Период</th>
-                        <th className="px-6 py-4 text-right text-[10px] font-bold text-slate-400 uppercase tracking-widest">Заказы (План)</th>
-                        <th className="px-6 py-4 text-right text-[10px] font-bold text-slate-400 uppercase tracking-widest">Касса (Факт)</th>
+                        <th className="px-6 py-4 text-right text-[10px] font-bold text-slate-400 uppercase tracking-widest">Заказы</th>
+                        <th className="px-6 py-4 text-right text-[10px] font-bold text-slate-400 uppercase tracking-widest">Сумма заказов</th>
+                        <th className="px-6 py-4 text-right text-[10px] font-bold text-emerald-500 uppercase tracking-widest">Оплачено</th>
+                        <th className="px-6 py-4 text-right text-[10px] font-bold text-orange-500 uppercase tracking-widest">К доплате</th>
+                        <th className="px-6 py-4 text-right text-[10px] font-bold text-red-500 uppercase tracking-widest">Возвраты</th>
                         <th className="px-6 py-4 text-right text-[10px] font-bold text-slate-400 uppercase tracking-widest">Расход</th>
                         <th className="px-6 py-4 text-right text-[10px] font-bold text-slate-400 uppercase tracking-widest">Сальдо</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-50">
-                      {Object.entries(financialStats.monthlyData).sort((a,b) => b[0].localeCompare(a[0])).map(([period, values]) => (
-                        <tr key={period} className="hover:bg-slate-50/50 transition-colors">
-                          <td className="px-6 py-4 text-sm font-bold text-slate-700">{period}</td>
-                          <td className="px-6 py-4 text-right text-xs font-bold text-slate-400">{formatCurrency(values.expected)}</td>
+                      {financialStats.monthlyRows.map((values) => (
+                        <tr key={`${values.year}-${values.month}`} className="hover:bg-slate-50/50 transition-colors">
+                          <td className="px-6 py-4 text-sm font-bold text-slate-700">{values.label}</td>
+                          <td className="px-6 py-4 text-right text-sm font-bold text-slate-500">{values.orders} / {values.sales}</td>
+                          <td className="px-6 py-4 text-right text-sm font-bold text-slate-900">{formatCurrency(values.planned)}</td>
                           <td className="px-6 py-4 text-right text-sm font-bold text-emerald-600">+{formatCurrency(values.income)}</td>
-                          <td className="px-6 py-4 text-right text-sm font-bold text-red-500">-{formatCurrency(values.expense)}</td>
-                          <td className={cn("px-6 py-4 text-right text-sm font-black", values.income - values.expense >= 0 ? "text-slate-900" : "text-orange-500")}>
-                            {formatCurrency(values.income - values.expense)}
+                          <td className={cn("px-6 py-4 text-right text-sm font-bold", values.owed > 0 ? "text-orange-500" : "text-slate-300")}>{formatCurrency(values.owed)}</td>
+                          <td className={cn("px-6 py-4 text-right text-sm font-bold", values.returns > 0 ? "text-red-500" : "text-slate-300")}>-{formatCurrency(values.returns)}</td>
+                          <td className={cn("px-6 py-4 text-right text-sm font-bold", values.expense > 0 ? "text-red-500" : "text-slate-300")}>-{formatCurrency(values.expense)}</td>
+                          <td className={cn("px-6 py-4 text-right text-sm font-black", values.net >= 0 ? "text-slate-900" : "text-orange-500")}>
+                            {formatCurrency(values.net)}
                           </td>
                         </tr>
                       ))}
+                      <tr className="bg-slate-50/70 text-sm font-black">
+                        <td className="px-6 py-4 text-slate-900">Итого</td>
+                        <td className="px-6 py-4 text-right text-slate-600">{financialStats.orders} / {financialStats.sales}</td>
+                        <td className="px-6 py-4 text-right text-slate-900">{formatCurrency(financialStats.planned)}</td>
+                        <td className="px-6 py-4 text-right text-emerald-600">+{formatCurrency(financialStats.received)}</td>
+                        <td className="px-6 py-4 text-right text-orange-500">{formatCurrency(financialStats.owed)}</td>
+                        <td className="px-6 py-4 text-right text-red-500">-{formatCurrency(financialStats.returns)}</td>
+                        <td className="px-6 py-4 text-right text-red-500">-{formatCurrency(financialStats.expenses)}</td>
+                        <td className="px-6 py-4 text-right text-slate-900">{formatCurrency(financialStats.balance)}</td>
+                      </tr>
                     </tbody>
                   </table>
                 </div>
@@ -423,43 +556,42 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack }) =>
                         {Array.from({ length: 31 }).map((_, i) => {
                           const day = i + 1;
                           const currentDateObj = new Date(currentDate.getFullYear(), currentDate.getMonth(), day);
-                          const dateString = currentDateObj.toISOString().split('T')[0];
-
                           const dayExpenses = expenses.filter(e => e.date.getDate() === day && e.date.getMonth() === currentDate.getMonth() && e.date.getFullYear() === currentDate.getFullYear());
                           
-                          // Prepayments (received on order creation date)
-                          const dayPrepayments = orders.filter(o => {
+                          const dayOrders = orders.filter(o => {
                             const oDate = o.date ? new Date(o.date) : null;
                             return oDate && oDate.getDate() === day && oDate.getMonth() === currentDate.getMonth() && oDate.getFullYear() === currentDate.getFullYear();
-                          }).reduce((a, b) => a + (Number(b.prepaymentAmount) || 0), 0);
-
-                          // Final payments (received on finalPaymentDate)
-                          const dayFinalPayments = orders.filter(o => {
-                            if (!o.finalPaymentDate) return false;
-                            const fDate = new Date(o.finalPaymentDate);
-                            return fDate.getDate() === day && fDate.getMonth() === currentDate.getMonth() && fDate.getFullYear() === currentDate.getFullYear();
-                          }).reduce((a, b) => a + (Number(b.remainingAmount) || 0) + (b.paymentStatus === 'paid' && !b.prepaymentAmount ? Number(b.price) : 0), 0);
+                          });
+                          const dayIncome = dayOrders
+                            .filter(isActiveSale)
+                            .reduce((sum, order) => sum + (Number(order.paidAmount ?? order.paymentAmount ?? order.prepaymentAmount) || 0), 0);
+                          const dayDue = dayOrders
+                            .filter(isActiveSale)
+                            .reduce((sum, order) => {
+                              const revenue = getOrderRevenue(order);
+                              const delivery = Number(order.deliveryPrice ?? order.shippingCost) || 0;
+                              const paid = Number(order.paidAmount ?? order.paymentAmount ?? order.prepaymentAmount) || 0;
+                              return sum + Math.max(0, revenue + delivery - paid);
+                            }, 0);
                           
-                          const totalDayIncome = dayPrepayments + dayFinalPayments;
-
                           return (
                             <div key={i} className={cn(
                               "min-h-[100px] p-2 bg-slate-50 border border-slate-100 rounded-xl space-y-2 relative group hover:border-slate-300 transition-all",
                               dayExpenses.length > 0 && "bg-red-50/20",
-                              totalDayIncome > 0 && "bg-emerald-50/20"
+                              dayIncome > 0 && "bg-emerald-50/20"
                             )}>
                               <span className="text-[10px] font-bold text-slate-400">{day}</span>
                               <div className="space-y-1 mt-1">
-                                {dayPrepayments > 0 && (
+                                {dayIncome > 0 && (
                                   <div className="text-[8px] font-bold text-emerald-600 bg-emerald-100/50 rounded px-1 flex justify-between">
-                                    <span>Пр:</span>
-                                    <span>+{formatCurrency(dayPrepayments)}</span>
+                                    <span>Опл:</span>
+                                    <span>+{formatCurrency(dayIncome)}</span>
                                   </div>
                                 )}
-                                {dayFinalPayments > 0 && (
-                                  <div className="text-[8px] font-bold text-blue-600 bg-blue-100/50 rounded px-1 flex justify-between">
-                                    <span>Доп:</span>
-                                    <span>+{formatCurrency(dayFinalPayments)}</span>
+                                {dayDue > 0 && (
+                                  <div className="text-[8px] font-bold text-orange-600 bg-orange-100/60 rounded px-1 flex justify-between">
+                                    <span>Долг:</span>
+                                    <span>{formatCurrency(dayDue)}</span>
                                   </div>
                                 )}
                                 {dayExpenses.map(e => (
