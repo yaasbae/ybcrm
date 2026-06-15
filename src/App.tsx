@@ -10,6 +10,7 @@ const Products = lazy(() => import("./components/Products").then(m => ({ default
 const AISalesAgent = lazy(() => import("./components/AISalesAgent").then(m => ({ default: m.AISalesAgent })));
 const PublicProductView = lazy(() => import("./components/PublicProductView").then(m => ({ default: m.PublicProductView })));
 const FinanceDashboard = lazy(() => import("./components/FinanceDashboard").then(m => ({ default: m.FinanceDashboard })));
+const PayrollPage = lazy(() => import("./components/PayrollPage").then(m => ({ default: m.PayrollPage })));
 const HandbookPage = lazy(() => import("./components/HandbookPage").then(m => ({ default: m.HandbookPage })));
 const BroadcastPage = lazy(() => import("./components/BroadcastPage").then(m => ({ default: m.BroadcastPage })));
 const BroadcastV2Page = lazy(() => import("./components/BroadcastV2Page").then(m => ({ default: m.BroadcastV2Page })));
@@ -24,11 +25,11 @@ import { cn } from "./lib/utils";
 import {
   LogIn, LogOut, User as UserIcon, AlertCircle,
   DollarSign, Calculator, LayoutDashboard, Package, Bot, ShoppingBag,
-  UserCircle, Star, Calendar as CalendarIcon, BookOpen, Send, Sparkles, Wand2, Truck
+  UserCircle, Star, Calendar as CalendarIcon, BookOpen, Send, Sparkles, Wand2, Truck, ReceiptText
 } from "lucide-react";
 import { motion } from "motion/react";
 
-type AppView = 'home' | 'calculator' | 'analytics' | 'orders' | 'clients' | 'marketing' | 'order-form' | 'products' | 'ai-agent' | 'public-product' | 'public-payment' | 'finance' | 'handbook' | 'broadcast' | 'broadcast-v2' | 'bot' | 'content' | 'studio' | 'cdek';
+type AppView = 'home' | 'calculator' | 'analytics' | 'orders' | 'clients' | 'marketing' | 'order-form' | 'products' | 'ai-agent' | 'public-product' | 'public-payment' | 'finance' | 'payroll' | 'handbook' | 'broadcast' | 'broadcast-v2' | 'bot' | 'content' | 'studio' | 'cdek';
 
 const viewRoutes: Record<Exclude<AppView, 'public-product' | 'public-payment'>, string> = {
   home: '/',
@@ -41,6 +42,7 @@ const viewRoutes: Record<Exclude<AppView, 'public-product' | 'public-payment'>, 
   products: '/products',
   'ai-agent': '/ai-agent',
   finance: '/finance',
+  payroll: '/payroll',
   handbook: '/handbook',
   broadcast: '/broadcast',
   'broadcast-v2': '/broadcast-v2',
@@ -202,7 +204,7 @@ export default function App() {
     };
   }, []);
 
-  const handleNavigate = (newView: 'calculator' | 'analytics' | 'orders' | 'clients' | 'marketing' | 'order-form' | 'products' | 'ai-agent' | 'finance' | 'handbook' | 'broadcast' | 'broadcast-v2' | 'bot' | 'content' | 'studio' | 'cdek' | 'home', clientData?: any) => {
+  const handleNavigate = (newView: 'calculator' | 'analytics' | 'orders' | 'clients' | 'marketing' | 'order-form' | 'products' | 'ai-agent' | 'finance' | 'payroll' | 'handbook' | 'broadcast' | 'broadcast-v2' | 'bot' | 'content' | 'studio' | 'cdek' | 'home', clientData?: any) => {
     if (clientData) setInitialClient(clientData);
     else setInitialClient(null);
     setView(newView);
@@ -415,6 +417,7 @@ export default function App() {
                 { id: 'home',      label: 'Главная',  icon: LayoutDashboard },
                 { id: 'calculator',label: 'Юнит',     icon: Calculator },
                 { id: 'finance',   label: 'Финансы',  icon: DollarSign },
+                { id: 'payroll',   label: 'ФОТ',      icon: ReceiptText },
                 { id: 'analytics', label: 'Аналит.',  icon: LayoutDashboard },
                 { id: 'orders',    label: 'Заказы',   icon: ShoppingBag },
                 { id: 'clients',   label: 'Клиент.',  icon: UserCircle },
@@ -530,6 +533,10 @@ export default function App() {
 
           {view === 'finance' && (
             <FinanceDashboard onBack={() => handleNavigate('home')} />
+          )}
+
+          {view === 'payroll' && (
+            <PayrollPage onBack={() => handleNavigate('home')} />
           )}
 
           {view === 'handbook' && (
