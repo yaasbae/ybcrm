@@ -1,468 +1,478 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import Papa from 'papaparse';
 import {
   ArrowLeft,
   Briefcase,
-  CalendarDays,
+  Calculator,
   CheckCircle2,
-  Clock,
   Download,
-  RefreshCcw,
+  Plus,
   ReceiptText,
-  Search,
-  Users,
+  Trash2,
+  UserRound,
   Wallet,
 } from 'lucide-react';
+import Papa from 'papaparse';
 import { cn, formatCurrency } from '../lib/utils';
 
 interface PayrollPageProps {
   onBack: () => void;
 }
 
-interface PayrollEmployee {
+type PayType = 'salary' | 'hourly' | 'shift' | 'piece' | 'mixed';
+
+interface PayrollPerson {
   id: string;
-  department: string;
-  payType: string;
   name: string;
-  phone: string;
+  department: string;
   role: string;
-  salary: number;
+  payType: PayType;
+  baseSalary: number;
+  normDays: number;
+  workedDays: number;
   hourlyRate: number;
+  normHours: number;
+  workedHours: number;
   shiftRate: number;
-  workedFirst: number;
-  workedSecond: number;
-  earnedFirst: number;
-  earnedSecond: number;
+  shifts: number;
+  pieceAmount: number;
+  percentRate: number;
+  percentBase: number;
+  bonus: number;
   paid: number;
-  debt: number;
+  note: string;
 }
 
-interface PayrollSummaryRow {
-  manager: string;
-  kind: string;
-  sales: number;
-  amount: number;
-  salary: number;
-}
+const STORAGE_KEY = 'ybcrm.payroll.people.v1';
 
-const PAYROLL_SHEET_ID = '182Rshoz5PhHYVgz-FzqFEiO24bcIXqLHIble9wEsgHM';
-const PAYROLL_GID = '1163158895';
-
-const sectionNames = [
-  'Административный персонал',
-  'Отдел продаж',
-  'Производство г.Казань',
-  'Производство г. Казань',
-  'Производство г. Вятские Поляны',
-];
-
-const monthNameMap: Record<string, string> = {
-  '01': 'Январь',
-  '02': 'Февраль',
-  '03': 'Март',
-  '04': 'Апрель',
-  '05': 'Май',
-  '06': 'Июнь',
-  '07': 'Июль',
-  '08': 'Август',
-  '09': 'Сентябрь',
-  '10': 'Октябрь',
-  '11': 'Ноябрь',
-  '12': 'Декабрь',
+const payTypeLabels: Record<PayType, string> = {
+  salary: 'Оклад',
+  hourly: 'Почасовая',
+  shift: 'Выход / смена',
+  piece: 'Сдельная',
+  mixed: 'Смешанная',
 };
 
-const parseMoney = (value: any): number => {
-  if (value === null || value === undefined) return 0;
-  const normalized = String(value)
-    .replace(/\u00A0/g, '')
-    .replace(/\s/g, '')
-    .replace(',', '.')
-    .replace(/[^\d.-]/g, '');
-  const parsed = Number(normalized);
+const defaultPeople: PayrollPerson[] = [
+  {
+    id: 'manager-2-example',
+    name: 'Менеджер 2',
+    department: 'Отдел продаж',
+    role: 'Менеджер по продажам',
+    payType: 'mixed',
+    baseSalary: 0,
+    normDays: 22,
+    workedDays: 0,
+    hourlyRate: 0,
+    normHours: 176,
+    workedHours: 0,
+    shiftRate: 1000,
+    shifts: 12,
+    pieceAmount: 0,
+    percentRate: 5,
+    percentBase: 600000,
+    bonus: 0,
+    paid: 0,
+    note: 'Пример: смена 1000 рублей + 5% от продаж.',
+  },
+  {
+    id: 'cutter-example',
+    name: 'Закройщик',
+    department: 'Производство',
+    role: 'Закройщик',
+    payType: 'hourly',
+    baseSalary: 0,
+    normDays: 22,
+    workedDays: 0,
+    hourlyRate: 500,
+    normHours: 176,
+    workedHours: 160,
+    shiftRate: 0,
+    shifts: 0,
+    pieceAmount: 0,
+    percentRate: 0,
+    percentBase: 0,
+    bonus: 0,
+    paid: 0,
+    note: 'Пример: норма 176 часов, ставка 500 рублей в час.',
+  },
+];
+
+const createPerson = (): PayrollPerson => ({
+  id: `person-${Date.now()}`,
+  name: '',
+  department: 'Производство',
+  role: '',
+  payType: 'mixed',
+  baseSalary: 0,
+  normDays: 22,
+  workedDays: 0,
+  hourlyRate: 0,
+  normHours: 176,
+  workedHours: 0,
+  shiftRate: 0,
+  shifts: 0,
+  pieceAmount: 0,
+  percentRate: 0,
+  percentBase: 0,
+  bonus: 0,
+  paid: 0,
+  note: '',
+});
+
+const numberValue = (value: unknown) => {
+  const parsed = Number(String(value ?? '').replace(/\s/g, '').replace(',', '.'));
   return Number.isFinite(parsed) ? parsed : 0;
 };
 
-const isPeriodRow = (row: string[]) => /^\d{2}\.\d{2}$/.test(String(row[0] || '').trim());
-
-const getPeriodTitle = (start: string, end: string) => {
-  const [, month] = start.split('.');
-  const year = String(end || '').split('.').pop() || '2026';
-  return `${monthNameMap[month] || 'Месяц'} ${year}`;
+const calculateAccrued = (person: PayrollPerson) => {
+  const salaryPart = person.baseSalary > 0
+    ? person.baseSalary * (person.normDays > 0 ? person.workedDays / person.normDays : 1)
+    : 0;
+  const hourlyPart = person.hourlyRate * person.workedHours;
+  const shiftPart = person.shiftRate * person.shifts;
+  const piecePart = person.pieceAmount;
+  const percentPart = person.percentBase * (person.percentRate / 100);
+  return Math.max(salaryPart + hourlyPart + shiftPart + piecePart + percentPart + person.bonus, 0);
 };
 
-const normalizeRows = (rows: any[][]) => rows.map(row => Array.from({ length: 18 }, (_, index) => String(row[index] ?? '').trim()));
-
-const parsePayroll = (csv: string) => {
-  const parsed = Papa.parse<string[]>(csv, { skipEmptyLines: false });
-  const rows = normalizeRows(parsed.data as any[][]);
-  const startIndex = rows.findIndex(row => isPeriodRow(row));
-  const sourceRows = startIndex >= 0 ? rows.slice(startIndex) : rows;
-  const nextPeriodIndex = sourceRows.findIndex((row, index) => index > 0 && isPeriodRow(row));
-  const block = nextPeriodIndex > 0 ? sourceRows.slice(0, nextPeriodIndex) : sourceRows;
-
-  const periodStart = block[0]?.[0] || '';
-  const periodEnd = block[0]?.[1] || '';
-  const title = getPeriodTitle(periodStart, periodEnd);
-
-  let department = 'Без отдела';
-  const employees: PayrollEmployee[] = [];
-
-  block.forEach((row, index) => {
-    const possibleSection = row[4];
-    if (possibleSection && sectionNames.some(section => possibleSection.toLowerCase() === section.toLowerCase())) {
-      department = possibleSection;
-      return;
-    }
-
-    const name = row[5];
-    if (!name || name.toLowerCase() === 'фио' || name.toLowerCase().includes('итого')) return;
-    if (!row[4] && !row[7] && !row[8] && !row[10] && !row[11]) return;
-
-    const earnedFirst = parseMoney(row[10]);
-    const earnedSecond = parseMoney(row[11]);
-    const paid = [12, 13, 14, 15].reduce((sum, cellIndex) => sum + parseMoney(row[cellIndex]), 0);
-    const explicitDebt = [16, 17].map(cellIndex => parseMoney(row[cellIndex])).find(value => value > 0) || 0;
-    const earned = earnedFirst + earnedSecond;
-
-    employees.push({
-      id: `${index}-${name}`,
-      department,
-      payType: row[4] || 'не указан',
-      name,
-      phone: row[6],
-      role: row[7] || 'не указана',
-      salary: parseMoney(row[0]),
-      hourlyRate: parseMoney(row[1]),
-      shiftRate: parseMoney(row[2]),
-      workedFirst: parseMoney(row[8]),
-      workedSecond: parseMoney(row[9]),
-      earnedFirst,
-      earnedSecond,
-      paid,
-      debt: explicitDebt || Math.max(earned - paid, 0),
-    });
-  });
-
-  const summaryStart = block.findIndex(row => row.some(cell => cell.toLowerCase().includes('короткая сводка')));
-  const summaryRows: PayrollSummaryRow[] = summaryStart >= 0
-    ? block.slice(summaryStart + 2).map(row => ({
-      manager: row[1],
-      kind: row[2],
-      sales: parseMoney(row[3]),
-      amount: parseMoney(row[4]),
-      salary: parseMoney(row[5]),
-    })).filter(row => row.manager || row.kind)
-    : [];
-
-  const workingDaysRow = block.find(row => row[1]?.toLowerCase() === 'дней рабочих');
-  const normHoursRow = block.find(row => row[1]?.toLowerCase() === 'часов норма');
-  const payrollFundRow = block.find(row => row[5]?.toLowerCase().includes('итого по организации'));
-
-  return {
-    title,
-    periodStart,
-    periodEnd,
-    workingDays: parseMoney(workingDaysRow?.[0]),
-    normHours: parseMoney(normHoursRow?.[0]),
-    payrollFund: parseMoney(payrollFundRow?.[0]),
-    employees,
-    summaryRows,
-  };
+const describeFormula = (person: PayrollPerson) => {
+  const parts: string[] = [];
+  if (person.baseSalary > 0) {
+    parts.push(`оклад ${formatCurrency(person.baseSalary)} x ${person.workedDays || 0}/${person.normDays || 1}`);
+  }
+  if (person.hourlyRate > 0 || person.workedHours > 0) {
+    parts.push(`${formatCurrency(person.hourlyRate)} x ${person.workedHours || 0} ч`);
+  }
+  if (person.shiftRate > 0 || person.shifts > 0) {
+    parts.push(`${formatCurrency(person.shiftRate)} x ${person.shifts || 0} смен`);
+  }
+  if (person.pieceAmount > 0) {
+    parts.push(`сдельно ${formatCurrency(person.pieceAmount)}`);
+  }
+  if (person.percentRate > 0 || person.percentBase > 0) {
+    parts.push(`${person.percentRate || 0}% от ${formatCurrency(person.percentBase)}`);
+  }
+  if (person.bonus > 0) {
+    parts.push(`премия ${formatCurrency(person.bonus)}`);
+  }
+  return parts.length ? parts.join(' + ') : 'Заполни ставку, часы, смены, сдельную сумму или процент.';
 };
 
 export const PayrollPage: React.FC<PayrollPageProps> = ({ onBack }) => {
-  const [csv, setCsv] = useState('');
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [query, setQuery] = useState('');
-  const [departmentFilter, setDepartmentFilter] = useState('Все отделы');
-
-  const loadPayroll = async () => {
-    setLoading(true);
-    setError(null);
+  const [people, setPeople] = useState<PayrollPerson[]>(() => {
     try {
-      const url = `/api/sheet/export?sheetId=${encodeURIComponent(PAYROLL_SHEET_ID)}&gid=${PAYROLL_GID}`;
-      const response = await fetch(url);
-      if (!response.ok) throw new Error('Не удалось загрузить таблицу ФОТ');
-      setCsv(await response.text());
-    } catch (err: any) {
-      setError(err?.message || 'Не удалось загрузить ФОТ');
-    } finally {
-      setLoading(false);
+      const saved = localStorage.getItem(STORAGE_KEY);
+      return saved ? JSON.parse(saved) : defaultPeople;
+    } catch {
+      return defaultPeople;
     }
-  };
+  });
+  const [activeId, setActiveId] = useState(people[0]?.id || '');
 
   useEffect(() => {
-    loadPayroll();
-  }, []);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(people));
+  }, [people]);
 
-  const payroll = useMemo(() => parsePayroll(csv), [csv]);
+  const activePerson = people.find(person => person.id === activeId) || people[0];
 
-  const totals = useMemo(() => {
-    const earned = payroll.employees.reduce((sum, employee) => sum + employee.earnedFirst + employee.earnedSecond, 0);
-    const paid = payroll.employees.reduce((sum, employee) => sum + employee.paid, 0);
-    const debt = payroll.employees.reduce((sum, employee) => sum + employee.debt, 0);
-    const worked = payroll.employees.reduce((sum, employee) => sum + employee.workedFirst + employee.workedSecond, 0);
-    return {
-      people: payroll.employees.length,
-      earned,
-      paid,
-      debt,
-      worked,
-      remaining: Math.max(earned - paid, 0),
-    };
-  }, [payroll.employees]);
-
-  const departments = useMemo(() => ['Все отделы', ...Array.from(new Set(payroll.employees.map(employee => employee.department)))], [payroll.employees]);
-
-  const filteredEmployees = useMemo(() => {
-    const search = query.trim().toLowerCase();
-    return payroll.employees.filter(employee => {
-      const matchDepartment = departmentFilter === 'Все отделы' || employee.department === departmentFilter;
-      const matchSearch = !search || [employee.name, employee.phone, employee.role, employee.department].some(value => value.toLowerCase().includes(search));
-      return matchDepartment && matchSearch;
-    });
-  }, [departmentFilter, payroll.employees, query]);
-
-  const departmentStats = useMemo(() => {
-    return departments.filter(name => name !== 'Все отделы').map(name => {
-      const list = payroll.employees.filter(employee => employee.department === name);
+  const rows = useMemo(() => {
+    return people.map(person => {
+      const accrued = calculateAccrued(person);
       return {
-        name,
-        people: list.length,
-        earned: list.reduce((sum, employee) => sum + employee.earnedFirst + employee.earnedSecond, 0),
-        paid: list.reduce((sum, employee) => sum + employee.paid, 0),
-        debt: list.reduce((sum, employee) => sum + employee.debt, 0),
+        ...person,
+        accrued,
+        debt: Math.max(accrued - person.paid, 0),
       };
     });
-  }, [departments, payroll.employees]);
+  }, [people]);
 
-  const exportCsv = () => {
-    const headers = ['Отдел', 'ФИО', 'Телефон', 'Должность', 'Тип оплаты', 'Начислено', 'Выплачено', 'Долг'];
-    const rows = filteredEmployees.map(employee => [
-      employee.department,
-      employee.name,
-      employee.phone,
-      employee.role,
-      employee.payType,
-      employee.earnedFirst + employee.earnedSecond,
-      employee.paid,
-      employee.debt,
+  const totals = useMemo(() => {
+    return rows.reduce(
+      (acc, row) => ({
+        accrued: acc.accrued + row.accrued,
+        paid: acc.paid + row.paid,
+        debt: acc.debt + row.debt,
+        people: acc.people + 1,
+      }),
+      { accrued: 0, paid: 0, debt: 0, people: 0 }
+    );
+  }, [rows]);
+
+  const updatePerson = (id: string, patch: Partial<PayrollPerson>) => {
+    setPeople(prev => prev.map(person => person.id === id ? { ...person, ...patch } : person));
+  };
+
+  const addPerson = () => {
+    const person = createPerson();
+    setPeople(prev => [person, ...prev]);
+    setActiveId(person.id);
+  };
+
+  const removePerson = (id: string) => {
+    setPeople(prev => {
+      const next = prev.filter(person => person.id !== id);
+      if (activeId === id) setActiveId(next[0]?.id || '');
+      return next;
+    });
+  };
+
+  const exportPayroll = () => {
+    const headers = ['ФИО', 'Отдел', 'Должность', 'Тип', 'Формула', 'Начислено', 'Выплачено', 'Долг'];
+    const data = rows.map(row => [
+      row.name,
+      row.department,
+      row.role,
+      payTypeLabels[row.payType],
+      describeFormula(row),
+      row.accrued,
+      row.paid,
+      row.debt,
     ]);
-    const blob = new Blob(['\uFEFF' + Papa.unparse([headers, ...rows])], { type: 'text/csv;charset=utf-8;' });
+    const blob = new Blob(['\uFEFF' + Papa.unparse([headers, ...data])], { type: 'text/csv;charset=utf-8;' });
     const link = document.createElement('a');
     link.href = URL.createObjectURL(blob);
-    link.download = `payroll_${payroll.title.replace(/\s/g, '_')}.csv`;
+    link.download = 'fot_payroll.csv';
     link.click();
     URL.revokeObjectURL(link.href);
   };
 
-  const statCards = [
-    { label: 'Фонд организации', value: payroll.payrollFund || totals.earned, caption: 'плановый ФОТ', icon: Briefcase, tone: 'slate' },
-    { label: 'Начислено', value: totals.earned, caption: `${totals.people} сотрудников`, icon: Wallet, tone: 'emerald' },
-    { label: 'Выплачено', value: totals.paid, caption: '15 и 30 числа', icon: CheckCircle2, tone: 'blue' },
-    { label: 'Долг', value: totals.debt || totals.remaining, caption: 'к выплате', icon: ReceiptText, tone: 'orange' },
-  ];
+  const activeAccrued = activePerson ? calculateAccrued(activePerson) : 0;
+  const activeDebt = activePerson ? Math.max(activeAccrued - activePerson.paid, 0) : 0;
 
   return (
-    <div className="min-h-screen bg-slate-50/50 text-slate-900 font-sans">
-      <div className="mx-auto w-full max-w-[1440px] px-4 py-8 space-y-8 sm:px-6 lg:px-8">
-        <div className="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
+    <div className="min-h-screen bg-[#F6F7F9] text-[#1F2937]">
+      <div className="mx-auto w-full max-w-[1540px] px-4 py-8 sm:px-6 xl:px-8">
+        <div className="mb-8 flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
           <div className="flex items-start gap-4">
-            <button onClick={onBack} className="mt-1 rounded-full p-2 text-slate-700 transition-colors hover:bg-slate-100">
-              <ArrowLeft size={20} strokeWidth={1.8} />
+            <button onClick={onBack} className="mt-1 rounded-[8px] p-2 text-[#6B7280] transition hover:bg-white hover:text-[#1F2937]">
+              <ArrowLeft size={20} />
             </button>
             <div>
-              <h1 className="text-2xl font-bold tracking-tight text-slate-900">ФОТ</h1>
-              <p className="text-sm text-slate-500">Зарплаты, выплаты, долги и сводка по сотрудникам</p>
+              <p className="text-[11px] font-bold uppercase tracking-[0.22em] text-[#9CA3AF]">ФОТ</p>
+              <h1 className="mt-2 text-[34px] font-medium leading-10 tracking-tight text-[#1F2937]">Расчет зарплаты</h1>
+              <p className="mt-1 text-[14px] text-[#6B7280]">Добавляй людей, ставки, смены, проценты и выплаты. Таблица больше не нужна как источник расчета.</p>
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-3">
-            <div className="inline-flex h-12 items-center gap-2 rounded-xl border border-slate-100 bg-white px-4 text-sm font-bold text-slate-700 shadow-sm">
-              <CalendarDays size={16} className="text-slate-400" />
-              {payroll.title}
-            </div>
+          <div className="flex flex-wrap gap-2">
             <button
-              onClick={loadPayroll}
-              disabled={loading}
-              className="inline-flex h-12 items-center gap-2 rounded-xl border border-slate-100 bg-white px-4 text-xs font-bold uppercase tracking-widest text-slate-500 shadow-sm transition-all hover:bg-slate-50 hover:text-slate-900 disabled:opacity-50"
+              onClick={exportPayroll}
+              className="inline-flex h-10 items-center gap-2 rounded-[8px] border border-[#E6E9EF] bg-white px-4 text-[12px] font-medium uppercase tracking-[0.12em] text-[#6B7280] transition hover:text-[#1F2937]"
             >
-              <RefreshCcw size={16} className={cn(loading && 'animate-spin')} />
-              Обновить
+              <Download size={16} />
+              Экспорт
             </button>
             <button
-              onClick={exportCsv}
-              disabled={!filteredEmployees.length}
-              className="inline-flex h-12 items-center gap-2 rounded-xl bg-slate-900 px-5 text-sm font-bold text-white shadow-lg transition-all hover:bg-slate-800 disabled:opacity-50"
+              onClick={addPerson}
+              className="inline-flex h-10 items-center gap-2 rounded-[8px] bg-[#7D7DE6] px-5 text-[12px] font-medium uppercase tracking-[0.12em] text-white shadow-sm transition hover:bg-[#6f6fd8]"
             >
-              <Download size={18} />
-              Экспорт
+              <Plus size={17} />
+              Добавить сотрудника
             </button>
           </div>
         </div>
 
-        {error && (
-          <div className="rounded-2xl border border-orange-100 bg-orange-50 px-5 py-4 text-sm font-semibold text-orange-700">
-            {error}. Проверь доступ к таблице или backend `/api/sheet/export`.
-          </div>
-        )}
-
-        <div className="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-4">
-          {statCards.map(card => {
+        <div className="mb-6 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          {[
+            { label: 'Сотрудников', value: String(totals.people), caption: 'в расчете', icon: UserRound, tone: 'slate' },
+            { label: 'Начислено', value: formatCurrency(totals.accrued), caption: 'зарплата к начислению', icon: Wallet, tone: 'green' },
+            { label: 'Выплачено', value: formatCurrency(totals.paid), caption: 'уже выдано', icon: CheckCircle2, tone: 'blue' },
+            { label: 'Долг', value: formatCurrency(totals.debt), caption: 'осталось выплатить', icon: ReceiptText, tone: 'orange' },
+          ].map(card => {
             const Icon = card.icon;
-            const toneClass = card.tone === 'emerald'
-              ? 'text-emerald-500 bg-emerald-50'
-              : card.tone === 'blue'
-                ? 'text-blue-500 bg-blue-50'
-                : card.tone === 'orange'
-                  ? 'text-orange-500 bg-orange-50'
-                  : 'text-slate-900 bg-slate-100';
             return (
-              <div key={card.label} className="space-y-3 rounded-2xl border border-slate-100 bg-white p-6 shadow-sm">
-                <div className="flex items-center justify-between">
-                  <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400">{card.label}</span>
-                  <div className={cn('rounded-lg p-2', toneClass)}>
+              <div key={card.label} className="rounded-[10px] border border-[#E6E9EF] bg-white p-5 shadow-[0_12px_32px_rgba(31,41,55,0.04)]">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-[#6B7280]">{card.label}</p>
+                  <span className={cn(
+                    'rounded-[8px] p-2',
+                    card.tone === 'green' && 'bg-emerald-50 text-emerald-600',
+                    card.tone === 'blue' && 'bg-blue-50 text-blue-600',
+                    card.tone === 'orange' && 'bg-orange-50 text-orange-500',
+                    card.tone === 'slate' && 'bg-slate-100 text-slate-700'
+                  )}>
                     <Icon size={16} />
-                  </div>
+                  </span>
                 </div>
-                <p className="text-2xl font-black text-slate-900">{formatCurrency(card.value)}</p>
-                <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">{card.caption}</p>
+                <p className="mt-5 text-[26px] font-semibold leading-8 text-[#1F2937]">{card.value}</p>
+                <p className="mt-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#9CA3AF]">{card.caption}</p>
               </div>
             );
           })}
         </div>
 
-        <div className="grid grid-cols-1 gap-6 xl:grid-cols-[1fr_360px]">
-          <div className="overflow-hidden rounded-3xl border border-slate-100 bg-white shadow-sm">
-            <div className="flex flex-col gap-4 border-b border-slate-50 p-6 lg:flex-row lg:items-center lg:justify-between">
-              <div>
-                <h3 className="text-sm font-bold uppercase tracking-widest text-slate-900">Сотрудники ФОТ</h3>
-                <p className="mt-1 text-xs font-bold text-slate-400">
-                  {payroll.periodStart} - {payroll.periodEnd} • {payroll.workingDays || 0} рабочих дней • {payroll.normHours || 0} часов норма
-                </p>
-              </div>
-              <div className="flex flex-col gap-3 sm:flex-row">
-                <div className="relative">
-                  <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-300" />
-                  <input
-                    value={query}
-                    onChange={event => setQuery(event.target.value)}
-                    placeholder="Поиск..."
-                    className="h-11 w-full rounded-xl border border-slate-100 bg-slate-50/40 pl-10 pr-4 text-sm font-semibold text-slate-700 outline-none transition focus:border-slate-300 sm:w-64"
-                  />
-                </div>
-                <select
-                  value={departmentFilter}
-                  onChange={event => setDepartmentFilter(event.target.value)}
-                  className="h-11 rounded-xl border border-slate-100 bg-white px-4 text-sm font-bold text-slate-700 outline-none transition focus:border-slate-300"
-                >
-                  {departments.map(department => <option key={department}>{department}</option>)}
-                </select>
-              </div>
+        <div className="grid gap-5 xl:grid-cols-[420px_minmax(0,1fr)]">
+          <div className="rounded-[10px] border border-[#E6E9EF] bg-white shadow-[0_12px_32px_rgba(31,41,55,0.04)]">
+            <div className="border-b border-[#E6E9EF] p-5">
+              <h2 className="text-[14px] font-medium uppercase tracking-[0.18em]">Сотрудники</h2>
+              <p className="mt-1 text-[12px] text-[#9CA3AF]">Выбери строку, чтобы настроить расчет.</p>
             </div>
-
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[980px] table-fixed text-left">
-                <thead className="bg-slate-50/50">
-                  <tr>
-                    {['Отдел', 'Сотрудник', 'Должность', 'Отработано', 'Начислено', 'Выплачено', 'Долг'].map((head, index) => (
-                      <th key={head} className={cn('px-5 py-4 text-[10px] font-bold uppercase tracking-widest text-slate-400', index > 3 && 'text-right')}>
-                        {head}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredEmployees.map(employee => {
-                    const earned = employee.earnedFirst + employee.earnedSecond;
-                    return (
-                      <tr key={employee.id} className="border-t border-slate-50 transition hover:bg-slate-50/50">
-                        <td className="px-5 py-5 text-xs font-bold text-slate-400">{employee.department}</td>
-                        <td className="px-5 py-5">
-                          <div className="text-sm font-bold text-slate-900">{employee.name}</div>
-                          <div className="mt-1 text-xs font-semibold text-slate-400">{employee.phone || 'телефон не указан'}</div>
-                        </td>
-                        <td className="px-5 py-5">
-                          <div className="text-sm font-semibold text-slate-700">{employee.role}</div>
-                          <div className="mt-1 text-xs font-bold uppercase tracking-wider text-slate-400">{employee.payType}</div>
-                        </td>
-                        <td className="px-5 py-5 text-sm font-bold text-slate-700">
-                          {employee.workedFirst + employee.workedSecond || 0}
-                          <span className="ml-1 text-xs text-slate-400">ч/дн.</span>
-                        </td>
-                        <td className="px-5 py-5 text-right text-sm font-black text-slate-900">{formatCurrency(earned)}</td>
-                        <td className="px-5 py-5 text-right text-sm font-black text-emerald-600">{formatCurrency(employee.paid)}</td>
-                        <td className="px-5 py-5 text-right text-sm font-black text-orange-500">{formatCurrency(employee.debt)}</td>
-                      </tr>
-                    );
-                  })}
-                  {!filteredEmployees.length && (
-                    <tr>
-                      <td colSpan={7} className="px-5 py-12 text-center text-sm font-semibold text-slate-400">
-                        {loading ? 'Загружаю ФОТ...' : 'Сотрудники не найдены'}
-                      </td>
-                    </tr>
+            <div className="max-h-[680px] overflow-y-auto">
+              {rows.map(row => (
+                <button
+                  key={row.id}
+                  onClick={() => setActiveId(row.id)}
+                  className={cn(
+                    'w-full border-b border-[#F1F3F6] px-5 py-4 text-left transition hover:bg-[#F6F7F9]',
+                    row.id === activeId && 'bg-[#F6F7F9]'
                   )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          <div className="space-y-6">
-            <div className="rounded-3xl border border-slate-100 bg-white p-6 shadow-sm">
-              <h3 className="text-sm font-bold uppercase tracking-widest text-slate-900">Отделы</h3>
-              <div className="mt-5 space-y-4">
-                {departmentStats.map(department => (
-                  <button
-                    key={department.name}
-                    onClick={() => setDepartmentFilter(department.name)}
-                    className={cn(
-                      'w-full rounded-2xl border p-4 text-left transition',
-                      departmentFilter === department.name ? 'border-slate-900 bg-slate-50' : 'border-slate-100 hover:bg-slate-50'
-                    )}
-                  >
-                    <div className="flex items-center justify-between gap-3">
-                      <div>
-                        <p className="text-sm font-black text-slate-900">{department.name}</p>
-                        <p className="mt-1 text-xs font-bold text-slate-400">{department.people} сотрудников</p>
-                      </div>
-                      <Users size={16} className="text-slate-400" />
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="truncate text-[15px] font-semibold text-[#1F2937]">{row.name || 'Новый сотрудник'}</p>
+                      <p className="mt-1 truncate text-[12px] font-medium text-[#6B7280]">{row.role || 'должность'} • {payTypeLabels[row.payType]}</p>
                     </div>
-                    <div className="mt-3 grid grid-cols-2 gap-3 text-xs font-bold">
-                      <span className="text-emerald-600">{formatCurrency(department.earned)}</span>
-                      <span className="text-right text-orange-500">{formatCurrency(department.debt)}</span>
-                    </div>
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="rounded-3xl border border-slate-100 bg-white p-6 shadow-sm">
-              <div className="flex items-center justify-between">
-                <h3 className="text-sm font-bold uppercase tracking-widest text-slate-900">Сводка продаж</h3>
-                <Clock size={16} className="text-slate-400" />
-              </div>
-              <div className="mt-5 space-y-3">
-                {payroll.summaryRows.slice(0, 8).map((row, index) => (
-                  <div key={`${row.manager}-${row.kind}-${index}`} className="rounded-2xl border border-slate-100 p-4">
-                    <div className="flex items-center justify-between gap-3">
-                      <div>
-                        <p className="text-sm font-black text-slate-900">{row.manager || row.kind || 'Строка'}</p>
-                        <p className="mt-1 text-xs font-bold text-slate-400">{row.kind || 'тип не указан'} • {row.sales || 0} продаж</p>
-                      </div>
-                      <p className="text-sm font-black text-emerald-600">{formatCurrency(row.salary || row.amount)}</p>
-                    </div>
+                    <p className="shrink-0 text-[14px] font-semibold text-emerald-600">{formatCurrency(row.accrued)}</p>
                   </div>
-                ))}
-                {!payroll.summaryRows.length && <p className="text-sm font-semibold text-slate-400">Сводка в таблице не найдена</p>}
-              </div>
+                  <p className="mt-3 line-clamp-2 text-[11px] leading-4 text-[#9CA3AF]">{describeFormula(row)}</p>
+                </button>
+              ))}
             </div>
           </div>
+
+          {activePerson && (
+            <div className="space-y-5">
+              <div className="rounded-[10px] border border-[#E6E9EF] bg-white p-5 shadow-[0_12px_32px_rgba(31,41,55,0.04)]">
+                <div className="mb-5 flex items-start justify-between gap-4">
+                  <div>
+                    <h2 className="text-[14px] font-medium uppercase tracking-[0.18em]">Карточка расчета</h2>
+                    <p className="mt-1 text-[12px] text-[#9CA3AF]">Заполняй только нужные поля. Итог считается автоматически.</p>
+                  </div>
+                  <button
+                    onClick={() => removePerson(activePerson.id)}
+                    className="rounded-[8px] bg-red-50 p-2 text-red-500 transition hover:bg-red-100"
+                  >
+                    <Trash2 size={16} />
+                  </button>
+                </div>
+
+                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                  <Field label="ФИО" value={activePerson.name} onChange={value => updatePerson(activePerson.id, { name: value })} />
+                  <Field label="Отдел" value={activePerson.department} onChange={value => updatePerson(activePerson.id, { department: value })} />
+                  <Field label="Должность" value={activePerson.role} onChange={value => updatePerson(activePerson.id, { role: value })} />
+                  <label className="space-y-2">
+                    <span className="text-[11px] font-medium uppercase tracking-[0.16em] text-[#9CA3AF]">Тип оплаты</span>
+                    <select
+                      value={activePerson.payType}
+                      onChange={event => updatePerson(activePerson.id, { payType: event.target.value as PayType })}
+                      className="h-12 w-full rounded-[8px] border border-[#E6E9EF] bg-white px-3 text-[14px] font-medium text-[#1F2937] outline-none transition focus:border-[#7D7DE6]"
+                    >
+                      {Object.entries(payTypeLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                    </select>
+                  </label>
+                </div>
+
+                <div className="mt-5 grid gap-5 xl:grid-cols-2">
+                  <Section title="Окладник" caption="Формула: оклад / норма дней x отработанные дни">
+                    <NumberField label="Оклад" value={activePerson.baseSalary} onChange={value => updatePerson(activePerson.id, { baseSalary: value })} />
+                    <NumberField label="Норма дней" value={activePerson.normDays} onChange={value => updatePerson(activePerson.id, { normDays: value })} />
+                    <NumberField label="Отработал дней" value={activePerson.workedDays} onChange={value => updatePerson(activePerson.id, { workedDays: value })} />
+                  </Section>
+
+                  <Section title="Почасовая" caption="Формула: ставка в час x часы">
+                    <NumberField label="Ставка в час" value={activePerson.hourlyRate} onChange={value => updatePerson(activePerson.id, { hourlyRate: value })} />
+                    <NumberField label="Норма часов" value={activePerson.normHours} onChange={value => updatePerson(activePerson.id, { normHours: value })} />
+                    <NumberField label="Отработал часов" value={activePerson.workedHours} onChange={value => updatePerson(activePerson.id, { workedHours: value })} />
+                  </Section>
+
+                  <Section title="Выход / смена" caption="Формула: ставка за смену x кол-во смен">
+                    <NumberField label="Ставка за смену" value={activePerson.shiftRate} onChange={value => updatePerson(activePerson.id, { shiftRate: value })} />
+                    <NumberField label="Смен" value={activePerson.shifts} onChange={value => updatePerson(activePerson.id, { shifts: value })} />
+                  </Section>
+
+                  <Section title="Сдельная и процент" caption="Формула: сдельная сумма + процент от базы + премия">
+                    <NumberField label="Сдельная сумма" value={activePerson.pieceAmount} onChange={value => updatePerson(activePerson.id, { pieceAmount: value })} />
+                    <NumberField label="% ставка" value={activePerson.percentRate} onChange={value => updatePerson(activePerson.id, { percentRate: value })} />
+                    <NumberField label="База процента" value={activePerson.percentBase} onChange={value => updatePerson(activePerson.id, { percentBase: value })} />
+                    <NumberField label="Премия" value={activePerson.bonus} onChange={value => updatePerson(activePerson.id, { bonus: value })} />
+                  </Section>
+                </div>
+
+                <div className="mt-5 grid gap-4 md:grid-cols-[1fr_240px]">
+                  <label className="space-y-2">
+                    <span className="text-[11px] font-medium uppercase tracking-[0.16em] text-[#9CA3AF]">Комментарий</span>
+                    <textarea
+                      value={activePerson.note}
+                      onChange={event => updatePerson(activePerson.id, { note: event.target.value })}
+                      placeholder="Например: аванс выдан 15 числа, остальное 30 числа"
+                      className="min-h-[84px] w-full resize-none rounded-[8px] border border-[#E6E9EF] bg-white px-3 py-3 text-[14px] outline-none transition focus:border-[#7D7DE6]"
+                    />
+                  </label>
+                  <NumberField label="Выплачено" value={activePerson.paid} onChange={value => updatePerson(activePerson.id, { paid: value })} />
+                </div>
+              </div>
+
+              <div className="rounded-[10px] border border-[#E6E9EF] bg-white p-5 shadow-[0_12px_32px_rgba(31,41,55,0.04)]">
+                <div className="flex items-center gap-2 text-[14px] font-medium uppercase tracking-[0.18em] text-[#1F2937]">
+                  <Calculator size={17} className="text-[#7D7DE6]" />
+                  Формула и итог
+                </div>
+                <div className="mt-4 rounded-[8px] border border-[#E6E9EF] bg-[#F6F7F9] p-4 text-[13px] font-medium leading-6 text-[#6B7280]">
+                  {describeFormula(activePerson)}
+                </div>
+                <div className="mt-4 grid gap-3 md:grid-cols-3">
+                  <ResultCard label="Начислено" value={activeAccrued} tone="green" />
+                  <ResultCard label="Выплачено" value={activePerson.paid} tone="slate" />
+                  <ResultCard label="Долг" value={activeDebt} tone="orange" />
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>
   );
 };
+
+const Field: React.FC<{ label: string; value: string; onChange: (value: string) => void }> = ({ label, value, onChange }) => (
+  <label className="space-y-2">
+    <span className="text-[11px] font-medium uppercase tracking-[0.16em] text-[#9CA3AF]">{label}</span>
+    <input
+      value={value}
+      onChange={event => onChange(event.target.value)}
+      className="h-12 w-full rounded-[8px] border border-[#E6E9EF] bg-white px-3 text-[14px] font-medium text-[#1F2937] outline-none transition focus:border-[#7D7DE6]"
+    />
+  </label>
+);
+
+const NumberField: React.FC<{ label: string; value: number; onChange: (value: number) => void }> = ({ label, value, onChange }) => (
+  <label className="space-y-2">
+    <span className="text-[11px] font-medium uppercase tracking-[0.16em] text-[#9CA3AF]">{label}</span>
+    <input
+      type="number"
+      value={value || ''}
+      onChange={event => onChange(numberValue(event.target.value))}
+      placeholder="0"
+      className="h-12 w-full rounded-[8px] border border-[#E6E9EF] bg-white px-3 text-[14px] font-semibold text-[#1F2937] outline-none transition focus:border-[#7D7DE6]"
+    />
+  </label>
+);
+
+const Section: React.FC<{ title: string; caption: string; children: React.ReactNode }> = ({ title, caption, children }) => (
+  <div className="rounded-[10px] border border-[#E6E9EF] bg-[#FBFCFD] p-4">
+    <h3 className="text-[13px] font-semibold text-[#1F2937]">{title}</h3>
+    <p className="mt-1 text-[11px] font-medium text-[#9CA3AF]">{caption}</p>
+    <div className="mt-4 grid gap-3 sm:grid-cols-2">{children}</div>
+  </div>
+);
+
+const ResultCard: React.FC<{ label: string; value: number; tone: 'green' | 'orange' | 'slate' }> = ({ label, value, tone }) => (
+  <div className={cn(
+    'rounded-[8px] border p-4',
+    tone === 'green' && 'border-emerald-100 bg-emerald-50/60',
+    tone === 'orange' && 'border-orange-100 bg-orange-50/60',
+    tone === 'slate' && 'border-[#E6E9EF] bg-white'
+  )}>
+    <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-[#9CA3AF]">{label}</p>
+    <p className={cn(
+      'mt-2 text-[22px] font-semibold',
+      tone === 'green' && 'text-emerald-600',
+      tone === 'orange' && 'text-orange-500',
+      tone === 'slate' && 'text-[#1F2937]'
+    )}>
+      {formatCurrency(value)}
+    </p>
+  </div>
+);
 
 export default PayrollPage;
