@@ -12,6 +12,8 @@ import {
   Wallet,
 } from 'lucide-react';
 import Papa from 'papaparse';
+import { collection, onSnapshot, query } from 'firebase/firestore';
+import { db } from '../firebase';
 import { cn, formatCurrency } from '../lib/utils';
 
 interface PayrollPageProps {
@@ -37,12 +39,22 @@ interface PayrollPerson {
   pieceAmount: number;
   percentRate: number;
   percentBase: number;
+  linkedManager: string;
   bonus: number;
   paid: number;
   note: string;
 }
 
+interface PayrollOrder {
+  id: string;
+  manager: string;
+  date: Date | null;
+  revenue: number;
+  status: string;
+}
+
 const STORAGE_KEY = 'ybcrm.payroll.people.v1';
+const MANAGER_LINKS = ['Менеджер 1', 'Менеджер 2'];
 
 const payTypeLabels: Record<PayType, string> = {
   salary: 'Оклад',
@@ -53,6 +65,28 @@ const payTypeLabels: Record<PayType, string> = {
 };
 
 const defaultPeople: PayrollPerson[] = [
+  {
+    id: 'manager-1-example',
+    name: 'Менеджер 1',
+    department: 'Отдел продаж',
+    role: 'Менеджер по продажам',
+    payType: 'mixed',
+    baseSalary: 0,
+    normDays: 22,
+    workedDays: 0,
+    hourlyRate: 0,
+    normHours: 176,
+    workedHours: 0,
+    shiftRate: 1000,
+    shifts: 0,
+    pieceAmount: 0,
+    percentRate: 5,
+    percentBase: 0,
+    linkedManager: 'Менеджер 1',
+    bonus: 0,
+    paid: 0,
+    note: 'Продажи подтягиваются из заказов, где выбран Менеджер 1.',
+  },
   {
     id: 'manager-2-example',
     name: 'Менеджер 2',
@@ -69,10 +103,11 @@ const defaultPeople: PayrollPerson[] = [
     shifts: 12,
     pieceAmount: 0,
     percentRate: 5,
-    percentBase: 600000,
+    percentBase: 0,
+    linkedManager: 'Менеджер 2',
     bonus: 0,
     paid: 0,
-    note: 'Пример: смена 1000 рублей + 5% от продаж.',
+    note: 'Продажи подтягиваются из заказов, где выбран Менеджер 2.',
   },
   {
     id: 'cutter-example',
@@ -91,6 +126,7 @@ const defaultPeople: PayrollPerson[] = [
     pieceAmount: 0,
     percentRate: 0,
     percentBase: 0,
+    linkedManager: '',
     bonus: 0,
     paid: 0,
     note: 'Пример: норма 176 часов, ставка 500 рублей в час.',
@@ -114,6 +150,7 @@ const createPerson = (): PayrollPerson => ({
   pieceAmount: 0,
   percentRate: 0,
   percentBase: 0,
+  linkedManager: '',
   bonus: 0,
   paid: 0,
   note: '',
@@ -122,6 +159,46 @@ const createPerson = (): PayrollPerson => ({
 const numberValue = (value: unknown) => {
   const parsed = Number(String(value ?? '').replace(/\s/g, '').replace(',', '.'));
   return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const currentMonthKey = () => {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+};
+
+const toMonthKey = (date: Date | null) => {
+  if (!date) return '';
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+};
+
+const parseOrderDate = (value: unknown): Date | null => {
+  if (!value) return null;
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+  if (typeof value === 'object' && value && 'toDate' in value && typeof (value as { toDate?: () => Date }).toDate === 'function') {
+    const date = (value as { toDate: () => Date }).toDate();
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+  const date = new Date(String(value));
+  return Number.isNaN(date.getTime()) ? null : date;
+};
+
+const isPayrollSaleOrder = (order: PayrollOrder) => {
+  const status = order.status.toLowerCase();
+  return order.revenue > 0 && !status.includes('возврат') && !status.includes('отмена') && !status.includes('обмен');
+};
+
+const normalizePeople = (people: PayrollPerson[]) => {
+  const normalized = people.map(person => {
+    const matchingManager = MANAGER_LINKS.find(manager => manager === person.name);
+    return { ...person, linkedManager: person.linkedManager || matchingManager || '' };
+  });
+  const hasManager1 = normalized.some(person => person.linkedManager === 'Менеджер 1' || person.name === 'Менеджер 1');
+  const hasManager2 = normalized.some(person => person.linkedManager === 'Менеджер 2' || person.name === 'Менеджер 2');
+  return [
+    ...(!hasManager1 ? [defaultPeople[0]] : []),
+    ...(!hasManager2 ? [defaultPeople[1]] : []),
+    ...normalized,
+  ];
 };
 
 const calculateAccrued = (person: PayrollPerson) => {
@@ -150,7 +227,7 @@ const describeFormula = (person: PayrollPerson) => {
     parts.push(`сдельно ${formatCurrency(person.pieceAmount)}`);
   }
   if (person.percentRate > 0 || person.percentBase > 0) {
-    parts.push(`${person.percentRate || 0}% от ${formatCurrency(person.percentBase)}`);
+    parts.push(`${person.percentRate || 0}% от ${person.linkedManager ? `продаж ${person.linkedManager} ` : ''}${formatCurrency(person.percentBase)}`);
   }
   if (person.bonus > 0) {
     parts.push(`премия ${formatCurrency(person.bonus)}`);
@@ -162,12 +239,38 @@ export const PayrollPage: React.FC<PayrollPageProps> = ({ onBack }) => {
   const [people, setPeople] = useState<PayrollPerson[]>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
-      return saved ? JSON.parse(saved) : defaultPeople;
+      return saved ? normalizePeople(JSON.parse(saved)) : defaultPeople;
     } catch {
       return defaultPeople;
     }
   });
   const [activeId, setActiveId] = useState(people[0]?.id || '');
+  const [monthKey, setMonthKey] = useState(currentMonthKey());
+  const [orders, setOrders] = useState<PayrollOrder[]>([]);
+  const [ordersLoading, setOrdersLoading] = useState(true);
+
+  useEffect(() => {
+    const ordersQuery = query(collection(db, 'orders_new'));
+    const unsubscribe = onSnapshot(
+      ordersQuery,
+      snapshot => {
+        const nextOrders = snapshot.docs.map(docSnap => {
+          const data = docSnap.data() as Record<string, unknown>;
+          return {
+            id: docSnap.id,
+            manager: String(data.manager || '').trim(),
+            date: parseOrderDate(data.date),
+            revenue: numberValue(data.revenue ?? data.totalPrice ?? data.amount ?? 0),
+            status: String(data.status || ''),
+          };
+        });
+        setOrders(nextOrders);
+        setOrdersLoading(false);
+      },
+      () => setOrdersLoading(false)
+    );
+    return () => unsubscribe();
+  }, []);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(people));
@@ -175,16 +278,40 @@ export const PayrollPage: React.FC<PayrollPageProps> = ({ onBack }) => {
 
   const activePerson = people.find(person => person.id === activeId) || people[0];
 
+  const managerStats = useMemo(() => {
+    return MANAGER_LINKS.reduce<Record<string, { orders: number; revenue: number }>>((acc, manager) => {
+      const managerOrders = orders.filter(order => (
+        order.manager === manager &&
+        toMonthKey(order.date) === monthKey &&
+        isPayrollSaleOrder(order)
+      ));
+      acc[manager] = {
+        orders: managerOrders.length,
+        revenue: managerOrders.reduce((sum, order) => sum + order.revenue, 0),
+      };
+      return acc;
+    }, {});
+  }, [orders, monthKey]);
+
+  const applyManagerLink = (person: PayrollPerson): PayrollPerson => {
+    if (!person.linkedManager) return person;
+    return {
+      ...person,
+      percentBase: managerStats[person.linkedManager]?.revenue || 0,
+    };
+  };
+
   const rows = useMemo(() => {
     return people.map(person => {
-      const accrued = calculateAccrued(person);
+      const effectivePerson = applyManagerLink(person);
+      const accrued = calculateAccrued(effectivePerson);
       return {
-        ...person,
+        ...effectivePerson,
         accrued,
-        debt: Math.max(accrued - person.paid, 0),
+        debt: Math.max(accrued - effectivePerson.paid, 0),
       };
     });
-  }, [people]);
+  }, [people, managerStats]);
 
   const totals = useMemo(() => {
     return rows.reduce(
@@ -236,8 +363,9 @@ export const PayrollPage: React.FC<PayrollPageProps> = ({ onBack }) => {
     URL.revokeObjectURL(link.href);
   };
 
-  const activeAccrued = activePerson ? calculateAccrued(activePerson) : 0;
-  const activeDebt = activePerson ? Math.max(activeAccrued - activePerson.paid, 0) : 0;
+  const activeEffectivePerson = activePerson ? applyManagerLink(activePerson) : undefined;
+  const activeAccrued = activeEffectivePerson ? calculateAccrued(activeEffectivePerson) : 0;
+  const activeDebt = activeEffectivePerson ? Math.max(activeAccrued - activeEffectivePerson.paid, 0) : 0;
 
   return (
     <div className="min-h-screen bg-[#F6F7F9] text-[#1F2937]">
@@ -255,6 +383,15 @@ export const PayrollPage: React.FC<PayrollPageProps> = ({ onBack }) => {
           </div>
 
           <div className="flex flex-wrap gap-2">
+            <label className="inline-flex h-10 items-center gap-2 rounded-[8px] border border-[#E6E9EF] bg-white px-3 text-[12px] font-medium uppercase tracking-[0.12em] text-[#6B7280]">
+              Месяц
+              <input
+                type="month"
+                value={monthKey}
+                onChange={event => setMonthKey(event.target.value || currentMonthKey())}
+                className="bg-transparent text-[13px] font-semibold normal-case tracking-normal text-[#1F2937] outline-none"
+              />
+            </label>
             <button
               onClick={exportPayroll}
               className="inline-flex h-10 items-center gap-2 rounded-[8px] border border-[#E6E9EF] bg-white px-4 text-[12px] font-medium uppercase tracking-[0.12em] text-[#6B7280] transition hover:text-[#1F2937]"
@@ -296,6 +433,27 @@ export const PayrollPage: React.FC<PayrollPageProps> = ({ onBack }) => {
                 </div>
                 <p className="mt-5 text-[26px] font-semibold leading-8 text-[#1F2937]">{card.value}</p>
                 <p className="mt-2 text-[11px] font-medium uppercase tracking-[0.16em] text-[#9CA3AF]">{card.caption}</p>
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="mb-6 grid gap-4 md:grid-cols-2">
+          {MANAGER_LINKS.map(manager => {
+            const stat = managerStats[manager] || { orders: 0, revenue: 0 };
+            return (
+              <div key={manager} className="rounded-[10px] border border-[#E6E9EF] bg-white p-5 shadow-[0_12px_32px_rgba(31,41,55,0.04)]">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-[#9CA3AF]">Продажи из заказов</p>
+                    <h3 className="mt-2 text-[20px] font-semibold text-[#1F2937]">{manager}</h3>
+                  </div>
+                  <p className="text-right text-[24px] font-semibold text-emerald-600">{formatCurrency(stat.revenue)}</p>
+                </div>
+                <div className="mt-4 flex items-center justify-between border-t border-[#F1F3F6] pt-3 text-[12px] font-medium text-[#6B7280]">
+                  <span>{ordersLoading ? 'Загружаю заказы...' : `${stat.orders} заказов за месяц`}</span>
+                  <span>База для процента</span>
+                </div>
               </div>
             );
           })}
@@ -346,7 +504,7 @@ export const PayrollPage: React.FC<PayrollPageProps> = ({ onBack }) => {
                   </button>
                 </div>
 
-                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
                   <Field label="ФИО" value={activePerson.name} onChange={value => updatePerson(activePerson.id, { name: value })} />
                   <Field label="Отдел" value={activePerson.department} onChange={value => updatePerson(activePerson.id, { department: value })} />
                   <Field label="Должность" value={activePerson.role} onChange={value => updatePerson(activePerson.id, { role: value })} />
@@ -358,6 +516,17 @@ export const PayrollPage: React.FC<PayrollPageProps> = ({ onBack }) => {
                       className="h-12 w-full rounded-[8px] border border-[#E6E9EF] bg-white px-3 text-[14px] font-medium text-[#1F2937] outline-none transition focus:border-[#7D7DE6]"
                     >
                       {Object.entries(payTypeLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                    </select>
+                  </label>
+                  <label className="space-y-2">
+                    <span className="text-[11px] font-medium uppercase tracking-[0.16em] text-[#9CA3AF]">Связь с заказами</span>
+                    <select
+                      value={activePerson.linkedManager || ''}
+                      onChange={event => updatePerson(activePerson.id, { linkedManager: event.target.value })}
+                      className="h-12 w-full rounded-[8px] border border-[#E6E9EF] bg-white px-3 text-[14px] font-medium text-[#1F2937] outline-none transition focus:border-[#7D7DE6]"
+                    >
+                      <option value="">Не привязан</option>
+                      {MANAGER_LINKS.map(manager => <option key={manager} value={manager}>{manager}</option>)}
                     </select>
                   </label>
                 </div>
@@ -383,7 +552,12 @@ export const PayrollPage: React.FC<PayrollPageProps> = ({ onBack }) => {
                   <Section title="Сдельная и процент" caption="Формула: сдельная сумма + процент от базы + премия">
                     <NumberField label="Сдельная сумма" value={activePerson.pieceAmount} onChange={value => updatePerson(activePerson.id, { pieceAmount: value })} />
                     <NumberField label="% ставка" value={activePerson.percentRate} onChange={value => updatePerson(activePerson.id, { percentRate: value })} />
-                    <NumberField label="База процента" value={activePerson.percentBase} onChange={value => updatePerson(activePerson.id, { percentBase: value })} />
+                    <NumberField
+                      label={activePerson.linkedManager ? `База: ${activePerson.linkedManager}` : 'База процента'}
+                      value={activeEffectivePerson?.percentBase || activePerson.percentBase}
+                      onChange={value => updatePerson(activePerson.id, { percentBase: value })}
+                      disabled={Boolean(activePerson.linkedManager)}
+                    />
                     <NumberField label="Премия" value={activePerson.bonus} onChange={value => updatePerson(activePerson.id, { bonus: value })} />
                   </Section>
                 </div>
@@ -408,7 +582,7 @@ export const PayrollPage: React.FC<PayrollPageProps> = ({ onBack }) => {
                   Формула и итог
                 </div>
                 <div className="mt-4 rounded-[8px] border border-[#E6E9EF] bg-[#F6F7F9] p-4 text-[13px] font-medium leading-6 text-[#6B7280]">
-                  {describeFormula(activePerson)}
+                  {activeEffectivePerson ? describeFormula(activeEffectivePerson) : describeFormula(activePerson)}
                 </div>
                 <div className="mt-4 grid gap-3 md:grid-cols-3">
                   <ResultCard label="Начислено" value={activeAccrued} tone="green" />
@@ -435,15 +609,19 @@ const Field: React.FC<{ label: string; value: string; onChange: (value: string) 
   </label>
 );
 
-const NumberField: React.FC<{ label: string; value: number; onChange: (value: number) => void }> = ({ label, value, onChange }) => (
+const NumberField: React.FC<{ label: string; value: number; onChange: (value: number) => void; disabled?: boolean }> = ({ label, value, onChange, disabled }) => (
   <label className="space-y-2">
     <span className="text-[11px] font-medium uppercase tracking-[0.16em] text-[#9CA3AF]">{label}</span>
     <input
       type="number"
       value={value || ''}
       onChange={event => onChange(numberValue(event.target.value))}
+      disabled={disabled}
       placeholder="0"
-      className="h-12 w-full rounded-[8px] border border-[#E6E9EF] bg-white px-3 text-[14px] font-semibold text-[#1F2937] outline-none transition focus:border-[#7D7DE6]"
+      className={cn(
+        'h-12 w-full rounded-[8px] border border-[#E6E9EF] bg-white px-3 text-[14px] font-semibold text-[#1F2937] outline-none transition focus:border-[#7D7DE6]',
+        disabled && 'bg-[#F6F7F9] text-emerald-600'
+      )}
     />
   </label>
 );
