@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Package, Plus, X, Camera, Save, 
   ChevronLeft, Trash2, Calendar, 
@@ -7,7 +7,7 @@ import {
   Download, Edit2, Palette, Calculator, Info, Link as LinkIcon, Instagram, BookOpen
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { cn } from '../lib/utils';
+import { cn, formatCurrency } from '../lib/utils';
 import imageCompression from 'browser-image-compression';
 import { db, OperationType, handleFirestoreError, storage } from '../firebase';
 import { collection, onSnapshot, doc, setDoc, deleteDoc, query, orderBy } from 'firebase/firestore';
@@ -152,6 +152,19 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
     postUrl: '',
     posts: []
   });
+
+  const productStats = useMemo(() => {
+    const costTotal = products.reduce((sum, product) => sum + (Number(product.costPrice) || 0), 0);
+    const priceTotal = products.reduce((sum, product) => sum + (Number(product.sellingPrice) || 0), 0);
+    const withLinks = products.filter(product => product.postUrl || (product.posts || []).some(post => post.url)).length;
+    return {
+      count: products.length,
+      costTotal,
+      priceTotal,
+      margin: priceTotal - costTotal,
+      withLinks,
+    };
+  }, [products]);
 
   const handleAddProduct = async () => {
     if (!newProduct.name) return;
@@ -489,22 +502,21 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
   };
 
   return (
-    <div className="min-h-screen bg-[#F6F7F9] text-[#1F2937] font-sans">
-      <div className="mx-auto w-full max-w-[1600px] px-4 py-6 sm:px-6 lg:px-8 lg:py-10 space-y-8">
+    <div className="min-h-screen bg-slate-50/50 text-slate-900 font-sans">
+      <div className="mx-auto w-full max-w-[1440px] px-4 py-8 space-y-8 sm:px-6 lg:px-8">
         
         {/* Header */}
-        <div className="flex flex-col gap-8 lg:flex-row lg:items-start lg:justify-between">
-          <div className="space-y-12">
+        <div className="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex items-start gap-4">
             <button 
               onClick={onBack}
-              className="inline-flex min-h-11 items-center gap-2 rounded-lg text-[16px] font-medium text-[#6B7280] transition-colors hover:text-[#1F2937]"
+              className="mt-1 rounded-full p-2 text-slate-700 transition-colors hover:bg-slate-100"
             >
-              <ChevronLeft size={22} strokeWidth={1.8} />
-              <span>Назад</span>
+              <ChevronLeft size={20} strokeWidth={1.8} />
             </button>
-            <div className="space-y-2">
-              <h1 className="text-[34px] font-semibold leading-[40px] tracking-normal text-[#1F2937] sm:text-[40px] sm:leading-[48px]">Продукция</h1>
-              <p className="text-[18px] font-medium leading-7 text-[#6B7280]">Управление ассортиментом и складскими данными</p>
+            <div>
+              <h1 className="text-2xl font-bold tracking-tight text-slate-900">Продукция</h1>
+              <p className="text-sm text-slate-500">Управление ассортиментом и складскими данными</p>
             </div>
           </div>
 
@@ -512,10 +524,10 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
             <button
               onClick={() => setIsHandbookOpen(!isHandbookOpen)}
               className={cn(
-                "inline-flex h-[48px] items-center gap-2 rounded-[8px] border px-5 text-[12px] font-semibold uppercase tracking-[0.16em] shadow-[0_14px_30px_rgba(31,41,55,0.04)] transition-all",
+                "inline-flex h-12 items-center gap-2 rounded-xl border px-4 text-xs font-bold uppercase tracking-widest shadow-sm transition-all",
                 isHandbookOpen
-                  ? "border-[#1F2937] bg-[#1F2937] text-white"
-                  : "border-[#E6E9EF] bg-white text-[#6B7280] hover:border-[#CBD5E1] hover:text-[#1F2937]"
+                  ? "border-slate-900 bg-slate-900 text-white"
+                  : "border-slate-100 bg-white text-slate-500 hover:bg-slate-50 hover:text-slate-900"
               )}
             >
               <BookOpen className="h-4 w-4" strokeWidth={1.8} /> Справочник
@@ -523,7 +535,7 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
             <button
               onClick={handleExportExcel}
               disabled={products.length === 0}
-              className="inline-flex h-[48px] items-center gap-2 rounded-[8px] border border-[#E6E9EF] bg-white px-5 text-[12px] font-semibold uppercase tracking-[0.16em] text-[#6B7280] shadow-[0_14px_30px_rgba(31,41,55,0.04)] transition-all hover:border-[#CBD5E1] hover:text-[#1F2937] disabled:opacity-50"
+              className="inline-flex h-12 items-center gap-2 rounded-xl border border-slate-100 bg-white px-4 text-xs font-bold uppercase tracking-widest text-slate-500 shadow-sm transition-all hover:bg-slate-50 hover:text-slate-900 disabled:opacity-50"
             >
               <Download className="h-4 w-4" strokeWidth={1.8} /> Экспорт
             </button>
@@ -533,10 +545,57 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
                 setPhotoUploadStatus({});
                 setIsAdding(true);
               }}
-              className="inline-flex h-[48px] items-center gap-2 rounded-[8px] bg-[#7D7DE6] px-6 text-[12px] font-semibold uppercase tracking-[0.18em] text-white shadow-[0_18px_34px_rgba(125,125,230,0.24)] transition-all hover:bg-[#7070D8]"
+              className="inline-flex h-12 items-center gap-2 rounded-xl bg-slate-900 px-5 text-sm font-bold text-white shadow-lg transition-all hover:bg-slate-800 active:scale-95"
             >
-              <Plus className="h-4 w-4" strokeWidth={1.9} /> Добавить товар
+              <Plus className="h-5 w-5" strokeWidth={1.9} /> Добавить товар
             </button>
+          </div>
+        </div>
+
+        {/* Global Stats */}
+        <div className="grid grid-cols-1 gap-6 md:grid-cols-4">
+          <div className="space-y-2 rounded-2xl border border-slate-100 bg-white p-6 shadow-sm">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Товаров в складе</span>
+              <div className="rounded-lg bg-slate-100 p-2 text-slate-700">
+                <Package size={16} />
+              </div>
+            </div>
+            <p className="text-2xl font-black text-slate-900">{productStats.count}</p>
+            <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Активная номенклатура</p>
+          </div>
+
+          <div className="space-y-2 rounded-2xl border border-slate-100 bg-white p-6 shadow-sm">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Себестоимость</span>
+              <div className="rounded-lg bg-red-50 p-2 text-red-500">
+                <Calculator size={16} />
+              </div>
+            </div>
+            <p className="text-2xl font-black text-slate-900">{formatCurrency(productStats.costTotal)}</p>
+            <p className="text-[10px] font-bold uppercase tracking-widest text-red-500">Сумма затрат</p>
+          </div>
+
+          <div className="space-y-2 rounded-2xl border border-slate-100 bg-white p-6 shadow-sm">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Цена продажи</span>
+              <div className="rounded-lg bg-emerald-50 p-2 text-emerald-500">
+                <Star size={16} />
+              </div>
+            </div>
+            <p className="text-2xl font-black text-slate-900">{formatCurrency(productStats.priceTotal)}</p>
+            <p className="text-[10px] font-bold uppercase tracking-widest text-emerald-500">По карточкам товара</p>
+          </div>
+
+          <div className="space-y-2 rounded-2xl border border-slate-100 border-l-4 border-l-slate-900 bg-white p-6 shadow-sm">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Потенц. маржа</span>
+              <div className="rounded-lg bg-slate-900 p-2 text-white">
+                <LinkIcon size={16} />
+              </div>
+            </div>
+            <p className="text-2xl font-black text-slate-900">{formatCurrency(productStats.margin)}</p>
+            <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">{productStats.withLinks} товаров со ссылками</p>
           </div>
         </div>
 
@@ -1220,24 +1279,35 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
         </AnimatePresence>
 
         {/* Products List - Responsive View */}
-        <div className="overflow-hidden rounded-[10px] border border-[#E6E9EF] bg-white shadow-[0_20px_42px_rgba(31,41,55,0.05)]">
+        <div className="overflow-hidden rounded-3xl border border-slate-100 bg-white shadow-sm">
+          <div className="flex items-center justify-between border-b border-slate-50 p-6">
+            <div>
+              <h3 className="text-sm font-bold uppercase tracking-widest text-slate-900">Складская таблица</h3>
+              <p className="mt-1 text-xs font-bold text-slate-400">Фото, характеристики, себестоимость и цена продажи</p>
+            </div>
+            <Download
+              size={16}
+              className={cn("text-slate-400", products.length > 0 ? "cursor-pointer hover:text-slate-600" : "opacity-40")}
+              onClick={products.length > 0 ? handleExportExcel : undefined}
+            />
+          </div>
           {/* Desktop Table View */}
           <div className="hidden lg:block overflow-x-auto">
             <table className="w-full min-w-[1320px] table-fixed text-left border-collapse">
               <thead>
-                <tr className="border-b border-[#E6E9EF] bg-[#F9FAFB]">
-                  <th className="w-[76px] px-5 py-4 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#6B7280]">Фото</th>
-                  <th className="w-[238px] px-5 py-4 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#6B7280]">Наименование</th>
-                  <th className="w-[128px] px-5 py-4 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#6B7280]">Цвет</th>
-                  <th className="w-[105px] px-5 py-4 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#6B7280]">Размеры</th>
-                  <th className="w-[92px] px-5 py-4 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#6B7280]">Рост</th>
-                  <th className="w-[120px] px-5 py-4 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#6B7280]">Обхваты</th>
-                  <th className="w-[80px] px-5 py-4 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#6B7280]">Вес</th>
-                  <th className="w-[142px] px-5 py-4 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#6B7280]">Нанесение</th>
-                  <th className="w-[94px] px-5 py-4 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#6B7280]">Лекало</th>
-                  <th className="w-[118px] px-5 py-4 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#6B7280]">Себест.</th>
-                  <th className="w-[110px] px-5 py-4 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#6B7280]">Цена</th>
-                  <th className="w-[120px] px-5 py-4 text-right text-[11px] font-semibold uppercase tracking-[0.18em] text-[#6B7280]">Действия</th>
+                <tr className="bg-slate-50/50">
+                  <th className="w-[76px] px-5 py-4 text-[10px] font-bold uppercase tracking-widest text-slate-400">Фото</th>
+                  <th className="w-[238px] px-5 py-4 text-[10px] font-bold uppercase tracking-widest text-slate-400">Наименование</th>
+                  <th className="w-[128px] px-5 py-4 text-[10px] font-bold uppercase tracking-widest text-slate-400">Цвет</th>
+                  <th className="w-[105px] px-5 py-4 text-[10px] font-bold uppercase tracking-widest text-slate-400">Размеры</th>
+                  <th className="w-[92px] px-5 py-4 text-[10px] font-bold uppercase tracking-widest text-slate-400">Рост</th>
+                  <th className="w-[120px] px-5 py-4 text-[10px] font-bold uppercase tracking-widest text-slate-400">Обхваты</th>
+                  <th className="w-[80px] px-5 py-4 text-[10px] font-bold uppercase tracking-widest text-slate-400">Вес</th>
+                  <th className="w-[142px] px-5 py-4 text-[10px] font-bold uppercase tracking-widest text-slate-400">Нанесение</th>
+                  <th className="w-[94px] px-5 py-4 text-[10px] font-bold uppercase tracking-widest text-slate-400">Лекало</th>
+                  <th className="w-[118px] px-5 py-4 text-[10px] font-bold uppercase tracking-widest text-slate-400">Себест.</th>
+                  <th className="w-[110px] px-5 py-4 text-[10px] font-bold uppercase tracking-widest text-slate-400">Цена</th>
+                  <th className="w-[120px] px-5 py-4 text-right text-[10px] font-bold uppercase tracking-widest text-slate-400">Действия</th>
                 </tr>
               </thead>
               <tbody>
