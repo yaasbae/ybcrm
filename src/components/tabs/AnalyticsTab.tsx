@@ -95,6 +95,31 @@ export const AnalyticsTab: React.FC<AnalyticsTabProps> = ({ stats, onGoToOrders 
     }), { orders: 0, sales: 0, paid: 0, dueExtra: 0, returnsAmount: 0 });
   }, [analyticsMonths]);
 
+  const currentMonthDailyRows = useMemo(() => {
+    return (stats?.currentMonthDailyRows || []).map((row: any) => ({
+      ...row,
+      paid: Number(row.paid) || 0,
+      dueExtra: Number(row.dueExtra) || 0,
+      returnsAmount: Number(row.returnsAmount) || 0,
+      net: Number(row.net) || 0,
+      orders: Number(row.orders) || 0,
+      sales: Number(row.sales) || 0,
+      delivery: Number(row.delivery) || 0,
+    }));
+  }, [stats?.currentMonthDailyRows]);
+
+  const currentMonthDailyTotals = useMemo(() => {
+    return currentMonthDailyRows.reduce((acc: any, row: any) => ({
+      orders: acc.orders + row.orders,
+      sales: acc.sales + row.sales,
+      paid: acc.paid + row.paid,
+      dueExtra: acc.dueExtra + row.dueExtra,
+      returnsAmount: acc.returnsAmount + row.returnsAmount,
+      delivery: acc.delivery + row.delivery,
+      net: acc.net + row.net,
+    }), { orders: 0, sales: 0, paid: 0, dueExtra: 0, returnsAmount: 0, delivery: 0, net: 0 });
+  }, [currentMonthDailyRows]);
+
   const insights = useMemo(() => {
     const source = selectedMonth === -1 ? allMonths2026 : analyticsMonths;
     const monthsWithSales = source.filter((m: any) => Number(m.paid) > 0);
@@ -200,6 +225,92 @@ export const AnalyticsTab: React.FC<AnalyticsTabProps> = ({ stats, onGoToOrders 
             {detailsOpen ? 'Свернуть аналитику' : 'Показать график и месяцы'}
             <ChevronRight className={cn("h-4 w-4 text-zinc-500 transition-transform", detailsOpen ? "-rotate-90" : "rotate-90")} />
           </button>
+        </div>
+
+        <div className="mb-4 overflow-hidden rounded-[10px] border border-[#E6E9EF] bg-white shadow-[0_8px_22px_rgba(31,41,55,0.03)]">
+          <div className="flex flex-col gap-1 border-b border-[#E6E9EF] px-4 py-4 sm:flex-row sm:items-end sm:justify-between sm:px-5">
+            <div>
+              <h4 className="text-[20px] font-medium leading-[26px] text-[#1F2937]">Сводка по дням</h4>
+              <p className="mt-1 text-[12px] font-medium text-[#6B7280]">Текущий месяц: продажи, оплаты, доплаты и возвраты по датам</p>
+            </div>
+            <div className="grid grid-cols-2 gap-2 text-[11px] font-semibold sm:flex">
+              <span className="rounded-[8px] bg-emerald-50 px-3 py-2 text-emerald-700">{currentMonthDailyTotals.sales} продаж</span>
+              <span className="rounded-[8px] bg-[#F6F7F9] px-3 py-2 text-[#1F2937]">{formatCurrency(currentMonthDailyTotals.net)} итог</span>
+            </div>
+          </div>
+
+          {currentMonthDailyRows.length ? (
+            <>
+              <div className="space-y-2 p-3 md:hidden">
+                {currentMonthDailyRows.map((row: any) => (
+                  <div key={`day-${row.day}`} className={cn("rounded-[10px] border border-[#E6E9EF] bg-white p-4", row.isToday && "border-[#7D7DE6] bg-[#F7F7FF]")}>
+                    <div className="mb-3 flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-[15px] font-semibold text-[#1F2937]">{row.dateLabel}</p>
+                        <p className="mt-1 text-[11px] font-medium text-[#9CA3AF]">{row.orders} заказов · {row.sales} продаж</p>
+                      </div>
+                      {row.isToday && <span className="rounded-full bg-[#7D7DE6] px-2 py-1 text-[8px] font-bold uppercase tracking-wide text-white">сегодня</span>}
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <MiniDailyMetric label="оплачено" value={formatCurrency(row.paid)} tone="green" />
+                      <MiniDailyMetric label="к доплате" value={formatCurrency(row.dueExtra)} tone="orange" />
+                      <MiniDailyMetric label="возвраты" value={`−${formatCurrency(row.returnsAmount)}`} tone="red" muted={row.returnsAmount <= 0} />
+                      <MiniDailyMetric label="итог" value={formatCurrency(row.net)} tone="black" />
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="hidden overflow-x-auto md:block">
+                <table className="w-full min-w-[980px] text-left">
+                  <thead>
+                    <tr className="border-b border-[#E6E9EF] bg-[#F6F7F9] text-[10px] font-bold uppercase tracking-[0.16em] text-[#9CA3AF]">
+                      <th className="px-5 py-4">Дата</th>
+                      <th className="px-5 py-4 text-right">Заказы</th>
+                      <th className="px-5 py-4 text-right">Продажи</th>
+                      <th className="px-5 py-4 text-right text-emerald-600">Оплачено</th>
+                      <th className="px-5 py-4 text-right text-[#6B7280]">Доставка</th>
+                      <th className="px-5 py-4 text-right text-orange-500">К доплате</th>
+                      <th className="px-5 py-4 text-right text-red-500">Возвраты</th>
+                      <th className="px-5 py-4 text-right text-[#1F2937]">После возвратов</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {currentMonthDailyRows.map((row: any) => (
+                      <tr key={`daily-${row.day}`} className={cn("border-b border-[#F1F3F6] text-[13px] font-semibold last:border-b-0", row.isToday && "bg-[#F7F7FF]")}>
+                        <td className="px-5 py-3 text-[#1F2937]">
+                          {row.dateLabel}
+                          {row.isToday && <span className="ml-2 rounded-full bg-[#7D7DE6] px-2 py-0.5 text-[8px] font-bold uppercase text-white">сегодня</span>}
+                        </td>
+                        <td className="px-5 py-3 text-right text-[#6B7280]">{row.orders}</td>
+                        <td className="px-5 py-3 text-right text-[#6B7280]">{row.sales}</td>
+                        <td className="px-5 py-3 text-right text-emerald-600">{formatCurrency(row.paid)}</td>
+                        <td className="px-5 py-3 text-right text-[#9CA3AF]">{formatCurrency(row.delivery)}</td>
+                        <td className={cn("px-5 py-3 text-right", row.dueExtra > 0 ? "text-orange-500" : "text-[#D1D5DB]")}>{formatCurrency(row.dueExtra)}</td>
+                        <td className={cn("px-5 py-3 text-right", row.returnsAmount > 0 ? "text-red-500" : "text-[#D1D5DB]")}>−{formatCurrency(row.returnsAmount)}</td>
+                        <td className="px-5 py-3 text-right text-[#1F2937]">{formatCurrency(row.net)}</td>
+                      </tr>
+                    ))}
+                    <tr className="bg-[#F6F7F9] text-[13px] font-bold">
+                      <td className="px-5 py-4 text-[#1F2937]">Итого</td>
+                      <td className="px-5 py-4 text-right text-[#6B7280]">{currentMonthDailyTotals.orders}</td>
+                      <td className="px-5 py-4 text-right text-[#6B7280]">{currentMonthDailyTotals.sales}</td>
+                      <td className="px-5 py-4 text-right text-emerald-600">{formatCurrency(currentMonthDailyTotals.paid)}</td>
+                      <td className="px-5 py-4 text-right text-[#9CA3AF]">{formatCurrency(currentMonthDailyTotals.delivery)}</td>
+                      <td className="px-5 py-4 text-right text-orange-500">{formatCurrency(currentMonthDailyTotals.dueExtra)}</td>
+                      <td className="px-5 py-4 text-right text-red-500">−{formatCurrency(currentMonthDailyTotals.returnsAmount)}</td>
+                      <td className="px-5 py-4 text-right text-[#1F2937]">{formatCurrency(currentMonthDailyTotals.net)}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </>
+          ) : (
+            <div className="flex min-h-[140px] flex-col items-center justify-center gap-2 px-4 py-8 text-center text-[#9CA3AF]">
+              <Calendar className="h-7 w-7 opacity-40" />
+              <p className="text-[12px] font-semibold uppercase tracking-[0.16em]">В текущем месяце пока нет продаж</p>
+            </div>
+          )}
         </div>
 
         <div className={cn("grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]", !detailsOpen && "hidden md:grid")}>
@@ -386,6 +497,27 @@ export const AnalyticsTab: React.FC<AnalyticsTabProps> = ({ stats, onGoToOrders 
           </div>
         </div>
       )}
+    </div>
+  );
+};
+
+const MiniDailyMetric: React.FC<{
+  label: string;
+  value: string;
+  tone: 'green' | 'orange' | 'red' | 'black';
+  muted?: boolean;
+}> = ({ label, value, tone, muted }) => {
+  const toneClass = {
+    green: 'border-emerald-100 bg-emerald-50 text-emerald-600',
+    orange: 'border-orange-100 bg-orange-50 text-orange-500',
+    red: 'border-red-100 bg-red-50 text-red-500',
+    black: 'border-[#E6E9EF] bg-[#F6F7F9] text-[#1F2937]',
+  }[tone];
+
+  return (
+    <div className={cn('rounded-[8px] border p-3', toneClass, muted && 'opacity-45')}>
+      <p className="text-[9px] font-bold uppercase tracking-[0.14em] opacity-70">{label}</p>
+      <p className="mt-1 text-[13px] font-bold">{value}</p>
     </div>
   );
 };

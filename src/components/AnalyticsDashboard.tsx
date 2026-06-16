@@ -553,6 +553,7 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
         totalActualPayments: 0,
         totalDueExtraPayments: 0,
         salesCount: 0,
+        currentMonthDailyRows: [],
         uniqueSizes: [],
         uniqueDeliveries: ['СДЭК', 'Почта РФ', 'Боксберри', 'Самовывоз', 'Курьер', 'DBS'],
         uniquePromotions: [],
@@ -713,6 +714,69 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
       };
     }).sort((a, b) => (a.year * 12 + a.month) - (b.year * 12 + b.month));
 
+    const today = new Date();
+    const currentYear = today.getFullYear();
+    const currentMonth = today.getMonth();
+    const daysInCurrentMonth = new Date(currentYear, currentMonth + 1, 0).getDate();
+    const dailySalesMap = new Map<number, {
+      day: number;
+      dateLabel: string;
+      orders: number;
+      sales: number;
+      paid: number;
+      dueExtra: number;
+      returnsAmount: number;
+      delivery: number;
+    }>();
+
+    for (let day = 1; day <= daysInCurrentMonth; day += 1) {
+      const date = new Date(currentYear, currentMonth, day);
+      dailySalesMap.set(day, {
+        day,
+        dateLabel: date.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' }),
+        orders: 0,
+        sales: 0,
+        paid: 0,
+        dueExtra: 0,
+        returnsAmount: 0,
+        delivery: 0,
+      });
+    }
+
+    uniqueOrders.forEach((order) => {
+      const date = order.date instanceof Date ? order.date : new Date(order.date);
+      if (!date || Number.isNaN(date.getTime()) || date.getFullYear() !== currentYear || date.getMonth() !== currentMonth) return;
+      const dayRow = dailySalesMap.get(date.getDate());
+      if (!dayRow) return;
+      const revenue = Number(order.revenue) || 0;
+      const paid = Number(order.paidAmount) || 0;
+      const delivery = Number(order.deliveryPrice) || 0;
+      dayRow.orders += 1;
+      if (isSalesOrder(order)) {
+        dayRow.sales += 1;
+        dayRow.paid += paid;
+        dayRow.delivery += delivery;
+        dayRow.dueExtra += Math.max(0, revenue + delivery - paid);
+      }
+    });
+
+    manualReturnOperations.forEach((operation) => {
+      if (operation.date.getFullYear() !== currentYear || operation.date.getMonth() !== currentMonth) return;
+      const dayRow = dailySalesMap.get(operation.date.getDate());
+      if (!dayRow) return;
+      dayRow.returnsAmount += operation.amount;
+    });
+
+    const currentMonthDailyRows = Array.from(dailySalesMap.values())
+      .map(row => ({
+        ...row,
+        net: Math.max(0, row.paid - row.returnsAmount),
+        isToday: row.day === today.getDate(),
+        hasActivity: row.orders > 0 || row.paid > 0 || row.dueExtra > 0 || row.returnsAmount > 0,
+      }))
+      .filter(row => row.hasActivity)
+      .sort((a, b) => a.day - b.day);
+
     const bestMonths = [...chartData].sort((a, b) => b.revenue - a.revenue).slice(0, 5);
     const bloggersByMonth = chartData.map(d => ({ name: d.period, count: d.bloggers }));
 
@@ -767,6 +831,7 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
       totalActualPayments: salesOrders.reduce((sum, o) => sum + o.paidAmount, 0) - manualReturnAmount,
       totalDueExtraPayments: salesOrders.reduce((sum, o) => sum + Math.max(0, (o.revenue + o.deliveryPrice) - o.paidAmount), 0),
       salesCount: salesOrders.length,
+      currentMonthDailyRows,
       uniqueSizes,
       uniqueDeliveries,
       uniquePromotions,
