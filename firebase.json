@@ -13,6 +13,10 @@
     "rewrites": [
       { "source": "/api/tochka/status",        "function": "tochkaStatus" },
       { "source": "/api/tochka/save-token",     "function": "tochkaSaveToken" },
+      { "source": "/api/tochka/oauth/status",   "function": "tochkaOAuthStatus" },
+      { "source": "/api/tochka/oauth/save-client", "function": "tochkaOAuthSaveClient" },
+      { "source": "/api/tochka/oauth/start",    "function": "tochkaOAuthStart" },
+      { "source": "/api/tochka/oauth/callback", "function": "tochkaOAuthCallback" },
       { "source": "/api/tochka/create-payment", "function": "tochkaCreatePayment" },
       { "source": "/api/tochka/find-payment",   "function": "tochkaFindPayment" },
       { "source": "**",                         "destination": "/index.html" }

@@ -138,6 +138,16 @@ function ActionButton({
   );
 }
 
+async function readApiJson(res: Response) {
+  const text = await res.text();
+  if (!text) return {};
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error(text.slice(0, 180) || `Сервер вернул не JSON (${res.status})`);
+  }
+}
+
 export const IntegrationsPage: React.FC<Props> = ({ onNavigate }) => {
   const [tochkaState, setTochkaState] = useState<ApiState>('checking');
   const [tochkaToken, setTochkaToken] = useState('');
@@ -145,6 +155,13 @@ export const IntegrationsPage: React.FC<Props> = ({ onNavigate }) => {
   const [tochkaAccountId, setTochkaAccountId] = useState('');
   const [tochkaResult, setTochkaResult] = useState('');
   const [savingTochka, setSavingTochka] = useState(false);
+  const [tochkaOAuthState, setTochkaOAuthState] = useState<ApiState>('checking');
+  const [tochkaOAuthClientId, setTochkaOAuthClientId] = useState('');
+  const [tochkaOAuthClientSecret, setTochkaOAuthClientSecret] = useState('');
+  const [tochkaOAuthScope, setTochkaOAuthScope] = useState('');
+  const [tochkaOAuthRedirectUrl, setTochkaOAuthRedirectUrl] = useState('');
+  const [tochkaOAuthResult, setTochkaOAuthResult] = useState('');
+  const [savingTochkaOAuth, setSavingTochkaOAuth] = useState(false);
 
   const [cdekState, setCdekState] = useState<ApiState>('checking');
   const [cdek, setCdek] = useState<CdekSettings>({});
@@ -170,6 +187,7 @@ export const IntegrationsPage: React.FC<Props> = ({ onNavigate }) => {
 
   const loadStatuses = async () => {
     setTochkaState('checking');
+    setTochkaOAuthState('checking');
     setCdekState('checking');
     setTgState('checking');
     setGeminiState('checking');
@@ -178,6 +196,18 @@ export const IntegrationsPage: React.FC<Props> = ({ onNavigate }) => {
       .then(r => r.json())
       .then(d => setTochkaState(d.configured ? 'connected' : 'missing'))
       .catch(() => setTochkaState('missing'));
+
+    fetch('/api/tochka/oauth/status')
+      .then(r => r.json())
+      .then(d => {
+        setTochkaOAuthState(d.connected ? 'connected' : d.configured ? 'partial' : 'missing');
+        setTochkaOAuthRedirectUrl(d.redirectUrl || callbackUrl);
+        setTochkaOAuthScope(d.scope || '');
+      })
+      .catch(() => {
+        setTochkaOAuthState('missing');
+        setTochkaOAuthRedirectUrl(callbackUrl);
+      });
 
     fetch('/api/cdek/status')
       .then(r => r.json())
@@ -227,7 +257,7 @@ export const IntegrationsPage: React.FC<Props> = ({ onNavigate }) => {
           paymentMode: ['sbp'],
         }),
       });
-      const data = await res.json();
+      const data = await readApiJson(res);
       if (!res.ok) throw new Error(data.error || 'Не удалось сохранить Точку');
       setTochkaState('connected');
       setTochkaResult(`Сохранено. Код клиента: ${data.customerCode || 'получен'}`);
@@ -239,6 +269,44 @@ export const IntegrationsPage: React.FC<Props> = ({ onNavigate }) => {
     } finally {
       setSavingTochka(false);
     }
+  };
+
+  const saveTochkaOAuth = async () => {
+    if (!tochkaOAuthClientId.trim() && tochkaOAuthState === 'missing') {
+      setTochkaOAuthResult('Вставь Client ID.');
+      return;
+    }
+    if (!tochkaOAuthClientSecret.trim() && tochkaOAuthState === 'missing') {
+      setTochkaOAuthResult('Вставь Client Secret.');
+      return;
+    }
+    setSavingTochkaOAuth(true);
+    setTochkaOAuthResult('');
+    try {
+      const res = await fetch('/api/tochka/oauth/save-client', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          clientId: tochkaOAuthClientId.trim(),
+          clientSecret: tochkaOAuthClientSecret.trim(),
+          redirectUrl: tochkaOAuthRedirectUrl.trim() || callbackUrl,
+          scope: tochkaOAuthScope.trim(),
+        }),
+      });
+      const data = await readApiJson(res);
+      if (!res.ok) throw new Error(data.error || 'Не удалось сохранить OAuth');
+      setTochkaOAuthClientSecret('');
+      setTochkaOAuthResult('OAuth ключи сохранены. Теперь нажми “Подключить Точка Банк”.');
+      loadStatuses();
+    } catch (e: any) {
+      setTochkaOAuthResult(e.message || 'Ошибка сохранения OAuth');
+    } finally {
+      setSavingTochkaOAuth(false);
+    }
+  };
+
+  const startTochkaOAuth = () => {
+    window.location.href = '/api/tochka/oauth/start';
   };
 
   const saveCdek = async () => {
@@ -260,7 +328,7 @@ export const IntegrationsPage: React.FC<Props> = ({ onNavigate }) => {
           shipmentPoint: cdek.shipmentPoint || '',
         }),
       });
-      const data = await res.json();
+      const data = await readApiJson(res);
       if (!res.ok) throw new Error(data.message || data.error || 'Не удалось сохранить СДЭК');
       setCdekState('connected');
       setCdekClientSecret('');
@@ -290,7 +358,7 @@ export const IntegrationsPage: React.FC<Props> = ({ onNavigate }) => {
   };
 
   const copyCallback = async () => {
-    await navigator.clipboard.writeText(callbackUrl);
+    await navigator.clipboard.writeText(tochkaOAuthRedirectUrl || callbackUrl);
   };
 
   return (
@@ -318,45 +386,94 @@ export const IntegrationsPage: React.FC<Props> = ({ onNavigate }) => {
       <div className="grid gap-4 xl:grid-cols-2">
         <ApiCard
           title="Точка Банк"
-          subtitle="QR-оплата, проверка платежей и будущий OAuth для счетов/операций."
+          subtitle="Старый JWT остается рабочим. Новый OAuth подключается отдельно через Client ID и Client Secret."
           icon={WalletCards}
-          state={tochkaState}
+          state={tochkaOAuthState === 'connected' ? 'connected' : tochkaState}
           accent="bg-[#1F2937]"
         >
-          <div className="grid gap-3 lg:grid-cols-[1.3fr_1fr]">
-            <div className="space-y-3">
-              <Field label="JWT токен">
-                <textarea value={tochkaToken} onChange={e => setTochkaToken(e.target.value)} placeholder="eyJhbGciOi..." className={textareaClass} />
-              </Field>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <Field label="Merchant ID">
-                  <input value={tochkaMerchantId} onChange={e => setTochkaMerchantId(e.target.value)} placeholder="MF..." className={inputClass} />
+          <div className="space-y-4">
+            <div className="rounded-[10px] border border-[#E6E9EF] bg-[#F6F7F9] p-4">
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <p className={labelClass}>Новый способ</p>
+                  <h3 className="mt-1 text-[18px] font-semibold text-[#1F2937]">OAuth Точка Банк</h3>
+                </div>
+                <StatusPill state={tochkaOAuthState} />
+              </div>
+              <div className="grid gap-3 md:grid-cols-2">
+                <Field label="Client ID">
+                  <input value={tochkaOAuthClientId} onChange={e => setTochkaOAuthClientId(e.target.value)} placeholder="Client ID из кабинета Точки" className={inputClass} />
                 </Field>
-                <Field label="Account ID">
-                  <input value={tochkaAccountId} onChange={e => setTochkaAccountId(e.target.value)} placeholder="4080.../БИК" className={inputClass} />
+                <Field label="Client Secret">
+                  <input value={tochkaOAuthClientSecret} onChange={e => setTochkaOAuthClientSecret(e.target.value)} placeholder={tochkaOAuthState !== 'missing' ? 'оставь пустым, если не менять' : 'Client Secret'} type="password" className={inputClass} />
+                </Field>
+                <Field label="Scope">
+                  <input value={tochkaOAuthScope} onChange={e => setTochkaOAuthScope(e.target.value)} placeholder="если Точка требует scope, впиши сюда" className={inputClass} />
+                </Field>
+                <Field label="Redirect URL">
+                  <div className="flex items-center gap-2">
+                    <input value={tochkaOAuthRedirectUrl || callbackUrl} onChange={e => setTochkaOAuthRedirectUrl(e.target.value)} className={inputClass} />
+                    <button onClick={copyCallback} className="h-11 rounded-[8px] border border-[#E6E9EF] bg-white px-3 text-[#6B7280] hover:bg-[#F6F7F9]" title="Скопировать callback">
+                      <Copy className="h-4 w-4" />
+                    </button>
+                  </div>
                 </Field>
               </div>
-              {tochkaResult && (
-                <p className={cn('text-[12px] font-semibold', tochkaResult.toLowerCase().includes('ошиб') || tochkaResult.includes('Сначала') ? 'text-[#F06B6B]' : 'text-[#2EBA7F]')}>
-                  {tochkaResult}
+              {tochkaOAuthResult && (
+                <p className={cn('mt-3 text-[12px] font-semibold', tochkaOAuthResult.toLowerCase().includes('ошиб') || tochkaOAuthResult.includes('Вставь') ? 'text-[#F06B6B]' : 'text-[#2EBA7F]')}>
+                  {tochkaOAuthResult}
                 </p>
               )}
-              <ActionButton onClick={saveTochka} disabled={savingTochka || (!tochkaToken.trim() && tochkaState !== 'connected')} tone="blue">
-                {savingTochka ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-                Сохранить Точку
-              </ActionButton>
-            </div>
-            <div className="rounded-[10px] border border-[#E6E9EF] bg-[#F6F7F9] p-4">
-              <p className={labelClass}>OAuth callback</p>
-              <div className="mt-2 flex items-center gap-2 rounded-[8px] border border-[#E6E9EF] bg-white px-3 py-2">
-                <code className="min-w-0 flex-1 truncate text-[11px] font-semibold text-[#1F2937]">{callbackUrl}</code>
-                <button onClick={copyCallback} className="rounded-[6px] p-1.5 text-[#6B7280] hover:bg-[#F6F7F9]" title="Скопировать callback">
-                  <Copy className="h-4 w-4" />
-                </button>
+              <div className="mt-4 flex flex-wrap gap-2">
+                <ActionButton onClick={saveTochkaOAuth} disabled={savingTochkaOAuth} tone="blue">
+                  {savingTochkaOAuth ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                  Сохранить OAuth
+                </ActionButton>
+                <ActionButton onClick={startTochkaOAuth} disabled={tochkaOAuthState === 'missing'} tone="dark">
+                  <ExternalLink className="h-4 w-4" />
+                  Подключить Точка Банк
+                </ActionButton>
               </div>
-              <p className="mt-3 text-[12px] leading-5 text-[#6B7280]">
-                Для счетов и выписок нужен OAuth-доступ Точки. Secret хранить только на сервере, не в браузере.
-              </p>
+            </div>
+
+            <div className="rounded-[10px] border border-[#E6E9EF] bg-white p-4">
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <p className={labelClass}>Старый способ</p>
+                  <h3 className="mt-1 text-[18px] font-semibold text-[#1F2937]">JWT / API token</h3>
+                </div>
+                <StatusPill state={tochkaState} />
+              </div>
+              <div className="grid gap-3 lg:grid-cols-[1.3fr_1fr]">
+                <div className="space-y-3">
+                  <Field label="JWT токен">
+                    <textarea value={tochkaToken} onChange={e => setTochkaToken(e.target.value)} placeholder="eyJhbGciOi..." className={textareaClass} />
+                  </Field>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <Field label="Merchant ID">
+                      <input value={tochkaMerchantId} onChange={e => setTochkaMerchantId(e.target.value)} placeholder="MF..." className={inputClass} />
+                    </Field>
+                    <Field label="Account ID">
+                      <input value={tochkaAccountId} onChange={e => setTochkaAccountId(e.target.value)} placeholder="4080.../БИК" className={inputClass} />
+                    </Field>
+                  </div>
+                  {tochkaResult && (
+                    <p className={cn('text-[12px] font-semibold', tochkaResult.toLowerCase().includes('ошиб') || tochkaResult.includes('Сначала') ? 'text-[#F06B6B]' : 'text-[#2EBA7F]')}>
+                      {tochkaResult}
+                    </p>
+                  )}
+                  <ActionButton onClick={saveTochka} disabled={savingTochka || (!tochkaToken.trim() && tochkaState !== 'connected')} tone="light">
+                    {savingTochka ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                    Сохранить старый токен
+                  </ActionButton>
+                </div>
+                <div className="rounded-[10px] border border-[#E6E9EF] bg-[#F6F7F9] p-4">
+                  <p className={labelClass}>Не трогаем</p>
+                  <p className="mt-2 text-[13px] font-semibold leading-5 text-[#1F2937]">
+                    Этот блок оставлен для текущих QR-счетов и проверки оплат. Новый OAuth работает отдельно сверху.
+                  </p>
+                </div>
+              </div>
             </div>
           </div>
         </ApiCard>
