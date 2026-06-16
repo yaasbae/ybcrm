@@ -255,26 +255,28 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack }) =>
     other: { label: 'Прочее', icon: Briefcase, color: 'text-slate-500', bg: 'bg-slate-50' }
   };
 
+  const metricCardClass = "rounded-[10px] border border-[#E6E9EF] bg-white p-5 shadow-[0_8px_22px_rgba(31,41,55,0.03)]";
+
   return (
-    <div className="min-h-screen bg-slate-50/50">
-      <div className="max-w-5xl mx-auto px-4 py-8 space-y-8">
+    <div className="min-h-screen bg-[#F6F7F9]">
+      <div className="mx-auto w-full max-w-[1760px] px-4 py-8 space-y-5 sm:px-6 lg:px-8">
         {/* Header */}
-        <div className="flex items-center justify-between">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div className="flex items-center gap-4">
             <button 
               onClick={onBack}
-              className="p-2 hover:bg-slate-100 rounded-full transition-colors"
+              className="inline-flex h-10 w-10 items-center justify-center rounded-[8px] border border-[#E6E9EF] bg-white text-[#1F2937] transition-colors hover:bg-[#F6F7F9]"
             >
               <ArrowLeft size={20} />
             </button>
             <div>
-              <h1 className="text-2xl font-bold tracking-tight text-slate-900">Финансы & ДДС</h1>
-              <p className="text-slate-500 text-sm">Управление денежными потоками и расходами</p>
+              <h1 className="text-[34px] font-medium leading-10 tracking-tight text-[#1F2937]">Финансы & ДДС</h1>
+              <p className="text-[14px] font-medium text-[#6B7280]">Управление денежными потоками и расходами</p>
             </div>
           </div>
           <button 
             onClick={() => setIsModalOpen(true)}
-            className="bg-slate-900 text-white px-4 py-2 rounded-xl text-sm font-bold flex items-center gap-2 hover:bg-slate-800 transition-all shadow-lg active:scale-95"
+            className="inline-flex h-11 items-center justify-center gap-2 rounded-[8px] bg-[#1F2937] px-5 text-[13px] font-semibold text-white shadow-[0_10px_24px_rgba(31,41,55,0.14)] transition-all hover:bg-[#111827] active:scale-95"
           >
             <Plus size={18} />
             Добавить расход
@@ -282,89 +284,89 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack }) =>
         </div>
 
         {/* Global Stats */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-          <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm space-y-2">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <div className={cn(metricCardClass, "space-y-2")}>
             <div className="flex items-center justify-between">
-              <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Получено (Касса)</span>
-              <div className="p-2 bg-emerald-50 text-emerald-500 rounded-lg">
+              <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-[#6B7280]">Получено (Касса)</span>
+              <div className="rounded-[8px] bg-emerald-50 p-2 text-emerald-500">
                 <TrendingUp size={16} />
               </div>
             </div>
-            <p className="text-2xl font-black text-slate-900">{formatCurrency(financialStats.received)}</p>
-            <p className="text-[10px] text-emerald-500 font-bold uppercase tracking-widest leading-none">Реальные приходы</p>
+            <p className="text-[28px] font-black leading-tight text-[#1F2937]">{formatCurrency(financialStats.received)}</p>
+            <p className="text-[10px] font-bold uppercase tracking-[0.16em] leading-none text-emerald-500">Реальные приходы</p>
           </div>
 
-          <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm space-y-2">
+          <div className={cn(metricCardClass, "space-y-2")}>
             <div className="flex items-center justify-between">
-              <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Дебиторка (Долги)</span>
-              <div className="p-2 bg-orange-50 text-orange-500 rounded-lg">
+              <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-[#6B7280]">Дебиторка (Долги)</span>
+              <div className="rounded-[8px] bg-orange-50 p-2 text-orange-500">
                 <AlertCircle size={16} />
               </div>
             </div>
-            <p className="text-2xl font-black text-slate-900">{formatCurrency(financialStats.owed)}</p>
-            <p className="text-[10px] text-orange-500 font-bold uppercase tracking-widest leading-none">Ожидаемые доплаты</p>
+            <p className="text-[28px] font-black leading-tight text-[#1F2937]">{formatCurrency(financialStats.owed)}</p>
+            <p className="text-[10px] font-bold uppercase tracking-[0.16em] leading-none text-orange-500">Ожидаемые доплаты</p>
           </div>
 
-          <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm space-y-2">
+          <div className={cn(metricCardClass, "space-y-2")}>
             <div className="flex items-center justify-between">
-              <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Расходы</span>
-              <div className="p-2 bg-red-50 text-red-500 rounded-lg">
+              <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-[#6B7280]">Расходы</span>
+              <div className="rounded-[8px] bg-red-50 p-2 text-red-500">
                 <TrendingDown size={16} />
               </div>
             </div>
-            <p className="text-2xl font-black text-slate-900">{formatCurrency(financialStats.expenses)}</p>
-            <p className="text-[10px] text-red-500 font-bold uppercase tracking-widest leading-none">ФОТ, аренда и пр.</p>
+            <p className="text-[28px] font-black leading-tight text-[#1F2937]">{formatCurrency(financialStats.expenses)}</p>
+            <p className="text-[10px] font-bold uppercase tracking-[0.16em] leading-none text-red-500">ФОТ, аренда и пр.</p>
           </div>
 
-          <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm space-y-2 border-l-4 border-l-slate-900">
+          <div className={cn(metricCardClass, "space-y-2 border-l-4 border-l-[#1F2937]")}>
             <div className="flex items-center justify-between">
-              <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Итого Чистыми</span>
-              <div className={cn("p-2 rounded-lg", financialStats.balance >= 0 ? "bg-slate-900 text-white" : "bg-orange-50 text-orange-500")}>
+              <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-[#6B7280]">Итого чистыми</span>
+              <div className={cn("rounded-[8px] p-2", financialStats.balance >= 0 ? "bg-[#1F2937] text-white" : "bg-orange-50 text-orange-500")}>
                 <DollarSign size={16} />
               </div>
             </div>
-            <p className="text-2xl font-black text-slate-900">{formatCurrency(financialStats.balance)}</p>
-            <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest leading-none">Сальдо в кассе</p>
+            <p className="text-[28px] font-black leading-tight text-[#1F2937]">{formatCurrency(financialStats.balance)}</p>
+            <p className="text-[10px] font-bold uppercase tracking-[0.16em] leading-none text-[#6B7280]">Сальдо в кассе</p>
           </div>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-          <div className="rounded-2xl border border-slate-100 bg-white p-4 shadow-sm">
-            <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-slate-400">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <div className={metricCardClass}>
+            <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.16em] text-[#6B7280]">
               <ReceiptText size={14} />
               Заказы CRM
             </div>
-            <p className="mt-2 text-xl font-black text-slate-900">{financialStats.orders}</p>
-            <p className="text-[11px] font-bold text-slate-400">{financialStats.sales} продаж</p>
+            <p className="mt-2 text-[22px] font-black leading-tight text-[#1F2937]">{financialStats.orders}</p>
+            <p className="text-[11px] font-bold text-[#6B7280]">{financialStats.sales} продаж</p>
           </div>
-          <div className="rounded-2xl border border-slate-100 bg-white p-4 shadow-sm">
-            <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-slate-400">
+          <div className={metricCardClass}>
+            <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.16em] text-[#6B7280]">
               <Wallet size={14} />
               Сумма заказов
             </div>
-            <p className="mt-2 text-xl font-black text-slate-900">{formatCurrency(financialStats.planned)}</p>
-            <p className="text-[11px] font-bold text-slate-400">товары + доставка</p>
+            <p className="mt-2 text-[22px] font-black leading-tight text-[#1F2937]">{formatCurrency(financialStats.planned)}</p>
+            <p className="text-[11px] font-bold text-[#6B7280]">товары + доставка</p>
           </div>
-          <div className="rounded-2xl border border-red-100 bg-red-50/40 p-4 shadow-sm">
-            <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-red-400">
+          <div className="rounded-[10px] border border-red-100 bg-red-50/60 p-5 shadow-[0_8px_22px_rgba(31,41,55,0.03)]">
+            <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.16em] text-red-400">
               <RefreshCcw size={14} />
               Возвраты
             </div>
-            <p className="mt-2 text-xl font-black text-red-500">-{formatCurrency(financialStats.returns)}</p>
+            <p className="mt-2 text-[22px] font-black leading-tight text-red-500">-{formatCurrency(financialStats.returns)}</p>
             <p className="text-[11px] font-bold text-red-300">учтены в чистом итоге</p>
           </div>
-          <div className="rounded-2xl border border-slate-100 bg-white p-4 shadow-sm">
-            <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-slate-400">
+          <div className={metricCardClass}>
+            <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.16em] text-[#6B7280]">
               <Database size={14} />
               После возвратов
             </div>
-            <p className="mt-2 text-xl font-black text-slate-900">{formatCurrency(Math.max(0, financialStats.received - financialStats.returns))}</p>
-            <p className="text-[11px] font-bold text-slate-400">до ручных расходов</p>
+            <p className="mt-2 text-[22px] font-black leading-tight text-[#1F2937]">{formatCurrency(Math.max(0, financialStats.received - financialStats.returns))}</p>
+            <p className="text-[11px] font-bold text-[#6B7280]">до ручных расходов</p>
           </div>
         </div>
 
         {/* Tabs */}
-        <div className="flex gap-2 p-1 bg-slate-100/50 rounded-2xl w-fit">
+        <div className="inline-flex max-w-full gap-1 overflow-x-auto rounded-[10px] border border-[#E6E9EF] bg-white p-1 shadow-[0_8px_22px_rgba(31,41,55,0.03)]">
           {[
             { id: 'dds', label: 'ДДС (Потоки)', icon: PieChart },
             { id: 'calendar', label: 'Календарь', icon: CalendarIcon },
@@ -374,8 +376,8 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack }) =>
               key={tab.id}
               onClick={() => setActiveTab(tab.id as any)}
               className={cn(
-                "px-4 py-2 rounded-xl text-xs font-bold uppercase tracking-widest transition-all flex items-center gap-2",
-                activeTab === tab.id ? "bg-white text-slate-900 shadow-sm" : "text-slate-400 hover:text-slate-600"
+                "inline-flex h-9 items-center gap-2 rounded-[8px] px-4 text-[11px] font-semibold uppercase tracking-[0.12em] transition-all",
+                activeTab === tab.id ? "bg-[#1F2937] text-white shadow-sm" : "text-[#6B7280] hover:bg-[#F6F7F9] hover:text-[#1F2937]"
               )}
             >
               <tab.icon size={14} />
@@ -394,49 +396,49 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack }) =>
               exit={{ opacity: 0 }}
               className="space-y-6"
             >
-              <div className="bg-white rounded-3xl border border-slate-100 shadow-sm overflow-hidden">
-                <div className="p-6 border-b border-slate-50 flex items-center justify-between">
-                  <h3 className="text-sm font-bold uppercase tracking-widest">Движение денежных средств</h3>
+              <div className="overflow-hidden rounded-[10px] border border-[#E6E9EF] bg-white shadow-[0_8px_22px_rgba(31,41,55,0.03)]">
+                <div className="flex items-center justify-between border-b border-[#E6E9EF] px-5 py-4">
+                  <h3 className="text-[13px] font-semibold uppercase tracking-[0.16em] text-[#1F2937]">Движение денежных средств</h3>
                   <Download size={16} className="text-slate-400 cursor-pointer hover:text-slate-600" />
                 </div>
                 <div className="overflow-x-auto">
-                  <table className="w-full">
+                  <table className="w-full min-w-[1120px] table-fixed">
                     <thead>
-                      <tr className="bg-slate-50/50">
-                        <th className="px-6 py-4 text-left text-[10px] font-bold text-slate-400 uppercase tracking-widest">Период</th>
-                        <th className="px-6 py-4 text-right text-[10px] font-bold text-slate-400 uppercase tracking-widest">Заказы</th>
-                        <th className="px-6 py-4 text-right text-[10px] font-bold text-slate-400 uppercase tracking-widest">Сумма заказов</th>
-                        <th className="px-6 py-4 text-right text-[10px] font-bold text-emerald-500 uppercase tracking-widest">Оплачено</th>
-                        <th className="px-6 py-4 text-right text-[10px] font-bold text-orange-500 uppercase tracking-widest">К доплате</th>
-                        <th className="px-6 py-4 text-right text-[10px] font-bold text-red-500 uppercase tracking-widest">Возвраты</th>
-                        <th className="px-6 py-4 text-right text-[10px] font-bold text-slate-400 uppercase tracking-widest">Расход</th>
-                        <th className="px-6 py-4 text-right text-[10px] font-bold text-slate-400 uppercase tracking-widest">Сальдо</th>
+                      <tr className="bg-[#F6F7F9]">
+                        <th className="px-5 py-4 text-left text-[10px] font-semibold uppercase tracking-[0.14em] text-[#9CA3AF]">Период</th>
+                        <th className="px-5 py-4 text-right text-[10px] font-semibold uppercase tracking-[0.14em] text-[#9CA3AF]">Заказы</th>
+                        <th className="px-5 py-4 text-right text-[10px] font-semibold uppercase tracking-[0.14em] text-[#9CA3AF]">Сумма заказов</th>
+                        <th className="px-5 py-4 text-right text-[10px] font-semibold uppercase tracking-[0.14em] text-emerald-500">Оплачено</th>
+                        <th className="px-5 py-4 text-right text-[10px] font-semibold uppercase tracking-[0.14em] text-orange-500">К доплате</th>
+                        <th className="px-5 py-4 text-right text-[10px] font-semibold uppercase tracking-[0.14em] text-red-500">Возвраты</th>
+                        <th className="px-5 py-4 text-right text-[10px] font-semibold uppercase tracking-[0.14em] text-[#9CA3AF]">Расход</th>
+                        <th className="px-5 py-4 text-right text-[10px] font-semibold uppercase tracking-[0.14em] text-[#9CA3AF]">Сальдо</th>
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-slate-50">
+                    <tbody className="divide-y divide-[#E6E9EF]">
                       {financialStats.monthlyRows.map((values) => (
                         <tr key={`${values.year}-${values.month}`} className="hover:bg-slate-50/50 transition-colors">
-                          <td className="px-6 py-4 text-sm font-bold text-slate-700">{values.label}</td>
-                          <td className="px-6 py-4 text-right text-sm font-bold text-slate-500">{values.orders} / {values.sales}</td>
-                          <td className="px-6 py-4 text-right text-sm font-bold text-slate-900">{formatCurrency(values.planned)}</td>
-                          <td className="px-6 py-4 text-right text-sm font-bold text-emerald-600">+{formatCurrency(values.income)}</td>
-                          <td className={cn("px-6 py-4 text-right text-sm font-bold", values.owed > 0 ? "text-orange-500" : "text-slate-300")}>{formatCurrency(values.owed)}</td>
-                          <td className={cn("px-6 py-4 text-right text-sm font-bold", values.returns > 0 ? "text-red-500" : "text-slate-300")}>-{formatCurrency(values.returns)}</td>
-                          <td className={cn("px-6 py-4 text-right text-sm font-bold", values.expense > 0 ? "text-red-500" : "text-slate-300")}>-{formatCurrency(values.expense)}</td>
-                          <td className={cn("px-6 py-4 text-right text-sm font-black", values.net >= 0 ? "text-slate-900" : "text-orange-500")}>
+                          <td className="px-5 py-4 text-[13px] font-bold text-[#1F2937]">{values.label}</td>
+                          <td className="px-5 py-4 text-right text-[13px] font-bold text-[#6B7280]">{values.orders} / {values.sales}</td>
+                          <td className="px-5 py-4 text-right text-[13px] font-bold text-[#1F2937]">{formatCurrency(values.planned)}</td>
+                          <td className="px-5 py-4 text-right text-[13px] font-bold text-emerald-600">+{formatCurrency(values.income)}</td>
+                          <td className={cn("px-5 py-4 text-right text-[13px] font-bold", values.owed > 0 ? "text-orange-500" : "text-slate-300")}>{formatCurrency(values.owed)}</td>
+                          <td className={cn("px-5 py-4 text-right text-[13px] font-bold", values.returns > 0 ? "text-red-500" : "text-slate-300")}>-{formatCurrency(values.returns)}</td>
+                          <td className={cn("px-5 py-4 text-right text-[13px] font-bold", values.expense > 0 ? "text-red-500" : "text-slate-300")}>-{formatCurrency(values.expense)}</td>
+                          <td className={cn("px-5 py-4 text-right text-[13px] font-black", values.net >= 0 ? "text-[#1F2937]" : "text-orange-500")}>
                             {formatCurrency(values.net)}
                           </td>
                         </tr>
                       ))}
-                      <tr className="bg-slate-50/70 text-sm font-black">
-                        <td className="px-6 py-4 text-slate-900">Итого</td>
-                        <td className="px-6 py-4 text-right text-slate-600">{financialStats.orders} / {financialStats.sales}</td>
-                        <td className="px-6 py-4 text-right text-slate-900">{formatCurrency(financialStats.planned)}</td>
-                        <td className="px-6 py-4 text-right text-emerald-600">+{formatCurrency(financialStats.received)}</td>
-                        <td className="px-6 py-4 text-right text-orange-500">{formatCurrency(financialStats.owed)}</td>
-                        <td className="px-6 py-4 text-right text-red-500">-{formatCurrency(financialStats.returns)}</td>
-                        <td className="px-6 py-4 text-right text-red-500">-{formatCurrency(financialStats.expenses)}</td>
-                        <td className="px-6 py-4 text-right text-slate-900">{formatCurrency(financialStats.balance)}</td>
+                      <tr className="bg-[#F6F7F9] text-[13px] font-black">
+                        <td className="px-5 py-4 text-[#1F2937]">Итого</td>
+                        <td className="px-5 py-4 text-right text-[#6B7280]">{financialStats.orders} / {financialStats.sales}</td>
+                        <td className="px-5 py-4 text-right text-[#1F2937]">{formatCurrency(financialStats.planned)}</td>
+                        <td className="px-5 py-4 text-right text-emerald-600">+{formatCurrency(financialStats.received)}</td>
+                        <td className="px-5 py-4 text-right text-orange-500">{formatCurrency(financialStats.owed)}</td>
+                        <td className="px-5 py-4 text-right text-red-500">-{formatCurrency(financialStats.returns)}</td>
+                        <td className="px-5 py-4 text-right text-red-500">-{formatCurrency(financialStats.expenses)}</td>
+                        <td className="px-5 py-4 text-right text-[#1F2937]">{formatCurrency(financialStats.balance)}</td>
                       </tr>
                     </tbody>
                   </table>

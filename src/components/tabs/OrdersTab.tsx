@@ -1243,6 +1243,11 @@ const OrderSummaryRow = React.memo(({
       <td className="px-5 py-5 align-top">
         <p className={cn("text-[11px] font-black uppercase tracking-widest", statusTone)}>{order.status || '—'}</p>
         <p className="mt-2 max-w-[160px] truncate text-[12px] font-semibold text-zinc-500">{order.deliveryMethod || '—'}</p>
+        {order.manager && (
+          <p className="mt-2 max-w-[170px] truncate text-[10px] font-bold uppercase tracking-[0.12em] text-zinc-400" title={order.manager}>
+            менеджер <span className="normal-case tracking-normal text-zinc-500">{order.manager}</span>
+          </p>
+        )}
       </td>
       <td className="px-5 py-5 align-top">
         <p className="text-[13px] font-black text-zinc-950 tabular-nums">{formatCurrency(order.revenue || 0)}</p>
@@ -2174,6 +2179,9 @@ const OrderCard = React.memo(({
             <div>
               <p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">{order.status || '—'}</p>
               <p className="mt-1 truncate text-[11px] font-semibold text-zinc-500">{order.deliveryMethod || '—'}</p>
+              {order.manager && (
+                <p className="mt-1 truncate text-[10px] font-bold text-zinc-400">менеджер: {order.manager}</p>
+              )}
             </div>
             <div className="text-right">
               <p className="text-[12px] font-black text-zinc-950">{formatCurrency(order.revenue || 0)}</p>
