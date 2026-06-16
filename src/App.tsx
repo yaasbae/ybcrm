@@ -19,17 +19,18 @@ const ContentPage = lazy(() => import("./components/ContentPage").then(m => ({ d
 const ContentStudioPage = lazy(() => import("./components/ContentStudioPage").then(m => ({ default: m.ContentStudioPage })));
 const PaymentPage = lazy(() => import("./components/PaymentPage").then(m => ({ default: m.PaymentPage })));
 const CdekPage = lazy(() => import("./components/CdekPage").then(m => ({ default: m.CdekPage })));
+const IntegrationsPage = lazy(() => import("./components/IntegrationsPage").then(m => ({ default: m.IntegrationsPage })));
 import { auth, completeGoogleRedirectSignIn, getGoogleAuthErrorMessage, signInWithGoogle, signInWithEmail, logOut } from "./firebase";
 import { onAuthStateChanged, User as FirebaseUser } from "firebase/auth";
 import { cn } from "./lib/utils";
 import {
   LogIn, LogOut, User as UserIcon, AlertCircle,
   DollarSign, Calculator, LayoutDashboard, Package, Bot, ShoppingBag,
-  UserCircle, Star, Calendar as CalendarIcon, BookOpen, Send, Sparkles, Wand2, Truck, ReceiptText
+  UserCircle, Star, Calendar as CalendarIcon, BookOpen, Send, Sparkles, Wand2, Truck, ReceiptText, PlugZap
 } from "lucide-react";
 import { motion } from "motion/react";
 
-type AppView = 'home' | 'calculator' | 'analytics' | 'orders' | 'clients' | 'marketing' | 'order-form' | 'products' | 'ai-agent' | 'public-product' | 'public-payment' | 'finance' | 'payroll' | 'handbook' | 'broadcast' | 'broadcast-v2' | 'bot' | 'content' | 'studio' | 'cdek';
+type AppView = 'home' | 'calculator' | 'analytics' | 'orders' | 'clients' | 'marketing' | 'order-form' | 'products' | 'ai-agent' | 'public-product' | 'public-payment' | 'finance' | 'payroll' | 'handbook' | 'broadcast' | 'broadcast-v2' | 'bot' | 'content' | 'studio' | 'cdek' | 'integrations';
 
 const viewRoutes: Record<Exclude<AppView, 'public-product' | 'public-payment'>, string> = {
   home: '/',
@@ -50,6 +51,7 @@ const viewRoutes: Record<Exclude<AppView, 'public-product' | 'public-payment'>, 
   content: '/content',
   studio: '/studio',
   cdek: '/cdek',
+  integrations: '/integrations',
 };
 
 const routeViews = Object.fromEntries(
@@ -204,7 +206,7 @@ export default function App() {
     };
   }, []);
 
-  const handleNavigate = (newView: 'calculator' | 'analytics' | 'orders' | 'clients' | 'marketing' | 'order-form' | 'products' | 'ai-agent' | 'finance' | 'payroll' | 'handbook' | 'broadcast' | 'broadcast-v2' | 'bot' | 'content' | 'studio' | 'cdek' | 'home', clientData?: any) => {
+  const handleNavigate = (newView: 'calculator' | 'analytics' | 'orders' | 'clients' | 'marketing' | 'order-form' | 'products' | 'ai-agent' | 'finance' | 'payroll' | 'handbook' | 'broadcast' | 'broadcast-v2' | 'bot' | 'content' | 'studio' | 'cdek' | 'integrations' | 'home', clientData?: any) => {
     if (clientData) setInitialClient(clientData);
     else setInitialClient(null);
     setView(newView);
@@ -425,6 +427,7 @@ export default function App() {
                 { id: 'products',  label: 'Склад',    icon: Package },
                 { id: 'handbook',  label: 'Справ.',   icon: BookOpen },
                 { id: 'cdek',      label: 'СДЭК',     icon: Truck },
+                { id: 'integrations', label: 'API',    icon: PlugZap },
                 { id: 'broadcast', label: 'Рассыл.',  icon: Send },
                 { id: 'bot',       label: 'Бот',       icon: Bot },
                 { id: 'content',   label: 'Контент',   icon: Sparkles },
@@ -545,6 +548,10 @@ export default function App() {
 
           {view === 'cdek' && (
             <CdekPage />
+          )}
+
+          {view === 'integrations' && (
+            <IntegrationsPage onNavigate={(target) => handleNavigate(target)} />
           )}
 
           {view === 'broadcast' && (
