@@ -104,6 +104,7 @@ export const AnalyticsTab: React.FC<AnalyticsTabProps> = ({ stats, onGoToOrders 
       net: Number(row.net) || 0,
       orders: Number(row.orders) || 0,
       sales: Number(row.sales) || 0,
+      salesAmount: Number(row.salesAmount) || 0,
       delivery: Number(row.delivery) || 0,
     }));
   }, [stats?.currentMonthDailyRows]);
@@ -112,12 +113,13 @@ export const AnalyticsTab: React.FC<AnalyticsTabProps> = ({ stats, onGoToOrders 
     return currentMonthDailyRows.reduce((acc: any, row: any) => ({
       orders: acc.orders + row.orders,
       sales: acc.sales + row.sales,
+      salesAmount: acc.salesAmount + row.salesAmount,
       paid: acc.paid + row.paid,
       dueExtra: acc.dueExtra + row.dueExtra,
       returnsAmount: acc.returnsAmount + row.returnsAmount,
       delivery: acc.delivery + row.delivery,
       net: acc.net + row.net,
-    }), { orders: 0, sales: 0, paid: 0, dueExtra: 0, returnsAmount: 0, delivery: 0, net: 0 });
+    }), { orders: 0, sales: 0, salesAmount: 0, paid: 0, dueExtra: 0, returnsAmount: 0, delivery: 0, net: 0 });
   }, [currentMonthDailyRows]);
 
   const insights = useMemo(() => {
@@ -235,6 +237,7 @@ export const AnalyticsTab: React.FC<AnalyticsTabProps> = ({ stats, onGoToOrders 
             </div>
             <div className="grid grid-cols-2 gap-2 text-[11px] font-semibold sm:flex">
               <span className="rounded-[8px] bg-emerald-50 px-3 py-2 text-emerald-700">{currentMonthDailyTotals.sales} продаж</span>
+              <span className="rounded-[8px] bg-[#F6F7F9] px-3 py-2 text-[#1F2937]">{formatCurrency(currentMonthDailyTotals.salesAmount)} сумма продаж</span>
               <span className="rounded-[8px] bg-[#F6F7F9] px-3 py-2 text-[#1F2937]">{formatCurrency(currentMonthDailyTotals.net)} итог</span>
             </div>
           </div>
@@ -252,6 +255,7 @@ export const AnalyticsTab: React.FC<AnalyticsTabProps> = ({ stats, onGoToOrders 
                       {row.isToday && <span className="rounded-full bg-[#7D7DE6] px-2 py-1 text-[8px] font-bold uppercase tracking-wide text-white">сегодня</span>}
                     </div>
                     <div className="grid grid-cols-2 gap-2">
+                      <MiniDailyMetric label="сумма продаж" value={formatCurrency(row.salesAmount)} tone="black" />
                       <MiniDailyMetric label="оплачено" value={formatCurrency(row.paid)} tone="green" />
                       <MiniDailyMetric label="к доплате" value={formatCurrency(row.dueExtra)} tone="orange" />
                       <MiniDailyMetric label="возвраты" value={`−${formatCurrency(row.returnsAmount)}`} tone="red" muted={row.returnsAmount <= 0} />
@@ -262,12 +266,13 @@ export const AnalyticsTab: React.FC<AnalyticsTabProps> = ({ stats, onGoToOrders 
               </div>
 
               <div className="hidden overflow-x-auto md:block">
-                <table className="w-full min-w-[980px] text-left">
+                <table className="w-full min-w-[1120px] text-left">
                   <thead>
                     <tr className="border-b border-[#E6E9EF] bg-[#F6F7F9] text-[10px] font-bold uppercase tracking-[0.16em] text-[#9CA3AF]">
                       <th className="px-5 py-4">Дата</th>
                       <th className="px-5 py-4 text-right">Заказы</th>
                       <th className="px-5 py-4 text-right">Продажи</th>
+                      <th className="px-5 py-4 text-right text-[#1F2937]">Сумма продаж</th>
                       <th className="px-5 py-4 text-right text-emerald-600">Оплачено</th>
                       <th className="px-5 py-4 text-right text-[#6B7280]">Доставка</th>
                       <th className="px-5 py-4 text-right text-orange-500">К доплате</th>
@@ -284,6 +289,7 @@ export const AnalyticsTab: React.FC<AnalyticsTabProps> = ({ stats, onGoToOrders 
                         </td>
                         <td className="px-5 py-3 text-right text-[#6B7280]">{row.orders}</td>
                         <td className="px-5 py-3 text-right text-[#6B7280]">{row.sales}</td>
+                        <td className="px-5 py-3 text-right text-[#1F2937]">{formatCurrency(row.salesAmount)}</td>
                         <td className="px-5 py-3 text-right text-emerald-600">{formatCurrency(row.paid)}</td>
                         <td className="px-5 py-3 text-right text-[#9CA3AF]">{formatCurrency(row.delivery)}</td>
                         <td className={cn("px-5 py-3 text-right", row.dueExtra > 0 ? "text-orange-500" : "text-[#D1D5DB]")}>{formatCurrency(row.dueExtra)}</td>
@@ -295,6 +301,7 @@ export const AnalyticsTab: React.FC<AnalyticsTabProps> = ({ stats, onGoToOrders 
                       <td className="px-5 py-4 text-[#1F2937]">Итого</td>
                       <td className="px-5 py-4 text-right text-[#6B7280]">{currentMonthDailyTotals.orders}</td>
                       <td className="px-5 py-4 text-right text-[#6B7280]">{currentMonthDailyTotals.sales}</td>
+                      <td className="px-5 py-4 text-right text-[#1F2937]">{formatCurrency(currentMonthDailyTotals.salesAmount)}</td>
                       <td className="px-5 py-4 text-right text-emerald-600">{formatCurrency(currentMonthDailyTotals.paid)}</td>
                       <td className="px-5 py-4 text-right text-[#9CA3AF]">{formatCurrency(currentMonthDailyTotals.delivery)}</td>
                       <td className="px-5 py-4 text-right text-orange-500">{formatCurrency(currentMonthDailyTotals.dueExtra)}</td>

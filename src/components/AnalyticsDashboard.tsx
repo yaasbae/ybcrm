@@ -723,6 +723,7 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
       dateLabel: string;
       orders: number;
       sales: number;
+      salesAmount: number;
       paid: number;
       dueExtra: number;
       returnsAmount: number;
@@ -736,6 +737,7 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
         dateLabel: date.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' }),
         orders: 0,
         sales: 0,
+        salesAmount: 0,
         paid: 0,
         dueExtra: 0,
         returnsAmount: 0,
@@ -754,6 +756,7 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
       dayRow.orders += 1;
       if (isSalesOrder(order)) {
         dayRow.sales += 1;
+        dayRow.salesAmount += revenue;
         dayRow.paid += paid;
         dayRow.delivery += delivery;
         dayRow.dueExtra += Math.max(0, revenue + delivery - paid);
@@ -772,7 +775,7 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
         ...row,
         net: Math.max(0, row.paid - row.returnsAmount),
         isToday: row.day === today.getDate(),
-        hasActivity: row.orders > 0 || row.paid > 0 || row.dueExtra > 0 || row.returnsAmount > 0,
+        hasActivity: row.orders > 0 || row.salesAmount > 0 || row.paid > 0 || row.dueExtra > 0 || row.returnsAmount > 0,
       }))
       .filter(row => row.hasActivity)
       .sort((a, b) => a.day - b.day);

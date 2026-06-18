@@ -3000,10 +3000,27 @@ async function getTochkaToken(): Promise<string | null> {
   return snap?.exists() ? snap.data().jwtToken : null;
 }
 
-async function getTochkaOAuthSettings(): Promise<any> {
+async function readTochkaSettingsDoc(id: string): Promise<any> {
+  if (adminDb) {
+    const snap = await adminDb.collection('settings').doc(id).get();
+    return snap.exists ? snap.data() : {};
+  }
   if (!db) return {};
-  const snap = await getDoc(doc(db, 'settings', 'tochka_oauth')).catch(() => null);
+  const snap = await getDoc(doc(db, 'settings', id)).catch(() => null);
   return snap?.exists() ? snap.data() : {};
+}
+
+async function writeTochkaSettingsDoc(id: string, payload: Record<string, any>) {
+  if (adminDb) {
+    await adminDb.collection('settings').doc(id).set(payload, { merge: true });
+    return;
+  }
+  if (!db) throw new Error('DB не подключена');
+  await setDoc(doc(db, 'settings', id), payload, { merge: true });
+}
+
+async function getTochkaOAuthSettings(): Promise<any> {
+  return readTochkaSettingsDoc('tochka_oauth');
 }
 
 function getTochkaOAuthRedirectUrl(req?: any, savedRedirectUrl?: string) {
@@ -3194,11 +3211,10 @@ app.post('/api/tochka/save-token', async (req, res) => {
 
 // Новый OAuth Точки. Старый JWT-ввод выше остается рабочим.
 app.get('/api/tochka/oauth/status', async (req, res) => {
-  if (!db) return res.json({ configured: false, connected: false });
+  if (!db && !adminDb) return res.json({ configured: false, connected: false });
   try {
     const oauth = await getTochkaOAuthSettings();
-    const tokenSnap = await getDoc(doc(db, 'settings', 'tochka_api')).catch(() => null);
-    const tokenSettings = tokenSnap?.exists() ? tokenSnap.data() : {};
+    const tokenSettings = await readTochkaSettingsDoc('tochka_api');
     const redirectUrl = getTochkaOAuthRedirectUrl(req, oauth.redirectUrl);
     res.json({
       configured: Boolean(oauth.clientId && oauth.clientSecret),
@@ -3216,7 +3232,7 @@ app.get('/api/tochka/oauth/status', async (req, res) => {
 });
 
 app.post('/api/tochka/oauth/save-client', async (req, res) => {
-  if (!db) return res.status(503).json({ error: 'DB не подключена' });
+  if (!db && !adminDb) return res.status(503).json({ error: 'DB не подключена' });
   const { clientId, clientSecret, redirectUrl, scope, authorizeUrl, tokenUrl } = req.body || {};
   const cleanClientId = String(clientId || '').trim();
   const cleanClientSecret = String(clientSecret || '').trim();
@@ -3228,7 +3244,7 @@ app.post('/api/tochka/oauth/save-client', async (req, res) => {
       return res.status(400).json({ error: 'Нужны Client ID и Client Secret' });
     }
     const finalRedirectUrl = getTochkaOAuthRedirectUrl(req, String(redirectUrl || current.redirectUrl || '').trim());
-    await setDoc(doc(db, 'settings', 'tochka_oauth'), {
+    await writeTochkaSettingsDoc('tochka_oauth', {
       clientId: finalClientId,
       clientSecret: finalClientSecret,
       redirectUrl: finalRedirectUrl,
@@ -3236,7 +3252,7 @@ app.post('/api/tochka/oauth/save-client', async (req, res) => {
       authorizeUrl: String(authorizeUrl || current.authorizeUrl || TOCHKA_OAUTH_AUTHORIZE_URL).trim(),
       tokenUrl: String(tokenUrl || current.tokenUrl || TOCHKA_OAUTH_TOKEN_URL).trim(),
       updatedAt: new Date().toISOString(),
-    }, { merge: true });
+    });
     res.json({
       success: true,
       redirectUrl: finalRedirectUrl,
@@ -3248,7 +3264,7 @@ app.post('/api/tochka/oauth/save-client', async (req, res) => {
 });
 
 app.get('/api/tochka/oauth/start', async (req, res) => {
-  if (!db) return res.status(503).send('DB не подключена');
+  if (!db && !adminDb) return res.status(503).send('DB не подключена');
   try {
     const settings = await getTochkaOAuthSettings();
     if (!settings.clientId || !settings.clientSecret) {
@@ -3256,11 +3272,11 @@ app.get('/api/tochka/oauth/start', async (req, res) => {
     }
     const redirectUrl = getTochkaOAuthRedirectUrl(req, settings.redirectUrl);
     const state = randomBytes(18).toString('hex');
-    await setDoc(doc(db, 'settings', 'tochka_oauth_state'), {
+    await writeTochkaSettingsDoc('tochka_oauth_state', {
       state,
       createdAt: new Date().toISOString(),
       expiresAt: Date.now() + 10 * 60 * 1000,
-    }, { merge: true });
+    });
     const url = new URL(settings.authorizeUrl || TOCHKA_OAUTH_AUTHORIZE_URL);
     url.searchParams.set('response_type', 'code');
     url.searchParams.set('client_id', settings.clientId);
@@ -3274,7 +3290,7 @@ app.get('/api/tochka/oauth/start', async (req, res) => {
 });
 
 app.get('/api/tochka/oauth/callback', async (req, res) => {
-  if (!db) return res.status(503).send('DB не подключена');
+  if (!db && !adminDb) return res.status(503).send('DB не подключена');
   const code = String(req.query.code || '').trim();
   const state = String(req.query.state || '').trim();
   const error = String(req.query.error || '').trim();
@@ -3283,8 +3299,7 @@ app.get('/api/tochka/oauth/callback', async (req, res) => {
 
   try {
     const settings = await getTochkaOAuthSettings();
-    const stateSnap = await getDoc(doc(db, 'settings', 'tochka_oauth_state')).catch(() => null);
-    const savedState = stateSnap?.exists() ? stateSnap.data() : {};
+    const savedState = await readTochkaSettingsDoc('tochka_oauth_state');
     if (!savedState?.state || savedState.state !== state || Number(savedState.expiresAt || 0) < Date.now()) {
       return res.status(400).send('OAuth state не совпал или устарел. Запусти подключение заново.');
     }
@@ -3298,11 +3313,10 @@ app.get('/api/tochka/oauth/callback', async (req, res) => {
     }
 
     const payload: any = decodeJwtPayload(accessToken);
-    const currentSnap = await getDoc(doc(db, 'settings', 'tochka_api')).catch(() => null);
-    const current = currentSnap?.exists() ? currentSnap.data() : {};
+    const current = await readTochkaSettingsDoc('tochka_api');
     const customerCode = payload.customerCode || payload.customer_code || tokenData.customerCode || tokenData.customer_code || current.customerCode || '';
     const expiresIn = Number(tokenData.expires_in || tokenData.expiresIn || 0);
-    await setDoc(doc(db, 'settings', 'tochka_api'), {
+    await writeTochkaSettingsDoc('tochka_api', {
       jwtToken: accessToken,
       oauthAccessToken: accessToken,
       oauthRefreshToken: tokenData.refresh_token || tokenData.refreshToken || '',
@@ -3316,8 +3330,8 @@ app.get('/api/tochka/oauth/callback', async (req, res) => {
       paymentMode: current.paymentMode || ['sbp'],
       merchantId: current.merchantId || '',
       accountId: current.accountId || '',
-    }, { merge: true });
-    await setDoc(doc(db, 'settings', 'tochka_oauth_state'), { state: '', completedAt: new Date().toISOString() }, { merge: true });
+    });
+    await writeTochkaSettingsDoc('tochka_oauth_state', { state: '', completedAt: new Date().toISOString() });
     res.redirect('/integrations?tochka=connected');
   } catch (e: any) {
     const details = e.response?.data ? ` ${JSON.stringify(e.response.data).slice(0, 700)}` : '';
