@@ -155,6 +155,8 @@ export const IntegrationsPage: React.FC<Props> = ({ onNavigate }) => {
   const [tochkaAccountId, setTochkaAccountId] = useState('');
   const [tochkaResult, setTochkaResult] = useState('');
   const [savingTochka, setSavingTochka] = useState(false);
+  const [checkingTochkaJwt, setCheckingTochkaJwt] = useState(false);
+  const [tochkaJwtDiagnostics, setTochkaJwtDiagnostics] = useState<any | null>(null);
   const [tochkaOAuthState, setTochkaOAuthState] = useState<ApiState>('checking');
   const [tochkaOAuthClientId, setTochkaOAuthClientId] = useState('');
   const [tochkaOAuthClientSecret, setTochkaOAuthClientSecret] = useState('');
@@ -307,6 +309,23 @@ export const IntegrationsPage: React.FC<Props> = ({ onNavigate }) => {
 
   const startTochkaOAuth = () => {
     window.location.href = '/api/tochka/oauth/start';
+  };
+
+  const checkTochkaJwt = async () => {
+    setCheckingTochkaJwt(true);
+    setTochkaResult('');
+    try {
+      const res = await fetch('/api/tochka/jwt-diagnostics');
+      const data = await readApiJson(res);
+      setTochkaJwtDiagnostics(data);
+      if (!res.ok) throw new Error(data.error || 'Не удалось проверить JWT Точки');
+      const failed = Array.isArray(data.tests) ? data.tests.filter((item: any) => !item.ok).length : 0;
+      setTochkaResult(failed ? `JWT проверен, есть ${failed} предупреждение(я).` : 'JWT проверен: базовые доступы работают.');
+    } catch (e: any) {
+      setTochkaResult(e.message || 'Ошибка проверки JWT Точки');
+    } finally {
+      setCheckingTochkaJwt(false);
+    }
   };
 
   const saveCdek = async () => {
@@ -462,10 +481,16 @@ export const IntegrationsPage: React.FC<Props> = ({ onNavigate }) => {
                       {tochkaResult}
                     </p>
                   )}
-                  <ActionButton onClick={saveTochka} disabled={savingTochka || (!tochkaToken.trim() && tochkaState !== 'connected')} tone="light">
-                    {savingTochka ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-                    Сохранить старый токен
-                  </ActionButton>
+                  <div className="flex flex-wrap gap-2">
+                    <ActionButton onClick={saveTochka} disabled={savingTochka || (!tochkaToken.trim() && tochkaState !== 'connected')} tone="light">
+                      {savingTochka ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                      Сохранить старый токен
+                    </ActionButton>
+                    <ActionButton onClick={checkTochkaJwt} disabled={checkingTochkaJwt || tochkaState === 'missing'} tone="blue">
+                      {checkingTochkaJwt ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
+                      Проверить JWT
+                    </ActionButton>
+                  </div>
                 </div>
                 <div className="rounded-[10px] border border-[#E6E9EF] bg-[#F6F7F9] p-4">
                   <p className={labelClass}>Не трогаем</p>
@@ -474,6 +499,50 @@ export const IntegrationsPage: React.FC<Props> = ({ onNavigate }) => {
                   </p>
                 </div>
               </div>
+              {tochkaJwtDiagnostics && (
+                <div className="mt-4 rounded-[10px] border border-[#E6E9EF] bg-[#F6F7F9] p-4">
+                  <div className="grid gap-3 sm:grid-cols-4">
+                    <div>
+                      <p className={labelClass}>customerCode</p>
+                      <p className="mt-1 truncate text-[13px] font-semibold text-[#1F2937]">{tochkaJwtDiagnostics.customerCode || 'не найден'}</p>
+                    </div>
+                    <div>
+                      <p className={labelClass}>Срок</p>
+                      <p className={cn('mt-1 text-[13px] font-semibold', tochkaJwtDiagnostics.expired ? 'text-[#F06B6B]' : 'text-[#1F2937]')}>
+                        {tochkaJwtDiagnostics.expiresAt ? new Date(tochkaJwtDiagnostics.expiresAt).toLocaleString('ru-RU') : 'без exp'}
+                      </p>
+                    </div>
+                    <div>
+                      <p className={labelClass}>Merchant</p>
+                      <p className="mt-1 text-[13px] font-semibold text-[#1F2937]">{tochkaJwtDiagnostics.merchantConfigured ? 'задан' : 'не задан'}</p>
+                    </div>
+                    <div>
+                      <p className={labelClass}>Account</p>
+                      <p className="mt-1 text-[13px] font-semibold text-[#1F2937]">{tochkaJwtDiagnostics.accountConfigured ? 'задан' : 'не задан'}</p>
+                    </div>
+                  </div>
+                  <div className="mt-4 grid gap-2">
+                    {(tochkaJwtDiagnostics.tests || []).map((test: any) => (
+                      <div key={test.key || test.name} className="flex items-start justify-between gap-3 rounded-[8px] border border-[#E6E9EF] bg-white px-3 py-2">
+                        <div>
+                          <p className="text-[12px] font-semibold text-[#1F2937]">{test.name}</p>
+                          <p className="mt-0.5 text-[11px] font-medium text-[#6B7280]">
+                            {test.message}
+                            {typeof test.count === 'number' ? ` · найдено: ${test.count}` : ''}
+                            {test.status ? ` · HTTP ${test.status}` : ''}
+                          </p>
+                        </div>
+                        <span className={cn('shrink-0 rounded-[8px] px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.12em]', test.ok ? 'bg-emerald-50 text-[#2EBA7F]' : 'bg-red-50 text-[#F06B6B]')}>
+                          {test.ok ? 'OK' : 'Ошибка'}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="mt-3 text-[11px] font-medium leading-5 text-[#6B7280]">
+                    Диагностика не создает счет и не делает возврат. Реальный QR проверяется через создание счета в заказе.
+                  </p>
+                </div>
+              )}
             </div>
           </div>
         </ApiCard>

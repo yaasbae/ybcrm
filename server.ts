@@ -2995,9 +2995,8 @@ function decodeJwtPayload(token: string) {
 }
 
 async function getTochkaToken(): Promise<string | null> {
-  if (!db) return null;
-  const snap = await getDoc(doc(db, 'settings', 'tochka_api')).catch(() => null);
-  return snap?.exists() ? snap.data().jwtToken : null;
+  const settings = await readTochkaSettingsDoc('tochka_api');
+  return settings?.jwtToken || settings?.oauthAccessToken || null;
 }
 
 async function readTochkaSettingsDoc(id: string): Promise<any> {
@@ -3079,6 +3078,23 @@ function normalizeTochkaList(data: any): any[] {
     data?.result,
   ];
   return candidates.find(Array.isArray) || [];
+}
+
+function getTochkaJwtExpiresAt(payload: any) {
+  const exp = Number(payload?.exp || payload?.expiresAt || 0);
+  if (!exp) return null;
+  return exp > 100000000000 ? exp : exp * 1000;
+}
+
+function getTochkaErrorMessage(error: any) {
+  const data = error?.response?.data;
+  if (!data) return error?.message || 'Неизвестная ошибка';
+  return data?.message
+    || data?.error_description
+    || data?.error
+    || data?.errors?.[0]?.message
+    || data?.Errors?.[0]?.message
+    || JSON.stringify(data).slice(0, 240);
 }
 
 function getTochkaOperationId(operation: any) {
@@ -3183,20 +3199,19 @@ async function findTochkaOperationId(token: string, customerCode: string, orderI
 // Сохранить JWT токен Точки
 app.post('/api/tochka/save-token', async (req, res) => {
   const { jwtToken, merchantId, accountId, paymentMode } = req.body;
-  if (!db) return res.status(503).json({ error: 'DB не подключена' });
+  if (!db && !adminDb) return res.status(503).json({ error: 'DB не подключена' });
   try {
-    const currentSnap = await getDoc(doc(db, 'settings', 'tochka_api'));
-    const current = currentSnap.exists() ? currentSnap.data() : {};
+    const current = await readTochkaSettingsDoc('tochka_api');
     const finalToken = jwtToken?.trim() || current.jwtToken;
     if (!finalToken) return res.status(400).json({ error: 'Нужен jwtToken' });
 
-    const payload = JSON.parse(Buffer.from(finalToken.split('.')[1], 'base64').toString());
+    const payload: any = decodeJwtPayload(finalToken);
     const customerCode = payload.customerCode || payload.customer_code || current.customerCode || '';
-    const savePromise = setDoc(doc(db, 'settings', 'tochka_api'), {
+    const savePromise = writeTochkaSettingsDoc('tochka_api', {
       jwtToken: finalToken,
       customerCode,
-      merchantId: merchantId || '',
-      accountId: accountId || '',
+      merchantId: String(merchantId || '').trim() || current.merchantId || '',
+      accountId: String(accountId || '').trim() || current.accountId || '',
       paymentMode: Array.isArray(paymentMode) ? paymentMode : ['sbp'],
     }, { merge: true });
     await Promise.race([
@@ -3620,12 +3635,12 @@ app.post('/api/tochka/refund-payment', async (req, res) => {
 });
 
 app.get('/api/tochka/retailers', async (_req, res) => {
-  if (!db) return res.status(503).json({ error: 'DB не подключена' });
+  if (!db && !adminDb) return res.status(503).json({ error: 'DB не подключена' });
   try {
     const token = await getTochkaToken();
     if (!token) return res.status(400).json({ error: 'Токен Точки не настроен' });
-    const snap = await getDoc(doc(db, 'settings', 'tochka_api'));
-    const customerCode = snap?.data()?.customerCode;
+    const settings = await readTochkaSettingsDoc('tochka_api');
+    const customerCode = settings?.customerCode;
     const response = await axios.get(
       `${TOCHKA_API}/acquiring/v1.0/retailers`,
       {
@@ -3699,9 +3714,121 @@ app.post('/api/tochka/webhook', async (req, res) => {
 
 // Статус токена Точки
 app.get('/api/tochka/status', async (_req, res) => {
-  if (!db) return res.json({ configured: false });
-  const snap = await getDoc(doc(db, 'settings', 'tochka_api')).catch(() => null);
-  res.json({ configured: !!snap?.exists(), customerCode: snap?.data()?.customerCode });
+  if (!db && !adminDb) return res.json({ configured: false });
+  const settings = await readTochkaSettingsDoc('tochka_api').catch(() => ({}));
+  res.json({
+    configured: Boolean(settings?.jwtToken || settings?.oauthAccessToken),
+    customerCode: settings?.customerCode || '',
+    merchantConfigured: Boolean(settings?.merchantId),
+    accountConfigured: Boolean(settings?.accountId),
+  });
+});
+
+// Безопасная диагностика JWT: ничего не списывает и не создает счет.
+app.get('/api/tochka/jwt-diagnostics', async (_req, res) => {
+  if (!db && !adminDb) return res.status(503).json({ error: 'DB не подключена' });
+  try {
+    const settings = await readTochkaSettingsDoc('tochka_api');
+    const token = settings?.jwtToken || settings?.oauthAccessToken || '';
+    if (!token) return res.status(400).json({ configured: false, error: 'Токен Точки не настроен' });
+
+    const payload: any = decodeJwtPayload(token);
+    const expiresAtMs = getTochkaJwtExpiresAt(payload);
+    const expiresAt = expiresAtMs ? new Date(expiresAtMs).toISOString() : '';
+    const expired = expiresAtMs ? expiresAtMs <= Date.now() : false;
+    const customerCode = settings?.customerCode || payload?.customerCode || payload?.customer_code || '';
+    const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+    const tests: any[] = [
+      {
+        key: 'payload',
+        name: 'JWT payload',
+        ok: Boolean(Object.keys(payload || {}).length),
+        message: Object.keys(payload || {}).length ? 'Токен читается сервером' : 'Payload не читается',
+      },
+      {
+        key: 'expires',
+        name: 'Срок токена',
+        ok: !expiresAtMs || !expired,
+        message: expiresAt ? (expired ? `Истек ${expiresAt}` : `Действует до ${expiresAt}`) : 'В токене нет exp',
+      },
+      {
+        key: 'customerCode',
+        name: 'customerCode',
+        ok: Boolean(customerCode),
+        message: customerCode ? 'Код клиента найден' : 'customerCode не найден в настройках/токене',
+      },
+    ];
+
+    if (customerCode) {
+      try {
+        const response = await axios.get(`${TOCHKA_API}/acquiring/v1.0/retailers`, {
+          headers,
+          params: { customerCode },
+          timeout: 15000,
+        });
+        tests.push({
+          key: 'retailers',
+          name: 'Магазины / retailers',
+          ok: true,
+          status: response.status,
+          count: normalizeTochkaList(response.data).length,
+          message: 'Доступ к acquiring retailers есть',
+        });
+      } catch (error: any) {
+        tests.push({
+          key: 'retailers',
+          name: 'Магазины / retailers',
+          ok: false,
+          status: error?.response?.status || null,
+          message: getTochkaErrorMessage(error),
+        });
+      }
+
+      try {
+        const response = await axios.get(`${TOCHKA_API}/acquiring/v1.0/payments`, {
+          headers,
+          params: { customerCode },
+          timeout: 15000,
+        });
+        tests.push({
+          key: 'payments',
+          name: 'Платежи / payments',
+          ok: true,
+          status: response.status,
+          count: normalizeTochkaList(response.data).length,
+          message: 'Доступ к списку платежей есть',
+        });
+      } catch (error: any) {
+        tests.push({
+          key: 'payments',
+          name: 'Платежи / payments',
+          ok: false,
+          status: error?.response?.status || null,
+          message: getTochkaErrorMessage(error),
+        });
+      }
+    }
+
+    res.json({
+      configured: true,
+      customerCode,
+      expiresAt,
+      expired,
+      merchantConfigured: Boolean(settings?.merchantId),
+      accountConfigured: Boolean(settings?.accountId),
+      paymentMode: Array.isArray(settings?.paymentMode) ? settings.paymentMode : ['sbp'],
+      claims: {
+        aud: payload?.aud || '',
+        iss: payload?.iss || '',
+        scope: payload?.scope || payload?.scopes || '',
+        permissions: payload?.permissions || payload?.roles || '',
+        subPreview: payload?.sub ? `${String(payload.sub).slice(0, 8)}...` : '',
+      },
+      tests,
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message || 'Не удалось проверить JWT Точки' });
+  }
 });
 
 // ─── Chatwoot ───────────────────────────────────────────────────────────────
