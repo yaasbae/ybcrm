@@ -3737,6 +3737,7 @@ app.get('/api/tochka/jwt-diagnostics', async (_req, res) => {
     const expiresAt = expiresAtMs ? new Date(expiresAtMs).toISOString() : '';
     const expired = expiresAtMs ? expiresAtMs <= Date.now() : false;
     const customerCode = settings?.customerCode || payload?.customerCode || payload?.customer_code || '';
+    const sbpConfigured = Boolean(settings?.merchantId && settings?.accountId);
     const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
     const tests: any[] = [
       {
@@ -3756,6 +3757,14 @@ app.get('/api/tochka/jwt-diagnostics', async (_req, res) => {
         name: 'customerCode',
         ok: Boolean(customerCode),
         message: customerCode ? 'Код клиента найден' : 'customerCode не найден в настройках/токене',
+      },
+      {
+        key: 'sbp_config',
+        name: 'СБП QR',
+        ok: sbpConfigured,
+        message: sbpConfigured
+          ? 'Merchant и Account заданы, CRM будет создавать QR через СБП'
+          : 'Для QR через СБП нужны Merchant и Account',
       },
     ];
 
@@ -3779,8 +3788,11 @@ app.get('/api/tochka/jwt-diagnostics', async (_req, res) => {
           key: 'retailers',
           name: 'Магазины / retailers',
           ok: false,
+          optional: sbpConfigured,
           status: error?.response?.status || null,
-          message: getTochkaErrorMessage(error),
+          message: sbpConfigured
+            ? `${getTochkaErrorMessage(error)}. Для СБП QR это не критично, но нужно для acquiring-платежных ссылок.`
+            : getTochkaErrorMessage(error),
         });
       }
 
@@ -3803,8 +3815,11 @@ app.get('/api/tochka/jwt-diagnostics', async (_req, res) => {
           key: 'payments',
           name: 'Платежи / payments',
           ok: false,
+          optional: sbpConfigured,
           status: error?.response?.status || null,
-          message: getTochkaErrorMessage(error),
+          message: sbpConfigured
+            ? `${getTochkaErrorMessage(error)}. Для СБП QR это не критично, но нужно для поиска acquiring-платежей.`
+            : getTochkaErrorMessage(error),
         });
       }
     }

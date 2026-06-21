@@ -319,8 +319,14 @@ export const IntegrationsPage: React.FC<Props> = ({ onNavigate }) => {
       const data = await readApiJson(res);
       setTochkaJwtDiagnostics(data);
       if (!res.ok) throw new Error(data.error || 'Не удалось проверить JWT Точки');
-      const failed = Array.isArray(data.tests) ? data.tests.filter((item: any) => !item.ok).length : 0;
-      setTochkaResult(failed ? `JWT проверен, есть ${failed} предупреждение(я).` : 'JWT проверен: базовые доступы работают.');
+      const failed = Array.isArray(data.tests) ? data.tests.filter((item: any) => !item.ok && !item.optional).length : 0;
+      const optional = Array.isArray(data.tests) ? data.tests.filter((item: any) => !item.ok && item.optional).length : 0;
+      setTochkaResult(failed
+        ? `JWT проверен, есть ${failed} ошибка(и).`
+        : optional
+          ? `JWT проверен: СБП готово, ${optional} acquiring-проверка(и) недоступны.`
+          : 'JWT проверен: базовые доступы работают.'
+      );
     } catch (e: any) {
       setTochkaResult(e.message || 'Ошибка проверки JWT Точки');
     } finally {
@@ -532,8 +538,15 @@ export const IntegrationsPage: React.FC<Props> = ({ onNavigate }) => {
                             {test.status ? ` · HTTP ${test.status}` : ''}
                           </p>
                         </div>
-                        <span className={cn('shrink-0 rounded-[8px] px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.12em]', test.ok ? 'bg-emerald-50 text-[#2EBA7F]' : 'bg-red-50 text-[#F06B6B]')}>
-                          {test.ok ? 'OK' : 'Ошибка'}
+                        <span className={cn(
+                          'shrink-0 rounded-[8px] px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.12em]',
+                          test.ok
+                            ? 'bg-emerald-50 text-[#2EBA7F]'
+                            : test.optional
+                              ? 'bg-orange-50 text-[#F5A623]'
+                              : 'bg-red-50 text-[#F06B6B]'
+                        )}>
+                          {test.ok ? 'OK' : test.optional ? 'Опц.' : 'Ошибка'}
                         </span>
                       </div>
                     ))}
