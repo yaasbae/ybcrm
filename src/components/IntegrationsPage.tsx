@@ -157,6 +157,8 @@ export const IntegrationsPage: React.FC<Props> = ({ onNavigate }) => {
   const [savingTochka, setSavingTochka] = useState(false);
   const [checkingTochkaJwt, setCheckingTochkaJwt] = useState(false);
   const [tochkaJwtDiagnostics, setTochkaJwtDiagnostics] = useState<any | null>(null);
+  const [checkingTochkaAccounts, setCheckingTochkaAccounts] = useState(false);
+  const [tochkaAccountsDiagnostics, setTochkaAccountsDiagnostics] = useState<any | null>(null);
   const [tochkaOAuthState, setTochkaOAuthState] = useState<ApiState>('checking');
   const [tochkaOAuthClientId, setTochkaOAuthClientId] = useState('');
   const [tochkaOAuthClientSecret, setTochkaOAuthClientSecret] = useState('');
@@ -334,6 +336,26 @@ export const IntegrationsPage: React.FC<Props> = ({ onNavigate }) => {
     }
   };
 
+  const checkTochkaAccounts = async () => {
+    setCheckingTochkaAccounts(true);
+    setTochkaResult('');
+    try {
+      const res = await fetch('/api/tochka/accounts-diagnostics');
+      const data = await readApiJson(res);
+      setTochkaAccountsDiagnostics(data);
+      if (!res.ok) throw new Error(data.error || 'Не удалось проверить счета Точки');
+      const success = Array.isArray(data.tests) ? data.tests.filter((item: any) => item.ok).length : 0;
+      setTochkaResult(success
+        ? `Счета Точки проверены: доступно ${success} метод(а).`
+        : 'Счета Точки проверены: доступов к счетам пока нет.'
+      );
+    } catch (e: any) {
+      setTochkaResult(e.message || 'Ошибка проверки счетов Точки');
+    } finally {
+      setCheckingTochkaAccounts(false);
+    }
+  };
+
   const saveCdek = async () => {
     setSavingCdek(true);
     setCdekResult('');
@@ -496,6 +518,10 @@ export const IntegrationsPage: React.FC<Props> = ({ onNavigate }) => {
                       {checkingTochkaJwt ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
                       Проверить JWT
                     </ActionButton>
+                    <ActionButton onClick={checkTochkaAccounts} disabled={checkingTochkaAccounts || tochkaState === 'missing'} tone="dark">
+                      {checkingTochkaAccounts ? <Loader2 className="h-4 w-4 animate-spin" /> : <Database className="h-4 w-4" />}
+                      Проверить счета
+                    </ActionButton>
                   </div>
                 </div>
                 <div className="rounded-[10px] border border-[#E6E9EF] bg-[#F6F7F9] p-4">
@@ -553,6 +579,55 @@ export const IntegrationsPage: React.FC<Props> = ({ onNavigate }) => {
                   </div>
                   <p className="mt-3 text-[11px] font-medium leading-5 text-[#6B7280]">
                     Диагностика не создает счет и не делает возврат. Реальный QR проверяется через создание счета в заказе.
+                  </p>
+                </div>
+              )}
+              {tochkaAccountsDiagnostics && (
+                <div className="mt-4 rounded-[10px] border border-[#E6E9EF] bg-[#F6F7F9] p-4">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <p className={labelClass}>Счета Точки</p>
+                      <p className="mt-1 text-[13px] font-semibold text-[#1F2937]">
+                        customerCode: {tochkaAccountsDiagnostics.customerCode || 'не найден'} · account: {tochkaAccountsDiagnostics.accountIdConfigured ? 'задан' : 'не задан'}
+                      </p>
+                    </div>
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#9CA3AF]">
+                      {tochkaAccountsDiagnostics.period?.dateFrom} - {tochkaAccountsDiagnostics.period?.dateTo}
+                    </p>
+                  </div>
+                  <div className="mt-4 grid gap-2">
+                    {(tochkaAccountsDiagnostics.tests || []).map((test: any) => (
+                      <div key={test.key || test.name} className="rounded-[8px] border border-[#E6E9EF] bg-white px-3 py-2">
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <p className="text-[12px] font-semibold text-[#1F2937]">{test.name}</p>
+                            <p className="mt-0.5 text-[11px] font-medium text-[#6B7280]">
+                              {test.message}
+                              {typeof test.count === 'number' ? ` · найдено: ${test.count}` : ''}
+                              {test.status ? ` · HTTP ${test.status}` : ''}
+                            </p>
+                          </div>
+                          <span className={cn(
+                            'shrink-0 rounded-[8px] px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.12em]',
+                            test.ok
+                              ? 'bg-emerald-50 text-[#2EBA7F]'
+                              : test.skipped
+                                ? 'bg-slate-100 text-[#6B7280]'
+                                : 'bg-red-50 text-[#F06B6B]'
+                          )}>
+                            {test.ok ? 'OK' : test.skipped ? 'Пропуск' : 'Ошибка'}
+                          </span>
+                        </div>
+                        {test.ok && test.sample && (
+                          <pre className="mt-2 max-h-32 overflow-auto rounded-[8px] bg-[#F6F7F9] p-2 text-[10px] font-medium text-[#6B7280]">
+                            {test.sample}
+                          </pre>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                  <p className="mt-3 text-[11px] font-medium leading-5 text-[#6B7280]">
+                    Это только чтение: реквизиты, остаток и выписки. Если везде 403/404, значит Точка выдала права в кабинете, но текущий JWT не имеет доступа к этим методам или у API другой путь.
                   </p>
                 </div>
               )}

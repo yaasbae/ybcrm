@@ -3846,6 +3846,124 @@ app.get('/api/tochka/jwt-diagnostics', async (_req, res) => {
   }
 });
 
+app.get('/api/tochka/accounts-diagnostics', async (_req, res) => {
+  if (!db && !adminDb) return res.status(503).json({ error: 'DB не подключена' });
+  try {
+    const settings = await readTochkaSettingsDoc('tochka_api');
+    const token = settings?.jwtToken || settings?.oauthAccessToken || '';
+    if (!token) return res.status(400).json({ configured: false, error: 'Токен Точки не настроен' });
+
+    const payload: any = decodeJwtPayload(token);
+    const customerCode = settings?.customerCode || payload?.customerCode || payload?.customer_code || '';
+    const accountId = settings?.accountId || '';
+    const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+    const now = new Date();
+    const from = new Date(now);
+    from.setDate(now.getDate() - 30);
+    const dateFrom = from.toISOString().slice(0, 10);
+    const dateTo = now.toISOString().slice(0, 10);
+
+    const candidates = [
+      {
+        key: 'accounts_open_banking',
+        name: 'Счета / open-banking accounts',
+        url: `${TOCHKA_API}/open-banking/v1.0/accounts`,
+        params: customerCode ? { customerCode } : {},
+      },
+      {
+        key: 'accounts_customer',
+        name: 'Счета клиента / customer accounts',
+        url: `${TOCHKA_API}/open-banking/v1.0/customers/${encodeURIComponent(customerCode)}/accounts`,
+        params: {},
+        skip: !customerCode,
+      },
+      {
+        key: 'account_requisites',
+        name: 'Реквизиты счета',
+        url: `${TOCHKA_API}/open-banking/v1.0/accounts/${encodeURIComponent(accountId)}`,
+        params: customerCode ? { customerCode } : {},
+        skip: !accountId,
+      },
+      {
+        key: 'balances',
+        name: 'Остаток / balances',
+        url: `${TOCHKA_API}/open-banking/v1.0/accounts/${encodeURIComponent(accountId)}/balances`,
+        params: customerCode ? { customerCode } : {},
+        skip: !accountId,
+      },
+      {
+        key: 'balance',
+        name: 'Остаток / balance',
+        url: `${TOCHKA_API}/open-banking/v1.0/accounts/${encodeURIComponent(accountId)}/balance`,
+        params: customerCode ? { customerCode } : {},
+        skip: !accountId,
+      },
+      {
+        key: 'transactions',
+        name: 'Операции / transactions',
+        url: `${TOCHKA_API}/open-banking/v1.0/accounts/${encodeURIComponent(accountId)}/transactions`,
+        params: { ...(customerCode ? { customerCode } : {}), dateFrom, dateTo },
+        skip: !accountId,
+      },
+      {
+        key: 'statements',
+        name: 'Выписка / statements',
+        url: `${TOCHKA_API}/open-banking/v1.0/accounts/${encodeURIComponent(accountId)}/statements`,
+        params: { ...(customerCode ? { customerCode } : {}), dateFrom, dateTo },
+        skip: !accountId,
+      },
+    ];
+
+    const tests = [];
+    for (const candidate of candidates) {
+      if (candidate.skip) {
+        tests.push({
+          key: candidate.key,
+          name: candidate.name,
+          ok: false,
+          skipped: true,
+          message: 'Пропущено: не задан customerCode или accountId',
+        });
+        continue;
+      }
+      try {
+        const response = await axios.get(candidate.url, {
+          headers,
+          params: candidate.params,
+          timeout: 15000,
+        });
+        tests.push({
+          key: candidate.key,
+          name: candidate.name,
+          ok: true,
+          status: response.status,
+          count: normalizeTochkaList(response.data).length,
+          sample: JSON.stringify(response.data).slice(0, 1200),
+          message: 'Доступ есть',
+        });
+      } catch (error: any) {
+        tests.push({
+          key: candidate.key,
+          name: candidate.name,
+          ok: false,
+          status: error?.response?.status || null,
+          message: getTochkaErrorMessage(error),
+        });
+      }
+    }
+
+    res.json({
+      configured: true,
+      customerCode,
+      accountIdConfigured: Boolean(accountId),
+      period: { dateFrom, dateTo },
+      tests,
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message || 'Не удалось проверить счета Точки' });
+  }
+});
+
 // ─── Chatwoot ───────────────────────────────────────────────────────────────
 // Связь карточки клиента в Chatwoot с его заказами из CRM.
 // Chatwoot шлёт вебхук (contact_created / conversation_created) → ищем клиента
