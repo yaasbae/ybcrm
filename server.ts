@@ -3189,7 +3189,9 @@ function getBalanceType(balance: any) {
 
 function getBalanceAmount(balance: any) {
   return normalizeTochkaAmount(
-    balance?.amount
+    balance?.Amount?.amount
+    ?? balance?.amount?.amount
+    ?? balance?.amount
     ?? balance?.Amount
     ?? balance?.balance
     ?? balance?.Balance
@@ -3200,6 +3202,10 @@ function getBalanceAmount(balance: any) {
 
 function maskAccountId(accountId: string) {
   const clean = String(accountId || '');
+  const [accountNumber, bankCode] = clean.split('/');
+  if (accountNumber && accountNumber.length > 10) {
+    return `${accountNumber.slice(0, 4)}…${accountNumber.slice(-6)}${bankCode ? ` / ${bankCode.slice(-3)}` : ''}`;
+  }
   if (clean.length <= 8) return clean;
   return `${clean.slice(0, 4)}…${clean.slice(-4)}`;
 }
@@ -3224,6 +3230,121 @@ function getFinanceOrderPaidAmount(order: any) {
   const prepayment = Number(order?.prepaymentAmount ?? order?.prepaidAmount ?? 0) || 0;
   const finalPayment = Number(order?.finalPaymentAmount ?? order?.dopaymentAmount ?? 0) || 0;
   return paid || (prepayment + finalPayment);
+}
+
+function getTochkaText(...values: any[]) {
+  return values
+    .filter(Boolean)
+    .map(value => String(value).trim())
+    .filter(Boolean)
+    .join(' · ');
+}
+
+function classifyExpenseCategory(text: string) {
+  const raw = String(text || '').toLowerCase();
+  const checks: Array<[string, string[]]> = [
+    ['Продукты', ['пятероч', 'магнит', 'перекресток', 'вкусвилл', 'самокат', 'лавка', 'ozon fresh', 'продукт', 'food']],
+    ['Топливо', ['азс', 'лукойл', 'газпром', 'роснефть', 'топлив', 'fuel', 'benz', 'gpn']],
+    ['Маркетинг', ['instagram', 'vk ', 'яндекс директ', 'direct', 'реклама', 'target', 'meta', 'google ads', 'авито']],
+    ['Аренда', ['аренд', 'rent']],
+    ['ФОТ', ['зарплат', 'аванс', 'сотрудник', 'salary', 'самозанят']],
+    ['Логистика', ['сдэк', 'cdek', 'почта', 'boxberry', 'достав', 'курьер']],
+    ['Материалы', ['ткан', 'фурнитур', 'типограф', 'печать', 'материал']],
+    ['Налоги', ['налог', 'фнс', 'пенсион', 'страхов']],
+    ['Комиссии банка', ['комисс', 'обслуживание счета', 'банк']],
+    ['Переводы', ['перевод', 'sbp', 'сбп']],
+  ];
+  return checks.find(([, keywords]) => keywords.some(keyword => raw.includes(keyword)))?.[0] || 'Другое';
+}
+
+function detectCardMask(text: string) {
+  const raw = String(text || '');
+  const known = TOCHKA_KNOWN_CARDS.find(card => raw.includes(card.mask));
+  if (known) return known.mask;
+  const match = raw.match(/(?:\*|x{2,}|•{2,}|карта\s*)?(\d{4})(?!\d)/i);
+  return match?.[1] || '';
+}
+
+function normalizeTochkaOperation(operation: any, fallbackAccountId = '') {
+  const json = JSON.stringify(operation || '');
+  const amount = normalizeTochkaAmount(
+    operation?.Amount?.amount
+    ?? operation?.amount?.amount
+    ?? operation?.amount
+    ?? operation?.sum
+    ?? operation?.transactionAmount
+    ?? operation?.operationAmount
+    ?? 0
+  );
+  const indicator = String(
+    operation?.creditDebitIndicator
+    || operation?.CreditDebitIndicator
+    || operation?.direction
+    || operation?.type
+    || ''
+  ).toLowerCase();
+  const signedAmount = indicator.includes('debit') || indicator.includes('out')
+    ? -Math.abs(amount)
+    : indicator.includes('credit') || indicator.includes('in')
+      ? Math.abs(amount)
+      : Number(operation?.amount) < 0
+        ? -Math.abs(amount)
+        : amount;
+  const description = getTochkaText(
+    operation?.description,
+    operation?.purpose,
+    operation?.paymentPurpose,
+    operation?.remittanceInformation,
+    operation?.merchantName,
+    operation?.counterpartyName,
+    operation?.Counterparty?.name,
+    operation?.Data?.purpose
+  ) || 'Операция Точки';
+  const dateRaw = operation?.dateTime || operation?.bookingDateTime || operation?.operationDate || operation?.date || operation?.createdAt;
+  const date = dateRaw ? new Date(dateRaw) : new Date();
+  const accountId = String(operation?.accountId || operation?.AccountId || fallbackAccountId || '');
+  const cardMask = detectCardMask(json);
+  const isExpense = signedAmount < 0;
+  return {
+    id: getTochkaOperationId(operation) || `${accountId}-${date.toISOString()}-${Math.abs(signedAmount)}-${description}`.slice(0, 140),
+    date: Number.isNaN(date.getTime()) ? new Date().toISOString() : date.toISOString(),
+    accountId,
+    maskedAccountId: maskAccountId(accountId),
+    cardMask,
+    amount: signedAmount,
+    absAmount: Math.abs(signedAmount),
+    direction: isExpense ? 'expense' : 'income',
+    category: isExpense ? classifyExpenseCategory(description) : 'Доходы',
+    description,
+    counterparty: getTochkaText(operation?.counterpartyName, operation?.Counterparty?.name, operation?.merchantName),
+  };
+}
+
+async function fetchTochkaOperations(token: string, customerCode: string, accountId: string, dateFrom: string, dateTo: string) {
+  const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+  const params = { customerCode, dateFrom, dateTo, from: dateFrom, to: dateTo };
+  const encodedAccount = encodeURIComponent(accountId);
+  const candidates = [
+    { key: 'account_transactions', url: `${TOCHKA_API}/open-banking/v1.0/accounts/${encodedAccount}/transactions`, params },
+    { key: 'account_operations', url: `${TOCHKA_API}/open-banking/v1.0/accounts/${encodedAccount}/operations`, params },
+    { key: 'transactions', url: `${TOCHKA_API}/open-banking/v1.0/transactions`, params: { ...params, accountId } },
+    { key: 'operations', url: `${TOCHKA_API}/open-banking/v1.0/operations`, params: { ...params, accountId } },
+  ];
+
+  const errors: any[] = [];
+  for (const candidate of candidates) {
+    try {
+      const response = await axios.get(candidate.url, { headers, params: candidate.params, timeout: 15000 });
+      const rows = normalizeTochkaList(response.data)
+        .map((item: any) => normalizeTochkaOperation(item, accountId))
+        .filter((item: any) => Number(item.absAmount) > 0);
+      if (rows.length) return { ok: true, source: candidate.key, operations: rows, errors };
+      errors.push({ source: candidate.key, status: response.status, message: 'Операций нет в ответе' });
+    } catch (error: any) {
+      errors.push({ source: candidate.key, status: error?.response?.status || null, message: getTochkaErrorMessage(error) });
+    }
+  }
+  return { ok: false, source: '', operations: [], errors };
 }
 
 async function loadOrdersForFinanceMonth(monthKey: string) {
@@ -4201,6 +4322,11 @@ app.get('/api/tochka/finance-summary', async (req, res) => {
 
     const now = new Date();
     const monthKey = String(req.query.month || `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`);
+    const [yearPart, monthPart] = monthKey.split('-').map(Number);
+    const monthStart = new Date(yearPart || now.getFullYear(), (monthPart || now.getMonth() + 1) - 1, 1);
+    const monthEnd = new Date(yearPart || now.getFullYear(), monthPart || now.getMonth() + 1, 0);
+    const dateFrom = monthStart.toISOString().slice(0, 10);
+    const dateTo = monthEnd.toISOString().slice(0, 10);
     const monthOrders = await loadOrdersForFinanceMonth(monthKey).catch(() => []);
     const sourceMap: Record<string, { key: string; label: string; amount: number; count: number }> = {
       qr: { key: 'qr', label: 'QR / СБП', amount: 0, count: 0 },
@@ -4218,6 +4344,53 @@ app.get('/api/tochka/finance-summary', async (req, res) => {
       sourceMap[key].count += 1;
     }
 
+    const operationFetches = await Promise.all(accounts.map((account: any) =>
+      fetchTochkaOperations(token, effectiveCustomerCode, account.accountId, dateFrom, dateTo)
+        .then(result => ({ account, result }))
+        .catch(error => ({ account, result: { ok: false, source: '', operations: [], errors: [{ message: getTochkaErrorMessage(error) }] } }))
+    ));
+    const operations = operationFetches.flatMap(item => item.result.operations || [])
+      .sort((a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime());
+    const expenses = operations.filter((operation: any) => operation.direction === 'expense');
+    const incomes = operations.filter((operation: any) => operation.direction === 'income');
+    const expenseCategoryMap = new Map<string, { category: string; amount: number; count: number }>();
+    for (const operation of expenses) {
+      const row = expenseCategoryMap.get(operation.category) || { category: operation.category, amount: 0, count: 0 };
+      row.amount += operation.absAmount;
+      row.count += 1;
+      expenseCategoryMap.set(operation.category, row);
+    }
+    const accountExpenseMap = new Map<string, { accountId: string; maskedAccountId: string; amount: number; operations: any[] }>();
+    const cardExpenseMap = new Map<string, { mask: string; label: string; kind: string; expenses: number; operations: any[] }>();
+    for (const card of TOCHKA_KNOWN_CARDS) {
+      cardExpenseMap.set(card.mask, { ...card, expenses: 0, operations: [] });
+    }
+    for (const operation of expenses) {
+      const accountRow = accountExpenseMap.get(operation.accountId) || {
+        accountId: operation.accountId,
+        maskedAccountId: operation.maskedAccountId,
+        amount: 0,
+        operations: [],
+      };
+      accountRow.amount += operation.absAmount;
+      accountRow.operations.push(operation);
+      accountExpenseMap.set(operation.accountId, accountRow);
+
+      if (operation.cardMask) {
+        const knownCard = TOCHKA_KNOWN_CARDS.find(card => card.mask === operation.cardMask);
+        const cardRow = cardExpenseMap.get(operation.cardMask) || {
+          mask: operation.cardMask,
+          label: knownCard?.label || 'Карта',
+          kind: knownCard?.kind || 'card',
+          expenses: 0,
+          operations: [],
+        };
+        cardRow.expenses += operation.absAmount;
+        cardRow.operations.push(operation);
+        cardExpenseMap.set(operation.cardMask, cardRow);
+      }
+    }
+
     res.json({
       configured: true,
       ownerEmail: FINANCE_OWNER_EMAIL,
@@ -4229,20 +4402,23 @@ app.get('/api/tochka/finance-summary', async (req, res) => {
       totalExpected,
       accounts,
       incomingSources: Object.values(sourceMap),
-      accountExpenses: accounts.map((account: any) => ({
-        accountId: account.accountId,
-        maskedAccountId: account.maskedAccountId,
-        amount: 0,
-        operations: [],
+      actualIncome: incomes.reduce((sum: number, operation: any) => sum + operation.absAmount, 0),
+      actualExpenses: expenses.reduce((sum: number, operation: any) => sum + operation.absAmount, 0),
+      accountExpenses: Array.from(accountExpenseMap.values()),
+      cards: Array.from(cardExpenseMap.values()),
+      expenseCategories: Array.from(expenseCategoryMap.values()).sort((a, b) => b.amount - a.amount),
+      operations: operations.slice(0, 100),
+      cardExpenses: expenses.filter((operation: any) => operation.cardMask),
+      operationFetches: operationFetches.map(item => ({
+        account: item.account.maskedAccountId,
+        ok: item.result.ok,
+        source: item.result.source,
+        errors: item.result.errors?.slice(0, 3) || [],
       })),
-      cards: TOCHKA_KNOWN_CARDS.map(card => ({
-        ...card,
-        expenses: 0,
-        operations: [],
-      })),
-      cardExpenses: [],
-      operationsStatus: 'statements_not_connected',
-      message: 'Баланс и счета читаются из Точки. Детальные расходы по счетам и картам появятся после подключения выписки/операций Точки.',
+      operationsStatus: operations.length ? 'connected' : 'no_operations',
+      message: operations.length
+        ? 'Операции Точки загружены и разложены по счетам, картам и категориям.'
+        : 'Баланс читается из Точки. Операции за месяц не пришли через доступные методы API — проверь права на получение выписок/операций.',
     });
   } catch (error: any) {
     res.status(error?.response?.status || 500).json({

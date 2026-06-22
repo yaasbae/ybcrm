@@ -21,6 +21,8 @@ interface TochkaFinanceSummary {
   configured?: boolean;
   totalBalance: number;
   totalExpected: number;
+  actualIncome?: number;
+  actualExpenses?: number;
   monthKey: string;
   generatedAt: string;
   accounts: Array<{
@@ -37,6 +39,20 @@ interface TochkaFinanceSummary {
   incomingSources: Array<{ key: string; label: string; amount: number; count: number }>;
   cards: Array<{ mask: string; label: string; kind: string; expenses: number; operations: any[] }>;
   accountExpenses: Array<{ maskedAccountId: string; amount: number; operations: any[] }>;
+  expenseCategories?: Array<{ category: string; amount: number; count: number }>;
+  operations?: Array<{
+    id: string;
+    date: string;
+    maskedAccountId: string;
+    cardMask?: string;
+    amount: number;
+    absAmount: number;
+    direction: 'income' | 'expense';
+    category: string;
+    description: string;
+    counterparty?: string;
+  }>;
+  operationFetches?: Array<{ account: string; ok: boolean; source: string; errors: any[] }>;
   operationsStatus: string;
   message?: string;
 }
@@ -457,8 +473,87 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
                 ))}
               </div>
               <p className="mt-3 text-[11px] font-medium leading-4 text-[#6B7280]">
-                Детальные списания по картам появятся здесь после подключения выписки операций Точки.
+                {tochkaSummary?.operations?.length
+                  ? 'Ниже показаны операции, где Точка отдала маску карты или описание списания.'
+                  : 'Если здесь пусто, Точка пока не отдала операции по картам через текущие права API.'}
               </p>
+            </div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 gap-3 xl:grid-cols-[0.8fr_1.2fr]">
+          <div className="rounded-[10px] border border-[#E6E9EF] bg-white p-5 shadow-[0_8px_22px_rgba(31,41,55,0.03)]">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h3 className="text-[13px] font-semibold uppercase tracking-[0.16em] text-[#1F2937]">Куда ушли деньги</h3>
+                <p className="mt-1 text-[12px] font-medium text-[#6B7280]">Категории расходов по выписке Точки</p>
+              </div>
+              <span className="text-[18px] font-black text-red-500">{formatCurrency(tochkaSummary?.actualExpenses || 0)}</span>
+            </div>
+            <div className="mt-4 space-y-2">
+              {(tochkaSummary?.expenseCategories || []).map(category => (
+                <div key={category.category} className="rounded-[8px] border border-[#E6E9EF] bg-[#F6F7F9] p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-[13px] font-bold text-[#1F2937]">{category.category}</p>
+                    <p className="text-[13px] font-black text-red-500">{formatCurrency(category.amount)}</p>
+                  </div>
+                  <p className="mt-1 text-[11px] font-semibold text-[#9CA3AF]">{category.count} операций</p>
+                </div>
+              ))}
+              {!tochkaSummary?.expenseCategories?.length && (
+                <div className="rounded-[8px] border border-dashed border-[#E6E9EF] p-4 text-[12px] font-semibold leading-5 text-[#6B7280]">
+                  Расходных операций за месяц пока нет в ответе API. Баланс уже читается, следующий шаг — включить/проверить права на выписки и операции.
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="overflow-hidden rounded-[10px] border border-[#E6E9EF] bg-white shadow-[0_8px_22px_rgba(31,41,55,0.03)]">
+            <div className="flex items-center justify-between border-b border-[#E6E9EF] px-5 py-4">
+              <div>
+                <h3 className="text-[13px] font-semibold uppercase tracking-[0.16em] text-[#1F2937]">Детальный отчет операций</h3>
+                <p className="mt-1 text-[12px] font-medium text-[#6B7280]">Дата, счет/карта, категория, контрагент и сумма</p>
+              </div>
+              <span className="text-[11px] font-bold uppercase tracking-[0.14em] text-[#9CA3AF]">{tochkaSummary?.operations?.length || 0} операций</span>
+            </div>
+            <div className="max-h-[420px] overflow-auto">
+              <table className="w-full min-w-[900px] table-fixed">
+                <thead className="sticky top-0 bg-[#F6F7F9]">
+                  <tr>
+                    <th className="px-4 py-3 text-left text-[10px] font-semibold uppercase tracking-[0.14em] text-[#9CA3AF]">Дата</th>
+                    <th className="px-4 py-3 text-left text-[10px] font-semibold uppercase tracking-[0.14em] text-[#9CA3AF]">Счет / карта</th>
+                    <th className="px-4 py-3 text-left text-[10px] font-semibold uppercase tracking-[0.14em] text-[#9CA3AF]">Категория</th>
+                    <th className="px-4 py-3 text-left text-[10px] font-semibold uppercase tracking-[0.14em] text-[#9CA3AF]">Описание</th>
+                    <th className="px-4 py-3 text-right text-[10px] font-semibold uppercase tracking-[0.14em] text-[#9CA3AF]">Сумма</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[#E6E9EF]">
+                  {(tochkaSummary?.operations || []).map(operation => (
+                    <tr key={operation.id} className="hover:bg-[#F6F7F9]">
+                      <td className="px-4 py-3 text-[12px] font-bold text-[#6B7280]">
+                        {new Date(operation.date).toLocaleDateString('ru-RU')}
+                      </td>
+                      <td className="px-4 py-3 text-[12px] font-bold text-[#1F2937]">
+                        {operation.cardMask ? `*${operation.cardMask}` : operation.maskedAccountId}
+                      </td>
+                      <td className="px-4 py-3 text-[12px] font-bold text-[#6B7280]">{operation.category}</td>
+                      <td className="truncate px-4 py-3 text-[12px] font-semibold text-[#1F2937]" title={operation.description}>
+                        {operation.description}
+                      </td>
+                      <td className={cn("px-4 py-3 text-right text-[12px] font-black", operation.direction === 'expense' ? "text-red-500" : "text-emerald-600")}>
+                        {operation.direction === 'expense' ? '-' : '+'}{formatCurrency(operation.absAmount)}
+                      </td>
+                    </tr>
+                  ))}
+                  {!tochkaSummary?.operations?.length && (
+                    <tr>
+                      <td colSpan={5} className="px-4 py-8 text-center text-[13px] font-semibold text-[#6B7280]">
+                        Операций пока нет. {tochkaSummary?.operationFetches?.[0]?.errors?.[0]?.message || ''}
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
             </div>
           </div>
         </div>
