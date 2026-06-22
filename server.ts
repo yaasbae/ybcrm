@@ -3943,7 +3943,7 @@ app.get('/api/tochka/accounts-diagnostics', async (_req, res) => {
           url: `${TOCHKA_API}/open-banking/v1.0/accounts/${encodeURIComponent(id)}/balances`,
           params: effectiveCustomerCode ? { customerCode: effectiveCustomerCode } : {},
         },
-      ]))),
+      ])),
       {
         key: 'statements',
         name: 'Выписка / statements',
