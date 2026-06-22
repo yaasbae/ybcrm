@@ -3863,11 +3863,59 @@ app.get('/api/tochka/accounts-diagnostics', async (_req, res) => {
     const dateFrom = from.toISOString().slice(0, 10);
     const dateTo = now.toISOString().slice(0, 10);
 
-    const candidates = [
-      {
+    const tests: any[] = [];
+    let discoveredAccounts: any[] = [];
+
+    try {
+      const response = await axios.get(`${TOCHKA_API}/open-banking/v1.0/accounts`, {
+        headers,
+        params: customerCode ? { customerCode } : {},
+        timeout: 15000,
+      });
+      discoveredAccounts = [
+        ...(response.data?.Data?.Account || []),
+        ...(response.data?.data?.accounts || []),
+        ...(response.data?.accounts || []),
+      ].filter(Boolean);
+      tests.push({
         key: 'accounts_open_banking',
         name: 'Счета / open-banking accounts',
-        url: `${TOCHKA_API}/open-banking/v1.0/accounts`,
+        ok: true,
+        status: response.status,
+        count: discoveredAccounts.length,
+        sample: JSON.stringify(response.data).slice(0, 1200),
+        message: 'Доступ есть',
+      });
+    } catch (error: any) {
+      tests.push({
+        key: 'accounts_open_banking',
+        name: 'Счета / open-banking accounts',
+        ok: false,
+        status: error?.response?.status || null,
+        message: getTochkaErrorMessage(error),
+      });
+    }
+
+    const discoveredAccountIds = discoveredAccounts
+      .map((account: any) => account?.accountId || account?.AccountId || account?.id)
+      .filter(Boolean)
+      .map(String);
+    const accountIds = Array.from(new Set([accountId, ...discoveredAccountIds].filter(Boolean))).slice(0, 4);
+
+    const candidates: Array<{
+      key: string;
+      name: string;
+      method?: 'get' | 'post';
+      url?: string;
+      params?: Record<string, any>;
+      data?: Record<string, any>;
+      skip?: boolean;
+      skippedMessage?: string;
+    }> = [
+      {
+        key: 'balances_list',
+        name: 'Список остатков / open-banking balances',
+        url: `${TOCHKA_API}/open-banking/v1.0/balances`,
         params: customerCode ? { customerCode } : {},
       },
       {
@@ -3877,44 +3925,28 @@ app.get('/api/tochka/accounts-diagnostics', async (_req, res) => {
         params: {},
         skip: !customerCode,
       },
-      {
-        key: 'account_requisites',
-        name: 'Реквизиты счета',
-        url: `${TOCHKA_API}/open-banking/v1.0/accounts/${encodeURIComponent(accountId)}`,
-        params: customerCode ? { customerCode } : {},
-        skip: !accountId,
-      },
-      {
-        key: 'balances',
-        name: 'Остаток / balances',
-        url: `${TOCHKA_API}/open-banking/v1.0/accounts/${encodeURIComponent(accountId)}/balances`,
-        params: customerCode ? { customerCode } : {},
-        skip: !accountId,
-      },
-      {
-        key: 'balance',
-        name: 'Остаток / balance',
-        url: `${TOCHKA_API}/open-banking/v1.0/accounts/${encodeURIComponent(accountId)}/balance`,
-        params: customerCode ? { customerCode } : {},
-        skip: !accountId,
-      },
-      {
-        key: 'transactions',
-        name: 'Операции / transactions',
-        url: `${TOCHKA_API}/open-banking/v1.0/accounts/${encodeURIComponent(accountId)}/transactions`,
-        params: { ...(customerCode ? { customerCode } : {}), dateFrom, dateTo },
-        skip: !accountId,
-      },
+      ...accountIds.flatMap((id, index) => ([
+        {
+          key: `account_requisites_${index + 1}`,
+          name: `Реквизиты счета ${index + 1}`,
+          url: `${TOCHKA_API}/open-banking/v1.0/accounts/${encodeURIComponent(id)}`,
+          params: customerCode ? { customerCode } : {},
+        },
+        {
+          key: `account_balances_${index + 1}`,
+          name: `Остаток по счету ${index + 1}`,
+          url: `${TOCHKA_API}/open-banking/v1.0/accounts/${encodeURIComponent(id)}/balances`,
+          params: customerCode ? { customerCode } : {},
+        },
+      ]))),
       {
         key: 'statements',
         name: 'Выписка / statements',
-        url: `${TOCHKA_API}/open-banking/v1.0/accounts/${encodeURIComponent(accountId)}/statements`,
-        params: { ...(customerCode ? { customerCode } : {}), dateFrom, dateTo },
-        skip: !accountId,
+        skip: true,
+        skippedMessage: 'Выписка в API Точки создается через POST /open-banking/v1.0/statements, диагностика не создает документы автоматически.',
       },
     ];
 
-    const tests = [];
     for (const candidate of candidates) {
       if (candidate.skip) {
         tests.push({
@@ -3922,12 +3954,12 @@ app.get('/api/tochka/accounts-diagnostics', async (_req, res) => {
           name: candidate.name,
           ok: false,
           skipped: true,
-          message: 'Пропущено: не задан customerCode или accountId',
+          message: candidate.skippedMessage || 'Пропущено: не задан customerCode или accountId',
         });
         continue;
       }
       try {
-        const response = await axios.get(candidate.url, {
+        const response = await axios.get(candidate.url!, {
           headers,
           params: candidate.params,
           timeout: 15000,
@@ -3956,6 +3988,12 @@ app.get('/api/tochka/accounts-diagnostics', async (_req, res) => {
       configured: true,
       customerCode,
       accountIdConfigured: Boolean(accountId),
+      discoveredAccounts: discoveredAccounts.map((account: any) => ({
+        customerCode: account?.customerCode || '',
+        accountId: account?.accountId || '',
+        status: account?.status || '',
+        currency: account?.currency || '',
+      })),
       period: { dateFrom, dateTo },
       tests,
     });
