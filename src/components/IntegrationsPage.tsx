@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   ChevronRight,
   Copy,
+  Database,
   ExternalLink,
   KeyRound,
   Loader2,
