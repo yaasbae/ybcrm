@@ -10,6 +10,7 @@ import { initializeFirestore, doc, getDoc, collection, getDocs, addDoc, setDoc, 
 import { getStorage, ref as storageRef, uploadBytes as fbUploadBytes, getDownloadURL as fbGetDownloadURL } from "firebase/storage";
 import { initializeApp as initializeAdminApp, applicationDefault, getApps as getAdminApps } from "firebase-admin/app";
 import { getFirestore as getAdminFirestore } from "firebase-admin/firestore";
+import { getAuth as getAdminAuth } from "firebase-admin/auth";
 import fs from "fs";
 import https from "https";
 import { execFileSync } from "child_process";
@@ -2982,6 +2983,33 @@ app.post("/api/content/instagram-settings", async (req, res) => {
 const TOCHKA_API = 'https://enter.tochka.com/uapi';
 const TOCHKA_OAUTH_AUTHORIZE_URL = process.env.TOCHKA_OAUTH_AUTHORIZE_URL || 'https://enter.tochka.com/connect/authorize';
 const TOCHKA_OAUTH_TOKEN_URL = process.env.TOCHKA_OAUTH_TOKEN_URL || 'https://enter.tochka.com/connect/token';
+const FINANCE_OWNER_EMAIL = 'ndtiger86@gmail.com';
+const TOCHKA_KNOWN_CARDS = [
+  { mask: '5316', label: 'Пластиковая карта', kind: 'card' },
+  { mask: '8690', label: 'Платежный стикер', kind: 'sticker' },
+  { mask: '9259', label: 'Корпоративная карта', kind: 'corporate' },
+];
+
+async function requireFinanceOwner(req: any, res: any) {
+  const authHeader = String(req.headers?.authorization || '');
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+  if (!token) {
+    res.status(401).json({ error: 'Нужен вход в аккаунт владельца' });
+    return null;
+  }
+  try {
+    const decoded = await getAdminAuth().verifyIdToken(token);
+    const email = String(decoded.email || '').toLowerCase();
+    if (email !== FINANCE_OWNER_EMAIL) {
+      res.status(403).json({ error: 'Финансовая аналитика доступна только владельцу' });
+      return null;
+    }
+    return decoded;
+  } catch (error: any) {
+    res.status(401).json({ error: 'Сессия входа устарела. Войдите заново.' });
+    return null;
+  }
+}
 
 function decodeJwtPayload(token: string) {
   try {
@@ -3127,6 +3155,96 @@ function normalizeTochkaAmount(value: any) {
   return normalized > 100000 ? normalized / 100 : normalized;
 }
 
+function extractTochkaAccounts(data: any): any[] {
+  return [
+    ...(data?.Data?.Account || []),
+    ...(data?.Data?.Accounts || []),
+    ...(data?.data?.accounts || []),
+    ...(data?.accounts || []),
+  ].filter(Boolean);
+}
+
+function extractTochkaBalances(data: any): any[] {
+  return [
+    ...(data?.Data?.Balance || []),
+    ...(data?.Data?.Balances || []),
+    ...(data?.data?.balances || []),
+    ...(data?.balances || []),
+  ].filter(Boolean);
+}
+
+function getBalanceAccountId(balance: any) {
+  return String(
+    balance?.accountId
+    || balance?.AccountId
+    || balance?.account
+    || balance?.Account
+    || ''
+  );
+}
+
+function getBalanceType(balance: any) {
+  return String(balance?.balanceType || balance?.BalanceType || balance?.type || balance?.Type || '').toLowerCase();
+}
+
+function getBalanceAmount(balance: any) {
+  return normalizeTochkaAmount(
+    balance?.amount
+    ?? balance?.Amount
+    ?? balance?.balance
+    ?? balance?.Balance
+    ?? balance?.value
+    ?? 0
+  );
+}
+
+function maskAccountId(accountId: string) {
+  const clean = String(accountId || '');
+  if (clean.length <= 8) return clean;
+  return `${clean.slice(0, 4)}…${clean.slice(-4)}`;
+}
+
+function classifyPaymentSource(order: any) {
+  const raw = [
+    order?.paymentSource,
+    order?.paymentType,
+    order?.paymentMethod,
+    order?.invoiceType,
+    order?.payment,
+    order?.paymentLabel,
+  ].filter(Boolean).join(' ').toLowerCase();
+  if (raw.includes('долями') || raw.includes('dolyami')) return 'dolyami';
+  if (raw.includes('сплит') || raw.includes('split')) return 'split';
+  if (raw.includes('qr') || raw.includes('сбп') || raw.includes('sbp')) return 'qr';
+  return 'other';
+}
+
+function getFinanceOrderPaidAmount(order: any) {
+  const paid = Number(order?.paidAmount ?? order?.paymentAmount ?? 0) || 0;
+  const prepayment = Number(order?.prepaymentAmount ?? order?.prepaidAmount ?? 0) || 0;
+  const finalPayment = Number(order?.finalPaymentAmount ?? order?.dopaymentAmount ?? 0) || 0;
+  return paid || (prepayment + finalPayment);
+}
+
+async function loadOrdersForFinanceMonth(monthKey: string) {
+  const docs: any[] = [];
+  if (adminDb) {
+    const snap = await adminDb.collection('orders_new').get();
+    snap.forEach((docSnap: any) => docs.push({ id: docSnap.id, ...docSnap.data() }));
+  } else if (db) {
+    const snap = await getDocs(collection(db, 'orders_new'));
+    snap.docs.forEach((docSnap: any) => docs.push({ id: docSnap.id, ...docSnap.data() }));
+  }
+
+  return docs.filter((order: any) => {
+    const rawDate = order?.date || order?.orderDate || order?.createdAt;
+    const date = rawDate?.toDate ? rawDate.toDate() : new Date(rawDate || Date.now());
+    if (Number.isNaN(date.getTime())) return false;
+    const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+    return key === monthKey;
+  });
+}
+
 function isTochkaPaidStatus(status: any) {
   const normalized = String(status || '').toLowerCase();
   return ['paid', 'approved', 'completed', 'succeeded', 'success', 'done'].some(item => normalized.includes(item));
@@ -3213,7 +3331,7 @@ app.post('/api/tochka/save-token', async (req, res) => {
       merchantId: String(merchantId || '').trim() || current.merchantId || '',
       accountId: String(accountId || '').trim() || current.accountId || '',
       paymentMode: Array.isArray(paymentMode) ? paymentMode : ['sbp'],
-    }, { merge: true });
+    });
     await Promise.race([
       savePromise,
       new Promise((_, reject) => setTimeout(() => reject(new Error('Сохранение заняло больше 15 секунд. Проверь интернет и повтори.')), 15000)),
@@ -3905,7 +4023,13 @@ app.get('/api/tochka/accounts-diagnostics', async (_req, res) => {
       .filter(Boolean)
       .map(String)[0] || '';
     const effectiveCustomerCode = discoveredCustomerCode || customerCode;
-    const accountIds = Array.from(new Set([accountId, ...discoveredAccountIds].filter(Boolean))).slice(0, 4);
+    const configuredAccountMismatch = Boolean(
+      accountId && discoveredAccountIds.length && !discoveredAccountIds.includes(String(accountId))
+    );
+    const accountIds = Array.from(new Set([
+      ...discoveredAccountIds,
+      ...(discoveredAccountIds.length ? [] : [accountId]),
+    ].filter(Boolean))).slice(0, 4);
 
     const candidates: Array<{
       key: string;
@@ -3994,6 +4118,7 @@ app.get('/api/tochka/accounts-diagnostics', async (_req, res) => {
       customerCode,
       effectiveCustomerCode,
       accountIdConfigured: Boolean(accountId),
+      configuredAccountMismatch,
       discoveredAccounts: discoveredAccounts.map((account: any) => ({
         customerCode: account?.customerCode || '',
         accountId: account?.accountId || '',
@@ -4005,6 +4130,124 @@ app.get('/api/tochka/accounts-diagnostics', async (_req, res) => {
     });
   } catch (e: any) {
     res.status(500).json({ error: e.message || 'Не удалось проверить счета Точки' });
+  }
+});
+
+app.get('/api/tochka/finance-summary', async (req, res) => {
+  if (!db && !adminDb) return res.status(503).json({ error: 'DB не подключена' });
+  const owner = await requireFinanceOwner(req, res);
+  if (!owner) return;
+
+  try {
+    const settings = await readTochkaSettingsDoc('tochka_api');
+    const token = settings?.jwtToken || settings?.oauthAccessToken || '';
+    if (!token) return res.status(400).json({ configured: false, error: 'Токен Точки не настроен' });
+
+    const payload: any = decodeJwtPayload(token);
+    const customerCode = settings?.customerCode || payload?.customerCode || payload?.customer_code || '';
+    const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+
+    const accountsResponse = await axios.get(`${TOCHKA_API}/open-banking/v1.0/accounts`, {
+      headers,
+      params: customerCode ? { customerCode } : {},
+      timeout: 15000,
+    });
+    const accountsRaw = extractTochkaAccounts(accountsResponse.data);
+    const discoveredCustomerCode = accountsRaw
+      .map((account: any) => account?.customerCode || account?.CustomerCode || account?.customer_code)
+      .filter(Boolean)
+      .map(String)[0] || '';
+    const effectiveCustomerCode = discoveredCustomerCode || customerCode;
+
+    const balancesResponse = await axios.get(`${TOCHKA_API}/open-banking/v1.0/balances`, {
+      headers,
+      params: effectiveCustomerCode ? { customerCode: effectiveCustomerCode } : {},
+      timeout: 15000,
+    });
+    const balancesRaw = extractTochkaBalances(balancesResponse.data);
+    const balancesByAccount = new Map<string, any>();
+    for (const balance of balancesRaw) {
+      const accountId = getBalanceAccountId(balance);
+      if (!accountId) continue;
+      const row = balancesByAccount.get(accountId) || {
+        openingAvailable: 0,
+        closingAvailable: 0,
+        expected: 0,
+      };
+      const type = getBalanceType(balance);
+      const amount = getBalanceAmount(balance);
+      if (type.includes('opening')) row.openingAvailable = amount;
+      else if (type.includes('expected')) row.expected = amount;
+      else if (type.includes('closing') || type.includes('available')) row.closingAvailable = amount;
+      else row.closingAvailable = amount;
+      balancesByAccount.set(accountId, row);
+    }
+
+    const accounts = accountsRaw.map((account: any) => {
+      const accountId = String(account?.accountId || account?.AccountId || account?.id || '');
+      const balances = balancesByAccount.get(accountId) || { openingAvailable: 0, closingAvailable: 0, expected: 0 };
+      return {
+        accountId,
+        maskedAccountId: maskAccountId(accountId),
+        customerCode: account?.customerCode || account?.CustomerCode || '',
+        status: account?.status || account?.Status || '',
+        currency: account?.currency || account?.Currency || 'RUB',
+        balances,
+      };
+    });
+
+    const totalBalance = accounts.reduce((sum: number, account: any) => sum + (Number(account.balances.closingAvailable) || 0), 0);
+    const totalExpected = accounts.reduce((sum: number, account: any) => sum + (Number(account.balances.expected) || 0), 0);
+
+    const now = new Date();
+    const monthKey = String(req.query.month || `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`);
+    const monthOrders = await loadOrdersForFinanceMonth(monthKey).catch(() => []);
+    const sourceMap: Record<string, { key: string; label: string; amount: number; count: number }> = {
+      qr: { key: 'qr', label: 'QR / СБП', amount: 0, count: 0 },
+      dolyami: { key: 'dolyami', label: 'Долями', amount: 0, count: 0 },
+      split: { key: 'split', label: 'Сплиты', amount: 0, count: 0 },
+      other: { key: 'other', label: 'Другое', amount: 0, count: 0 },
+    };
+    for (const order of monthOrders) {
+      const status = String(order?.status || '').toLowerCase();
+      if (status.includes('возврат') || status.includes('отмена')) continue;
+      const amount = getFinanceOrderPaidAmount(order);
+      if (amount <= 0) continue;
+      const key = classifyPaymentSource(order);
+      sourceMap[key].amount += amount;
+      sourceMap[key].count += 1;
+    }
+
+    res.json({
+      configured: true,
+      ownerEmail: FINANCE_OWNER_EMAIL,
+      customerCode,
+      effectiveCustomerCode,
+      monthKey,
+      generatedAt: new Date().toISOString(),
+      totalBalance,
+      totalExpected,
+      accounts,
+      incomingSources: Object.values(sourceMap),
+      accountExpenses: accounts.map((account: any) => ({
+        accountId: account.accountId,
+        maskedAccountId: account.maskedAccountId,
+        amount: 0,
+        operations: [],
+      })),
+      cards: TOCHKA_KNOWN_CARDS.map(card => ({
+        ...card,
+        expenses: 0,
+        operations: [],
+      })),
+      cardExpenses: [],
+      operationsStatus: 'statements_not_connected',
+      message: 'Баланс и счета читаются из Точки. Детальные расходы по счетам и картам появятся после подключения выписки/операций Точки.',
+    });
+  } catch (error: any) {
+    res.status(error?.response?.status || 500).json({
+      error: getTochkaErrorMessage(error) || 'Не удалось получить финансовую сводку Точки',
+    });
   }
 });
 

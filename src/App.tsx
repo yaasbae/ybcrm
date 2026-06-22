@@ -535,7 +535,7 @@ export default function App() {
           )}
 
           {view === 'finance' && (
-            <FinanceDashboard onBack={() => handleNavigate('home')} />
+            <FinanceDashboard onBack={() => handleNavigate('home')} userEmail={user?.email || ''} />
           )}
 
           {view === 'payroll' && (

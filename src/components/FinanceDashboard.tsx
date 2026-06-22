@@ -5,15 +5,40 @@ import {
   Trash2, AlertCircle,
   ChevronRight, ChevronLeft, Briefcase, CreditCard,
   Building, UserCheck, Download, RefreshCcw,
-  Wallet, Database, ReceiptText
+  Wallet, Database, ReceiptText, Lock, ShieldCheck
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn, formatCurrency } from '../lib/utils';
-import { db, OperationType, handleFirestoreError } from '../firebase';
+import { auth, db, OperationType, handleFirestoreError } from '../firebase';
 import { collection, onSnapshot, doc, query, orderBy, deleteDoc, addDoc, serverTimestamp } from 'firebase/firestore';
 
 interface FinanceDashboardProps {
   onBack: () => void;
+  userEmail?: string;
+}
+
+interface TochkaFinanceSummary {
+  configured?: boolean;
+  totalBalance: number;
+  totalExpected: number;
+  monthKey: string;
+  generatedAt: string;
+  accounts: Array<{
+    accountId: string;
+    maskedAccountId: string;
+    status: string;
+    currency: string;
+    balances: {
+      openingAvailable: number;
+      closingAvailable: number;
+      expected: number;
+    };
+  }>;
+  incomingSources: Array<{ key: string; label: string; amount: number; count: number }>;
+  cards: Array<{ mask: string; label: string; kind: string; expenses: number; operations: any[] }>;
+  accountExpenses: Array<{ maskedAccountId: string; amount: number; operations: any[] }>;
+  operationsStatus: string;
+  message?: string;
 }
 
 interface Expense {
@@ -26,6 +51,7 @@ interface Expense {
 }
 
 const monthNames = ['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'];
+const FINANCE_OWNER_EMAIL = 'ndtiger86@gmail.com';
 
 const manualReturnOperations = [
   { date: new Date(2026, 0, 26), amount: 17900 },
@@ -69,10 +95,13 @@ const isActiveSale = (order: any): boolean => {
   return getOrderRevenue(order) > 0 && !status.includes('возврат') && !status.includes('отмена');
 };
 
-export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack }) => {
+export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, userEmail }) => {
   const [activeTab, setActiveTab] = useState<'dds' | 'calendar' | 'expenses'>('dds');
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [orders, setOrders] = useState<any[]>([]);
+  const [tochkaSummary, setTochkaSummary] = useState<TochkaFinanceSummary | null>(null);
+  const [tochkaLoading, setTochkaLoading] = useState(false);
+  const [tochkaError, setTochkaError] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [newExpense, setNewExpense] = useState({
     category: 'other' as const,
@@ -82,6 +111,7 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack }) =>
   });
 
   const [currentDate, setCurrentDate] = useState(new Date());
+  const canViewFinance = String(userEmail || '').toLowerCase() === FINANCE_OWNER_EMAIL;
 
   useEffect(() => {
     // Fetch Expenses
@@ -117,6 +147,34 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack }) =>
       unsubscribeOrders();
     };
   }, []);
+
+  useEffect(() => {
+    if (!canViewFinance) return;
+    let cancelled = false;
+    const loadTochkaFinance = async () => {
+      setTochkaLoading(true);
+      setTochkaError('');
+      try {
+        const token = await auth.currentUser?.getIdToken();
+        if (!token) throw new Error('Нужно войти в аккаунт владельца');
+        const monthKey = `${currentDate.getFullYear()}-${String(currentDate.getMonth() + 1).padStart(2, '0')}`;
+        const response = await fetch(`/api/tochka/finance-summary?month=${monthKey}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data?.error || 'Не удалось получить сводку Точки');
+        if (!cancelled) setTochkaSummary(data);
+      } catch (error: any) {
+        if (!cancelled) setTochkaError(error?.message || 'Не удалось получить сводку Точки');
+      } finally {
+        if (!cancelled) setTochkaLoading(false);
+      }
+    };
+    loadTochkaFinance();
+    return () => {
+      cancelled = true;
+    };
+  }, [canViewFinance, currentDate]);
 
   const handleAddExpense = async () => {
     if (!newExpense.amount || !newExpense.description) return;
@@ -256,6 +314,30 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack }) =>
   };
 
   const metricCardClass = "rounded-[10px] border border-[#E6E9EF] bg-white p-5 shadow-[0_8px_22px_rgba(31,41,55,0.03)]";
+  const tochkaIncomingTotal = (tochkaSummary?.incomingSources || []).reduce((sum, source) => sum + (Number(source.amount) || 0), 0);
+  const tochkaCardsExpenseTotal = (tochkaSummary?.cards || []).reduce((sum, card) => sum + (Number(card.expenses) || 0), 0);
+
+  if (!canViewFinance) {
+    return (
+      <div className="min-h-screen bg-[#F6F7F9]">
+        <div className="mx-auto flex min-h-screen w-full max-w-[920px] items-center justify-center px-4">
+          <div className="w-full rounded-[10px] border border-[#E6E9EF] bg-white p-8 text-center shadow-[0_12px_32px_rgba(31,41,55,0.06)]">
+            <div className="mx-auto mb-5 flex h-12 w-12 items-center justify-center rounded-[10px] bg-[#1F2937] text-white">
+              <Lock size={22} />
+            </div>
+            <h1 className="text-[24px] font-semibold text-[#1F2937]">Финансы доступны только владельцу</h1>
+            <p className="mt-2 text-[14px] font-medium text-[#6B7280]">Доступ открыт для {FINANCE_OWNER_EMAIL}. Сейчас вошел: {userEmail || 'неизвестный аккаунт'}.</p>
+            <button
+              onClick={onBack}
+              className="mt-6 inline-flex h-10 items-center justify-center rounded-[8px] border border-[#E6E9EF] bg-white px-4 text-[13px] font-semibold text-[#1F2937] hover:bg-[#F6F7F9]"
+            >
+              Вернуться назад
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-[#F6F7F9]">
@@ -281,6 +363,104 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack }) =>
             <Plus size={18} />
             Добавить расход
           </button>
+        </div>
+
+        <div className="grid grid-cols-1 gap-3 xl:grid-cols-[1.1fr_1fr]">
+          <div className="rounded-[10px] border border-[#E6E9EF] bg-white p-5 shadow-[0_8px_22px_rgba(31,41,55,0.03)]">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.16em] text-[#6B7280]">
+                  <ShieldCheck size={15} className="text-emerald-500" />
+                  Точка банк
+                </div>
+                <h2 className="mt-2 text-[20px] font-semibold leading-[26px] text-[#1F2937]">Действующий баланс и движения</h2>
+                <p className="mt-1 text-[12px] font-medium text-[#6B7280]">
+                  {tochkaLoading ? 'Обновляю данные банка...' : tochkaError || tochkaSummary?.message || 'Баланс читается напрямую из Точки.'}
+                </p>
+              </div>
+              <button
+                onClick={() => setCurrentDate(new Date(currentDate))}
+                className="inline-flex h-9 items-center justify-center gap-2 rounded-[8px] border border-[#E6E9EF] bg-white px-3 text-[11px] font-semibold uppercase tracking-[0.12em] text-[#6B7280] hover:bg-[#F6F7F9]"
+              >
+                <RefreshCcw size={14} />
+                Обновить
+              </button>
+            </div>
+
+            <div className="mt-5 grid grid-cols-1 gap-3 sm:grid-cols-3">
+              <div className="rounded-[8px] border border-[#E6E9EF] bg-[#F6F7F9] p-4">
+                <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-[#6B7280]">Баланс счета</p>
+                <p className="mt-2 text-[24px] font-black leading-tight text-[#1F2937]">{formatCurrency(tochkaSummary?.totalBalance || 0)}</p>
+              </div>
+              <div className="rounded-[8px] border border-orange-100 bg-orange-50/70 p-4">
+                <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-orange-500">Ожидается</p>
+                <p className="mt-2 text-[24px] font-black leading-tight text-orange-500">{formatCurrency(tochkaSummary?.totalExpected || 0)}</p>
+              </div>
+              <div className="rounded-[8px] border border-emerald-100 bg-emerald-50/70 p-4">
+                <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-emerald-600">Приходы CRM</p>
+                <p className="mt-2 text-[24px] font-black leading-tight text-emerald-600">{formatCurrency(tochkaIncomingTotal)}</p>
+              </div>
+            </div>
+
+            <div className="mt-4 overflow-hidden rounded-[8px] border border-[#E6E9EF]">
+              <div className="grid grid-cols-[1.1fr_0.7fr_0.8fr] bg-[#F6F7F9] px-4 py-3 text-[10px] font-bold uppercase tracking-[0.14em] text-[#9CA3AF]">
+                <span>Счет</span>
+                <span>Статус</span>
+                <span className="text-right">Баланс</span>
+              </div>
+              {(tochkaSummary?.accounts || []).map(account => (
+                <div key={account.accountId} className="grid grid-cols-[1.1fr_0.7fr_0.8fr] border-t border-[#E6E9EF] px-4 py-3 text-[13px] font-bold text-[#1F2937]">
+                  <span>{account.maskedAccountId}</span>
+                  <span className="text-[#6B7280]">{account.status || 'активен'}</span>
+                  <span className="text-right">{formatCurrency(account.balances.closingAvailable)}</span>
+                </div>
+              ))}
+              {!tochkaSummary?.accounts?.length && (
+                <div className="px-4 py-5 text-[13px] font-semibold text-[#6B7280]">Счета пока не загрузились.</div>
+              )}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 gap-3">
+            <div className="rounded-[10px] border border-[#E6E9EF] bg-white p-5 shadow-[0_8px_22px_rgba(31,41,55,0.03)]">
+              <h3 className="text-[13px] font-semibold uppercase tracking-[0.16em] text-[#1F2937]">Приходы по источникам</h3>
+              <div className="mt-4 grid grid-cols-2 gap-3">
+                {(tochkaSummary?.incomingSources || [
+                  { key: 'qr', label: 'QR / СБП', amount: 0, count: 0 },
+                  { key: 'dolyami', label: 'Долями', amount: 0, count: 0 },
+                  { key: 'split', label: 'Сплиты', amount: 0, count: 0 },
+                  { key: 'other', label: 'Другое', amount: 0, count: 0 },
+                ]).map(source => (
+                  <div key={source.key} className="rounded-[8px] border border-[#E6E9EF] bg-[#F6F7F9] p-3">
+                    <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-[#6B7280]">{source.label}</p>
+                    <p className="mt-2 text-[18px] font-black text-[#1F2937]">{formatCurrency(source.amount)}</p>
+                    <p className="text-[11px] font-bold text-[#9CA3AF]">{source.count} оплат</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="rounded-[10px] border border-[#E6E9EF] bg-white p-5 shadow-[0_8px_22px_rgba(31,41,55,0.03)]">
+              <div className="flex items-center justify-between">
+                <h3 className="text-[13px] font-semibold uppercase tracking-[0.16em] text-[#1F2937]">Расходы по картам</h3>
+                <span className="text-[13px] font-black text-red-500">{formatCurrency(tochkaCardsExpenseTotal)}</span>
+              </div>
+              <div className="mt-4 space-y-2">
+                {(tochkaSummary?.cards || []).map(card => (
+                  <div key={card.mask} className="flex items-center justify-between rounded-[8px] border border-[#E6E9EF] px-3 py-3">
+                    <div>
+                      <p className="text-[13px] font-bold text-[#1F2937]">*{card.mask}</p>
+                      <p className="text-[11px] font-semibold text-[#6B7280]">{card.label}</p>
+                    </div>
+                    <p className="text-[13px] font-black text-[#1F2937]">{formatCurrency(card.expenses || 0)}</p>
+                  </div>
+                ))}
+              </div>
+              <p className="mt-3 text-[11px] font-medium leading-4 text-[#6B7280]">
+                Детальные списания по картам появятся здесь после подключения выписки операций Точки.
+              </p>
+            </div>
+          </div>
         </div>
 
         {/* Global Stats */}
