@@ -3900,6 +3900,11 @@ app.get('/api/tochka/accounts-diagnostics', async (_req, res) => {
       .map((account: any) => account?.accountId || account?.AccountId || account?.id)
       .filter(Boolean)
       .map(String);
+    const discoveredCustomerCode = discoveredAccounts
+      .map((account: any) => account?.customerCode || account?.CustomerCode || account?.customer_code)
+      .filter(Boolean)
+      .map(String)[0] || '';
+    const effectiveCustomerCode = discoveredCustomerCode || customerCode;
     const accountIds = Array.from(new Set([accountId, ...discoveredAccountIds].filter(Boolean))).slice(0, 4);
 
     const candidates: Array<{
@@ -3916,27 +3921,27 @@ app.get('/api/tochka/accounts-diagnostics', async (_req, res) => {
         key: 'balances_list',
         name: 'Список остатков / open-banking balances',
         url: `${TOCHKA_API}/open-banking/v1.0/balances`,
-        params: customerCode ? { customerCode } : {},
+        params: effectiveCustomerCode ? { customerCode: effectiveCustomerCode } : {},
       },
       {
         key: 'accounts_customer',
         name: 'Счета клиента / customer accounts',
-        url: `${TOCHKA_API}/open-banking/v1.0/customers/${encodeURIComponent(customerCode)}/accounts`,
+        url: `${TOCHKA_API}/open-banking/v1.0/customers/${encodeURIComponent(effectiveCustomerCode)}/accounts`,
         params: {},
-        skip: !customerCode,
+        skip: !effectiveCustomerCode,
       },
       ...accountIds.flatMap((id, index) => ([
         {
           key: `account_requisites_${index + 1}`,
           name: `Реквизиты счета ${index + 1}`,
           url: `${TOCHKA_API}/open-banking/v1.0/accounts/${encodeURIComponent(id)}`,
-          params: customerCode ? { customerCode } : {},
+          params: effectiveCustomerCode ? { customerCode: effectiveCustomerCode } : {},
         },
         {
           key: `account_balances_${index + 1}`,
           name: `Остаток по счету ${index + 1}`,
           url: `${TOCHKA_API}/open-banking/v1.0/accounts/${encodeURIComponent(id)}/balances`,
-          params: customerCode ? { customerCode } : {},
+          params: effectiveCustomerCode ? { customerCode: effectiveCustomerCode } : {},
         },
       ]))),
       {
@@ -3987,6 +3992,7 @@ app.get('/api/tochka/accounts-diagnostics', async (_req, res) => {
     res.json({
       configured: true,
       customerCode,
+      effectiveCustomerCode,
       accountIdConfigured: Boolean(accountId),
       discoveredAccounts: discoveredAccounts.map((account: any) => ({
         customerCode: account?.customerCode || '',
