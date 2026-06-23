@@ -3220,6 +3220,18 @@ function extractTochkaBalances(data: any): any[] {
   ].filter(Boolean);
 }
 
+function extractTochkaCards(data: any): any[] {
+  return [
+    ...(data?.Data?.Card || []),
+    ...(data?.Data?.Cards || []),
+    ...(data?.Data?.card || []),
+    ...(data?.Data?.cards || []),
+    ...(data?.data?.cards || []),
+    ...(data?.cards || []),
+    ...(data?.Cards || []),
+  ].filter(Boolean);
+}
+
 function getBalanceAccountId(balance: any) {
   return String(
     balance?.accountId
@@ -3358,6 +3370,7 @@ function normalizeTochkaOperation(operation: any, fallbackAccountId = '') {
     accountId,
     maskedAccountId: maskAccountId(accountId),
     cardMask,
+    sourceType: cardMask ? 'card' : 'account',
     amount: signedAmount,
     absAmount: Math.abs(signedAmount),
     direction: isExpense ? 'expense' : 'income',
@@ -3472,6 +3485,107 @@ async function fetchTochkaOperations(token: string, customerCode: string, accoun
     }
   }
   return { ok: false, source: '', operations: [], errors };
+}
+
+async function fetchTochkaCardOperations(token: string, customerCode: string, dateFrom: string, dateTo: string) {
+  const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+  const baseParams = {
+    customerCode,
+    dateFrom,
+    dateTo,
+    from: dateFrom,
+    to: dateTo,
+    startDate: dateFrom,
+    endDate: dateTo,
+    dateStart: dateFrom,
+    dateEnd: dateTo,
+    fromDate: dateFrom,
+    toDate: dateTo,
+  };
+  const errors: any[] = [];
+  const cardListCandidates = [
+    { key: 'cards', url: `${TOCHKA_API}/cards/v1.0/cards`, params: baseParams },
+    { key: 'corporate_cards', url: `${TOCHKA_API}/corporate-cards/v1.0/cards`, params: baseParams },
+    { key: 'open_banking_cards', url: `${TOCHKA_API}/open-banking/v1.0/cards`, params: baseParams },
+    { key: 'banking_cards', url: `${TOCHKA_API}/banking/v1.0/cards`, params: baseParams },
+  ];
+
+  const foundCards: Array<{ id: string; mask: string; label: string }> = [];
+  for (const candidate of cardListCandidates) {
+    try {
+      const response = await axios.get(candidate.url, { headers, params: candidate.params, timeout: 15000 });
+      const cards = extractTochkaCards(response.data);
+      for (const card of cards) {
+        const raw = JSON.stringify(card || '');
+        const mask = detectCardMask(raw)
+          || String(card?.panTail || card?.last4 || card?.cardMask || card?.maskedPan || '').slice(-4);
+        const id = String(card?.cardId || card?.id || card?.cardToken || card?.maskedPan || mask || '').trim();
+        if (!id && !mask) continue;
+        foundCards.push({
+          id: id || mask,
+          mask: mask || id.slice(-4),
+          label: String(card?.name || card?.cardName || card?.type || 'Карта'),
+        });
+      }
+      errors.push({ source: candidate.key, status: response.status, message: cards.length ? `Найдено карт: ${cards.length}` : 'Список карт пуст' });
+    } catch (error: any) {
+      errors.push({ source: candidate.key, status: error?.response?.status || null, message: getTochkaErrorMessage(error) });
+    }
+  }
+
+  for (const known of TOCHKA_KNOWN_CARDS) {
+    if (!foundCards.some(card => card.mask === known.mask)) {
+      foundCards.push({ id: known.mask, mask: known.mask, label: known.label });
+    }
+  }
+
+  const operations: any[] = [];
+  const uniqueCards = Array.from(new Map(foundCards.map(card => [`${card.id}-${card.mask}`, card])).values());
+  const normalizeCardRows = (raw: any, card: { id: string; mask: string; label: string }) => normalizeTochkaList(raw)
+    .map((item: any) => {
+      const row = normalizeTochkaOperation(item, `card:${card.mask}`);
+      return {
+        ...row,
+        sourceType: 'card',
+        sourceLabel: card.label,
+        cardMask: row.cardMask || card.mask,
+        accountId: row.accountId?.startsWith('card:') ? row.accountId : (row.accountId || `card:${card.mask}`),
+        maskedAccountId: `*${row.cardMask || card.mask}`,
+      };
+    })
+    .filter((item: any) => Number(item.absAmount) > 0);
+
+  for (const card of uniqueCards) {
+    const encodedCard = encodeURIComponent(card.id);
+    const cardParams = { ...baseParams, cardId: card.id, cardMask: card.mask, panTail: card.mask, last4: card.mask };
+    const candidates = [
+      { key: `card_transactions_${card.mask}`, url: `${TOCHKA_API}/cards/v1.0/cards/${encodedCard}/transactions`, params: cardParams },
+      { key: `card_operations_${card.mask}`, url: `${TOCHKA_API}/cards/v1.0/cards/${encodedCard}/operations`, params: cardParams },
+      { key: `corporate_card_transactions_${card.mask}`, url: `${TOCHKA_API}/corporate-cards/v1.0/cards/${encodedCard}/transactions`, params: cardParams },
+      { key: `corporate_card_operations_${card.mask}`, url: `${TOCHKA_API}/corporate-cards/v1.0/cards/${encodedCard}/operations`, params: cardParams },
+      { key: `open_banking_card_transactions_${card.mask}`, url: `${TOCHKA_API}/open-banking/v1.0/cards/${encodedCard}/transactions`, params: cardParams },
+      { key: `open_banking_card_operations_${card.mask}`, url: `${TOCHKA_API}/open-banking/v1.0/cards/${encodedCard}/operations`, params: cardParams },
+      { key: `cards_transactions_${card.mask}`, url: `${TOCHKA_API}/cards/v1.0/transactions`, params: cardParams },
+      { key: `cards_operations_${card.mask}`, url: `${TOCHKA_API}/cards/v1.0/operations`, params: cardParams },
+    ];
+
+    for (const candidate of candidates) {
+      try {
+        const response = await axios.get(candidate.url, { headers, params: candidate.params, timeout: 15000 });
+        const rows = normalizeCardRows(response.data, card);
+        if (rows.length) {
+          operations.push(...rows);
+          errors.push({ source: candidate.key, status: response.status, message: `Операций: ${rows.length}` });
+          break;
+        }
+        errors.push({ source: candidate.key, status: response.status, message: 'Операций нет в ответе' });
+      } catch (error: any) {
+        errors.push({ source: candidate.key, status: error?.response?.status || null, message: getTochkaErrorMessage(error) });
+      }
+    }
+  }
+
+  return { ok: operations.length > 0, source: operations.length ? 'card_operations' : '', operations, errors };
 }
 
 async function loadOrdersForFinanceMonth(monthKey: string) {
@@ -4476,7 +4590,16 @@ app.get('/api/tochka/finance-summary', async (req, res) => {
         .then(result => ({ account, result }))
         .catch(error => ({ account, result: { ok: false, source: '', operations: [], errors: [{ message: getTochkaErrorMessage(error) }] } }))
     ));
-    const operations = operationFetches.flatMap(item => item.result.operations || [])
+    const cardOperationFetch = await fetchTochkaCardOperations(token, effectiveCustomerCode, dateFrom, dateTo)
+      .catch(error => ({ ok: false, source: '', operations: [], errors: [{ message: getTochkaErrorMessage(error) }] }));
+    const operationMap = new Map<string, any>();
+    for (const operation of [
+      ...operationFetches.flatMap(item => item.result.operations || []),
+      ...(cardOperationFetch.operations || []),
+    ]) {
+      operationMap.set(String(operation.id || `${operation.date}-${operation.accountId}-${operation.amount}-${operation.description}`), operation);
+    }
+    const operations = Array.from(operationMap.values())
       .sort((a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime());
     const expenses = operations.filter((operation: any) => operation.direction === 'expense');
     const incomes = operations.filter((operation: any) => operation.direction === 'income');
@@ -4541,11 +4664,16 @@ app.get('/api/tochka/finance-summary', async (req, res) => {
         ok: item.result.ok,
         source: item.result.source,
         errors: item.result.errors?.slice(0, 3) || [],
-      })),
+      })).concat([{
+        account: 'Карты Точки',
+        ok: cardOperationFetch.ok,
+        source: cardOperationFetch.source,
+        errors: cardOperationFetch.errors?.slice(0, 6) || [],
+      }]),
       operationsStatus: operations.length ? 'connected' : 'no_operations',
       message: operations.length
         ? 'Операции Точки загружены и разложены по счетам, картам и категориям.'
-        : 'Баланс читается из Точки. Операции за месяц не пришли через доступные методы API — проверь права на получение выписок/операций.',
+        : 'Баланс читается из Точки. Операции по счетам и картам за месяц не пришли через доступные методы API — проверь права на получение выписок/операций.',
     });
   } catch (error: any) {
     res.status(error?.response?.status || 500).json({
