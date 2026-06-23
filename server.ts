@@ -3093,7 +3093,30 @@ async function exchangeTochkaOAuthCode(settings: any, code: string, redirectUrl:
 function normalizeTochkaList(data: any): any[] {
   const candidates = [
     data?.Data,
+    data?.Data?.Transaction,
+    data?.Data?.Transactions,
+    data?.Data?.transaction,
+    data?.Data?.transactions,
+    data?.Data?.Operation,
+    data?.Data?.Operations,
+    data?.Data?.operation,
+    data?.Data?.Statement,
+    data?.Data?.Statements,
+    data?.Data?.statement,
+    data?.Data?.Statement?.Transaction,
+    data?.Data?.Statement?.Transactions,
+    data?.Data?.Statement?.Operation,
+    data?.Data?.Statement?.Operations,
     data?.data,
+    data?.data?.transactions,
+    data?.data?.Transactions,
+    data?.data?.Transaction,
+    data?.data?.Operation,
+    data?.data?.Operations,
+    data?.data?.Statement,
+    data?.data?.statement,
+    data?.data?.statement?.transactions,
+    data?.data?.statement?.operations,
     data?.Data?.payments,
     data?.Data?.operations,
     data?.Data?.paymentOperations,
@@ -3102,10 +3125,34 @@ function normalizeTochkaList(data: any): any[] {
     data?.data?.paymentOperations,
     data?.payments,
     data?.operations,
+    data?.transactions,
+    data?.Transactions,
+    data?.Transaction,
+    data?.Operation,
+    data?.Operations,
     data?.paymentOperations,
     data?.result,
+    data?.result?.transactions,
+    data?.result?.operations,
   ];
-  return candidates.find(Array.isArray) || [];
+  const list = candidates.find(Array.isArray);
+  if (list) return list;
+  const single = candidates.find(candidate => (
+    candidate
+    && typeof candidate === 'object'
+    && !Array.isArray(candidate)
+    && (
+      candidate.Amount
+      || candidate.amount
+      || candidate.TransactionId
+      || candidate.transactionId
+      || candidate.OperationId
+      || candidate.operationId
+      || candidate.bookingDateTime
+      || candidate.operationDate
+    )
+  ));
+  return single ? [single] : [];
 }
 
 function getTochkaJwtExpiresAt(payload: any) {
@@ -3322,13 +3369,30 @@ function normalizeTochkaOperation(operation: any, fallbackAccountId = '') {
 
 async function fetchTochkaOperations(token: string, customerCode: string, accountId: string, dateFrom: string, dateTo: string) {
   const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
-  const params = { customerCode, dateFrom, dateTo, from: dateFrom, to: dateTo };
+  const params = {
+    customerCode,
+    accountId,
+    dateFrom,
+    dateTo,
+    from: dateFrom,
+    to: dateTo,
+    startDate: dateFrom,
+    endDate: dateTo,
+    dateStart: dateFrom,
+    dateEnd: dateTo,
+    fromDate: dateFrom,
+    toDate: dateTo,
+  };
   const encodedAccount = encodeURIComponent(accountId);
   const candidates = [
     { key: 'account_transactions', url: `${TOCHKA_API}/open-banking/v1.0/accounts/${encodedAccount}/transactions`, params },
     { key: 'account_operations', url: `${TOCHKA_API}/open-banking/v1.0/accounts/${encodedAccount}/operations`, params },
-    { key: 'transactions', url: `${TOCHKA_API}/open-banking/v1.0/transactions`, params: { ...params, accountId } },
-    { key: 'operations', url: `${TOCHKA_API}/open-banking/v1.0/operations`, params: { ...params, accountId } },
+    { key: 'account_statement', url: `${TOCHKA_API}/open-banking/v1.0/accounts/${encodedAccount}/statement`, params },
+    { key: 'account_statements', url: `${TOCHKA_API}/open-banking/v1.0/accounts/${encodedAccount}/statements`, params },
+    { key: 'transactions', url: `${TOCHKA_API}/open-banking/v1.0/transactions`, params },
+    { key: 'operations', url: `${TOCHKA_API}/open-banking/v1.0/operations`, params },
+    { key: 'statement', url: `${TOCHKA_API}/open-banking/v1.0/statement`, params },
+    { key: 'statements', url: `${TOCHKA_API}/open-banking/v1.0/statements`, params },
   ];
 
   const errors: any[] = [];
