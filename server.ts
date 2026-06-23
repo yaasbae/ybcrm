@@ -3046,6 +3046,43 @@ async function writeTochkaSettingsDoc(id: string, payload: Record<string, any>) 
   await setDoc(doc(db, 'settings', id), payload, { merge: true });
 }
 
+function buildTochkaCacheId(...parts: string[]) {
+  return Buffer.from(parts.map(part => String(part || '')).join('|'))
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/g, '');
+}
+
+async function readTochkaStatementCache(customerCode: string, accountId: string, dateFrom: string, dateTo: string) {
+  const id = buildTochkaCacheId(customerCode, accountId, dateFrom, dateTo);
+  if (adminDb) {
+    const snap = await adminDb.collection('tochka_statements').doc(id).get().catch(() => null);
+    return snap?.exists ? { id, ...(snap.data() || {}) } : { id };
+  }
+  if (!db) return { id };
+  const snap = await getDoc(doc(db, 'tochka_statements', id)).catch(() => null);
+  return snap?.exists() ? { id, ...(snap.data() || {}) } : { id };
+}
+
+async function writeTochkaStatementCache(customerCode: string, accountId: string, dateFrom: string, dateTo: string, payload: Record<string, any>) {
+  const id = buildTochkaCacheId(customerCode, accountId, dateFrom, dateTo);
+  const row = {
+    customerCode,
+    accountId,
+    dateFrom,
+    dateTo,
+    ...payload,
+    updatedAt: new Date().toISOString(),
+  };
+  if (adminDb) {
+    await adminDb.collection('tochka_statements').doc(id).set(row, { merge: true }).catch(() => {});
+    return;
+  }
+  if (!db) return;
+  await setDoc(doc(db, 'tochka_statements', id), row, { merge: true }).catch(() => {});
+}
+
 async function getTochkaOAuthSettings(): Promise<any> {
   return readTochkaSettingsDoc('tochka_oauth');
 }
@@ -3217,6 +3254,36 @@ function getTochkaPaymentUrl(data: any) {
     'sbpPayload',
   ]);
   return value ? String(value) : '';
+}
+
+async function fetchTochkaQrById(token: string, merchantId: string, accountId: string, qrId: string) {
+  if (!qrId) return null;
+  const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+  const encodedMerchant = encodeURIComponent(merchantId);
+  const encodedAccount = encodeURIComponent(accountId);
+  const encodedQr = encodeURIComponent(qrId);
+  const urls = [
+    `${TOCHKA_API}/sbp/v1.0/qr-code/${encodedQr}`,
+    `${TOCHKA_API}/sbp/v1.0/qr-code/merchant/${encodedMerchant}/${encodedAccount}/${encodedQr}`,
+    `${TOCHKA_API}/sbp/v1.0/qr-code/merchant/${encodedMerchant}/${encodedAccount}`,
+  ];
+  let lastError: any = null;
+  for (const url of urls) {
+    try {
+      const response = await axios.get(url, {
+        headers,
+        params: { qrcId: qrId, qrId },
+        timeout: 20000,
+      });
+      const paymentUrl = getTochkaPaymentUrl(response.data);
+      if (paymentUrl) return { data: response.data, paymentUrl };
+      lastError = new Error('QR response has no payment url');
+    } catch (error: any) {
+      lastError = error;
+    }
+  }
+  if (lastError) throw lastError;
+  return null;
 }
 
 function getTochkaPaymentId(data: any) {
@@ -3516,12 +3583,27 @@ async function fetchTochkaOperations(token: string, customerCode: string, accoun
     const directRows = normalizeRows(raw);
     if (directRows.length) return { rows: directRows, source };
     const status = getTochkaStatementStatus(raw);
+    const statementId = getTochkaStatementId(raw);
+    if (statementId) {
+      await writeTochkaStatementCache(customerCode, accountId, dateFrom, dateTo, {
+        statementId,
+        status: status || '',
+        source,
+      });
+    }
     const followUrls = buildStatementFollowUrls(raw);
     for (const followUrl of followUrls) {
       try {
         const followResponse = await axios.get(followUrl, { headers, params, timeout: 20000 });
         const rows = normalizeRows(followResponse.data);
-        if (rows.length) return { rows, source: `statement_link:${followUrl}` };
+        if (rows.length) {
+          await writeTochkaStatementCache(customerCode, accountId, dateFrom, dateTo, {
+            statementId: getTochkaStatementId(followResponse.data) || statementId || '',
+            status: getTochkaStatementStatus(followResponse.data) || 'Ready',
+            source: `statement_link:${followUrl}`,
+          });
+          return { rows, source: `statement_link:${followUrl}` };
+        }
         const followStatus = getTochkaStatementStatus(followResponse.data);
         errors.push({
           source: `statement_link:${followUrl}`,
@@ -3537,6 +3619,37 @@ async function fetchTochkaOperations(token: string, customerCode: string, accoun
     if (status) errors.push({ source, status: 200, message: `Выписка в статусе ${status}, операции появятся в Ready` });
     return { rows: [], source: '' };
   };
+
+  const cachedStatement = await readTochkaStatementCache(customerCode, accountId, dateFrom, dateTo);
+  const cachedStatementId = String(cachedStatement?.statementId || '');
+  if (cachedStatementId) {
+    const cachedUrls = [
+      `${TOCHKA_API}/open-banking/v1.0/accounts/${encodedAccount}/statements/${encodeURIComponent(cachedStatementId)}`,
+      `${TOCHKA_API}/open-banking/v1.0/statements/${encodeURIComponent(cachedStatementId)}`,
+    ];
+    for (const cachedUrl of cachedUrls) {
+      try {
+        const response = await axios.get(cachedUrl, { headers, params, timeout: 20000 });
+        const rows = normalizeRows(response.data);
+        const status = getTochkaStatementStatus(response.data);
+        if (rows.length) {
+          await writeTochkaStatementCache(customerCode, accountId, dateFrom, dateTo, {
+            statementId: cachedStatementId,
+            status: status || 'Ready',
+            source: `cached_statement:${cachedUrl}`,
+          });
+          return { ok: true, source: `cached_statement:${cachedUrl}`, operations: rows, errors };
+        }
+        errors.push({
+          source: `cached_statement:${cachedUrl}`,
+          status: response.status,
+          message: status ? `Выписка ${cachedStatementId} пока в статусе ${status}` : `Выписка ${cachedStatementId} пока без операций`,
+        });
+      } catch (error: any) {
+        errors.push({ source: `cached_statement:${cachedUrl}`, status: error?.response?.status || null, message: getTochkaErrorMessage(error) });
+      }
+    }
+  }
 
   for (const candidate of candidates) {
     try {
@@ -3965,59 +4078,104 @@ app.post('/api/tochka/create-payment', async (req, res) => {
       createdAt: new Date().toISOString(),
     }).catch(() => {});
 
-    const response = merchantId && accountId
-      ? await axios.post(
-        `${TOCHKA_API}/sbp/v1.0/qr-code/merchant/${merchantId}/${accountId}`,
-        {
-          Data: {
-            amount: Math.round(paymentAmount * 100),
-            paymentPurpose: description || `Оплата заказа ${orderId}`,
-            qrcType: '02',
-            currency: 'RUB',
-            sourceName: 'YBCRM',
-            ttl: 72 * 60,
-            redirectUrl: process.env.SERVER_URL ? `${process.env.SERVER_URL}/pay/${orderId}` : undefined,
-            imageParams: { width: 300, height: 300 },
-          },
+    const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+    const paymentPurpose = description || `Оплата заказа ${orderId}`;
+    const encodedMerchant = encodeURIComponent(String(merchantId || ''));
+    const encodedAccount = encodeURIComponent(String(accountId || ''));
+    const sbpBodies = [
+      {
+        Data: {
+          amount: Math.round(paymentAmount * 100) / 100,
+          paymentPurpose,
+          qrcType: '02',
+          currency: 'RUB',
+          sourceName: 'YBCRM',
+          ttl: 72 * 60,
+          redirectUrl: process.env.SERVER_URL ? `${process.env.SERVER_URL}/pay/${orderId}` : undefined,
+          imageParams: { width: 300, height: 300 },
         },
-        {
-          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-          timeout: 20000,
+      },
+      {
+        Data: {
+          amount: Math.round(paymentAmount * 100),
+          paymentPurpose,
+          qrcType: '02',
+          currency: 'RUB',
+          sourceName: 'YBCRM',
+          ttl: 72 * 60,
+        },
+      },
+      {
+        Data: {
+          amount: String(Math.round(paymentAmount * 100) / 100),
+          paymentPurpose,
+          qrcType: '02',
+          currency: 'RUB',
+        },
+      },
+    ];
+
+    let paymentData: any = null;
+    let paymentUrl = '';
+    let paymentId = '';
+    let lastPaymentError: any = null;
+
+    if (merchantId && accountId) {
+      for (const body of sbpBodies) {
+        try {
+          const response = await axios.post(
+            `${TOCHKA_API}/sbp/v1.0/qr-code/merchant/${encodedMerchant}/${encodedAccount}`,
+            body,
+            { headers, timeout: 20000 }
+          );
+          paymentData = response.data;
+          paymentUrl = getTochkaPaymentUrl(paymentData);
+          paymentId = getTochkaPaymentId(paymentData);
+          if (!paymentUrl && paymentId) {
+            const qrDetails = await fetchTochkaQrById(token, String(merchantId), String(accountId), paymentId).catch(() => null);
+            if (qrDetails?.paymentUrl) {
+              paymentUrl = qrDetails.paymentUrl;
+              paymentData = { initial: paymentData, qr: qrDetails.data };
+            }
+          }
+          if (paymentUrl) break;
+          lastPaymentError = new Error('Точка создала QR, но не вернула payload/ссылку');
+        } catch (error: any) {
+          lastPaymentError = error;
         }
-      )
-      : await axios.post(
+      }
+    } else {
+      const response = await axios.post(
         `${TOCHKA_API}/acquiring/v1.0/payments`,
         {
           Data: {
             customerCode,
             amount: Math.round(paymentAmount * 100) / 100,
-            purpose: description || `Оплата заказа ${orderId}`,
+            purpose: paymentPurpose,
             paymentMode,
             paymentLinkId: orderId,
             redirectUrl: process.env.SERVER_URL ? `${process.env.SERVER_URL}/pay/${orderId}` : undefined,
             ttl: 72 * 60, // 72 часа
           },
         },
-        {
-          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-          timeout: 20000,
-        }
+        { headers, timeout: 20000 }
       );
+      paymentData = response.data;
+      paymentUrl = getTochkaPaymentUrl(paymentData);
+      paymentId = getTochkaPaymentId(paymentData);
+    }
 
-    const paymentData = response.data;
-    const paymentUrl = getTochkaPaymentUrl(paymentData);
-    const paymentId = getTochkaPaymentId(paymentData);
     if (!paymentUrl) {
       console.error('[tochka] create-payment no paymentUrl:', JSON.stringify(paymentData).slice(0, 500));
       await addDoc(collection(db, 'tochka_logs'), {
         orderId,
         amount: paymentAmount,
         status: 'error',
-        error: 'Точка не вернула paymentUrl/payload',
+        error: lastPaymentError ? getTochkaErrorMessage(lastPaymentError) : 'Точка не вернула paymentUrl/payload',
         response: JSON.stringify(paymentData).slice(0, 1000),
         createdAt: new Date().toISOString(),
       }).catch(() => {});
-      return res.status(502).json({ error: 'Точка не вернула ссылку или payload QR', details: paymentData });
+      return res.status(502).json({ error: 'Точка не вернула ссылку или payload QR', details: paymentData, message: lastPaymentError ? getTochkaErrorMessage(lastPaymentError) : '' });
     }
 
     // Сохраняем ссылку оплаты в основной заказ CRM.
