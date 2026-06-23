@@ -3396,16 +3396,79 @@ async function fetchTochkaOperations(token: string, customerCode: string, accoun
   ];
 
   const errors: any[] = [];
+  const normalizeRows = (raw: any) => normalizeTochkaList(raw)
+    .map((item: any) => normalizeTochkaOperation(item, accountId))
+    .filter((item: any) => Number(item.absAmount) > 0);
+  const getStatementIds = (raw: any) => [
+    raw?.Data?.statementId,
+    raw?.Data?.StatementId,
+    raw?.Data?.Statement?.statementId,
+    raw?.Data?.Statement?.StatementId,
+    raw?.data?.statementId,
+    raw?.data?.statement?.statementId,
+    raw?.statementId,
+    raw?.id,
+  ].filter(Boolean).map(String);
+  const getResponseLinks = (raw: any) => {
+    const links = raw?.Links || raw?.links || raw?.Data?.Links || raw?.data?.links || {};
+    return Object.values(links)
+      .flat()
+      .map((value: any) => (typeof value === 'string' ? value : value?.href || value?.url || ''))
+      .filter((value: string) => value && value.startsWith('http'));
+  };
+
   for (const candidate of candidates) {
     try {
       const response = await axios.get(candidate.url, { headers, params: candidate.params, timeout: 15000 });
-      const rows = normalizeTochkaList(response.data)
-        .map((item: any) => normalizeTochkaOperation(item, accountId))
-        .filter((item: any) => Number(item.absAmount) > 0);
+      const rows = normalizeRows(response.data);
       if (rows.length) return { ok: true, source: candidate.key, operations: rows, errors };
       errors.push({ source: candidate.key, status: response.status, message: 'Операций нет в ответе' });
     } catch (error: any) {
       errors.push({ source: candidate.key, status: error?.response?.status || null, message: getTochkaErrorMessage(error) });
+    }
+  }
+
+  const statementBodies = [
+    { Data: { customerCode, accountId, dateFrom, dateTo } },
+    { Data: { customerCode, accountId, from: dateFrom, to: dateTo } },
+    { Data: { customerCode, accountId, startDate: dateFrom, endDate: dateTo } },
+    { Data: { customerCode, accountId, statementPeriod: { from: dateFrom, to: dateTo } } },
+    { Data: { customerCode, accountId, period: { dateFrom, dateTo } } },
+    { customerCode, accountId, dateFrom, dateTo },
+  ];
+  const statementUrls = [
+    `${TOCHKA_API}/open-banking/v1.0/statements`,
+    `${TOCHKA_API}/open-banking/v1.0/statement`,
+    `${TOCHKA_API}/open-banking/v1.0/accounts/${encodedAccount}/statements`,
+  ];
+
+  for (const statementUrl of statementUrls) {
+    for (const body of statementBodies) {
+      try {
+        const response = await axios.post(statementUrl, body, { headers, timeout: 20000 });
+        const directRows = normalizeRows(response.data);
+        if (directRows.length) return { ok: true, source: `post_statement:${statementUrl}`, operations: directRows, errors };
+
+        const followUrls = Array.from(new Set([
+          ...getResponseLinks(response.data),
+          ...getStatementIds(response.data).map(id => `${TOCHKA_API}/open-banking/v1.0/statements/${encodeURIComponent(id)}`),
+        ])).slice(0, 6);
+
+        for (const followUrl of followUrls) {
+          try {
+            const followResponse = await axios.get(followUrl, { headers, params, timeout: 20000 });
+            const rows = normalizeRows(followResponse.data);
+            if (rows.length) return { ok: true, source: `statement_link:${followUrl}`, operations: rows, errors };
+            errors.push({ source: `statement_link:${followUrl}`, status: followResponse.status, message: 'Выписка создана, но строк операций в ответе нет' });
+          } catch (followError: any) {
+            errors.push({ source: `statement_link:${followUrl}`, status: followError?.response?.status || null, message: getTochkaErrorMessage(followError) });
+          }
+        }
+
+        errors.push({ source: `post_statement:${statementUrl}`, status: response.status, message: 'Выписка создана/принята, но операции не вернулись сразу' });
+      } catch (error: any) {
+        errors.push({ source: `post_statement:${statementUrl}`, status: error?.response?.status || null, message: getTochkaErrorMessage(error) });
+      }
     }
   }
   return { ok: false, source: '', operations: [], errors };
