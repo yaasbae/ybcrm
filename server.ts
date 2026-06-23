@@ -3024,7 +3024,7 @@ function decodeJwtPayload(token: string) {
 
 async function getTochkaToken(): Promise<string | null> {
   const settings = await readTochkaSettingsDoc('tochka_api');
-  return settings?.jwtToken || settings?.oauthAccessToken || null;
+  return settings?.jwtToken || null;
 }
 
 async function readTochkaSettingsDoc(id: string): Promise<any> {
@@ -4471,7 +4471,7 @@ app.get('/api/tochka/jwt-diagnostics', async (_req, res) => {
   if (!db && !adminDb) return res.status(503).json({ error: 'DB не подключена' });
   try {
     const settings = await readTochkaSettingsDoc('tochka_api');
-    const token = settings?.jwtToken || settings?.oauthAccessToken || '';
+    const token = settings?.jwtToken || '';
     if (!token) return res.status(400).json({ configured: false, error: 'Токен Точки не настроен' });
 
     const payload: any = decodeJwtPayload(token);
@@ -4848,7 +4848,7 @@ app.get('/api/tochka/finance-summary', async (req, res) => {
     }
 
     const operationFetches = await Promise.all(accounts.map((account: any) =>
-      fetchTochkaOperations(token, effectiveCustomerCode, account.accountId, dateFrom, dateTo)
+      fetchTochkaOperations(token, account.customerCode || effectiveCustomerCode, account.accountId, dateFrom, dateTo)
         .then(result => ({ account, result }))
         .catch(error => ({ account, result: { ok: false, source: '', operations: [], errors: [{ message: getTochkaErrorMessage(error) }] } }))
     ));
