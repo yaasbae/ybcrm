@@ -3172,6 +3172,64 @@ function getTochkaErrorMessage(error: any) {
     || JSON.stringify(data).slice(0, 240);
 }
 
+function findTochkaValueByKeys(data: any, keys: string[]) {
+  const wanted = new Set(keys.map(key => key.toLowerCase()));
+  const seen = new Set<any>();
+  const walk = (value: any): any => {
+    if (!value || typeof value !== 'object' || seen.has(value)) return null;
+    seen.add(value);
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        const found = walk(item);
+        if (found !== null && found !== undefined && found !== '') return found;
+      }
+      return null;
+    }
+    for (const [key, nestedValue] of Object.entries(value)) {
+      if (wanted.has(key.toLowerCase()) && nestedValue !== null && nestedValue !== undefined && nestedValue !== '') {
+        return nestedValue;
+      }
+    }
+    for (const nestedValue of Object.values(value)) {
+      const found = walk(nestedValue);
+      if (found !== null && found !== undefined && found !== '') return found;
+    }
+    return null;
+  };
+  return walk(data);
+}
+
+function getTochkaPaymentUrl(data: any) {
+  const value = findTochkaValueByKeys(data, [
+    'paymentUrl',
+    'paymentURL',
+    'paymentLink',
+    'paymentLinkUrl',
+    'qrUrl',
+    'qrcUrl',
+    'qrcLink',
+    'url',
+    'link',
+    'payload',
+    'qrCode',
+    'qrcode',
+    'qrPayload',
+    'sbpPayload',
+  ]);
+  return value ? String(value) : '';
+}
+
+function getTochkaPaymentId(data: any) {
+  const value = findTochkaValueByKeys(data, [
+    'operationId',
+    'paymentId',
+    'qrcId',
+    'qrId',
+    'id',
+  ]);
+  return value ? String(value) : '';
+}
+
 function getTochkaOperationId(operation: any) {
   return operation?.operationId
     || operation?.OperationId
@@ -3324,6 +3382,24 @@ function detectCardMask(text: string) {
   return match?.[1] || '';
 }
 
+function getTochkaStatementId(raw: any) {
+  const value = findTochkaValueByKeys(raw, [
+    'statementId',
+    'StatementId',
+    'id',
+  ]);
+  return value ? String(value) : '';
+}
+
+function getTochkaStatementStatus(raw: any) {
+  const value = findTochkaValueByKeys(raw, [
+    'status',
+    'Status',
+    'statementStatus',
+  ]);
+  return value ? String(value) : '';
+}
+
 function normalizeTochkaOperation(operation: any, fallbackAccountId = '') {
   const json = JSON.stringify(operation || '');
   const amount = normalizeTochkaAmount(
@@ -3412,16 +3488,16 @@ async function fetchTochkaOperations(token: string, customerCode: string, accoun
   const normalizeRows = (raw: any) => normalizeTochkaList(raw)
     .map((item: any) => normalizeTochkaOperation(item, accountId))
     .filter((item: any) => Number(item.absAmount) > 0);
-  const getStatementIds = (raw: any) => [
-    raw?.Data?.statementId,
-    raw?.Data?.StatementId,
-    raw?.Data?.Statement?.statementId,
-    raw?.Data?.Statement?.StatementId,
-    raw?.data?.statementId,
-    raw?.data?.statement?.statementId,
-    raw?.statementId,
-    raw?.id,
-  ].filter(Boolean).map(String);
+  const getStatementIds = (raw: any) => {
+    const ids = new Set<string>();
+    const directId = getTochkaStatementId(raw);
+    if (directId) ids.add(directId);
+    for (const item of normalizeTochkaList(raw)) {
+      const id = getTochkaStatementId(item);
+      if (id) ids.add(id);
+    }
+    return Array.from(ids);
+  };
   const getResponseLinks = (raw: any) => {
     const links = raw?.Links || raw?.links || raw?.Data?.Links || raw?.data?.links || {};
     return Object.values(links)
@@ -3429,12 +3505,46 @@ async function fetchTochkaOperations(token: string, customerCode: string, accoun
       .map((value: any) => (typeof value === 'string' ? value : value?.href || value?.url || ''))
       .filter((value: string) => value && value.startsWith('http'));
   };
+  const buildStatementFollowUrls = (raw: any) => Array.from(new Set([
+    ...getResponseLinks(raw),
+    ...getStatementIds(raw).flatMap(id => [
+      `${TOCHKA_API}/open-banking/v1.0/accounts/${encodedAccount}/statements/${encodeURIComponent(id)}`,
+      `${TOCHKA_API}/open-banking/v1.0/statements/${encodeURIComponent(id)}`,
+    ]),
+  ])).slice(0, 10);
+  const fetchStatementRows = async (raw: any, source: string) => {
+    const directRows = normalizeRows(raw);
+    if (directRows.length) return { rows: directRows, source };
+    const status = getTochkaStatementStatus(raw);
+    const followUrls = buildStatementFollowUrls(raw);
+    for (const followUrl of followUrls) {
+      try {
+        const followResponse = await axios.get(followUrl, { headers, params, timeout: 20000 });
+        const rows = normalizeRows(followResponse.data);
+        if (rows.length) return { rows, source: `statement_link:${followUrl}` };
+        const followStatus = getTochkaStatementStatus(followResponse.data);
+        errors.push({
+          source: `statement_link:${followUrl}`,
+          status: followResponse.status,
+          message: followStatus
+            ? `Выписка в статусе ${followStatus}, операций пока нет`
+            : 'Выписка создана, но строк операций в ответе нет',
+        });
+      } catch (followError: any) {
+        errors.push({ source: `statement_link:${followUrl}`, status: followError?.response?.status || null, message: getTochkaErrorMessage(followError) });
+      }
+    }
+    if (status) errors.push({ source, status: 200, message: `Выписка в статусе ${status}, операции появятся в Ready` });
+    return { rows: [], source: '' };
+  };
 
   for (const candidate of candidates) {
     try {
       const response = await axios.get(candidate.url, { headers, params: candidate.params, timeout: 15000 });
       const rows = normalizeRows(response.data);
       if (rows.length) return { ok: true, source: candidate.key, operations: rows, errors };
+      const statementRows = await fetchStatementRows(response.data, candidate.key);
+      if (statementRows.rows.length) return { ok: true, source: statementRows.source, operations: statementRows.rows, errors };
       errors.push({ source: candidate.key, status: response.status, message: 'Операций нет в ответе' });
     } catch (error: any) {
       errors.push({ source: candidate.key, status: error?.response?.status || null, message: getTochkaErrorMessage(error) });
@@ -3442,6 +3552,9 @@ async function fetchTochkaOperations(token: string, customerCode: string, accoun
   }
 
   const statementBodies = [
+    { Data: { Statement: { accountId, customerCode, dateFrom, dateTo } } },
+    { Data: { Statement: { accountId, customerCode, from: dateFrom, to: dateTo } } },
+    { Data: { Statement: { accountId, customerCode, startDate: dateFrom, endDate: dateTo } } },
     { Data: { customerCode, accountId, dateFrom, dateTo } },
     { Data: { customerCode, accountId, from: dateFrom, to: dateTo } },
     { Data: { customerCode, accountId, startDate: dateFrom, endDate: dateTo } },
@@ -3459,26 +3572,17 @@ async function fetchTochkaOperations(token: string, customerCode: string, accoun
     for (const body of statementBodies) {
       try {
         const response = await axios.post(statementUrl, body, { headers, timeout: 20000 });
-        const directRows = normalizeRows(response.data);
-        if (directRows.length) return { ok: true, source: `post_statement:${statementUrl}`, operations: directRows, errors };
-
-        const followUrls = Array.from(new Set([
-          ...getResponseLinks(response.data),
-          ...getStatementIds(response.data).map(id => `${TOCHKA_API}/open-banking/v1.0/statements/${encodeURIComponent(id)}`),
-        ])).slice(0, 6);
-
-        for (const followUrl of followUrls) {
-          try {
-            const followResponse = await axios.get(followUrl, { headers, params, timeout: 20000 });
-            const rows = normalizeRows(followResponse.data);
-            if (rows.length) return { ok: true, source: `statement_link:${followUrl}`, operations: rows, errors };
-            errors.push({ source: `statement_link:${followUrl}`, status: followResponse.status, message: 'Выписка создана, но строк операций в ответе нет' });
-          } catch (followError: any) {
-            errors.push({ source: `statement_link:${followUrl}`, status: followError?.response?.status || null, message: getTochkaErrorMessage(followError) });
-          }
-        }
-
-        errors.push({ source: `post_statement:${statementUrl}`, status: response.status, message: 'Выписка создана/принята, но операции не вернулись сразу' });
+        const statementRows = await fetchStatementRows(response.data, `post_statement:${statementUrl}`);
+        if (statementRows.rows.length) return { ok: true, source: statementRows.source || `post_statement:${statementUrl}`, operations: statementRows.rows, errors };
+        const statementStatus = getTochkaStatementStatus(response.data);
+        const statementId = getTochkaStatementId(response.data);
+        errors.push({
+          source: `post_statement:${statementUrl}`,
+          status: response.status,
+          message: statementId
+            ? `Выписка ${statementId} создана${statementStatus ? `, статус ${statementStatus}` : ''}. Нажми обновить через минуту.`
+            : 'Выписка создана/принята, но операции не вернулись сразу',
+        });
       } catch (error: any) {
         errors.push({ source: `post_statement:${statementUrl}`, status: error?.response?.status || null, message: getTochkaErrorMessage(error) });
       }
@@ -3901,19 +4005,19 @@ app.post('/api/tochka/create-payment', async (req, res) => {
       );
 
     const paymentData = response.data;
-    const paymentUrl = paymentData.paymentUrl || paymentData.data?.paymentUrl || paymentData.Data?.paymentUrl || paymentData.Data?.payload;
-    const paymentId = paymentData.operationId || paymentData.data?.operationId || paymentData.Data?.operationId || paymentData.Data?.qrcId;
+    const paymentUrl = getTochkaPaymentUrl(paymentData);
+    const paymentId = getTochkaPaymentId(paymentData);
     if (!paymentUrl) {
       console.error('[tochka] create-payment no paymentUrl:', JSON.stringify(paymentData).slice(0, 500));
       await addDoc(collection(db, 'tochka_logs'), {
         orderId,
         amount: paymentAmount,
         status: 'error',
-        error: 'Точка не вернула paymentUrl',
+        error: 'Точка не вернула paymentUrl/payload',
         response: JSON.stringify(paymentData).slice(0, 1000),
         createdAt: new Date().toISOString(),
       }).catch(() => {});
-      return res.status(502).json({ error: 'Точка не вернула ссылку оплаты', details: paymentData });
+      return res.status(502).json({ error: 'Точка не вернула ссылку или payload QR', details: paymentData });
     }
 
     // Сохраняем ссылку оплаты в основной заказ CRM.
