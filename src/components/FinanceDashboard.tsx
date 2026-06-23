@@ -118,6 +118,7 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
   const [tochkaSummary, setTochkaSummary] = useState<TochkaFinanceSummary | null>(null);
   const [tochkaLoading, setTochkaLoading] = useState(false);
   const [tochkaError, setTochkaError] = useState('');
+  const [tochkaRefreshKey, setTochkaRefreshKey] = useState(0);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [newExpense, setNewExpense] = useState({
     category: 'other' as const,
@@ -171,11 +172,12 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
       setTochkaLoading(true);
       setTochkaError('');
       try {
-        const token = await auth.currentUser?.getIdToken();
+        const token = await auth.currentUser?.getIdToken(tochkaRefreshKey > 0);
         if (!token) throw new Error('Нужно войти в аккаунт владельца');
         const monthKey = `${currentDate.getFullYear()}-${String(currentDate.getMonth() + 1).padStart(2, '0')}`;
-        const response = await fetch(`/api/tochka/finance-summary?month=${monthKey}`, {
+        const response = await fetch(`/api/tochka/finance-summary?month=${monthKey}&refresh=${tochkaRefreshKey}`, {
           headers: { Authorization: `Bearer ${token}` },
+          cache: 'no-store',
         });
         const data = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(data?.error || 'Не удалось получить сводку Точки');
@@ -190,7 +192,7 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
     return () => {
       cancelled = true;
     };
-  }, [canViewFinance, currentDate]);
+  }, [canViewFinance, currentDate, tochkaRefreshKey]);
 
   const handleAddExpense = async () => {
     if (!newExpense.amount || !newExpense.description) return;
@@ -395,10 +397,14 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
                 </p>
               </div>
               <button
-                onClick={() => setCurrentDate(new Date(currentDate))}
-                className="inline-flex h-9 items-center justify-center gap-2 rounded-[8px] border border-[#E6E9EF] bg-white px-3 text-[11px] font-semibold uppercase tracking-[0.12em] text-[#6B7280] hover:bg-[#F6F7F9]"
+                onClick={() => setTochkaRefreshKey(key => key + 1)}
+                disabled={tochkaLoading}
+                className={cn(
+                  "inline-flex h-9 items-center justify-center gap-2 rounded-[8px] border border-[#E6E9EF] bg-white px-3 text-[11px] font-semibold uppercase tracking-[0.12em] text-[#6B7280] hover:bg-[#F6F7F9]",
+                  tochkaLoading && "cursor-wait opacity-60"
+                )}
               >
-                <RefreshCcw size={14} />
+                <RefreshCcw size={14} className={tochkaLoading ? 'animate-spin' : ''} />
                 Обновить
               </button>
             </div>
