@@ -85,6 +85,105 @@ function normalizeTochkaList(data: any): any[] {
   return candidates.find(Array.isArray) || [];
 }
 
+function findTochkaValueByKeys(data: any, keys: string[]) {
+  const wanted = new Set(keys.map(key => key.toLowerCase()));
+  const seen = new Set<any>();
+  const walk = (value: any): any => {
+    if (!value || typeof value !== 'object' || seen.has(value)) return null;
+    seen.add(value);
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        const found = walk(item);
+        if (found !== null && found !== undefined && found !== '') return found;
+      }
+      return null;
+    }
+    for (const [key, nestedValue] of Object.entries(value)) {
+      if (wanted.has(key.toLowerCase()) && nestedValue !== null && nestedValue !== undefined && nestedValue !== '') {
+        return nestedValue;
+      }
+    }
+    for (const nestedValue of Object.values(value)) {
+      const found = walk(nestedValue);
+      if (found !== null && found !== undefined && found !== '') return found;
+    }
+    return null;
+  };
+  return walk(data);
+}
+
+function getTochkaPaymentUrl(data: any) {
+  const value = findTochkaValueByKeys(data, [
+    'paymentUrl',
+    'paymentURL',
+    'paymentLink',
+    'paymentLinkUrl',
+    'qrUrl',
+    'qrcUrl',
+    'qrcLink',
+    'url',
+    'link',
+    'payload',
+    'qrCode',
+    'qrcode',
+    'qrPayload',
+    'sbpPayload',
+  ]);
+  return value ? String(value) : '';
+}
+
+function getTochkaPaymentId(data: any) {
+  const value = findTochkaValueByKeys(data, [
+    'operationId',
+    'paymentId',
+    'qrcId',
+    'qrId',
+    'id',
+  ]);
+  return value ? String(value) : '';
+}
+
+function getTochkaErrorMessage(error: any) {
+  const data = error?.response?.data;
+  if (!data) return error?.message || 'Неизвестная ошибка';
+  return data?.message
+    || data?.error_description
+    || data?.error
+    || data?.errors?.[0]?.message
+    || data?.Errors?.[0]?.message
+    || JSON.stringify(data).slice(0, 240);
+}
+
+async function fetchTochkaQrById(token: string, merchantId: string, accountId: string, qrId: string) {
+  if (!qrId) return null;
+  const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+  const encodedMerchant = encodeURIComponent(merchantId);
+  const encodedAccount = encodeURIComponent(accountId);
+  const encodedQr = encodeURIComponent(qrId);
+  const urls = [
+    `${TOCHKA_API}/sbp/v1.0/qr-code/${encodedQr}`,
+    `${TOCHKA_API}/sbp/v1.0/qr-code/merchant/${encodedMerchant}/${encodedAccount}/${encodedQr}`,
+    `${TOCHKA_API}/sbp/v1.0/qr-code/merchant/${encodedMerchant}/${encodedAccount}`,
+  ];
+  let lastError: any = null;
+  for (const url of urls) {
+    try {
+      const response = await axios.get(url, {
+        headers,
+        params: { qrcId: qrId, qrId },
+        timeout: 20000,
+      });
+      const paymentUrl = getTochkaPaymentUrl(response.data);
+      if (paymentUrl) return { data: response.data, paymentUrl };
+      lastError = new Error('QR response has no payment url');
+    } catch (error: any) {
+      lastError = error;
+    }
+  }
+  if (lastError) throw lastError;
+  return null;
+}
+
 function getTochkaOperationId(op: any) {
   return op?.operationId || op?.OperationId || op?.id || op?.paymentId || '';
 }
@@ -362,45 +461,96 @@ export const tochkaCreatePayment = onRequest({ timeoutSeconds: 30 }, async (req:
       status: 'request', createdAt: new Date().toISOString(),
     }).catch(() => {});
 
-    const response = merchantId && accountId
-      ? await axios.post(
-        `${TOCHKA_API}/sbp/v1.0/qr-code/merchant/${merchantId}/${accountId}`,
-        {
-          Data: {
-            amount: Math.round(paymentAmount * 100),
-            paymentPurpose: description || `Оплата заказа ${orderId}`,
-            qrcType: '02', currency: 'RUB', sourceName: 'YBCRM',
-            ttl: 72 * 60, imageParams: { width: 300, height: 300 },
-          },
+    const headers = { Authorization: `Bearer ${jwtToken}`, 'Content-Type': 'application/json' };
+    const paymentPurpose = description || `Оплата заказа ${orderId}`;
+    const encodedMerchant = encodeURIComponent(String(merchantId || ''));
+    const encodedAccount = encodeURIComponent(String(accountId || ''));
+    const sbpBodies = [
+      {
+        Data: {
+          amount: Math.round(paymentAmount * 100) / 100,
+          paymentPurpose,
+          qrcType: '02',
+          currency: 'RUB',
+          sourceName: 'YBCRM',
+          ttl: 72 * 60,
+          imageParams: { width: 300, height: 300 },
         },
-        { headers: { Authorization: `Bearer ${jwtToken}`, 'Content-Type': 'application/json' }, timeout: 20000 }
-      )
-      : await axios.post(
+      },
+      {
+        Data: {
+          amount: Math.round(paymentAmount * 100),
+          paymentPurpose,
+          qrcType: '02',
+          currency: 'RUB',
+          sourceName: 'YBCRM',
+          ttl: 72 * 60,
+        },
+      },
+      {
+        Data: {
+          amount: String(Math.round(paymentAmount * 100) / 100),
+          paymentPurpose,
+          qrcType: '02',
+          currency: 'RUB',
+        },
+      },
+    ];
+
+    let paymentData: any = null;
+    let paymentUrl = '';
+    let paymentId = '';
+    let lastPaymentError: any = null;
+
+    if (merchantId && accountId) {
+      for (const body of sbpBodies) {
+        try {
+          const response = await axios.post(
+            `${TOCHKA_API}/sbp/v1.0/qr-code/merchant/${encodedMerchant}/${encodedAccount}`,
+            body,
+            { headers, timeout: 20000 }
+          );
+          paymentData = response.data;
+          paymentUrl = getTochkaPaymentUrl(paymentData);
+          paymentId = getTochkaPaymentId(paymentData);
+          if (!paymentUrl && paymentId) {
+            const qrDetails = await fetchTochkaQrById(jwtToken, String(merchantId), String(accountId), paymentId).catch(() => null);
+            if (qrDetails?.paymentUrl) {
+              paymentUrl = qrDetails.paymentUrl;
+              paymentData = { initial: paymentData, qr: qrDetails.data };
+            }
+          }
+          if (paymentUrl) break;
+          lastPaymentError = new Error('Точка создала QR, но не вернула payload/ссылку');
+        } catch (error: any) {
+          lastPaymentError = error;
+        }
+      }
+    } else {
+      const response = await axios.post(
         `${TOCHKA_API}/acquiring/v1.0/payments`,
         {
           Data: {
             customerCode, amount: Math.round(paymentAmount * 100) / 100,
-            purpose: description || `Оплата заказа ${orderId}`,
+            purpose: paymentPurpose,
             paymentMode: modes, paymentLinkId: orderId, ttl: 72 * 60,
           },
         },
-        { headers: { Authorization: `Bearer ${jwtToken}`, 'Content-Type': 'application/json' }, timeout: 20000 }
+        { headers, timeout: 20000 }
       );
-
-    const paymentData = response.data;
-    const paymentUrl = paymentData.paymentUrl || paymentData.data?.paymentUrl
-      || paymentData.Data?.paymentUrl || paymentData.Data?.payload;
-    const paymentId = paymentData.operationId || paymentData.data?.operationId
-      || paymentData.Data?.operationId || paymentData.Data?.qrcId;
+      paymentData = response.data;
+      paymentUrl = getTochkaPaymentUrl(paymentData);
+      paymentId = getTochkaPaymentId(paymentData);
+    }
 
     if (!paymentUrl) {
       await db.collection('tochka_logs').add({
         orderId, amount: paymentAmount, status: 'error',
-        error: 'Точка не вернула paymentUrl',
+        error: lastPaymentError ? getTochkaErrorMessage(lastPaymentError) : 'Точка не вернула paymentUrl',
         response: JSON.stringify(paymentData).slice(0, 1000),
         createdAt: new Date().toISOString(),
       }).catch(() => {});
-      res.status(502).json({ error: 'Точка не вернула ссылку оплаты', details: paymentData }); return;
+      res.status(502).json({ error: 'Точка не вернула ссылку оплаты', details: paymentData, message: lastPaymentError ? getTochkaErrorMessage(lastPaymentError) : '' }); return;
     }
 
     const target = getTochkaPaymentTarget(orderId);
