@@ -3356,6 +3356,10 @@ function normalizeTochkaAmount(value: any) {
   return normalized > 100000 ? normalized / 100 : normalized;
 }
 
+function toTochkaMinorAmount(value: number) {
+  return Math.round((Number(value) || 0) * 100);
+}
+
 function extractTochkaAccounts(data: any): any[] {
   return [
     ...(data?.Data?.Account || []),
@@ -4008,18 +4012,19 @@ app.post('/api/tochka/create-payment', async (req, res) => {
       redirectUrl: process.env.SERVER_URL ? `${process.env.SERVER_URL}/pay/${orderId}` : undefined,
       imageParams: { width: 300, height: 300 },
     });
+    const sbpAmount = toTochkaMinorAmount(paymentAmount);
     const sbpBodies = [
       {
         Data: compactTochkaData({
           ...baseSbpData,
-          amount: Math.round(paymentAmount * 100) / 100,
+          amount: sbpAmount,
           qrcType: '02',
         }),
       },
       {
         Data: compactTochkaData({
           ...baseSbpData,
-          amount: Math.round(paymentAmount * 100) / 100,
+          amount: sbpAmount,
           qrcType: '02',
           imageParams: undefined,
         }),
@@ -4027,14 +4032,14 @@ app.post('/api/tochka/create-payment', async (req, res) => {
       {
         Data: compactTochkaData({
           ...baseSbpData,
-          amount: String(Math.round(paymentAmount * 100) / 100),
+          amount: String(sbpAmount),
           qrcType: '02',
         }),
       },
       {
         Data: compactTochkaData({
           ...baseSbpData,
-          amount: Math.round(paymentAmount * 100) / 100,
+          amount: sbpAmount,
           qrcType: '01',
         }),
       },
