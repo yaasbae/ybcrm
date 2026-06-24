@@ -3268,6 +3268,34 @@ function compactTochkaData(data: Record<string, any>) {
   );
 }
 
+function isValidTochkaAccountId(accountId: string) {
+  return /^\d+\/\d+$/.test(String(accountId || '').trim());
+}
+
+async function fetchTochkaOpenBankingAccounts(token: string, customerCode = '') {
+  const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+  const response = await axios.get(`${TOCHKA_API}/open-banking/v1.0/accounts`, {
+    headers,
+    params: customerCode ? { customerCode } : {},
+    timeout: 15000,
+  });
+  return extractTochkaAccounts(response.data);
+}
+
+async function resolveTochkaSbpAccount(token: string, customerCode: string, configuredAccountId: string) {
+  const currentAccountId = String(configuredAccountId || '').trim();
+  if (isValidTochkaAccountId(currentAccountId)) {
+    return { customerCode, accountId: currentAccountId };
+  }
+
+  const accounts = await fetchTochkaOpenBankingAccounts(token, customerCode).catch(() => []);
+  const account = accounts.find((item: any) => isValidTochkaAccountId(item?.accountId || item?.AccountId || item?.id));
+  return {
+    customerCode: String(account?.customerCode || account?.CustomerCode || account?.customer_code || customerCode || ''),
+    accountId: String(account?.accountId || account?.AccountId || account?.id || currentAccountId || ''),
+  };
+}
+
 async function discoverTochkaLegalId(token: string, customerCode: string, merchantId: string, accountId: string) {
   const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
   const bankCode = String(accountId || '').split('/')[1] || '';
@@ -3940,9 +3968,9 @@ app.post('/api/tochka/create-payment', async (req, res) => {
     if (!token) return res.status(400).json({ error: 'Токен Точки не настроен' });
     const snap = await getDoc(doc(db, 'settings', 'tochka_api'));
     const tochkaSettings = snap?.data() || {};
-    const customerCode = tochkaSettings.customerCode;
+    let customerCode = tochkaSettings.customerCode;
     const merchantId = tochkaSettings.merchantId;
-    const accountId = tochkaSettings.accountId;
+    let accountId = tochkaSettings.accountId;
     const configuredLegalId = String(tochkaSettings.legalId || '').trim();
     const paymentMode = Array.isArray(tochkaSettings.paymentMode) && tochkaSettings.paymentMode.length
       ? tochkaSettings.paymentMode
@@ -3959,6 +3987,11 @@ app.post('/api/tochka/create-payment', async (req, res) => {
 
     const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
     const paymentPurpose = description || `Оплата заказа ${orderId}`;
+    if (merchantId && accountId) {
+      const resolvedAccount = await resolveTochkaSbpAccount(token, String(customerCode || ''), String(accountId || ''));
+      customerCode = resolvedAccount.customerCode || customerCode;
+      accountId = resolvedAccount.accountId || accountId;
+    }
     const encodedMerchant = encodeURIComponent(String(merchantId || ''));
     const encodedAccount = encodeURIComponent(String(accountId || ''));
     const legalId = merchantId && accountId
