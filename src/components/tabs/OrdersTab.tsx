@@ -1670,10 +1670,22 @@ const OrderRow = React.memo(({
               <div className="grid grid-cols-1 items-start gap-6 xl:grid-cols-[minmax(420px,1fr)_minmax(360px,420px)]">
                 <div className="min-w-0">
                   <span className="block text-[11px] font-medium uppercase tracking-[0.16em] text-[#6B7280]">Изделие</span>
-                  <div className="mt-5 divide-y divide-[#E6E9EF] border-y border-[#E6E9EF]">
+                  <div className="mt-4 rounded-[8px] border border-[#E6E9EF] bg-[#F8FAFC]/70">
+                    <div className="hidden grid-cols-[minmax(220px,1.35fr)_minmax(130px,0.8fr)_minmax(105px,0.65fr)_minmax(105px,0.65fr)_minmax(140px,0.75fr)_34px] gap-3 border-b border-[#E6E9EF] px-3 py-2 text-[9px] font-medium uppercase tracking-[0.14em] text-[#9CA3AF] xl:grid">
+                      <span>Наименование</span>
+                      <span>Цвет</span>
+                      <span>Размер</span>
+                      <span>Рост</span>
+                      <span className="text-right">Цена, ₽</span>
+                      <span />
+                    </div>
                     {editItems.map((item, index) => (
-                      <div key={index} className="grid gap-2 py-3.5">
-                        <div className="grid grid-cols-[minmax(0,1fr)_110px_24px] items-center gap-3">
+                      <div
+                        key={index}
+                        className="grid gap-2 border-b border-[#E6E9EF] px-3 py-3 last:border-b-0 xl:grid-cols-[minmax(220px,1.35fr)_minmax(130px,0.8fr)_minmax(105px,0.65fr)_minmax(105px,0.65fr)_minmax(140px,0.75fr)_34px] xl:items-center xl:gap-3"
+                      >
+                        <label className="min-w-0">
+                          <span className="mb-1 block text-[9px] font-medium uppercase tracking-[0.14em] text-[#9CA3AF] xl:hidden">Наименование</span>
                           <input
                             type="text"
                             list="product-list"
@@ -1681,33 +1693,15 @@ const OrderRow = React.memo(({
                             onChange={(e) => applyProductCharacteristics(e.target.value, index)}
                             placeholder={index === 0 ? 'Название изделия...' : `Позиция ${index + 1}`}
                             title={item}
-                            className="min-w-0 border-0 bg-transparent px-0 py-0 text-[14px] font-medium leading-tight text-[#1F2937] outline-none"
+                            className="h-10 w-full rounded-[6px] border border-[#E6E9EF] bg-white px-3 text-[13px] font-medium leading-tight text-[#1F2937] outline-none transition-colors placeholder:text-[#9CA3AF] focus:border-[#7D7DE6]"
                           />
-                          <input
-                            type="number"
-                            value={editItemPrices[index] || ''}
-                            onChange={(e) => updateOrderItemPrice(index, parseFloat(e.target.value) || 0)}
-                            placeholder="Цена"
-                            className="w-full border-0 bg-transparent px-0 py-0 text-right text-[14px] font-medium text-[#1F2937] outline-none placeholder:text-[#9CA3AF]"
-                          />
-                          <div className="flex justify-end">
-                            {editItems.length > 1 && (
-                              <button
-                                type="button"
-                                onClick={() => removeOrderItem(index)}
-                                className="grid h-6 w-6 place-items-center text-zinc-400 hover:text-red-500 transition-colors"
-                                title="Удалить позицию"
-                              >
-                                <X className="w-4 h-4" />
-                              </button>
-                            )}
-                          </div>
-                        </div>
-                        <div className="grid grid-cols-3 gap-4">
+                        </label>
+                        <label className="min-w-0">
+                          <span className="mb-1 block text-[9px] font-medium uppercase tracking-[0.14em] text-[#9CA3AF] xl:hidden">Цвет</span>
                           <select
                             value={editItemColors[index] || ''}
                             onChange={(e) => updateOrderItemColor(index, e.target.value)}
-                            className="min-w-0 border-0 border-b border-[#E6E9EF] bg-transparent px-0 py-1 text-[12px] font-medium text-[#6B7280] outline-none focus:border-[#7D7DE6]"
+                            className="h-10 w-full rounded-[6px] border border-[#E6E9EF] bg-white px-3 text-[12px] font-medium text-[#6B7280] outline-none transition-colors focus:border-[#7D7DE6]"
                             title="Цвет позиции"
                           >
                             <option value="">Цвет</option>
@@ -1715,10 +1709,13 @@ const OrderRow = React.memo(({
                               <option key={opt} value={opt}>{opt}</option>
                             ))}
                           </select>
+                        </label>
+                        <label className="min-w-0">
+                          <span className="mb-1 block text-[9px] font-medium uppercase tracking-[0.14em] text-[#9CA3AF] xl:hidden">Размер</span>
                           <select
                             value={editItemSizes[index] || ''}
                             onChange={(e) => updateOrderItemSize(index, e.target.value)}
-                            className="min-w-0 border-0 border-b border-[#E6E9EF] bg-transparent px-0 py-1 text-[12px] font-medium text-[#6B7280] outline-none focus:border-[#7D7DE6]"
+                            className="h-10 w-full rounded-[6px] border border-[#E6E9EF] bg-white px-3 text-[12px] font-medium text-[#6B7280] outline-none transition-colors focus:border-[#7D7DE6]"
                             title="Размер позиции"
                           >
                             <option value="">Размер</option>
@@ -1726,10 +1723,13 @@ const OrderRow = React.memo(({
                               <option key={opt} value={opt}>{opt}</option>
                             ))}
                           </select>
+                        </label>
+                        <label className="min-w-0">
+                          <span className="mb-1 block text-[9px] font-medium uppercase tracking-[0.14em] text-[#9CA3AF] xl:hidden">Рост</span>
                           <select
                             value={editItemHeights[index] || ''}
                             onChange={(e) => updateOrderItemHeight(index, e.target.value)}
-                            className="min-w-0 border-0 border-b border-[#E6E9EF] bg-transparent px-0 py-1 text-[12px] font-medium text-[#6B7280] outline-none focus:border-[#7D7DE6]"
+                            className="h-10 w-full rounded-[6px] border border-[#E6E9EF] bg-white px-3 text-[12px] font-medium text-[#6B7280] outline-none transition-colors focus:border-[#7D7DE6]"
                             title="Рост позиции"
                           >
                             <option value="">Рост</option>
@@ -1737,6 +1737,31 @@ const OrderRow = React.memo(({
                               <option key={opt} value={opt}>{opt}</option>
                             ))}
                           </select>
+                        </label>
+                        <label className="min-w-0">
+                          <span className="mb-1 block text-[9px] font-medium uppercase tracking-[0.14em] text-[#9CA3AF] xl:hidden">Цена, ₽</span>
+                          <div className="relative">
+                            <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[12px] font-medium text-[#9CA3AF]">₽</span>
+                            <input
+                              type="number"
+                              value={editItemPrices[index] || ''}
+                              onChange={(e) => updateOrderItemPrice(index, parseFloat(e.target.value) || 0)}
+                              placeholder="Цена"
+                              className="h-10 w-full rounded-[6px] border border-[#E6E9EF] bg-white pl-7 pr-3 text-right text-[13px] font-medium tabular-nums text-[#1F2937] outline-none transition-colors placeholder:text-[#9CA3AF] focus:border-[#7D7DE6]"
+                            />
+                          </div>
+                        </label>
+                        <div className="flex justify-end xl:block">
+                          {editItems.length > 1 && (
+                            <button
+                              type="button"
+                              onClick={() => removeOrderItem(index)}
+                              className="grid h-10 w-10 place-items-center rounded-[6px] border border-red-100 bg-red-50 text-red-500 transition-colors hover:bg-red-100 xl:h-9 xl:w-9"
+                              title="Удалить позицию"
+                            >
+                              <X className="w-4 h-4" />
+                            </button>
+                          )}
                         </div>
                       </div>
                     ))}
@@ -1744,7 +1769,7 @@ const OrderRow = React.memo(({
                   <button
                     type="button"
                     onClick={addOrderItem}
-                    className="mt-4 inline-flex items-center gap-3 text-[13px] font-medium text-[#6B7280] transition-colors hover:text-[#1F2937]"
+                    className="mt-3 inline-flex h-9 items-center gap-2 rounded-[6px] border border-[#E6E9EF] bg-white px-3 text-[12px] font-medium text-[#6B7280] transition-colors hover:border-[#7D7DE6] hover:text-[#1F2937]"
                   >
                     <Plus className="w-4 h-4" />
                     Добавить изделие
@@ -2262,34 +2287,43 @@ const OrderCard = React.memo(({
         </div>
         <div className="space-y-2">
               {editItems.map((item, index) => (
-                <div key={index} className="grid gap-2 rounded-xl border border-zinc-100 p-2.5">
-                  <div className="grid grid-cols-[minmax(0,1fr)_38px] gap-2">
-                    <input
-                      value={item}
-                      list="product-list"
-                      onChange={(e) => applyMobileProduct(e.target.value, index)}
-                      placeholder={index === 0 ? 'Наименование' : `Позиция ${index + 1}`}
-                      className={cn(mobileInputClass, "text-[12px]")}
-                    />
+                <div key={index} className="grid gap-2 rounded-xl border border-zinc-100 bg-white p-2.5">
+                  <div className="grid grid-cols-[minmax(0,1fr)_40px] gap-2">
+                    <label className="min-w-0">
+                      <span className="mb-1 block text-[8px] font-black uppercase tracking-widest text-zinc-400">Наименование</span>
+                      <input
+                        value={item}
+                        list="product-list"
+                        onChange={(e) => applyMobileProduct(e.target.value, index)}
+                        placeholder={index === 0 ? 'Наименование' : `Позиция ${index + 1}`}
+                        className={cn(mobileInputClass, "text-[12px]")}
+                      />
+                    </label>
                     <button
                       type="button"
                       onClick={() => editItems.length > 1 ? removeMobileItem(index) : addMobileItem()}
                       className={cn(
-                        "grid h-10 w-10 place-items-center rounded-xl border text-zinc-500",
-                        editItems.length > 1 ? "border-red-100 bg-red-50 text-red-500" : "border-zinc-100 bg-white"
+                        "mt-[17px] grid h-10 w-10 place-items-center rounded-xl border text-zinc-500",
+                        editItems.length > 1 ? "border-red-100 bg-red-50 text-red-500" : "border-zinc-100 bg-zinc-50"
                       )}
                       title={editItems.length > 1 ? 'Удалить позицию' : 'Добавить позицию'}
                     >
                       {editItems.length > 1 ? <X className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
                     </button>
                   </div>
-                  <input
-                    type="number"
-                    value={editItemPrices[index] || ''}
-                    onChange={(e) => updateMobileItemPrice(index, parseFloat(e.target.value) || 0)}
-                    placeholder="Цена позиции"
-                    className={cn(mobileInputClass, "text-right text-[12px]")}
-                  />
+                  <label>
+                    <span className="mb-1 block text-[8px] font-black uppercase tracking-widest text-zinc-400">Цена позиции, ₽</span>
+                    <div className="relative">
+                      <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[11px] font-black text-zinc-300">₽</span>
+                      <input
+                        type="number"
+                        value={editItemPrices[index] || ''}
+                        onChange={(e) => updateMobileItemPrice(index, parseFloat(e.target.value) || 0)}
+                        placeholder="Цена"
+                        className={cn(mobileInputClass, "pl-7 text-right text-[12px] tabular-nums")}
+                      />
+                    </div>
+                  </label>
                   <div className="grid grid-cols-3 gap-1.5">
                     <select
                       value={editItemColors[index] || ''}
