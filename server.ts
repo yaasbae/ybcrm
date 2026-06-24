@@ -3251,6 +3251,53 @@ function getTochkaPaymentId(data: any) {
   return value ? String(value) : '';
 }
 
+function getTochkaLegalId(data: any) {
+  const value = findTochkaValueByKeys(data, [
+    'legalId',
+    'legal_id',
+    'LegalId',
+    'legalEntityId',
+    'LegalEntityId',
+  ]);
+  return value ? String(value) : '';
+}
+
+function compactTochkaData(data: Record<string, any>) {
+  return Object.fromEntries(
+    Object.entries(data).filter(([, value]) => value !== undefined && value !== null && value !== '')
+  );
+}
+
+async function discoverTochkaLegalId(token: string, customerCode: string, merchantId: string, accountId: string) {
+  const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+  const bankCode = String(accountId || '').split('/')[1] || '';
+  const candidates = [
+    {
+      url: `${TOCHKA_API}/sbp/v1.0/merchant/${encodeURIComponent(merchantId)}`,
+      params: customerCode ? { customerCode } : {},
+    },
+    {
+      url: `${TOCHKA_API}/sbp/v1.0/merchant`,
+      params: compactTochkaData({ customerCode, merchantId }),
+    },
+    {
+      url: `${TOCHKA_API}/sbp/v1.0/customer/${encodeURIComponent(customerCode)}/${encodeURIComponent(bankCode)}`,
+      params: {},
+    },
+  ].filter(candidate => candidate.url && !candidate.url.includes('//sbp') && !candidate.url.endsWith('/customer//'));
+
+  for (const candidate of candidates) {
+    try {
+      const response = await axios.get(candidate.url, { headers, params: candidate.params, timeout: 15000 });
+      const legalId = getTochkaLegalId(response.data);
+      if (legalId) return legalId;
+    } catch {
+      // LegalId is optional for some Tochka tenants, keep trying known read endpoints.
+    }
+  }
+  return '';
+}
+
 function getTochkaOperationId(operation: any) {
   return operation?.operationId
     || operation?.OperationId
@@ -3849,7 +3896,7 @@ async function findTochkaOperationId(token: string, customerCode: string, orderI
 
 // Сохранить JWT токен Точки
 app.post('/api/tochka/save-token', async (req, res) => {
-  const { jwtToken, merchantId, accountId, paymentMode } = req.body;
+  const { jwtToken, merchantId, accountId, legalId, paymentMode } = req.body;
   if (!db && !adminDb) return res.status(503).json({ error: 'DB не подключена' });
   try {
     const current = await readTochkaSettingsDoc('tochka_api');
@@ -3863,6 +3910,7 @@ app.post('/api/tochka/save-token', async (req, res) => {
       customerCode,
       merchantId: String(merchantId || '').trim() || current.merchantId || '',
       accountId: String(accountId || '').trim() || current.accountId || '',
+      legalId: String(legalId || '').trim() || current.legalId || '',
       paymentMode: Array.isArray(paymentMode) ? paymentMode : ['sbp'],
     });
     await Promise.race([
@@ -3895,6 +3943,7 @@ app.post('/api/tochka/create-payment', async (req, res) => {
     const customerCode = tochkaSettings.customerCode;
     const merchantId = tochkaSettings.merchantId;
     const accountId = tochkaSettings.accountId;
+    const configuredLegalId = String(tochkaSettings.legalId || '').trim();
     const paymentMode = Array.isArray(tochkaSettings.paymentMode) && tochkaSettings.paymentMode.length
       ? tochkaSettings.paymentMode
       : ['sbp'];
@@ -3912,35 +3961,49 @@ app.post('/api/tochka/create-payment', async (req, res) => {
     const paymentPurpose = description || `Оплата заказа ${orderId}`;
     const encodedMerchant = encodeURIComponent(String(merchantId || ''));
     const encodedAccount = encodeURIComponent(String(accountId || ''));
+    const legalId = merchantId && accountId
+      ? configuredLegalId || await discoverTochkaLegalId(token, String(customerCode || ''), String(merchantId), String(accountId))
+      : '';
+    const baseSbpData = compactTochkaData({
+      merchantId,
+      legalId,
+      customerCode,
+      accountId,
+      paymentPurpose,
+      currency: 'RUB',
+      sourceName: 'YBCRM',
+      ttl: 72 * 60,
+      redirectUrl: process.env.SERVER_URL ? `${process.env.SERVER_URL}/pay/${orderId}` : undefined,
+      imageParams: { width: 300, height: 300 },
+    });
     const sbpBodies = [
       {
         Data: {
+          ...baseSbpData,
           amount: Math.round(paymentAmount * 100) / 100,
-          paymentPurpose,
           qrcType: '02',
-          currency: 'RUB',
-          sourceName: 'YBCRM',
-          ttl: 72 * 60,
-          redirectUrl: process.env.SERVER_URL ? `${process.env.SERVER_URL}/pay/${orderId}` : undefined,
-          imageParams: { width: 300, height: 300 },
         },
       },
       {
         Data: {
-          amount: Math.round(paymentAmount * 100),
-          paymentPurpose,
+          ...baseSbpData,
+          amount: Math.round(paymentAmount * 100) / 100,
           qrcType: '02',
-          currency: 'RUB',
-          sourceName: 'YBCRM',
-          ttl: 72 * 60,
+          imageParams: undefined,
         },
       },
       {
         Data: {
+          ...baseSbpData,
           amount: String(Math.round(paymentAmount * 100) / 100),
-          paymentPurpose,
           qrcType: '02',
-          currency: 'RUB',
+        },
+      },
+      {
+        Data: {
+          ...baseSbpData,
+          amount: Math.round(paymentAmount * 100) / 100,
+          qrcType: '01',
         },
       },
     ];
@@ -3997,15 +4060,25 @@ app.post('/api/tochka/create-payment', async (req, res) => {
 
     if (!paymentUrl) {
       console.error('[tochka] create-payment no paymentUrl:', JSON.stringify(paymentData).slice(0, 500));
+      const tochkaErrorData = lastPaymentError?.response?.data || null;
       await addDoc(collection(db, 'tochka_logs'), {
         orderId,
         amount: paymentAmount,
         status: 'error',
         error: lastPaymentError ? getTochkaErrorMessage(lastPaymentError) : 'Точка не вернула paymentUrl/payload',
+        statusCode: lastPaymentError?.response?.status || null,
         response: JSON.stringify(paymentData).slice(0, 1000),
+        details: tochkaErrorData ? JSON.stringify(tochkaErrorData).slice(0, 1000) : '',
         createdAt: new Date().toISOString(),
       }).catch(() => {});
-      return res.status(502).json({ error: 'Точка не вернула ссылку или payload QR', details: paymentData, message: lastPaymentError ? getTochkaErrorMessage(lastPaymentError) : '' });
+      return res.status(502).json({
+        error: 'Точка не вернула ссылку или payload QR',
+        details: paymentData,
+        message: lastPaymentError ? getTochkaErrorMessage(lastPaymentError) : '',
+        statusCode: lastPaymentError?.response?.status || null,
+        tochkaDetails: tochkaErrorData,
+        legalId: legalId ? 'задан' : 'не найден',
+      });
     }
 
     // Сохраняем ссылку оплаты в основной заказ CRM.

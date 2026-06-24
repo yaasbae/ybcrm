@@ -153,6 +153,7 @@ export const IntegrationsPage: React.FC<Props> = ({ onNavigate }) => {
   const [tochkaToken, setTochkaToken] = useState('');
   const [tochkaMerchantId, setTochkaMerchantId] = useState('');
   const [tochkaAccountId, setTochkaAccountId] = useState('');
+  const [tochkaLegalId, setTochkaLegalId] = useState('');
   const [tochkaResult, setTochkaResult] = useState('');
   const [savingTochka, setSavingTochka] = useState(false);
   const [checkingTochkaJwt, setCheckingTochkaJwt] = useState(false);
@@ -236,6 +237,7 @@ export const IntegrationsPage: React.FC<Props> = ({ onNavigate }) => {
           jwtToken: tochkaToken.trim(),
           merchantId: tochkaMerchantId.trim(),
           accountId: tochkaAccountId.trim(),
+          legalId: tochkaLegalId.trim(),
           paymentMode: ['sbp'],
         }),
       });
@@ -394,6 +396,9 @@ export const IntegrationsPage: React.FC<Props> = ({ onNavigate }) => {
                     </Field>
                     <Field label="Account ID">
                       <input value={tochkaAccountId} onChange={e => setTochkaAccountId(e.target.value)} placeholder="4080.../БИК" className={inputClass} />
+                    </Field>
+                    <Field label="Legal ID">
+                      <input value={tochkaLegalId} onChange={e => setTochkaLegalId(e.target.value)} placeholder="если Точка требует legalId" className={inputClass} />
                     </Field>
                   </div>
                   {tochkaResult && (
