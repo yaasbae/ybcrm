@@ -3968,7 +3968,6 @@ app.post('/api/tochka/create-payment', async (req, res) => {
       merchantId,
       legalId,
       customerCode,
-      accountId,
       paymentPurpose,
       currency: 'RUB',
       sourceName: 'YBCRM',
@@ -3978,33 +3977,33 @@ app.post('/api/tochka/create-payment', async (req, res) => {
     });
     const sbpBodies = [
       {
-        Data: {
+        Data: compactTochkaData({
           ...baseSbpData,
           amount: Math.round(paymentAmount * 100) / 100,
           qrcType: '02',
-        },
+        }),
       },
       {
-        Data: {
+        Data: compactTochkaData({
           ...baseSbpData,
           amount: Math.round(paymentAmount * 100) / 100,
           qrcType: '02',
           imageParams: undefined,
-        },
+        }),
       },
       {
-        Data: {
+        Data: compactTochkaData({
           ...baseSbpData,
           amount: String(Math.round(paymentAmount * 100) / 100),
           qrcType: '02',
-        },
+        }),
       },
       {
-        Data: {
+        Data: compactTochkaData({
           ...baseSbpData,
           amount: Math.round(paymentAmount * 100) / 100,
           qrcType: '01',
-        },
+        }),
       },
     ];
 
