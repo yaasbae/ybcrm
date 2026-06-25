@@ -3557,15 +3557,15 @@ function getTochkaText(...values: any[]) {
 function classifyExpenseCategory(text: string) {
   const raw = String(text || '').toLowerCase();
   const checks: Array<[string, string[]]> = [
-    ['Продукты', ['пятероч', 'магнит', 'перекресток', 'вкусвилл', 'самокат', 'лавка', 'ozon fresh', 'продукт', 'food']],
-    ['Топливо', ['азс', 'лукойл', 'газпром', 'роснефть', 'топлив', 'fuel', 'benz', 'gpn']],
+    ['Продукты / закупки', ['пятероч', 'магнит', 'перекресток', 'вкусвилл', 'самокат', 'лавка', 'ozon fresh', 'продукт', 'food', 'metro', 'spar', 'lenta']],
+    ['Топливо', ['азс', 'лукойл', 'lukoil', 'газпром', 'gpn', 'роснефть', 'татнефть', 'tatneft', 'топлив', 'fuel', 'benz']],
     ['Маркетинг', ['instagram', 'vk ', 'яндекс директ', 'direct', 'реклама', 'target', 'meta', 'google ads', 'авито']],
     ['Аренда', ['аренд', 'rent']],
     ['ФОТ', ['зарплат', 'аванс', 'сотрудник', 'salary', 'самозанят']],
     ['Логистика', ['сдэк', 'cdek', 'почта', 'boxberry', 'достав', 'курьер']],
-    ['Материалы', ['ткан', 'фурнитур', 'типограф', 'печать', 'материал']],
-    ['Налоги', ['налог', 'фнс', 'пенсион', 'страхов']],
-    ['Комиссии банка', ['комисс', 'обслуживание счета', 'банк']],
+    ['Производство / материалы', ['ткан', 'фурнитур', 'типограф', 'печать', 'материал', 'шелкограф', 'лекал']],
+    ['Налоги', ['налог', 'фнс', 'казнач', 'пенсион', 'страхов']],
+    ['Банк / комиссии', ['комисс', 'обслуживание счета', 'банк точка', 'эквайринг']],
     ['Переводы', ['перевод', 'sbp', 'сбп']],
   ];
   return checks.find(([, keywords]) => keywords.some(keyword => raw.includes(keyword)))?.[0] || 'Другое';
@@ -3573,10 +3573,63 @@ function classifyExpenseCategory(text: string) {
 
 function detectCardMask(text: string) {
   const raw = String(text || '');
-  const known = TOCHKA_KNOWN_CARDS.find(card => raw.includes(card.mask));
-  if (known) return known.mask;
-  const match = raw.match(/(?:\*|x{2,}|•{2,}|карта\s*)?(\d{4})(?!\d)/i);
-  return match?.[1] || '';
+  const candidates = [
+    ...Array.from(raw.matchAll(/(?:карта|card)\D*(?:\d{4,6}[\s*хx•-]+)?(\d{4})(?!\d)/gi)).map(match => match[1]),
+    ...Array.from(raw.matchAll(/(?:\*{2,}|x{2,}|х{2,}|•{2,})\s*(\d{4})(?!\d)/gi)).map(match => match[1]),
+  ];
+  return candidates.find(mask => TOCHKA_KNOWN_CARDS.some(card => card.mask === mask)) || '';
+}
+
+function extractTochkaTerminalName(text: string) {
+  const raw = String(text || '');
+  const terminalMatch = raw.match(/терминал:\s*([^)]*?)(?:,\s*дата операции|,\s*на сумму|,\s*карта|\))/i);
+  if (!terminalMatch?.[1]) return '';
+  const parts = terminalMatch[1]
+    .split(',')
+    .map(part => part.trim())
+    .filter(Boolean)
+    .filter(part => !/^(ru|rus|russia)$/i.test(part));
+  return parts.slice(0, 2).join(', ');
+}
+
+function cleanTochkaDescription(rawDescription: string, operation: any, cardMask = '') {
+  const raw = String(rawDescription || '').replace(/\s+/g, ' ').trim();
+  const counterparty = getTochkaText(
+    operation?.counterpartyName,
+    operation?.CounterpartyName,
+    operation?.Counterparty?.name,
+    operation?.Counterparty?.Name,
+    operation?.counterparty?.name,
+    operation?.merchantName,
+    operation?.MerchantName,
+    operation?.MerchantDetails?.MerchantName,
+    operation?.merchantDetails?.merchantName,
+    operation?.CreditorParty?.name,
+    operation?.CreditorParty?.Name,
+    operation?.creditorParty?.name,
+    operation?.DebtorParty?.name,
+    operation?.DebtorParty?.Name,
+    operation?.debtorParty?.name,
+    operation?.debtorName,
+    operation?.DebtorName,
+    operation?.creditorName,
+    operation?.CreditorName
+  );
+  const terminalName = extractTochkaTerminalName(raw);
+  if (/покупка товара|purchase/i.test(raw)) {
+    return `Покупка: ${terminalName || counterparty || (cardMask ? `карта *${cardMask}` : 'карта')}`;
+  }
+  if (/комисс|обслуживание счета|банк точка/i.test(raw)) {
+    return 'Банк: комиссия / обслуживание';
+  }
+  if (counterparty && counterparty !== raw) {
+    const purpose = raw
+      .replace(/\([^)]*\)/g, '')
+      .replace(/^(плат[её]жное поручение|банковский ордер)\s*/i, '')
+      .trim();
+    return purpose ? `${counterparty} · ${purpose}`.slice(0, 180) : counterparty;
+  }
+  return raw || 'Операция Точки';
 }
 
 function getTochkaStatementId(raw: any) {
@@ -3635,7 +3688,7 @@ function normalizeTochkaOperation(operation: any, fallbackAccountId = '') {
       : Number(operation?.amount ?? operation?.Amount?.Amount ?? operation?.Amount?.amount) < 0
         ? -Math.abs(amount)
         : amount;
-  const description = getTochkaText(
+  const rawDescription = getTochkaText(
     operation?.description,
     operation?.Description,
     operation?.purpose,
@@ -3663,6 +3716,8 @@ function normalizeTochkaOperation(operation: any, fallbackAccountId = '') {
     operation?.CreditorName,
     operation?.Data?.purpose
   ) || 'Операция Точки';
+  const cardMask = detectCardMask(json);
+  const description = cleanTochkaDescription(rawDescription, operation, cardMask);
   const dateRaw = operation?.dateTime
     || operation?.DateTime
     || operation?.bookingDateTime
@@ -3677,6 +3732,8 @@ function normalizeTochkaOperation(operation: any, fallbackAccountId = '') {
     || operation?.OperationDateTime
     || operation?.documentDate
     || operation?.DocumentDate
+    || operation?.documentProcessDate
+    || operation?.DocumentProcessDate
     || operation?.date
     || operation?.Date
     || operation?.createdAt
@@ -3694,7 +3751,6 @@ function normalizeTochkaOperation(operation: any, fallbackAccountId = '') {
     || fallbackAccountId
     || ''
   );
-  const cardMask = detectCardMask(json);
   const isExpense = signedAmount < 0;
   return {
     id: getTochkaOperationId(operation) || `${accountId}-${date.toISOString()}-${Math.abs(signedAmount)}-${description}`.slice(0, 140),
@@ -3706,8 +3762,9 @@ function normalizeTochkaOperation(operation: any, fallbackAccountId = '') {
     amount: signedAmount,
     absAmount: Math.abs(signedAmount),
     direction: isExpense ? 'expense' : 'income',
-    category: isExpense ? classifyExpenseCategory(description) : 'Доходы',
+    category: isExpense ? classifyExpenseCategory(`${rawDescription} ${description}`) : 'Доходы',
     description,
+    rawDescription,
     counterparty: getTochkaText(
       operation?.counterpartyName,
       operation?.CounterpartyName,
@@ -3959,6 +4016,7 @@ async function fetchTochkaCardOperations(token: string, customerCode: string, da
           || String(card?.panTail || card?.last4 || card?.cardMask || card?.maskedPan || '').slice(-4);
         const id = String(card?.cardId || card?.id || card?.cardToken || card?.maskedPan || mask || '').trim();
         if (!id && !mask) continue;
+        if (!TOCHKA_KNOWN_CARDS.some(known => known.mask === mask)) continue;
         foundCards.push({
           id: id || mask,
           mask: mask || id.slice(-4),
@@ -3982,15 +4040,17 @@ async function fetchTochkaCardOperations(token: string, customerCode: string, da
   const normalizeCardRows = (raw: any, card: { id: string; mask: string; label: string }) => extractTochkaOperationRows(raw)
     .map((item: any) => {
       const row = normalizeTochkaOperation(item, `card:${card.mask}`);
+      if (!row.cardMask || row.cardMask !== card.mask) return null;
       return {
         ...row,
         sourceType: 'card',
         sourceLabel: card.label,
-        cardMask: row.cardMask || card.mask,
-        accountId: row.accountId?.startsWith('card:') ? row.accountId : (row.accountId || `card:${card.mask}`),
-        maskedAccountId: `*${row.cardMask || card.mask}`,
+        cardMask: row.cardMask,
+        accountId: row.accountId?.startsWith('card:') ? row.accountId : (row.accountId || `card:${row.cardMask}`),
+        maskedAccountId: `*${row.cardMask}`,
       };
     })
+    .filter(Boolean)
     .filter((item: any) => Number(item.absAmount) > 0);
 
   for (const card of uniqueCards) {
