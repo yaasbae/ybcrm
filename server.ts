@@ -3146,6 +3146,64 @@ function normalizeTochkaList(data: any): any[] {
   return single ? [single] : [];
 }
 
+function looksLikeTochkaOperation(value: any) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const keys = Object.keys(value).map(key => key.toLowerCase());
+  const joinedKeys = keys.join('|');
+  const hasAmount = /(^|[|_.-])(amount|sum|transactionamount|operationamount|paymentamount|totalamount)($|[|_.-])/.test(joinedKeys)
+    || Boolean(value?.Amount || value?.amount || value?.TransactionAmount || value?.transactionAmount);
+  const hasDate = keys.some(key => /date|datetime|created|booking|value/.test(key));
+  const hasOperationMarker = keys.some(key => /transaction|operation|payment|entry|statement|creditdebitindicator|counterparty|merchant|remittance/.test(key));
+  return hasAmount && (hasDate || hasOperationMarker);
+}
+
+function extractTochkaOperationRows(data: any): any[] {
+  const rows: any[] = [];
+  const seenObjects = new Set<any>();
+  const seenKeys = new Set<string>();
+  const push = (item: any) => {
+    if (!looksLikeTochkaOperation(item)) return;
+    const stableKey = String(
+      item?.transactionId
+      || item?.TransactionId
+      || item?.operationId
+      || item?.OperationId
+      || item?.entryReference
+      || item?.EntryReference
+      || JSON.stringify(item).slice(0, 500)
+    );
+    if (seenKeys.has(stableKey)) return;
+    seenKeys.add(stableKey);
+    rows.push(item);
+  };
+
+  for (const item of normalizeTochkaList(data)) push(item);
+
+  const walk = (value: any, keyHint = '', depth = 0) => {
+    if (!value || depth > 7) return;
+    if (typeof value !== 'object') return;
+    if (seenObjects.has(value)) return;
+    seenObjects.add(value);
+
+    if (Array.isArray(value)) {
+      const isOperationArray = /(transaction|operation|payment|entry|statement|row|item|movement|posting)/i.test(keyHint);
+      for (const item of value) {
+        if (isOperationArray || looksLikeTochkaOperation(item)) push(item);
+        walk(item, keyHint, depth + 1);
+      }
+      return;
+    }
+
+    push(value);
+    for (const [key, nestedValue] of Object.entries(value)) {
+      walk(nestedValue, key, depth + 1);
+    }
+  };
+
+  walk(data);
+  return rows.length ? rows : normalizeTochkaList(data);
+}
+
 function getTochkaJwtExpiresAt(payload: any) {
   const exp = Number(payload?.exp || payload?.expiresAt || 0);
   if (!exp) return null;
@@ -3329,6 +3387,16 @@ async function discoverTochkaLegalId(token: string, customerCode: string, mercha
 function getTochkaOperationId(operation: any) {
   return operation?.operationId
     || operation?.OperationId
+    || operation?.operationID
+    || operation?.transactionId
+    || operation?.TransactionId
+    || operation?.transactionID
+    || operation?.entryReference
+    || operation?.EntryReference
+    || operation?.statementEntryId
+    || operation?.StatementEntryId
+    || operation?.documentNumber
+    || operation?.DocumentNumber
     || operation?.id
     || operation?.paymentId
     || '';
@@ -3345,7 +3413,13 @@ function getTochkaOperationStatus(operation: any) {
 function getTochkaOperationAmount(operation: any) {
   return operation?.amount
     || operation?.Amount
+    || operation?.Amount?.Amount
+    || operation?.Amount?.amount
     || operation?.sum
+    || operation?.transactionAmount
+    || operation?.TransactionAmount
+    || operation?.TransactionAmount?.Amount
+    || operation?.TransactionAmount?.amount
     || operation?.paymentAmount
     || operation?.totalAmount
     || 0;
@@ -3407,7 +3481,9 @@ function getBalanceType(balance: any) {
 function getBalanceAmount(balance: any) {
   return normalizeTochkaAmount(
     balance?.Amount?.amount
+    ?? balance?.Amount?.Amount
     ?? balance?.amount?.amount
+    ?? balance?.amount?.Amount
     ?? balance?.amount
     ?? balance?.Amount
     ?? balance?.balance
@@ -3452,7 +3528,24 @@ function getFinanceOrderPaidAmount(order: any) {
 function getTochkaText(...values: any[]) {
   return values
     .filter(Boolean)
-    .map(value => String(value).trim())
+    .flatMap(value => Array.isArray(value) ? value : [value])
+    .map(value => {
+      if (typeof value === 'object') {
+        return getTochkaText(
+          value?.text,
+          value?.Text,
+          value?.name,
+          value?.Name,
+          value?.unstructured,
+          value?.Unstructured,
+          value?.information,
+          value?.Information,
+          value?.description,
+          value?.Description
+        );
+      }
+      return String(value).trim();
+    })
     .filter(Boolean)
     .join(' · ');
 }
@@ -3504,11 +3597,20 @@ function normalizeTochkaOperation(operation: any, fallbackAccountId = '') {
   const json = JSON.stringify(operation || '');
   const amount = normalizeTochkaAmount(
     operation?.Amount?.amount
+    ?? operation?.Amount?.Amount
     ?? operation?.amount?.amount
+    ?? operation?.amount?.Amount
+    ?? operation?.TransactionAmount?.Amount
+    ?? operation?.TransactionAmount?.amount
+    ?? operation?.transactionAmount?.Amount
+    ?? operation?.transactionAmount?.amount
     ?? operation?.amount
     ?? operation?.sum
     ?? operation?.transactionAmount
     ?? operation?.operationAmount
+    ?? operation?.paymentAmount
+    ?? operation?.totalAmount
+    ?? operation?.value
     ?? 0
   );
   const indicator = String(
@@ -3519,25 +3621,75 @@ function normalizeTochkaOperation(operation: any, fallbackAccountId = '') {
     || ''
   ).toLowerCase();
   const signedAmount = indicator.includes('debit') || indicator.includes('out')
+    || indicator.includes('расход')
+    || indicator.includes('спис')
     ? -Math.abs(amount)
     : indicator.includes('credit') || indicator.includes('in')
+      || indicator.includes('приход')
+      || indicator.includes('зачис')
       ? Math.abs(amount)
-      : Number(operation?.amount) < 0
+      : Number(operation?.amount ?? operation?.Amount?.Amount ?? operation?.Amount?.amount) < 0
         ? -Math.abs(amount)
         : amount;
   const description = getTochkaText(
     operation?.description,
+    operation?.Description,
     operation?.purpose,
+    operation?.Purpose,
     operation?.paymentPurpose,
+    operation?.PaymentPurpose,
+    operation?.transactionInformation,
+    operation?.TransactionInformation,
     operation?.remittanceInformation,
+    operation?.RemittanceInformation,
+    operation?.remittanceInformation?.unstructured,
+    operation?.RemittanceInformation?.Unstructured,
     operation?.merchantName,
+    operation?.MerchantName,
+    operation?.MerchantDetails?.MerchantName,
+    operation?.merchantDetails?.merchantName,
     operation?.counterpartyName,
+    operation?.CounterpartyName,
     operation?.Counterparty?.name,
+    operation?.Counterparty?.Name,
+    operation?.counterparty?.name,
+    operation?.debtorName,
+    operation?.DebtorName,
+    operation?.creditorName,
+    operation?.CreditorName,
     operation?.Data?.purpose
   ) || 'Операция Точки';
-  const dateRaw = operation?.dateTime || operation?.bookingDateTime || operation?.operationDate || operation?.date || operation?.createdAt;
+  const dateRaw = operation?.dateTime
+    || operation?.DateTime
+    || operation?.bookingDateTime
+    || operation?.BookingDateTime
+    || operation?.valueDateTime
+    || operation?.ValueDateTime
+    || operation?.transactionDate
+    || operation?.TransactionDate
+    || operation?.operationDate
+    || operation?.OperationDate
+    || operation?.operationDateTime
+    || operation?.OperationDateTime
+    || operation?.documentDate
+    || operation?.DocumentDate
+    || operation?.date
+    || operation?.Date
+    || operation?.createdAt
+    || operation?.CreatedAt;
   const date = dateRaw ? new Date(dateRaw) : new Date();
-  const accountId = String(operation?.accountId || operation?.AccountId || fallbackAccountId || '');
+  const accountId = String(
+    operation?.accountId
+    || operation?.AccountId
+    || operation?.Account?.Identification
+    || operation?.Account?.accountId
+    || operation?.account?.identification
+    || operation?.account?.accountId
+    || operation?.DebtorAccount?.Identification
+    || operation?.CreditorAccount?.Identification
+    || fallbackAccountId
+    || ''
+  );
   const cardMask = detectCardMask(json);
   const isExpense = signedAmount < 0;
   return {
@@ -3552,7 +3704,18 @@ function normalizeTochkaOperation(operation: any, fallbackAccountId = '') {
     direction: isExpense ? 'expense' : 'income',
     category: isExpense ? classifyExpenseCategory(description) : 'Доходы',
     description,
-    counterparty: getTochkaText(operation?.counterpartyName, operation?.Counterparty?.name, operation?.merchantName),
+    counterparty: getTochkaText(
+      operation?.counterpartyName,
+      operation?.CounterpartyName,
+      operation?.Counterparty?.name,
+      operation?.Counterparty?.Name,
+      operation?.counterparty?.name,
+      operation?.merchantName,
+      operation?.MerchantName,
+      operation?.MerchantDetails?.MerchantName,
+      operation?.debtorName,
+      operation?.creditorName
+    ),
   };
 }
 
@@ -3585,7 +3748,7 @@ async function fetchTochkaOperations(token: string, customerCode: string, accoun
   ];
 
   const errors: any[] = [];
-  const normalizeRows = (raw: any) => normalizeTochkaList(raw)
+  const normalizeRows = (raw: any) => extractTochkaOperationRows(raw)
     .map((item: any) => normalizeTochkaOperation(item, accountId))
     .filter((item: any) => Number(item.absAmount) > 0);
   const getStatementIds = (raw: any) => {
@@ -3609,9 +3772,13 @@ async function fetchTochkaOperations(token: string, customerCode: string, accoun
     ...getResponseLinks(raw),
     ...getStatementIds(raw).flatMap(id => [
       `${TOCHKA_API}/open-banking/v1.0/accounts/${encodedAccount}/statements/${encodeURIComponent(id)}`,
+      `${TOCHKA_API}/open-banking/v1.0/accounts/${encodedAccount}/statements/${encodeURIComponent(id)}/transactions`,
+      `${TOCHKA_API}/open-banking/v1.0/accounts/${encodedAccount}/statements/${encodeURIComponent(id)}/operations`,
       `${TOCHKA_API}/open-banking/v1.0/statements/${encodeURIComponent(id)}`,
+      `${TOCHKA_API}/open-banking/v1.0/statements/${encodeURIComponent(id)}/transactions`,
+      `${TOCHKA_API}/open-banking/v1.0/statements/${encodeURIComponent(id)}/operations`,
     ]),
-  ])).slice(0, 10);
+  ])).slice(0, 16);
   const fetchStatementRows = async (raw: any, source: string) => {
     const directRows = normalizeRows(raw);
     if (directRows.length) return { rows: directRows, source };
@@ -3658,7 +3825,11 @@ async function fetchTochkaOperations(token: string, customerCode: string, accoun
   if (cachedStatementId) {
     const cachedUrls = [
       `${TOCHKA_API}/open-banking/v1.0/accounts/${encodedAccount}/statements/${encodeURIComponent(cachedStatementId)}`,
+      `${TOCHKA_API}/open-banking/v1.0/accounts/${encodedAccount}/statements/${encodeURIComponent(cachedStatementId)}/transactions`,
+      `${TOCHKA_API}/open-banking/v1.0/accounts/${encodedAccount}/statements/${encodeURIComponent(cachedStatementId)}/operations`,
       `${TOCHKA_API}/open-banking/v1.0/statements/${encodeURIComponent(cachedStatementId)}`,
+      `${TOCHKA_API}/open-banking/v1.0/statements/${encodeURIComponent(cachedStatementId)}/transactions`,
+      `${TOCHKA_API}/open-banking/v1.0/statements/${encodeURIComponent(cachedStatementId)}/operations`,
     ];
     for (const cachedUrl of cachedUrls) {
       try {
@@ -3697,15 +3868,22 @@ async function fetchTochkaOperations(token: string, customerCode: string, accoun
     }
   }
 
+  const fromDateTime = `${dateFrom}T00:00:00+03:00`;
+  const toDateTime = `${dateTo}T23:59:59+03:00`;
   const statementBodies = [
     { Data: { Statement: { accountId, customerCode, dateFrom, dateTo } } },
     { Data: { Statement: { accountId, customerCode, from: dateFrom, to: dateTo } } },
     { Data: { Statement: { accountId, customerCode, startDate: dateFrom, endDate: dateTo } } },
+    { Data: { Statement: { accountId, customerCode, fromBookingDateTime: fromDateTime, toBookingDateTime: toDateTime } } },
+    { Data: { Statement: { AccountId: accountId, CustomerCode: customerCode, FromBookingDateTime: fromDateTime, ToBookingDateTime: toDateTime } } },
+    { Data: { AccountId: accountId, CustomerCode: customerCode, FromBookingDateTime: fromDateTime, ToBookingDateTime: toDateTime } },
     { Data: { customerCode, accountId, dateFrom, dateTo } },
     { Data: { customerCode, accountId, from: dateFrom, to: dateTo } },
     { Data: { customerCode, accountId, startDate: dateFrom, endDate: dateTo } },
+    { Data: { customerCode, accountId, fromBookingDateTime: fromDateTime, toBookingDateTime: toDateTime } },
     { Data: { customerCode, accountId, statementPeriod: { from: dateFrom, to: dateTo } } },
     { Data: { customerCode, accountId, period: { dateFrom, dateTo } } },
+    { customerCode, accountId, fromBookingDateTime: fromDateTime, toBookingDateTime: toDateTime },
     { customerCode, accountId, dateFrom, dateTo },
   ];
   const statementUrls = [
@@ -3791,7 +3969,7 @@ async function fetchTochkaCardOperations(token: string, customerCode: string, da
 
   const operations: any[] = [];
   const uniqueCards = Array.from(new Map(foundCards.map(card => [`${card.id}-${card.mask}`, card])).values());
-  const normalizeCardRows = (raw: any, card: { id: string; mask: string; label: string }) => normalizeTochkaList(raw)
+  const normalizeCardRows = (raw: any, card: { id: string; mask: string; label: string }) => extractTochkaOperationRows(raw)
     .map((item: any) => {
       const row = normalizeTochkaOperation(item, `card:${card.mask}`);
       return {
