@@ -3052,6 +3052,10 @@ function buildTochkaCacheId(...parts: string[]) {
     .replace(/=+$/g, '');
 }
 
+function wait(ms: number) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 async function readTochkaStatementCache(customerCode: string, accountId: string, dateFrom: string, dateTo: string) {
   const id = buildTochkaCacheId(customerCode, accountId, dateFrom, dateTo);
   if (adminDb) {
@@ -3792,29 +3796,34 @@ async function fetchTochkaOperations(token: string, customerCode: string, accoun
       });
     }
     const followUrls = buildStatementFollowUrls(raw);
-    for (const followUrl of followUrls) {
-      try {
-        const followResponse = await axios.get(followUrl, { headers, params, timeout: 20000 });
-        const rows = normalizeRows(followResponse.data);
-        if (rows.length) {
-          await writeTochkaStatementCache(customerCode, accountId, dateFrom, dateTo, {
-            statementId: getTochkaStatementId(followResponse.data) || statementId || '',
-            status: getTochkaStatementStatus(followResponse.data) || 'Ready',
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      if (attempt > 0 && statementId) await wait(5500);
+      for (const followUrl of followUrls) {
+        try {
+          const followResponse = await axios.get(followUrl, { headers, params, timeout: 20000 });
+          const rows = normalizeRows(followResponse.data);
+          if (rows.length) {
+            await writeTochkaStatementCache(customerCode, accountId, dateFrom, dateTo, {
+              statementId: getTochkaStatementId(followResponse.data) || statementId || '',
+              status: getTochkaStatementStatus(followResponse.data) || 'Ready',
+              source: `statement_link:${followUrl}`,
+            });
+            return { rows, source: `statement_link:${followUrl}` };
+          }
+          const followStatus = getTochkaStatementStatus(followResponse.data);
+          errors.push({
             source: `statement_link:${followUrl}`,
+            status: followResponse.status,
+            message: followStatus
+              ? `Выписка в статусе ${followStatus}, операций пока нет`
+              : 'Выписка создана, но строк операций в ответе нет',
           });
-          return { rows, source: `statement_link:${followUrl}` };
+        } catch (followError: any) {
+          errors.push({ source: `statement_link:${followUrl}`, status: followError?.response?.status || null, message: getTochkaErrorMessage(followError) });
         }
-        const followStatus = getTochkaStatementStatus(followResponse.data);
-        errors.push({
-          source: `statement_link:${followUrl}`,
-          status: followResponse.status,
-          message: followStatus
-            ? `Выписка в статусе ${followStatus}, операций пока нет`
-            : 'Выписка создана, но строк операций в ответе нет',
-        });
-      } catch (followError: any) {
-        errors.push({ source: `statement_link:${followUrl}`, status: followError?.response?.status || null, message: getTochkaErrorMessage(followError) });
       }
+      const lastStatus = errors.slice().reverse().find(item => String(item?.message || '').includes('Выписка в статусе'))?.message || '';
+      if (!statementId || (!/Created|Processing|Pending/i.test(lastStatus) && attempt > 0)) break;
     }
     if (status) errors.push({ source, status: 200, message: `Выписка в статусе ${status}, операции появятся в Ready` });
     return { rows: [], source: '' };
@@ -3871,6 +3880,7 @@ async function fetchTochkaOperations(token: string, customerCode: string, accoun
   const fromDateTime = `${dateFrom}T00:00:00+03:00`;
   const toDateTime = `${dateTo}T23:59:59+03:00`;
   const statementBodies = [
+    { Data: { Statement: { accountId, customerCode, startDateTime: dateFrom, endDateTime: dateTo } } },
     { Data: { Statement: { accountId, customerCode, dateFrom, dateTo } } },
     { Data: { Statement: { accountId, customerCode, from: dateFrom, to: dateTo } } },
     { Data: { Statement: { accountId, customerCode, startDate: dateFrom, endDate: dateTo } } },
