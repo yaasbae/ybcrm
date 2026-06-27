@@ -119,6 +119,8 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
   const [tochkaLoading, setTochkaLoading] = useState(false);
   const [tochkaError, setTochkaError] = useState('');
   const [tochkaRefreshKey, setTochkaRefreshKey] = useState(0);
+  const [tochkaPeriod, setTochkaPeriod] = useState<'month' | 'quarter' | 'halfYear' | 'year'>('month');
+  const [expandedExpenseCategories, setExpandedExpenseCategories] = useState<Record<string, boolean>>({});
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [newExpense, setNewExpense] = useState({
     category: 'other' as const,
@@ -175,7 +177,7 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
         const token = await auth.currentUser?.getIdToken(tochkaRefreshKey > 0);
         if (!token) throw new Error('Нужно войти в аккаунт владельца');
         const monthKey = `${currentDate.getFullYear()}-${String(currentDate.getMonth() + 1).padStart(2, '0')}`;
-        const response = await fetch(`/api/tochka/finance-summary?month=${monthKey}&refresh=${tochkaRefreshKey}`, {
+        const response = await fetch(`/api/tochka/finance-summary?month=${monthKey}&period=${tochkaPeriod}&refresh=${tochkaRefreshKey}`, {
           headers: { Authorization: `Bearer ${token}` },
           cache: 'no-store',
         });
@@ -192,7 +194,7 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
     return () => {
       cancelled = true;
     };
-  }, [canViewFinance, currentDate, tochkaRefreshKey]);
+  }, [canViewFinance, currentDate, tochkaPeriod, tochkaRefreshKey]);
 
   const handleAddExpense = async () => {
     if (!newExpense.amount || !newExpense.description) return;
@@ -334,6 +336,27 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
   const metricCardClass = "rounded-[10px] border border-[#E6E9EF] bg-white p-5 shadow-[0_8px_22px_rgba(31,41,55,0.03)]";
   const tochkaIncomingTotal = (tochkaSummary?.incomingSources || []).reduce((sum, source) => sum + (Number(source.amount) || 0), 0);
   const tochkaCardsExpenseTotal = (tochkaSummary?.cards || []).reduce((sum, card) => sum + (Number(card.expenses) || 0), 0);
+  const tochkaPeriodOptions = [
+    { key: 'month' as const, label: 'Месяц' },
+    { key: 'quarter' as const, label: 'Квартал' },
+    { key: 'halfYear' as const, label: 'Полгода' },
+    { key: 'year' as const, label: 'Год' },
+  ];
+  const expenseOperationsByCategory = useMemo(() => {
+    const map = new Map<string, NonNullable<TochkaFinanceSummary['operations']>>();
+    (tochkaSummary?.operations || [])
+      .filter(operation => operation.direction === 'expense')
+      .forEach(operation => {
+        const key = operation.category || 'Другое';
+        const rows = map.get(key) || [];
+        rows.push(operation);
+        map.set(key, rows);
+      });
+    return map;
+  }, [tochkaSummary?.operations]);
+  const incomeOperations = useMemo(() => (
+    (tochkaSummary?.operations || []).filter(operation => operation.direction === 'income')
+  ), [tochkaSummary?.operations]);
 
   if (!canViewFinance) {
     return (
@@ -487,28 +510,100 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
           </div>
         </div>
 
-        <div className="grid grid-cols-1 gap-3 xl:grid-cols-[0.8fr_1.2fr]">
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-[10px] border border-[#E6E9EF] bg-white p-3 shadow-[0_8px_22px_rgba(31,41,55,0.03)]">
+          <div>
+            <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-[#9CA3AF]">Период выписки</p>
+            <p className="mt-1 text-[13px] font-semibold text-[#1F2937]">Фильтр для расхода, прихода и операций Точки</p>
+          </div>
+          <div className="flex rounded-[8px] border border-[#E6E9EF] bg-[#F6F7F9] p-1">
+            {tochkaPeriodOptions.map(option => (
+              <button
+                key={option.key}
+                type="button"
+                onClick={() => setTochkaPeriod(option.key)}
+                className={cn(
+                  "h-9 rounded-[7px] px-3 text-[12px] font-bold transition-colors",
+                  tochkaPeriod === option.key
+                    ? "bg-[#1F2937] text-white shadow-[0_6px_16px_rgba(31,41,55,0.12)]"
+                    : "text-[#6B7280] hover:bg-white"
+                )}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 gap-3 xl:grid-cols-[0.95fr_1.05fr]">
           <div className="rounded-[10px] border border-[#E6E9EF] bg-white p-5 shadow-[0_8px_22px_rgba(31,41,55,0.03)]">
             <div className="flex items-start justify-between gap-3">
               <div>
-                <h3 className="text-[13px] font-semibold uppercase tracking-[0.16em] text-[#1F2937]">Куда ушли деньги</h3>
-                <p className="mt-1 text-[12px] font-medium text-[#6B7280]">Категории расходов по выписке Точки</p>
+                <h3 className="text-[13px] font-semibold uppercase tracking-[0.16em] text-[#1F2937]">Расход</h3>
+                <p className="mt-1 text-[12px] font-medium text-[#6B7280]">Раскрывай категорию, чтобы увидеть каждую операцию и дату</p>
               </div>
               <span className="text-[18px] font-black text-red-500">{formatCurrency(tochkaSummary?.actualExpenses || 0)}</span>
             </div>
             <div className="mt-4 space-y-2">
               {(tochkaSummary?.expenseCategories || []).map(category => (
-                <div key={category.category} className="rounded-[8px] border border-[#E6E9EF] bg-[#F6F7F9] p-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <p className="text-[13px] font-bold text-[#1F2937]">{category.category}</p>
-                    <p className="text-[13px] font-black text-red-500">{formatCurrency(category.amount)}</p>
-                  </div>
-                  <p className="mt-1 text-[11px] font-semibold text-[#9CA3AF]">{category.count} операций</p>
+                <div key={category.category} className="overflow-hidden rounded-[8px] border border-[#E6E9EF] bg-[#F6F7F9]">
+                  <button
+                    type="button"
+                    onClick={() => setExpandedExpenseCategories(prev => ({ ...prev, [category.category]: !prev[category.category] }))}
+                    className="flex w-full items-center justify-between gap-3 p-3 text-left"
+                    aria-expanded={!!expandedExpenseCategories[category.category]}
+                  >
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <ChevronRight
+                          size={15}
+                          className={cn(
+                            "shrink-0 text-[#6B7280] transition-transform",
+                            expandedExpenseCategories[category.category] && "rotate-90"
+                          )}
+                        />
+                        <p className="truncate text-[13px] font-bold text-[#1F2937]">{category.category}</p>
+                      </div>
+                      <p className="mt-1 pl-6 text-[11px] font-semibold text-[#9CA3AF]">{category.count} операций</p>
+                    </div>
+                    <p className="shrink-0 text-[13px] font-black text-red-500">{formatCurrency(category.amount)}</p>
+                  </button>
+
+                  <AnimatePresence initial={false}>
+                    {expandedExpenseCategories[category.category] && (
+                      <motion.div
+                        initial={{ height: 0, opacity: 0 }}
+                        animate={{ height: 'auto', opacity: 1 }}
+                        exit={{ height: 0, opacity: 0 }}
+                        transition={{ duration: 0.18 }}
+                        className="border-t border-[#E6E9EF] bg-white"
+                      >
+                        <div className="divide-y divide-[#E6E9EF]">
+                          {(expenseOperationsByCategory.get(category.category) || []).map(operation => (
+                            <div key={operation.id} className="grid grid-cols-[76px_1fr_auto] items-start gap-3 px-3 py-3">
+                              <div className="text-[11px] font-bold text-[#9CA3AF]">
+                                {new Date(operation.date).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' })}
+                              </div>
+                              <div className="min-w-0">
+                                <p className="truncate text-[12px] font-bold text-[#1F2937]" title={operation.description}>
+                                  {operation.description || operation.counterparty || 'Операция'}
+                                </p>
+                                <p className="mt-1 truncate text-[11px] font-semibold text-[#6B7280]">
+                                  {operation.cardMask ? `карта *${operation.cardMask}` : operation.maskedAccountId}
+                                  {operation.counterparty ? ` · ${operation.counterparty}` : ''}
+                                </p>
+                              </div>
+                              <p className="text-right text-[12px] font-black text-red-500">-{formatCurrency(operation.absAmount)}</p>
+                            </div>
+                          ))}
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
                 </div>
               ))}
               {!tochkaSummary?.expenseCategories?.length && (
                 <div className="rounded-[8px] border border-dashed border-[#E6E9EF] p-4 text-[12px] font-semibold leading-5 text-[#6B7280]">
-                  Расходных операций за месяц пока нет в ответе API. Баланс уже читается, следующий шаг — включить/проверить права на выписки и операции.
+                  Расходных операций за выбранный период пока нет в ответе API.
                 </div>
               )}
             </div>
@@ -517,10 +612,10 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
           <div className="overflow-hidden rounded-[10px] border border-[#E6E9EF] bg-white shadow-[0_8px_22px_rgba(31,41,55,0.03)]">
             <div className="flex items-center justify-between border-b border-[#E6E9EF] px-5 py-4">
               <div>
-                <h3 className="text-[13px] font-semibold uppercase tracking-[0.16em] text-[#1F2937]">Детальный отчет операций</h3>
-                <p className="mt-1 text-[12px] font-medium text-[#6B7280]">Дата, счет/карта, категория, контрагент и сумма</p>
+                <h3 className="text-[13px] font-semibold uppercase tracking-[0.16em] text-[#1F2937]">Приход</h3>
+                <p className="mt-1 text-[12px] font-medium text-[#6B7280]">Детальный отчет поступлений: дата, источник, описание и сумма</p>
               </div>
-              <span className="text-[11px] font-bold uppercase tracking-[0.14em] text-[#9CA3AF]">{tochkaSummary?.operations?.length || 0} операций</span>
+              <span className="text-[11px] font-bold uppercase tracking-[0.14em] text-[#9CA3AF]">{incomeOperations.length} операций</span>
             </div>
             <div className="max-h-[420px] overflow-auto">
               <table className="w-full min-w-[900px] table-fixed">
@@ -534,7 +629,7 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[#E6E9EF]">
-                  {(tochkaSummary?.operations || []).map(operation => (
+                  {incomeOperations.map(operation => (
                     <tr key={operation.id} className="hover:bg-[#F6F7F9]">
                       <td className="px-4 py-3 text-[12px] font-bold text-[#6B7280]">
                         {new Date(operation.date).toLocaleDateString('ru-RU')}
@@ -546,15 +641,15 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
                       <td className="truncate px-4 py-3 text-[12px] font-semibold text-[#1F2937]" title={operation.description}>
                         {operation.description}
                       </td>
-                      <td className={cn("px-4 py-3 text-right text-[12px] font-black", operation.direction === 'expense' ? "text-red-500" : "text-emerald-600")}>
-                        {operation.direction === 'expense' ? '-' : '+'}{formatCurrency(operation.absAmount)}
+                      <td className="px-4 py-3 text-right text-[12px] font-black text-emerald-600">
+                        +{formatCurrency(operation.absAmount)}
                       </td>
                     </tr>
                   ))}
-                  {!tochkaSummary?.operations?.length && (
+                  {!incomeOperations.length && (
                     <tr>
                       <td colSpan={5} className="px-4 py-8 text-center text-[13px] font-semibold text-[#6B7280]">
-                        Операций пока нет. {tochkaSummary?.operationFetches?.[0]?.errors?.[0]?.message || ''}
+                        Приходных операций за выбранный период пока нет. {tochkaSummary?.operationFetches?.[0]?.errors?.[0]?.message || ''}
                       </td>
                     </tr>
                   )}

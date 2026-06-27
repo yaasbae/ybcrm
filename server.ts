@@ -5019,11 +5019,28 @@ app.get('/api/tochka/finance-summary', async (req, res) => {
 
     const now = new Date();
     const monthKey = String(req.query.month || `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`);
+    const period = ['month', 'quarter', 'halfYear', 'year'].includes(String(req.query.period))
+      ? String(req.query.period)
+      : 'month';
     const [yearPart, monthPart] = monthKey.split('-').map(Number);
-    const monthStart = new Date(yearPart || now.getFullYear(), (monthPart || now.getMonth() + 1) - 1, 1);
-    const monthEnd = new Date(yearPart || now.getFullYear(), monthPart || now.getMonth() + 1, 0);
-    const dateFrom = monthStart.toISOString().slice(0, 10);
-    const dateTo = monthEnd.toISOString().slice(0, 10);
+    const selectedYear = yearPart || now.getFullYear();
+    const selectedMonthIndex = Math.max(0, Math.min(11, (monthPart || now.getMonth() + 1) - 1));
+    let rangeStartMonth = selectedMonthIndex;
+    let rangeEndMonth = selectedMonthIndex;
+    if (period === 'quarter') {
+      rangeStartMonth = Math.floor(selectedMonthIndex / 3) * 3;
+      rangeEndMonth = rangeStartMonth + 2;
+    } else if (period === 'halfYear') {
+      rangeStartMonth = selectedMonthIndex < 6 ? 0 : 6;
+      rangeEndMonth = rangeStartMonth + 5;
+    } else if (period === 'year') {
+      rangeStartMonth = 0;
+      rangeEndMonth = 11;
+    }
+    const rangeStart = new Date(selectedYear, rangeStartMonth, 1);
+    const rangeEnd = new Date(selectedYear, rangeEndMonth + 1, 0);
+    const dateFrom = rangeStart.toISOString().slice(0, 10);
+    const dateTo = rangeEnd.toISOString().slice(0, 10);
     const monthOrders = await loadOrdersForFinanceMonth(monthKey).catch(() => []);
     const sourceMap: Record<string, { key: string; label: string; amount: number; count: number }> = {
       qr: { key: 'qr', label: 'QR / СБП', amount: 0, count: 0 },
@@ -5103,6 +5120,9 @@ app.get('/api/tochka/finance-summary', async (req, res) => {
       customerCode,
       effectiveCustomerCode,
       monthKey,
+      period,
+      dateFrom,
+      dateTo,
       generatedAt: new Date().toISOString(),
       totalBalance,
       totalExpected,
@@ -5113,7 +5133,7 @@ app.get('/api/tochka/finance-summary', async (req, res) => {
       accountExpenses: Array.from(accountExpenseMap.values()),
       cards: Array.from(cardExpenseMap.values()),
       expenseCategories: Array.from(expenseCategoryMap.values()).sort((a, b) => b.amount - a.amount),
-      operations: operations.slice(0, 100),
+      operations: operations.slice(0, 1000),
       cardExpenses: expenses.filter((operation: any) => operation.cardMask),
       operationFetches: operationFetches.map(item => ({
         account: item.account.maskedAccountId,
