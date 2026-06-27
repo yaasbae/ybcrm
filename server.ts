@@ -3557,15 +3557,21 @@ function getTochkaText(...values: any[]) {
 function classifyExpenseCategory(text: string) {
   const raw = String(text || '').toLowerCase();
   const checks: Array<[string, string[]]> = [
-    ['Продукты / закупки', ['пятероч', 'магнит', 'перекресток', 'вкусвилл', 'самокат', 'лавка', 'ozon fresh', 'продукт', 'food', 'metro', 'spar', 'lenta']],
-    ['Топливо', ['азс', 'лукойл', 'lukoil', 'газпром', 'gpn', 'роснефть', 'татнефть', 'tatneft', 'топлив', 'fuel', 'benz']],
-    ['Маркетинг', ['instagram', 'vk ', 'яндекс директ', 'direct', 'реклама', 'target', 'meta', 'google ads', 'авито']],
+    ['ФОТ / наличные', ['выдача наличных', 'выдача наличных денег', 'atm ', 'банкомат', 'cash withdrawal', 'cash advance', 'снятие налич']],
+    ['Топливо', ['азс', 'azs', 'лукойл', 'lukoil', 'газпром', 'gazprom', 'gpn', 'роснефть', 'rosneft', 'татнефть', 'tatneft', 'ирбис', 'irbis', 'таиф', 'taif', 'glushko', 'глушко', 'топлив', 'fuel', 'benz', 'бензин']],
+    ['Продукты', ['пятероч', 'pyateroch', 'пятёроч', 'верный', 'verny', 'магнит', 'magnit', 'перекресток', 'perekrestok', 'вкусвилл', 'vkusvill', 'самокат', 'samokat', 'lavka', 'лавка', 'ozon fresh', 'доставка из пятероч', 'dostavka iz pyateroch', 'продукт', 'produkty', 'produktovyj', 'food', 'metro', 'spar', 'лента', 'lenta', 'магазин 4087', 'magazin 4087', 'gorizont']],
+    ['Кафе / питание', ['кафе', 'kafe', 'coffee', 'skuratov', 'столовая', 'stolovaya', 'pitpol', 'rest ', 'restaurant', 'turgaj', 'шашлык', 'shashlyk', 'myaso', 'пирог', 'pirog', 'gruzinskie istorii', 'татарской кухни', 'tatarskoj kukhni', 'zhar svezhar']],
+    ['Парковки / дороги', ['parkomatica', 'парков', 'parking', 'платн дор', 'platn dor', 'оплата пр по платн', 'spp 250']],
+    ['Транспорт', ['yandex*', 'яндекс', 'drive', 'такси', 'taxi', 'каршеринг', 'carsharing']],
+    ['Покупки / маркетплейсы', ['wildberries', 'wb', 'ozon', 'gold apple', 'gloria jeans', 'lemanapro', 'lemana', 'avito', 'авито', 'smile park', 'almaz sinema', 'kino', 'кино']],
+    ['Сервисы / подписки', ['ddx fitness', 'fitness', 'telegram', 'boosty', 'yandex plus', 'яндекс плюс', 'prodmaus', 'prodamus', 'gosuslugi', 'госуслуг', 'md.*gosuslugi', 'sellego']],
+    ['Маркетинг', ['instagram', 'vk ', 'яндекс директ', 'direct', 'реклама', 'target', 'meta', 'google ads']],
     ['Аренда', ['аренд', 'rent']],
     ['ФОТ', ['зарплат', 'аванс', 'сотрудник', 'salary', 'самозанят']],
     ['Логистика', ['сдэк', 'cdek', 'почта', 'boxberry', 'достав', 'курьер']],
-    ['Производство / материалы', ['ткан', 'фурнитур', 'типограф', 'печать', 'материал', 'шелкограф', 'лекал']],
+    ['Производство / материалы', ['ткан', 'фурнитур', 'типограф', 'печать', 'материал', 'шелкограф', 'лекал', 'vellteks', 'iris', 'ирис']],
     ['Налоги', ['налог', 'фнс', 'казнач', 'пенсион', 'страхов']],
-    ['Банк / комиссии', ['комисс', 'обслуживание счета', 'банк точка', 'эквайринг']],
+    ['Банк / комиссии', ['комисс', 'обслуживание счета', 'банк точка', 'эквайринг', 'bank fee']],
     ['Переводы', ['перевод', 'sbp', 'сбп']],
   ];
   return checks.find(([, keywords]) => keywords.some(keyword => raw.includes(keyword)))?.[0] || 'Другое';
