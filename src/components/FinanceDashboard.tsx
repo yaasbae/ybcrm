@@ -68,6 +68,7 @@ interface Expense {
 
 const monthNames = ['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'];
 const FINANCE_OWNER_EMAIL = 'ndtiger86@gmail.com';
+const TOCHKA_EXPENSE_TAGS_STORAGE_KEY = 'ybcrm:tochka-expense-tags';
 
 const manualReturnOperations = [
   { date: new Date(2026, 0, 26), amount: 17900 },
@@ -121,6 +122,7 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
   const [tochkaRefreshKey, setTochkaRefreshKey] = useState(0);
   const [tochkaPeriod, setTochkaPeriod] = useState<'month' | 'quarter' | 'halfYear' | 'year'>('month');
   const [expandedExpenseCategories, setExpandedExpenseCategories] = useState<Record<string, boolean>>({});
+  const [expenseTags, setExpenseTags] = useState<Record<string, string>>({});
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [newExpense, setNewExpense] = useState({
     category: 'other' as const,
@@ -131,6 +133,23 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
 
   const [currentDate, setCurrentDate] = useState(new Date());
   const canViewFinance = String(userEmail || '').toLowerCase() === FINANCE_OWNER_EMAIL;
+
+  useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem(TOCHKA_EXPENSE_TAGS_STORAGE_KEY);
+      if (saved) setExpenseTags(JSON.parse(saved));
+    } catch (error) {
+      console.warn('Не удалось прочитать метки расходов', error);
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(TOCHKA_EXPENSE_TAGS_STORAGE_KEY, JSON.stringify(expenseTags));
+    } catch (error) {
+      console.warn('Не удалось сохранить метки расходов', error);
+    }
+  }, [expenseTags]);
 
   useEffect(() => {
     // Fetch Expenses
@@ -357,6 +376,8 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
   const incomeOperations = useMemo(() => (
     (tochkaSummary?.operations || []).filter(operation => operation.direction === 'income')
   ), [tochkaSummary?.operations]);
+  const incomeOperationsTotal = incomeOperations.reduce((sum, operation) => sum + (Number(operation.absAmount) || 0), 0);
+  const currentMonthKey = `${currentDate.getFullYear()}-${String(currentDate.getMonth() + 1).padStart(2, '0')}`;
 
   if (!canViewFinance) {
     return (
@@ -513,24 +534,44 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-[10px] border border-[#E6E9EF] bg-white p-3 shadow-[0_8px_22px_rgba(31,41,55,0.03)]">
           <div>
             <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-[#9CA3AF]">Период выписки</p>
-            <p className="mt-1 text-[13px] font-semibold text-[#1F2937]">Фильтр для расхода, прихода и операций Точки</p>
+            <p className="mt-1 text-[13px] font-semibold text-[#1F2937]">Сначала выбери месяц, затем при необходимости расширь период</p>
           </div>
-          <div className="flex rounded-[8px] border border-[#E6E9EF] bg-[#F6F7F9] p-1">
-            {tochkaPeriodOptions.map(option => (
-              <button
-                key={option.key}
-                type="button"
-                onClick={() => setTochkaPeriod(option.key)}
-                className={cn(
-                  "h-9 rounded-[7px] px-3 text-[12px] font-bold transition-colors",
-                  tochkaPeriod === option.key
-                    ? "bg-[#1F2937] text-white shadow-[0_6px_16px_rgba(31,41,55,0.12)]"
-                    : "text-[#6B7280] hover:bg-white"
-                )}
-              >
-                {option.label}
-              </button>
-            ))}
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              value={currentMonthKey}
+              onChange={(event) => {
+                const [year, month] = event.target.value.split('-').map(Number);
+                setCurrentDate(new Date(year, month - 1, 1));
+                setTochkaPeriod('month');
+              }}
+              className="h-11 rounded-[8px] border border-[#E6E9EF] bg-white px-3 text-[13px] font-bold text-[#1F2937] outline-none transition-colors hover:bg-[#F6F7F9] focus:border-[#7D7DE6]"
+            >
+              {monthNames.map((month, index) => {
+                const value = `${currentDate.getFullYear()}-${String(index + 1).padStart(2, '0')}`;
+                return (
+                  <option key={value} value={value}>
+                    {month} {currentDate.getFullYear()}
+                  </option>
+                );
+              })}
+            </select>
+            <div className="flex rounded-[8px] border border-[#E6E9EF] bg-[#F6F7F9] p-1">
+              {tochkaPeriodOptions.map(option => (
+                <button
+                  key={option.key}
+                  type="button"
+                  onClick={() => setTochkaPeriod(option.key)}
+                  className={cn(
+                    "h-9 rounded-[7px] px-3 text-[12px] font-bold transition-colors",
+                    tochkaPeriod === option.key
+                      ? "bg-[#1F2937] text-white shadow-[0_6px_16px_rgba(31,41,55,0.12)]"
+                      : "text-[#6B7280] hover:bg-white"
+                  )}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
 
@@ -579,20 +620,31 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
                       >
                         <div className="divide-y divide-[#E6E9EF]">
                           {(expenseOperationsByCategory.get(category.category) || []).map(operation => (
-                            <div key={operation.id} className="grid grid-cols-[76px_1fr_auto] items-start gap-3 px-3 py-3">
-                              <div className="text-[11px] font-bold text-[#9CA3AF]">
-                                {new Date(operation.date).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' })}
+                            <div key={operation.id} className="px-3 py-3">
+                              <div className="grid grid-cols-[76px_1fr_auto] items-start gap-3">
+                                <div className="text-[11px] font-bold text-[#9CA3AF]">
+                                  {new Date(operation.date).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' })}
+                                </div>
+                                <div className="min-w-0">
+                                  <p className="truncate text-[12px] font-bold text-[#1F2937]" title={operation.description}>
+                                    {operation.description || operation.counterparty || 'Операция'}
+                                  </p>
+                                  <p className="mt-1 truncate text-[11px] font-semibold text-[#6B7280]">
+                                    {operation.cardMask ? `карта *${operation.cardMask}` : operation.maskedAccountId}
+                                    {operation.counterparty ? ` · ${operation.counterparty}` : ''}
+                                  </p>
+                                </div>
+                                <p className="text-right text-[12px] font-black text-red-500">-{formatCurrency(operation.absAmount)}</p>
                               </div>
-                              <div className="min-w-0">
-                                <p className="truncate text-[12px] font-bold text-[#1F2937]" title={operation.description}>
-                                  {operation.description || operation.counterparty || 'Операция'}
-                                </p>
-                                <p className="mt-1 truncate text-[11px] font-semibold text-[#6B7280]">
-                                  {operation.cardMask ? `карта *${operation.cardMask}` : operation.maskedAccountId}
-                                  {operation.counterparty ? ` · ${operation.counterparty}` : ''}
-                                </p>
+                              <div className="mt-3 grid grid-cols-[76px_1fr] items-center gap-3">
+                                <span className="text-[10px] font-bold uppercase tracking-[0.14em] text-[#9CA3AF]">Метка</span>
+                                <input
+                                  value={expenseTags[operation.id] || ''}
+                                  onChange={(event) => setExpenseTags(prev => ({ ...prev, [operation.id]: event.target.value }))}
+                                  placeholder="например: Аптека, топливо, продукты"
+                                  className="h-9 rounded-[8px] border border-[#E6E9EF] bg-[#F6F7F9] px-3 text-[12px] font-semibold text-[#1F2937] outline-none transition-colors placeholder:text-[#9CA3AF] focus:border-[#7D7DE6] focus:bg-white"
+                                />
                               </div>
-                              <p className="text-right text-[12px] font-black text-red-500">-{formatCurrency(operation.absAmount)}</p>
                             </div>
                           ))}
                         </div>
@@ -610,12 +662,15 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
           </div>
 
           <div className="overflow-hidden rounded-[10px] border border-[#E6E9EF] bg-white shadow-[0_8px_22px_rgba(31,41,55,0.03)]">
-            <div className="flex items-center justify-between border-b border-[#E6E9EF] px-5 py-4">
+            <div className="flex items-center justify-between gap-4 border-b border-[#E6E9EF] px-5 py-4">
               <div>
                 <h3 className="text-[13px] font-semibold uppercase tracking-[0.16em] text-[#1F2937]">Приход</h3>
                 <p className="mt-1 text-[12px] font-medium text-[#6B7280]">Детальный отчет поступлений: дата, источник, описание и сумма</p>
               </div>
-              <span className="text-[11px] font-bold uppercase tracking-[0.14em] text-[#9CA3AF]">{incomeOperations.length} операций</span>
+              <div className="text-right">
+                <p className="text-[18px] font-black leading-tight text-emerald-600">{formatCurrency(incomeOperationsTotal)}</p>
+                <p className="mt-1 text-[11px] font-bold uppercase tracking-[0.14em] text-[#9CA3AF]">{incomeOperations.length} операций</p>
+              </div>
             </div>
             <div className="max-h-[420px] overflow-auto">
               <table className="w-full min-w-[900px] table-fixed">
