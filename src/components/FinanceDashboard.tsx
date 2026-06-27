@@ -68,7 +68,8 @@ interface Expense {
 
 const monthNames = ['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'];
 const FINANCE_OWNER_EMAIL = 'ndtiger86@gmail.com';
-const TOCHKA_EXPENSE_TAGS_STORAGE_KEY = 'ybcrm:tochka-expense-tags';
+const TOCHKA_EXPENSE_CATEGORY_OVERRIDES_STORAGE_KEY = 'ybcrm:tochka-expense-category-overrides';
+const TOCHKA_CUSTOM_EXPENSE_CATEGORIES_STORAGE_KEY = 'ybcrm:tochka-custom-expense-categories';
 
 const manualReturnOperations = [
   { date: new Date(2026, 0, 26), amount: 17900 },
@@ -122,7 +123,9 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
   const [tochkaRefreshKey, setTochkaRefreshKey] = useState(0);
   const [tochkaPeriod, setTochkaPeriod] = useState<'month' | 'quarter' | 'halfYear' | 'year'>('month');
   const [expandedExpenseCategories, setExpandedExpenseCategories] = useState<Record<string, boolean>>({});
-  const [expenseTags, setExpenseTags] = useState<Record<string, string>>({});
+  const [expenseCategoryOverrides, setExpenseCategoryOverrides] = useState<Record<string, string>>({});
+  const [customExpenseCategories, setCustomExpenseCategories] = useState<string[]>([]);
+  const [newExpenseCategoryName, setNewExpenseCategoryName] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [newExpense, setNewExpense] = useState({
     category: 'other' as const,
@@ -136,20 +139,30 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
 
   useEffect(() => {
     try {
-      const saved = window.localStorage.getItem(TOCHKA_EXPENSE_TAGS_STORAGE_KEY);
-      if (saved) setExpenseTags(JSON.parse(saved));
+      const savedOverrides = window.localStorage.getItem(TOCHKA_EXPENSE_CATEGORY_OVERRIDES_STORAGE_KEY);
+      const savedCategories = window.localStorage.getItem(TOCHKA_CUSTOM_EXPENSE_CATEGORIES_STORAGE_KEY);
+      if (savedOverrides) setExpenseCategoryOverrides(JSON.parse(savedOverrides));
+      if (savedCategories) setCustomExpenseCategories(JSON.parse(savedCategories));
     } catch (error) {
-      console.warn('Не удалось прочитать метки расходов', error);
+      console.warn('Не удалось прочитать статьи расходов', error);
     }
   }, []);
 
   useEffect(() => {
     try {
-      window.localStorage.setItem(TOCHKA_EXPENSE_TAGS_STORAGE_KEY, JSON.stringify(expenseTags));
+      window.localStorage.setItem(TOCHKA_EXPENSE_CATEGORY_OVERRIDES_STORAGE_KEY, JSON.stringify(expenseCategoryOverrides));
     } catch (error) {
-      console.warn('Не удалось сохранить метки расходов', error);
+      console.warn('Не удалось сохранить переносы расходов', error);
     }
-  }, [expenseTags]);
+  }, [expenseCategoryOverrides]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(TOCHKA_CUSTOM_EXPENSE_CATEGORIES_STORAGE_KEY, JSON.stringify(customExpenseCategories));
+    } catch (error) {
+      console.warn('Не удалось сохранить статьи расходов', error);
+    }
+  }, [customExpenseCategories]);
 
   useEffect(() => {
     // Fetch Expenses
@@ -361,18 +374,70 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
     { key: 'halfYear' as const, label: 'Полгода' },
     { key: 'year' as const, label: 'Год' },
   ];
+  const expenseOperations = useMemo(() => (
+    (tochkaSummary?.operations || []).filter(operation => operation.direction === 'expense')
+  ), [tochkaSummary?.operations]);
+  const getEffectiveExpenseCategory = (operation: NonNullable<TochkaFinanceSummary['operations']>[number]) => (
+    expenseCategoryOverrides[operation.id] || operation.category || 'Другое'
+  );
+  const expenseCategoryOptions = useMemo(() => {
+    const categoriesSet = new Set<string>();
+    expenseOperations.forEach(operation => {
+      categoriesSet.add(getEffectiveExpenseCategory(operation));
+      if (operation.category) categoriesSet.add(operation.category);
+    });
+    customExpenseCategories.forEach(category => categoriesSet.add(category));
+    return Array.from(categoriesSet)
+      .filter(Boolean)
+      .sort((a, b) => a.localeCompare(b, 'ru'));
+  }, [expenseOperations, expenseCategoryOverrides, customExpenseCategories]);
   const expenseOperationsByCategory = useMemo(() => {
     const map = new Map<string, NonNullable<TochkaFinanceSummary['operations']>>();
-    (tochkaSummary?.operations || [])
-      .filter(operation => operation.direction === 'expense')
-      .forEach(operation => {
-        const key = operation.category || 'Другое';
-        const rows = map.get(key) || [];
-        rows.push(operation);
-        map.set(key, rows);
-      });
+    expenseOperations.forEach(operation => {
+      const key = getEffectiveExpenseCategory(operation);
+      const rows = map.get(key) || [];
+      rows.push(operation);
+      map.set(key, rows);
+    });
     return map;
-  }, [tochkaSummary?.operations]);
+  }, [expenseOperations, expenseCategoryOverrides]);
+  const expenseCategoriesForView = useMemo(() => {
+    const rows = Array.from(expenseOperationsByCategory.entries()).map(([category, operations]) => ({
+      category,
+      amount: operations.reduce((sum, operation) => sum + (Number(operation.absAmount) || 0), 0),
+      count: operations.length,
+    }));
+    customExpenseCategories.forEach(category => {
+      if (!rows.some(row => row.category === category)) {
+        rows.push({ category, amount: 0, count: 0 });
+      }
+    });
+    return rows.sort((a, b) => (b.amount - a.amount) || a.category.localeCompare(b.category, 'ru'));
+  }, [expenseOperationsByCategory, customExpenseCategories]);
+  const handleAddExpenseCategory = () => {
+    const name = newExpenseCategoryName.trim();
+    if (!name) return;
+    setCustomExpenseCategories(prev => (
+      prev.some(category => category.toLowerCase() === name.toLowerCase()) ? prev : [...prev, name]
+    ));
+    setExpandedExpenseCategories(prev => ({ ...prev, [name]: true }));
+    setNewExpenseCategoryName('');
+  };
+  const handleSetOperationCategory = (
+    operation: NonNullable<TochkaFinanceSummary['operations']>[number],
+    category: string
+  ) => {
+    const originalCategory = operation.category || 'Другое';
+    setExpenseCategoryOverrides(prev => {
+      const next = { ...prev };
+      if (!category || category === originalCategory) {
+        delete next[operation.id];
+      } else {
+        next[operation.id] = category;
+      }
+      return next;
+    });
+  };
   const incomeOperations = useMemo(() => (
     (tochkaSummary?.operations || []).filter(operation => operation.direction === 'income')
   ), [tochkaSummary?.operations]);
@@ -584,8 +649,27 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
               </div>
               <span className="text-[18px] font-black text-red-500">{formatCurrency(tochkaSummary?.actualExpenses || 0)}</span>
             </div>
+            <div className="mt-4 flex flex-col gap-2 sm:flex-row">
+              <input
+                value={newExpenseCategoryName}
+                onChange={(event) => setNewExpenseCategoryName(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') handleAddExpenseCategory();
+                }}
+                placeholder="Новая статья расхода, например: Аптека"
+                className="h-10 flex-1 rounded-[8px] border border-[#E6E9EF] bg-[#F6F7F9] px-3 text-[12px] font-semibold text-[#1F2937] outline-none transition-colors placeholder:text-[#9CA3AF] focus:border-[#7D7DE6] focus:bg-white"
+              />
+              <button
+                type="button"
+                onClick={handleAddExpenseCategory}
+                className="inline-flex h-10 items-center justify-center gap-2 rounded-[8px] bg-[#1F2937] px-4 text-[12px] font-bold text-white transition-colors hover:bg-[#111827]"
+              >
+                <Plus size={15} />
+                Добавить статью
+              </button>
+            </div>
             <div className="mt-4 space-y-2">
-              {(tochkaSummary?.expenseCategories || []).map(category => (
+              {expenseCategoriesForView.map(category => (
                 <div key={category.category} className="overflow-hidden rounded-[8px] border border-[#E6E9EF] bg-[#F6F7F9]">
                   <button
                     type="button"
@@ -636,14 +720,28 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
                                 </div>
                                 <p className="text-right text-[12px] font-black text-red-500">-{formatCurrency(operation.absAmount)}</p>
                               </div>
-                              <div className="mt-3 grid grid-cols-[76px_1fr] items-center gap-3">
-                                <span className="text-[10px] font-bold uppercase tracking-[0.14em] text-[#9CA3AF]">Метка</span>
-                                <input
-                                  value={expenseTags[operation.id] || ''}
-                                  onChange={(event) => setExpenseTags(prev => ({ ...prev, [operation.id]: event.target.value }))}
-                                  placeholder="например: Аптека, топливо, продукты"
-                                  className="h-9 rounded-[8px] border border-[#E6E9EF] bg-[#F6F7F9] px-3 text-[12px] font-semibold text-[#1F2937] outline-none transition-colors placeholder:text-[#9CA3AF] focus:border-[#7D7DE6] focus:bg-white"
-                                />
+                              <div className="mt-3 grid grid-cols-[76px_1fr_auto] items-center gap-3">
+                                <span className="text-[10px] font-bold uppercase tracking-[0.14em] text-[#9CA3AF]">Статья</span>
+                                <select
+                                  value={getEffectiveExpenseCategory(operation)}
+                                  onChange={(event) => handleSetOperationCategory(operation, event.target.value)}
+                                  className="h-9 rounded-[8px] border border-[#E6E9EF] bg-[#F6F7F9] px-3 text-[12px] font-semibold text-[#1F2937] outline-none transition-colors focus:border-[#7D7DE6] focus:bg-white"
+                                >
+                                  {expenseCategoryOptions.map(option => (
+                                    <option key={option} value={option}>{option}</option>
+                                  ))}
+                                </select>
+                                {expenseCategoryOverrides[operation.id] ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleSetOperationCategory(operation, operation.category || 'Другое')}
+                                    className="h-9 rounded-[8px] border border-[#E6E9EF] bg-white px-3 text-[11px] font-bold text-[#6B7280] transition-colors hover:bg-[#F6F7F9]"
+                                  >
+                                    Сбросить
+                                  </button>
+                                ) : (
+                                  <span className="hidden sm:block" />
+                                )}
                               </div>
                             </div>
                           ))}
@@ -653,7 +751,7 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
                   </AnimatePresence>
                 </div>
               ))}
-              {!tochkaSummary?.expenseCategories?.length && (
+              {!expenseCategoriesForView.length && (
                 <div className="rounded-[8px] border border-dashed border-[#E6E9EF] p-4 text-[12px] font-semibold leading-5 text-[#6B7280]">
                   Расходных операций за выбранный период пока нет в ответе API.
                 </div>
@@ -672,11 +770,18 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
                 <p className="mt-1 text-[11px] font-bold uppercase tracking-[0.14em] text-[#9CA3AF]">{incomeOperations.length} операций</p>
               </div>
             </div>
-            <div className="max-h-[420px] overflow-auto">
-              <table className="w-full min-w-[900px] table-fixed">
+            <div className="overflow-auto">
+              <table className="w-full min-w-[980px] table-fixed">
+                <colgroup>
+                  <col className="w-[128px]" />
+                  <col className="w-[220px]" />
+                  <col className="w-[190px]" />
+                  <col />
+                  <col className="w-[170px]" />
+                </colgroup>
                 <thead className="sticky top-0 bg-[#F6F7F9]">
                   <tr>
-                    <th className="px-4 py-3 text-left text-[10px] font-semibold uppercase tracking-[0.14em] text-[#9CA3AF]">Дата</th>
+                    <th className="py-3 pl-6 pr-4 text-left text-[10px] font-semibold uppercase tracking-[0.14em] text-[#9CA3AF]">Дата</th>
                     <th className="px-4 py-3 text-left text-[10px] font-semibold uppercase tracking-[0.14em] text-[#9CA3AF]">Счет / карта</th>
                     <th className="px-4 py-3 text-left text-[10px] font-semibold uppercase tracking-[0.14em] text-[#9CA3AF]">Категория</th>
                     <th className="px-4 py-3 text-left text-[10px] font-semibold uppercase tracking-[0.14em] text-[#9CA3AF]">Описание</th>
@@ -686,7 +791,7 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
                 <tbody className="divide-y divide-[#E6E9EF]">
                   {incomeOperations.map(operation => (
                     <tr key={operation.id} className="hover:bg-[#F6F7F9]">
-                      <td className="px-4 py-3 text-[12px] font-bold text-[#6B7280]">
+                      <td className="py-3 pl-6 pr-4 text-[12px] font-bold text-[#6B7280]">
                         {new Date(operation.date).toLocaleDateString('ru-RU')}
                       </td>
                       <td className="px-4 py-3 text-[12px] font-bold text-[#1F2937]">
