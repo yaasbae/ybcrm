@@ -5,7 +5,7 @@ import {
   Trash2, AlertCircle,
   ChevronRight, ChevronLeft, Briefcase, CreditCard,
   Building, UserCheck, Download, RefreshCcw,
-  Wallet, Database, ReceiptText, Lock, ShieldCheck
+  Wallet, ReceiptText, Lock, ShieldCheck
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn, formatCurrency } from '../lib/utils';
@@ -357,6 +357,67 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
     };
   }, [orders, expenses]);
 
+  const moneyFlowBase = Math.max(financialStats.planned, financialStats.received + financialStats.owed, 1);
+  const moneyFlow = {
+    paidPercent: Math.min(100, (financialStats.received / moneyFlowBase) * 100),
+    owedPercent: Math.min(100, (financialStats.owed / moneyFlowBase) * 100),
+    returnsPercent: Math.min(100, (financialStats.returns / moneyFlowBase) * 100),
+    expensesPercent: Math.min(100, (financialStats.expenses / moneyFlowBase) * 100),
+    netAfterReturns: financialStats.received - financialStats.returns,
+    completionPercent: Math.round((financialStats.received / moneyFlowBase) * 100),
+  };
+
+  const flowSteps = [
+    {
+      label: 'Заказы CRM',
+      value: financialStats.planned,
+      caption: `${financialStats.sales} продаж из ${financialStats.orders} заказов`,
+      tone: 'text-[#1F2937]',
+      bg: 'bg-[#F6F7F9]',
+      icon: ReceiptText,
+    },
+    {
+      label: 'Оплачено',
+      value: financialStats.received,
+      caption: `${moneyFlow.completionPercent}% от суммы заказов`,
+      tone: 'text-emerald-600',
+      bg: 'bg-emerald-50',
+      icon: TrendingUp,
+    },
+    {
+      label: 'К доплате',
+      value: financialStats.owed,
+      caption: 'ожидаемые деньги',
+      tone: 'text-orange-500',
+      bg: 'bg-orange-50',
+      icon: AlertCircle,
+    },
+    {
+      label: 'Возвраты',
+      value: -financialStats.returns,
+      caption: 'вычтено из прихода',
+      tone: 'text-red-500',
+      bg: 'bg-red-50',
+      icon: RefreshCcw,
+    },
+    {
+      label: 'Расходы',
+      value: -financialStats.expenses,
+      caption: 'ФОТ, аренда и пр.',
+      tone: 'text-red-500',
+      bg: 'bg-red-50',
+      icon: TrendingDown,
+    },
+    {
+      label: 'Итог',
+      value: financialStats.balance,
+      caption: 'чистый остаток',
+      tone: financialStats.balance >= 0 ? 'text-[#1F2937]' : 'text-orange-500',
+      bg: 'bg-[#1F2937] text-white',
+      icon: DollarSign,
+    },
+  ];
+
   const categories = {
     rent: { label: 'Аренда', icon: Building, color: 'text-orange-500', bg: 'bg-orange-50' },
     payroll: { label: 'ФОТ (Зарплаты)', icon: UserCheck, color: 'text-blue-500', bg: 'bg-blue-50' },
@@ -365,7 +426,6 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
     other: { label: 'Прочее', icon: Briefcase, color: 'text-slate-500', bg: 'bg-slate-50' }
   };
 
-  const metricCardClass = "rounded-[10px] border border-[#E6E9EF] bg-white p-5 shadow-[0_8px_22px_rgba(31,41,55,0.03)]";
   const tochkaIncomingTotal = (tochkaSummary?.incomingSources || []).reduce((sum, source) => sum + (Number(source.amount) || 0), 0);
   const tochkaCardsExpenseTotal = (tochkaSummary?.cards || []).reduce((sum, card) => sum + (Number(card.expenses) || 0), 0);
   const tochkaPeriodOptions = [
@@ -771,44 +831,41 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
               </div>
             </div>
             <div className="overflow-auto">
-              <table className="w-full min-w-[980px] table-fixed">
+              <table className="w-full min-w-[860px] table-fixed">
                 <colgroup>
-                  <col className="w-[128px]" />
-                  <col className="w-[220px]" />
+                  <col className="w-[116px]" />
                   <col className="w-[190px]" />
                   <col />
-                  <col className="w-[170px]" />
+                  <col className="w-[150px]" />
                 </colgroup>
                 <thead className="sticky top-0 bg-[#F6F7F9]">
                   <tr>
-                    <th className="py-3 pl-6 pr-4 text-left text-[10px] font-semibold uppercase tracking-[0.14em] text-[#9CA3AF]">Дата</th>
-                    <th className="px-4 py-3 text-left text-[10px] font-semibold uppercase tracking-[0.14em] text-[#9CA3AF]">Счет / карта</th>
-                    <th className="px-4 py-3 text-left text-[10px] font-semibold uppercase tracking-[0.14em] text-[#9CA3AF]">Категория</th>
-                    <th className="px-4 py-3 text-left text-[10px] font-semibold uppercase tracking-[0.14em] text-[#9CA3AF]">Описание</th>
-                    <th className="px-4 py-3 text-right text-[10px] font-semibold uppercase tracking-[0.14em] text-[#9CA3AF]">Сумма</th>
+                    <th className="py-3 pl-5 pr-2 text-left text-[10px] font-semibold uppercase tracking-[0.14em] text-[#9CA3AF]">Дата</th>
+                    <th className="px-2 py-3 text-left text-[10px] font-semibold uppercase tracking-[0.14em] text-[#9CA3AF]">Счет / карта</th>
+                    <th className="px-2 py-3 text-left text-[10px] font-semibold uppercase tracking-[0.14em] text-[#9CA3AF]">Описание</th>
+                    <th className="py-3 pl-2 pr-5 text-right text-[10px] font-semibold uppercase tracking-[0.14em] text-[#9CA3AF]">Сумма</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[#E6E9EF]">
                   {incomeOperations.map(operation => (
                     <tr key={operation.id} className="hover:bg-[#F6F7F9]">
-                      <td className="py-3 pl-6 pr-4 text-[12px] font-bold text-[#6B7280]">
+                      <td className="py-3 pl-5 pr-2 text-[12px] font-bold text-[#6B7280]">
                         {new Date(operation.date).toLocaleDateString('ru-RU')}
                       </td>
-                      <td className="px-4 py-3 text-[12px] font-bold text-[#1F2937]">
+                      <td className="px-2 py-3 text-[12px] font-bold text-[#1F2937]">
                         {operation.cardMask ? `*${operation.cardMask}` : operation.maskedAccountId}
                       </td>
-                      <td className="px-4 py-3 text-[12px] font-bold text-[#6B7280]">{operation.category}</td>
-                      <td className="truncate px-4 py-3 text-[12px] font-semibold text-[#1F2937]" title={operation.description}>
+                      <td className="truncate px-2 py-3 text-[12px] font-semibold text-[#1F2937]" title={operation.description}>
                         {operation.description}
                       </td>
-                      <td className="px-4 py-3 text-right text-[12px] font-black text-emerald-600">
+                      <td className="py-3 pl-2 pr-5 text-right text-[12px] font-black text-emerald-600">
                         +{formatCurrency(operation.absAmount)}
                       </td>
                     </tr>
                   ))}
                   {!incomeOperations.length && (
                     <tr>
-                      <td colSpan={5} className="px-4 py-8 text-center text-[13px] font-semibold text-[#6B7280]">
+                      <td colSpan={4} className="px-4 py-8 text-center text-[13px] font-semibold text-[#6B7280]">
                         Приходных операций за выбранный период пока нет. {tochkaSummary?.operationFetches?.[0]?.errors?.[0]?.message || ''}
                       </td>
                     </tr>
@@ -819,85 +876,73 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
           </div>
         </div>
 
-        {/* Global Stats */}
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
-          <div className={cn(metricCardClass, "space-y-2")}>
-            <div className="flex items-center justify-between">
-              <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-[#6B7280]">Получено (Касса)</span>
-              <div className="rounded-[8px] bg-emerald-50 p-2 text-emerald-500">
-                <TrendingUp size={16} />
+        {/* Money Flow Overview */}
+        <div className="overflow-hidden rounded-[10px] border border-[#E6E9EF] bg-white shadow-[0_8px_22px_rgba(31,41,55,0.03)]">
+          <div className="flex flex-col gap-3 border-b border-[#E6E9EF] px-5 py-4 lg:flex-row lg:items-end lg:justify-between">
+            <div>
+              <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.16em] text-[#6B7280]">
+                <Wallet size={14} />
+                Движение денег
+              </div>
+              <h3 className="mt-1 text-[20px] font-semibold leading-tight text-[#1F2937]">Заказы, оплаты, доплаты и чистый итог</h3>
+              <p className="mt-1 text-[12px] font-medium text-[#6B7280]">
+                Сверка: сумма заказов → фактические приходы → долги → возвраты и расходы.
+              </p>
+            </div>
+            <div className="grid grid-cols-2 gap-2 text-right sm:grid-cols-4">
+              <div className="rounded-[8px] border border-[#E6E9EF] bg-[#F6F7F9] px-3 py-2">
+                <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-[#9CA3AF]">Заказы</p>
+                <p className="text-[15px] font-black text-[#1F2937]">{financialStats.orders}</p>
+              </div>
+              <div className="rounded-[8px] border border-[#E6E9EF] bg-[#F6F7F9] px-3 py-2">
+                <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-[#9CA3AF]">Продажи</p>
+                <p className="text-[15px] font-black text-[#1F2937]">{financialStats.sales}</p>
+              </div>
+              <div className="rounded-[8px] border border-emerald-100 bg-emerald-50 px-3 py-2">
+                <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-emerald-500">Оплачено</p>
+                <p className="text-[15px] font-black text-emerald-600">{moneyFlow.completionPercent}%</p>
+              </div>
+              <div className="rounded-[8px] border border-[#E6E9EF] bg-white px-3 py-2">
+                <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-[#9CA3AF]">После возвратов</p>
+                <p className="text-[15px] font-black text-[#1F2937]">{formatCurrency(moneyFlow.netAfterReturns)}</p>
               </div>
             </div>
-            <p className="text-[28px] font-black leading-tight text-[#1F2937]">{formatCurrency(financialStats.received)}</p>
-            <p className="text-[10px] font-bold uppercase tracking-[0.16em] leading-none text-emerald-500">Реальные приходы</p>
           </div>
 
-          <div className={cn(metricCardClass, "space-y-2")}>
-            <div className="flex items-center justify-between">
-              <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-[#6B7280]">Дебиторка (Долги)</span>
-              <div className="rounded-[8px] bg-orange-50 p-2 text-orange-500">
-                <AlertCircle size={16} />
+          <div className="grid grid-cols-1 divide-y divide-[#E6E9EF] lg:grid-cols-6 lg:divide-x lg:divide-y-0">
+            {flowSteps.map((step) => (
+              <div key={step.label} className="p-4">
+                <div className="mb-3 flex items-center justify-between gap-2">
+                  <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-[#6B7280]">{step.label}</span>
+                  <div className={cn("rounded-[8px] p-2", step.bg)}>
+                    <step.icon size={15} />
+                  </div>
+                </div>
+                <p className={cn("text-[22px] font-black leading-tight", step.tone)}>
+                  {step.value < 0 ? '-' : ''}{formatCurrency(Math.abs(step.value))}
+                </p>
+                <p className="mt-1 min-h-8 text-[11px] font-bold leading-4 text-[#9CA3AF]">{step.caption}</p>
               </div>
-            </div>
-            <p className="text-[28px] font-black leading-tight text-[#1F2937]">{formatCurrency(financialStats.owed)}</p>
-            <p className="text-[10px] font-bold uppercase tracking-[0.16em] leading-none text-orange-500">Ожидаемые доплаты</p>
+            ))}
           </div>
 
-          <div className={cn(metricCardClass, "space-y-2")}>
-            <div className="flex items-center justify-between">
-              <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-[#6B7280]">Расходы</span>
-              <div className="rounded-[8px] bg-red-50 p-2 text-red-500">
-                <TrendingDown size={16} />
-              </div>
+          <div className="border-t border-[#E6E9EF] px-5 py-4">
+            <div className="mb-2 flex items-center justify-between gap-3">
+              <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-[#6B7280]">Структура суммы заказов</span>
+              <span className="text-[11px] font-bold text-[#9CA3AF]">база: {formatCurrency(moneyFlowBase)}</span>
             </div>
-            <p className="text-[28px] font-black leading-tight text-[#1F2937]">{formatCurrency(financialStats.expenses)}</p>
-            <p className="text-[10px] font-bold uppercase tracking-[0.16em] leading-none text-red-500">ФОТ, аренда и пр.</p>
-          </div>
-
-          <div className={cn(metricCardClass, "space-y-2 border-l-4 border-l-[#1F2937]")}>
-            <div className="flex items-center justify-between">
-              <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-[#6B7280]">Итого чистыми</span>
-              <div className={cn("rounded-[8px] p-2", financialStats.balance >= 0 ? "bg-[#1F2937] text-white" : "bg-orange-50 text-orange-500")}>
-                <DollarSign size={16} />
-              </div>
+            <div className="flex h-3 overflow-hidden rounded-full bg-[#E6E9EF]">
+              <div className="bg-emerald-500" style={{ width: `${moneyFlow.paidPercent}%` }} />
+              <div className="bg-orange-400" style={{ width: `${moneyFlow.owedPercent}%` }} />
+              <div className="bg-red-400" style={{ width: `${moneyFlow.returnsPercent}%` }} />
+              <div className="bg-[#1F2937]" style={{ width: `${moneyFlow.expensesPercent}%` }} />
             </div>
-            <p className="text-[28px] font-black leading-tight text-[#1F2937]">{formatCurrency(financialStats.balance)}</p>
-            <p className="text-[10px] font-bold uppercase tracking-[0.16em] leading-none text-[#6B7280]">Сальдо в кассе</p>
-          </div>
-        </div>
-
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
-          <div className={metricCardClass}>
-            <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.16em] text-[#6B7280]">
-              <ReceiptText size={14} />
-              Заказы CRM
+            <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] font-bold text-[#6B7280] sm:grid-cols-4">
+              <div><span className="mr-2 inline-block h-2 w-2 rounded-full bg-emerald-500" />Оплачено {formatCurrency(financialStats.received)}</div>
+              <div><span className="mr-2 inline-block h-2 w-2 rounded-full bg-orange-400" />К доплате {formatCurrency(financialStats.owed)}</div>
+              <div><span className="mr-2 inline-block h-2 w-2 rounded-full bg-red-400" />Возвраты {formatCurrency(financialStats.returns)}</div>
+              <div><span className="mr-2 inline-block h-2 w-2 rounded-full bg-[#1F2937]" />Расходы {formatCurrency(financialStats.expenses)}</div>
             </div>
-            <p className="mt-2 text-[22px] font-black leading-tight text-[#1F2937]">{financialStats.orders}</p>
-            <p className="text-[11px] font-bold text-[#6B7280]">{financialStats.sales} продаж</p>
-          </div>
-          <div className={metricCardClass}>
-            <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.16em] text-[#6B7280]">
-              <Wallet size={14} />
-              Сумма заказов
-            </div>
-            <p className="mt-2 text-[22px] font-black leading-tight text-[#1F2937]">{formatCurrency(financialStats.planned)}</p>
-            <p className="text-[11px] font-bold text-[#6B7280]">товары + доставка</p>
-          </div>
-          <div className="rounded-[10px] border border-red-100 bg-red-50/60 p-5 shadow-[0_8px_22px_rgba(31,41,55,0.03)]">
-            <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.16em] text-red-400">
-              <RefreshCcw size={14} />
-              Возвраты
-            </div>
-            <p className="mt-2 text-[22px] font-black leading-tight text-red-500">-{formatCurrency(financialStats.returns)}</p>
-            <p className="text-[11px] font-bold text-red-300">учтены в чистом итоге</p>
-          </div>
-          <div className={metricCardClass}>
-            <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.16em] text-[#6B7280]">
-              <Database size={14} />
-              После возвратов
-            </div>
-            <p className="mt-2 text-[22px] font-black leading-tight text-[#1F2937]">{formatCurrency(Math.max(0, financialStats.received - financialStats.returns))}</p>
-            <p className="text-[11px] font-bold text-[#6B7280]">до ручных расходов</p>
           </div>
         </div>
 
