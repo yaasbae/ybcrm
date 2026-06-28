@@ -388,14 +388,23 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
     };
   }, [financialStats.monthlyRows, currentMonthKey]);
 
-  const moneyFlowBase = Math.max(selectedFinancialStats.planned, selectedFinancialStats.received + selectedFinancialStats.owed, 1);
+  const tochkaOperationsForPeriod = tochkaSummary?.operations || [];
+  const actualIncomeForPeriod = tochkaOperationsForPeriod
+    .filter(operation => operation.direction === 'income')
+    .reduce((sum, operation) => sum + (Number(operation.absAmount) || 0), 0);
+  const actualExpensesForPeriod = Number(tochkaSummary?.actualExpenses) || tochkaOperationsForPeriod
+    .filter(operation => operation.direction === 'expense')
+    .reduce((sum, operation) => sum + (Number(operation.absAmount) || 0), 0);
+  const actualNetForPeriod = actualIncomeForPeriod - selectedFinancialStats.returns - actualExpensesForPeriod;
+
+  const moneyFlowBase = Math.max(selectedFinancialStats.planned, actualIncomeForPeriod + selectedFinancialStats.owed, 1);
   const moneyFlow = {
-    paidPercent: Math.min(100, (selectedFinancialStats.received / moneyFlowBase) * 100),
+    paidPercent: Math.min(100, (actualIncomeForPeriod / moneyFlowBase) * 100),
     owedPercent: Math.min(100, (selectedFinancialStats.owed / moneyFlowBase) * 100),
     returnsPercent: Math.min(100, (selectedFinancialStats.returns / moneyFlowBase) * 100),
-    expensesPercent: Math.min(100, (selectedFinancialStats.expenses / moneyFlowBase) * 100),
-    netAfterReturns: selectedFinancialStats.received - selectedFinancialStats.returns,
-    completionPercent: Math.round((selectedFinancialStats.received / moneyFlowBase) * 100),
+    expensesPercent: Math.min(100, (actualExpensesForPeriod / moneyFlowBase) * 100),
+    netAfterReturns: actualIncomeForPeriod - selectedFinancialStats.returns,
+    completionPercent: Math.round((actualIncomeForPeriod / moneyFlowBase) * 100),
   };
 
   const flowSteps = [
@@ -409,8 +418,8 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
     },
     {
       label: 'Оплачено',
-      value: selectedFinancialStats.received,
-      caption: `${moneyFlow.completionPercent}% от суммы заказов`,
+      value: actualIncomeForPeriod,
+      caption: 'фактический приход',
       tone: 'text-emerald-600',
       bg: 'bg-emerald-50',
       icon: TrendingUp,
@@ -433,17 +442,17 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
     },
     {
       label: 'Расходы',
-      value: -selectedFinancialStats.expenses,
-      caption: 'ФОТ, аренда и пр.',
+      value: -actualExpensesForPeriod,
+      caption: 'по выписке и расходам',
       tone: 'text-red-500',
       bg: 'bg-red-50',
       icon: TrendingDown,
     },
     {
       label: 'Итог',
-      value: selectedFinancialStats.balance,
+      value: actualNetForPeriod,
       caption: 'чистый остаток',
-      tone: selectedFinancialStats.balance >= 0 ? 'text-[#1F2937]' : 'text-orange-500',
+      tone: actualNetForPeriod >= 0 ? 'text-[#1F2937]' : 'text-orange-500',
       bg: 'bg-[#1F2937] text-white',
       icon: DollarSign,
     },
@@ -580,6 +589,94 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
             <Plus size={18} />
             Добавить расход
           </button>
+        </div>
+
+        {/* Money Flow Overview */}
+        <div className="overflow-hidden rounded-[10px] border border-[#E6E9EF] bg-white shadow-[0_8px_22px_rgba(31,41,55,0.03)]">
+          <div className="flex flex-col gap-3 border-b border-[#E6E9EF] px-5 py-4 lg:flex-row lg:items-end lg:justify-between">
+            <div>
+              <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.16em] text-[#6B7280]">
+                <Wallet size={14} />
+                Движение денег
+              </div>
+              <h3 className="mt-1 text-[20px] font-semibold leading-tight text-[#1F2937]">Заказы, оплаты, доплаты и чистый итог за месяц</h3>
+              <p className="mt-1 text-[12px] font-medium text-[#6B7280]">
+                {monthNames[currentDate.getMonth()]} {currentDate.getFullYear()} · заказы и долги из CRM, приход и расходы по фактическому ДДС.
+              </p>
+            </div>
+            <div className="grid grid-cols-2 gap-2 text-right sm:grid-cols-[160px_repeat(4,minmax(96px,1fr))]">
+              <select
+                value={currentMonthKey}
+                onChange={(event) => {
+                  const [year, month] = event.target.value.split('-').map(Number);
+                  setCurrentDate(new Date(year, month - 1, 1));
+                  setTochkaPeriod('month');
+                }}
+                className="col-span-2 h-full min-h-[54px] rounded-[8px] border border-[#E6E9EF] bg-white px-3 text-left text-[13px] font-bold text-[#1F2937] outline-none transition-colors hover:bg-[#F6F7F9] focus:border-[#7D7DE6] sm:col-span-1"
+              >
+                {monthNames.map((month, index) => {
+                  const value = `${currentDate.getFullYear()}-${String(index + 1).padStart(2, '0')}`;
+                  return (
+                    <option key={value} value={value}>
+                      {month} {currentDate.getFullYear()}
+                    </option>
+                  );
+                })}
+              </select>
+              <div className="rounded-[8px] border border-[#E6E9EF] bg-[#F6F7F9] px-3 py-2">
+                <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-[#9CA3AF]">Заказы</p>
+                <p className="text-[15px] font-black text-[#1F2937]">{selectedFinancialStats.orders}</p>
+              </div>
+              <div className="rounded-[8px] border border-[#E6E9EF] bg-[#F6F7F9] px-3 py-2">
+                <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-[#9CA3AF]">Продажи</p>
+                <p className="text-[15px] font-black text-[#1F2937]">{selectedFinancialStats.sales}</p>
+              </div>
+              <div className="rounded-[8px] border border-emerald-100 bg-emerald-50 px-3 py-2">
+                <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-emerald-500">Оплачено</p>
+                <p className="text-[15px] font-black text-emerald-600">{moneyFlow.completionPercent}%</p>
+              </div>
+              <div className="rounded-[8px] border border-[#E6E9EF] bg-white px-3 py-2">
+                <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-[#9CA3AF]">После возвратов</p>
+                <p className="text-[15px] font-black text-[#1F2937]">{formatCurrency(moneyFlow.netAfterReturns)}</p>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 divide-y divide-[#E6E9EF] lg:grid-cols-6 lg:divide-x lg:divide-y-0">
+            {flowSteps.map((step) => (
+              <div key={step.label} className="p-4">
+                <div className="mb-3 flex items-center justify-between gap-2">
+                  <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-[#6B7280]">{step.label}</span>
+                  <div className={cn("rounded-[8px] p-2", step.bg)}>
+                    <step.icon size={15} />
+                  </div>
+                </div>
+                <p className={cn("text-[22px] font-black leading-tight", step.tone)}>
+                  {step.value < 0 ? '-' : ''}{formatCurrency(Math.abs(step.value))}
+                </p>
+                <p className="mt-1 min-h-8 text-[11px] font-bold leading-4 text-[#9CA3AF]">{step.caption}</p>
+              </div>
+            ))}
+          </div>
+
+          <div className="border-t border-[#E6E9EF] px-5 py-4">
+            <div className="mb-2 flex items-center justify-between gap-3">
+              <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-[#6B7280]">Структура суммы заказов</span>
+              <span className="text-[11px] font-bold text-[#9CA3AF]">база: {formatCurrency(moneyFlowBase)}</span>
+            </div>
+            <div className="flex h-3 overflow-hidden rounded-full bg-[#E6E9EF]">
+              <div className="bg-emerald-500" style={{ width: `${moneyFlow.paidPercent}%` }} />
+              <div className="bg-orange-400" style={{ width: `${moneyFlow.owedPercent}%` }} />
+              <div className="bg-red-400" style={{ width: `${moneyFlow.returnsPercent}%` }} />
+              <div className="bg-[#1F2937]" style={{ width: `${moneyFlow.expensesPercent}%` }} />
+            </div>
+            <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] font-bold text-[#6B7280] sm:grid-cols-4">
+              <div><span className="mr-2 inline-block h-2 w-2 rounded-full bg-emerald-500" />Приход {formatCurrency(actualIncomeForPeriod)}</div>
+              <div><span className="mr-2 inline-block h-2 w-2 rounded-full bg-orange-400" />К доплате {formatCurrency(selectedFinancialStats.owed)}</div>
+              <div><span className="mr-2 inline-block h-2 w-2 rounded-full bg-red-400" />Возвраты {formatCurrency(selectedFinancialStats.returns)}</div>
+              <div><span className="mr-2 inline-block h-2 w-2 rounded-full bg-[#1F2937]" />Расходы {formatCurrency(actualExpensesForPeriod)}</div>
+            </div>
+          </div>
         </div>
 
         <div className="grid grid-cols-1 gap-3 xl:grid-cols-[1.1fr_1fr]">
@@ -902,94 +999,6 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
                   )}
                 </tbody>
               </table>
-            </div>
-          </div>
-        </div>
-
-        {/* Money Flow Overview */}
-        <div className="overflow-hidden rounded-[10px] border border-[#E6E9EF] bg-white shadow-[0_8px_22px_rgba(31,41,55,0.03)]">
-          <div className="flex flex-col gap-3 border-b border-[#E6E9EF] px-5 py-4 lg:flex-row lg:items-end lg:justify-between">
-            <div>
-              <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.16em] text-[#6B7280]">
-                <Wallet size={14} />
-                Движение денег
-              </div>
-              <h3 className="mt-1 text-[20px] font-semibold leading-tight text-[#1F2937]">Заказы, оплаты, доплаты и чистый итог за месяц</h3>
-              <p className="mt-1 text-[12px] font-medium text-[#6B7280]">
-                {monthNames[currentDate.getMonth()]} {currentDate.getFullYear()} · заказы и доплаты из CRM, расходы из раздела расходов.
-              </p>
-            </div>
-            <div className="grid grid-cols-2 gap-2 text-right sm:grid-cols-[160px_repeat(4,minmax(96px,1fr))]">
-              <select
-                value={currentMonthKey}
-                onChange={(event) => {
-                  const [year, month] = event.target.value.split('-').map(Number);
-                  setCurrentDate(new Date(year, month - 1, 1));
-                  setTochkaPeriod('month');
-                }}
-                className="col-span-2 h-full min-h-[54px] rounded-[8px] border border-[#E6E9EF] bg-white px-3 text-left text-[13px] font-bold text-[#1F2937] outline-none transition-colors hover:bg-[#F6F7F9] focus:border-[#7D7DE6] sm:col-span-1"
-              >
-                {monthNames.map((month, index) => {
-                  const value = `${currentDate.getFullYear()}-${String(index + 1).padStart(2, '0')}`;
-                  return (
-                    <option key={value} value={value}>
-                      {month} {currentDate.getFullYear()}
-                    </option>
-                  );
-                })}
-              </select>
-              <div className="rounded-[8px] border border-[#E6E9EF] bg-[#F6F7F9] px-3 py-2">
-                <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-[#9CA3AF]">Заказы</p>
-                <p className="text-[15px] font-black text-[#1F2937]">{selectedFinancialStats.orders}</p>
-              </div>
-              <div className="rounded-[8px] border border-[#E6E9EF] bg-[#F6F7F9] px-3 py-2">
-                <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-[#9CA3AF]">Продажи</p>
-                <p className="text-[15px] font-black text-[#1F2937]">{selectedFinancialStats.sales}</p>
-              </div>
-              <div className="rounded-[8px] border border-emerald-100 bg-emerald-50 px-3 py-2">
-                <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-emerald-500">Оплачено</p>
-                <p className="text-[15px] font-black text-emerald-600">{moneyFlow.completionPercent}%</p>
-              </div>
-              <div className="rounded-[8px] border border-[#E6E9EF] bg-white px-3 py-2">
-                <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-[#9CA3AF]">После возвратов</p>
-                <p className="text-[15px] font-black text-[#1F2937]">{formatCurrency(moneyFlow.netAfterReturns)}</p>
-              </div>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 divide-y divide-[#E6E9EF] lg:grid-cols-6 lg:divide-x lg:divide-y-0">
-            {flowSteps.map((step) => (
-              <div key={step.label} className="p-4">
-                <div className="mb-3 flex items-center justify-between gap-2">
-                  <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-[#6B7280]">{step.label}</span>
-                  <div className={cn("rounded-[8px] p-2", step.bg)}>
-                    <step.icon size={15} />
-                  </div>
-                </div>
-                <p className={cn("text-[22px] font-black leading-tight", step.tone)}>
-                  {step.value < 0 ? '-' : ''}{formatCurrency(Math.abs(step.value))}
-                </p>
-                <p className="mt-1 min-h-8 text-[11px] font-bold leading-4 text-[#9CA3AF]">{step.caption}</p>
-              </div>
-            ))}
-          </div>
-
-          <div className="border-t border-[#E6E9EF] px-5 py-4">
-            <div className="mb-2 flex items-center justify-between gap-3">
-              <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-[#6B7280]">Структура суммы заказов</span>
-              <span className="text-[11px] font-bold text-[#9CA3AF]">база: {formatCurrency(moneyFlowBase)}</span>
-            </div>
-            <div className="flex h-3 overflow-hidden rounded-full bg-[#E6E9EF]">
-              <div className="bg-emerald-500" style={{ width: `${moneyFlow.paidPercent}%` }} />
-              <div className="bg-orange-400" style={{ width: `${moneyFlow.owedPercent}%` }} />
-              <div className="bg-red-400" style={{ width: `${moneyFlow.returnsPercent}%` }} />
-              <div className="bg-[#1F2937]" style={{ width: `${moneyFlow.expensesPercent}%` }} />
-            </div>
-            <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] font-bold text-[#6B7280] sm:grid-cols-4">
-              <div><span className="mr-2 inline-block h-2 w-2 rounded-full bg-emerald-500" />Оплачено {formatCurrency(selectedFinancialStats.received)}</div>
-              <div><span className="mr-2 inline-block h-2 w-2 rounded-full bg-orange-400" />К доплате {formatCurrency(selectedFinancialStats.owed)}</div>
-              <div><span className="mr-2 inline-block h-2 w-2 rounded-full bg-red-400" />Возвраты {formatCurrency(selectedFinancialStats.returns)}</div>
-              <div><span className="mr-2 inline-block h-2 w-2 rounded-full bg-[#1F2937]" />Расходы {formatCurrency(selectedFinancialStats.expenses)}</div>
             </div>
           </div>
         </div>
