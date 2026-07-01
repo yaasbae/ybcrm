@@ -9,7 +9,10 @@
     "build": "vite build",
     "preview": "vite preview",
     "clean": "rm -rf dist",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "mcp:dev": "npm --prefix mcp run dev",
+    "mcp:build": "npm --prefix mcp run build",
+    "mcp:test": "npm --prefix mcp test"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.92.0",

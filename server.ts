@@ -4,6 +4,7 @@ import path from "path";
 import axios from "axios";
 import dotenv from "dotenv";
 import cors from "cors";
+import { Readable } from "stream";
 import Anthropic from "@anthropic-ai/sdk";
 import { initializeApp } from "firebase/app";
 import { initializeFirestore, doc, getDoc, collection, getDocs, addDoc, setDoc, updateDoc, deleteDoc, serverTimestamp, query, where, orderBy } from "firebase/firestore";
@@ -53,6 +54,7 @@ dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
+const MCP_UPSTREAM_URL = (process.env.MCP_UPSTREAM_URL || "https://ybcrm-mcp-37251611526.europe-west1.run.app").replace(/\/$/, "");
 
 const TG_API_ID = Number(process.env.TG_API_ID || 2040);
 const TG_API_HASH = process.env.TG_API_HASH || "b18441a1ff607e10a989891a5462e627";
@@ -134,6 +136,45 @@ try {
 } catch (e: any) {
   console.error("Firebase init error:", e.message);
 }
+
+async function proxyMcpRequest(req: express.Request, res: express.Response) {
+  const target = new URL(req.originalUrl, MCP_UPSTREAM_URL);
+  const headers = new Headers();
+  for (const [key, value] of Object.entries(req.headers)) {
+    if (!value) continue;
+    const lowerKey = key.toLowerCase();
+    if (["host", "connection", "content-length"].includes(lowerKey)) continue;
+    headers.set(key, Array.isArray(value) ? value.join(",") : String(value));
+  }
+
+  try {
+    const upstream = await fetch(target, {
+      method: req.method,
+      headers,
+      body: req.method === "GET" || req.method === "HEAD" ? undefined : (req as any),
+      duplex: "half",
+      redirect: "manual",
+    } as RequestInit & { duplex: "half" });
+
+    res.status(upstream.status);
+    upstream.headers.forEach((value, key) => {
+      if (["content-encoding", "content-length", "transfer-encoding"].includes(key.toLowerCase())) return;
+      res.setHeader(key, value);
+    });
+
+    if (!upstream.body) {
+      res.end();
+      return;
+    }
+
+    Readable.fromWeb(upstream.body as any).pipe(res);
+  } catch (error: any) {
+    console.error("MCP proxy error:", error?.message || error);
+    res.status(502).json({ error: "MCP proxy unavailable" });
+  }
+}
+
+app.use(["/mcp", "/oauth", "/.well-known/oauth-authorization-server", "/.well-known/oauth-protected-resource"], proxyMcpRequest);
 
 app.use(cors());
 app.use(express.json({ limit: '20mb' }));

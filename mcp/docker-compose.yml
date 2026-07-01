@@ -1,0 +1,8 @@
+services:
+  ybcrm-mcp:
+    build: .
+    ports:
+      - "3100:3100"
+    env_file:
+      - .env
+    restart: unless-stopped
