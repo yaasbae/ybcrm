@@ -38,6 +38,13 @@ export function createApp(container: Container) {
   app.use(createOAuthRouter(container.config));
   app.use("/api", auth, createApiRouter(container));
 
+  app.get("/mcp", auth, (_req, res) => {
+    res.status(405).json({
+      error: "METHOD_NOT_ALLOWED",
+      message: "MCP endpoint expects POST requests.",
+    });
+  });
+
   app.post("/mcp", auth, async (req, res, next) => {
     try {
       const server = createMcpServer(container);

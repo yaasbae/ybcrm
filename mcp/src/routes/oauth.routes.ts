@@ -99,10 +99,19 @@ function htmlPage(body: string) {
 </html>`;
 }
 
+function escapeHtml(value: unknown) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 export function createOAuthRouter(config: Config) {
   const router = Router();
 
-  router.get("/.well-known/oauth-authorization-server", (_req, res) => {
+  const authorizationServer = (_req: Request, res: Response) => {
     const issuer = baseUrl(config);
     res.json({
       issuer,
@@ -116,7 +125,10 @@ export function createOAuthRouter(config: Config) {
       scopes_supported: ["crm.read", "crm.write"],
       service_documentation: `${issuer}/docs`,
     });
-  });
+  };
+
+  router.get("/.well-known/oauth-authorization-server", authorizationServer);
+  router.get("/.well-known/oauth-authorization-server/mcp", authorizationServer);
 
   const protectedResource = (_req: Request, res: Response) => {
     const issuer = baseUrl(config);
@@ -160,7 +172,7 @@ export function createOAuthRouter(config: Config) {
     if (config.mcpOAuthPin && query.pin !== config.mcpOAuthPin) {
       const hidden = Object.entries(query)
         .filter(([key]) => key !== "pin")
-        .map(([key, value]) => `<input type="hidden" name="${key}" value="${String(value ?? "").replace(/"/g, "&quot;")}" />`)
+        .map(([key, value]) => `<input type="hidden" name="${escapeHtml(key)}" value="${escapeHtml(value)}" />`)
         .join("");
       res
         .status(query.pin ? 401 : 200)
