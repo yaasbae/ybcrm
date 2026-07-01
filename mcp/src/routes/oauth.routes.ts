@@ -4,13 +4,6 @@ import { Router } from "express";
 import jwt from "jsonwebtoken";
 import type { Config } from "../utils/config.js";
 
-type ClientRecord = {
-  clientId: string;
-  clientSecret?: string;
-  redirectUris: string[];
-  issuedAt: number;
-};
-
 type AuthCodeRecord = {
   clientId: string;
   redirectUri: string;
@@ -19,9 +12,6 @@ type AuthCodeRecord = {
   scope: string;
   expiresAt: number;
 };
-
-const clients = new Map<string, ClientRecord>();
-const codes = new Map<string, AuthCodeRecord>();
 
 function baseUrl(config: Config) {
   return config.mcpPublicBaseUrl.replace(/\/$/, "");
@@ -55,6 +45,36 @@ function issueAccessToken(config: Config, scope: string) {
       issuer: baseUrl(config),
     },
   );
+}
+
+function issueAuthorizationCode(config: Config, payload: Omit<AuthCodeRecord, "expiresAt">) {
+  return jwt.sign(payload, config.crmJwtSecret, {
+    expiresIn: "10m",
+    issuer: baseUrl(config),
+    audience: "ybcrm-mcp-oauth-code",
+  });
+}
+
+function readAuthorizationCode(config: Config, code: string): AuthCodeRecord | null {
+  try {
+    const decoded = jwt.verify(code, config.crmJwtSecret, {
+      issuer: baseUrl(config),
+      audience: "ybcrm-mcp-oauth-code",
+    }) as jwt.JwtPayload;
+
+    if (!decoded.clientId || !decoded.redirectUri || !decoded.scope) return null;
+
+    return {
+      clientId: String(decoded.clientId),
+      redirectUri: String(decoded.redirectUri),
+      codeChallenge: decoded.codeChallenge ? String(decoded.codeChallenge) : undefined,
+      codeChallengeMethod: decoded.codeChallengeMethod ? String(decoded.codeChallengeMethod) : undefined,
+      scope: String(decoded.scope),
+      expiresAt: decoded.exp ? decoded.exp * 1000 : Date.now(),
+    };
+  } catch {
+    return null;
+  }
 }
 
 function htmlPage(body: string) {
@@ -114,15 +134,10 @@ export function createOAuthRouter(config: Config) {
   router.post("/oauth/register", (req, res) => {
     const redirectUris = toArray(req.body?.redirect_uris);
     const clientId = `ybcrm_${randomBytes(12).toString("hex")}`;
-    const record: ClientRecord = {
-      clientId,
-      redirectUris,
-      issuedAt: Math.floor(Date.now() / 1000),
-    };
-    clients.set(clientId, record);
+    const issuedAt = Math.floor(Date.now() / 1000);
     res.status(201).json({
       client_id: clientId,
-      client_id_issued_at: record.issuedAt,
+      client_id_issued_at: issuedAt,
       redirect_uris: redirectUris,
       grant_types: ["authorization_code"],
       response_types: ["code"],
@@ -130,8 +145,8 @@ export function createOAuthRouter(config: Config) {
     });
   });
 
-  router.get("/oauth/authorize", (req, res) => {
-    const query = req.query as Record<string, string | undefined>;
+  const authorize = (req: Request, res: Response) => {
+    const query = { ...req.query, ...req.body } as Record<string, string | undefined>;
     const clientId = query.client_id;
     const redirectUri = query.redirect_uri;
     const state = query.state;
@@ -139,12 +154,6 @@ export function createOAuthRouter(config: Config) {
 
     if (!clientId || !redirectUri) {
       res.status(400).send(htmlPage("<h1>Не хватает данных</h1><p>ChatGPT не передал client_id или redirect_uri.</p>"));
-      return;
-    }
-
-    const client = clients.get(clientId);
-    if (client && client.redirectUris.length && !client.redirectUris.includes(redirectUri)) {
-      res.status(400).send(htmlPage("<h1>Redirect не совпал</h1><p>Адрес возврата не совпадает с зарегистрированным клиентом.</p>"));
       return;
     }
 
@@ -168,21 +177,22 @@ export function createOAuthRouter(config: Config) {
       return;
     }
 
-    const code = randomBytes(24).toString("base64url");
-    codes.set(code, {
+    const code = issueAuthorizationCode(config, {
       clientId,
       redirectUri,
       codeChallenge: query.code_challenge,
       codeChallengeMethod: query.code_challenge_method,
       scope,
-      expiresAt: Date.now() + 10 * 60_000,
     });
 
     const url = new URL(redirectUri);
     url.searchParams.set("code", code);
     if (state) url.searchParams.set("state", state);
     res.redirect(url.toString());
-  });
+  };
+
+  router.get("/oauth/authorize", authorize);
+  router.post("/oauth/authorize", authorize);
 
   router.post("/oauth/token", (req, res) => {
     const grantType = req.body?.grant_type;
@@ -195,8 +205,7 @@ export function createOAuthRouter(config: Config) {
       return;
     }
 
-    const record = codes.get(code);
-    codes.delete(code);
+    const record = readAuthorizationCode(config, String(code));
 
     if (!record || record.expiresAt < Date.now() || record.redirectUri !== redirectUri) {
       res.status(400).json({ error: "invalid_grant" });
