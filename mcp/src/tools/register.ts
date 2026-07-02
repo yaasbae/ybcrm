@@ -4,6 +4,7 @@ import {
   ClientsSearchToolSchema,
   EmptySchema,
   InstagramStatsToolSchema,
+  OrderCreateToolSchema,
   OrderGetToolSchema,
   OrdersListToolSchema,
   OrderUpdateToolSchema,
@@ -50,6 +51,16 @@ export function registerTools(server: McpServer, container: Container) {
       inputSchema: OrderUpdateToolSchema,
     },
     async (args) => jsonContent(await container.orders.updateStatus(String(args.id), String(args.status))),
+  );
+
+  server.registerTool(
+    "orders.create",
+    {
+      title: "Create order",
+      description: "Создать новый заказ в CRM",
+      inputSchema: OrderCreateToolSchema,
+    },
+    async (args) => jsonContent(await container.orders.create(args as any)),
   );
 
   server.registerTool(

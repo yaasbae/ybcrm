@@ -9,7 +9,7 @@ import { initializeApp } from "firebase/app";
 import { initializeFirestore, doc, getDoc, collection, getDocs, addDoc, setDoc, updateDoc, deleteDoc, serverTimestamp, query, where, orderBy } from "firebase/firestore";
 import { getStorage, ref as storageRef, uploadBytes as fbUploadBytes, getDownloadURL as fbGetDownloadURL } from "firebase/storage";
 import { initializeApp as initializeAdminApp, applicationDefault, getApps as getAdminApps } from "firebase-admin/app";
-import { getFirestore as getAdminFirestore } from "firebase-admin/firestore";
+import { FieldValue, getFirestore as getAdminFirestore } from "firebase-admin/firestore";
 import { getAuth as getAdminAuth } from "firebase-admin/auth";
 import fs from "fs";
 import https from "https";
@@ -320,6 +320,7 @@ const mcpTools = [
   "orders.list",
   "orders.get",
   "orders.update",
+  "orders.create",
   "clients.search",
   "analytics.sales",
   "instagram.stats",
@@ -333,14 +334,246 @@ const mcpTools = [
   inputSchema: { type: "object", additionalProperties: true },
 }));
 
+function mcpToNumber(value: any): number {
+  if (typeof value === "number") return Number.isFinite(value) ? value : 0;
+  if (typeof value === "string") {
+    const parsed = Number(value.replace(/\s/g, "").replace(",", ".").replace(/[^\d.-]/g, ""));
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  return 0;
+}
+
+function mcpDateString(value: any): string | undefined {
+  if (!value) return undefined;
+  if (typeof value?.toDate === "function") return value.toDate().toISOString().slice(0, 10);
+  if (value instanceof Date) return value.toISOString().slice(0, 10);
+  if (typeof value === "object" && typeof value.seconds === "number") {
+    return new Date(value.seconds * 1000).toISOString().slice(0, 10);
+  }
+  const raw = String(value).trim();
+  const ru = raw.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/);
+  if (ru) return `${ru[3]}-${ru[2].padStart(2, "0")}-${ru[1].padStart(2, "0")}`;
+  const iso = raw.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (iso) return `${iso[1]}-${iso[2].padStart(2, "0")}-${iso[3].padStart(2, "0")}`;
+  const parsed = new Date(raw);
+  return Number.isNaN(parsed.getTime()) ? undefined : parsed.toISOString().slice(0, 10);
+}
+
+function mcpOrderItems(data: any) {
+  const namesRaw = Array.isArray(data?.items) ? data.items : Array.isArray(data?.products) ? data.products : [];
+  const prices = Array.isArray(data?.itemPrices) ? data.itemPrices : [];
+  const colors = Array.isArray(data?.itemColors) ? data.itemColors : [];
+  const sizes = Array.isArray(data?.itemSizes) ? data.itemSizes : [];
+  const heights = Array.isArray(data?.itemHeights) ? data.itemHeights : [];
+
+  if (namesRaw.length) {
+    return namesRaw
+      .map((item: any, index: number) => {
+        if (typeof item === "string") {
+          return {
+            name: item,
+            price: mcpToNumber(prices[index]),
+            quantity: 1,
+            color: colors[index] || "",
+            size: sizes[index] || "",
+            height: heights[index] || "",
+          };
+        }
+        return {
+          name: String(item?.name || item?.product || item?.title || item?.item || "Изделие"),
+          price: mcpToNumber(item?.price ?? item?.amount ?? item?.cost ?? prices[index]),
+          quantity: Math.max(1, mcpToNumber(item?.quantity ?? item?.qty ?? 1) || 1),
+          color: item?.color || colors[index] || "",
+          size: item?.size || sizes[index] || "",
+          height: item?.height || item?.growth || heights[index] || "",
+          label: item?.label || item?.tag || "",
+        };
+      })
+      .filter((item: any) => item.name.trim());
+  }
+
+  const name = data?.item || data?.productName || data?.itemName || data?.product || data?.name;
+  if (!name) return [];
+  return [{
+    name: String(name),
+    price: mcpToNumber(data?.price ?? data?.revenue ?? data?.amountTotal ?? data?.total),
+    quantity: Math.max(1, mcpToNumber(data?.quantity ?? 1) || 1),
+    color: data?.color || "",
+    size: data?.size || "",
+    height: data?.height || data?.growth || "",
+  }];
+}
+
+function mcpNormalizeOrder(id: string, data: any) {
+  const items = mcpOrderItems(data);
+  const itemsTotal = items.reduce((sum: number, item: any) => sum + item.price * item.quantity, 0);
+  const revenue = mcpToNumber(data?.revenue ?? data?.amountTotal ?? data?.totalAmount ?? data?.total ?? itemsTotal);
+  const deliveryPrice = mcpToNumber(data?.deliveryPrice ?? data?.deliveryCost ?? data?.shippingCost);
+  const paidAmount = mcpToNumber(data?.paidAmount ?? data?.prepaymentAmount ?? data?.prepaidAmount ?? data?.paymentAmount ?? data?.paid);
+  const dueAmount = Math.max(0, revenue + deliveryPrice - paidAmount);
+  return {
+    id,
+    orderId: String(data?.orderId || data?.id || id),
+    date: mcpDateString(data?.date || data?.orderDate || data?.createdAt),
+    status: data?.status || "",
+    clientName: data?.clientName || data?.customerName || data?.name || "",
+    phone: data?.clientPhone || data?.phone || data?.customerPhone || "",
+    instagram: data?.clientInsta || data?.instagram || data?.clientInstagram || "",
+    city: data?.clientCity || data?.city || "",
+    manager: data?.manager || data?.managerName || "",
+    blogger: data?.blogger || data?.bloggerName || "",
+    source: data?.source || "",
+    delivery: data?.delivery || data?.deliveryMethod || data?.deliveryType || "",
+    paymentType: data?.paymentType || data?.invoiceType || data?.payment || data?.prepaymentType || "",
+    revenue,
+    deliveryPrice,
+    paidAmount,
+    dueAmount,
+    items,
+  };
+}
+
+function mcpFindOrderDoc(id: string) {
+  const cleanId = String(id || "").replace(/^#+/, "").trim();
+  return (async () => {
+    const direct = await adminDb.collection("orders_new").doc(cleanId).get();
+    if (direct.exists) return direct;
+    const byOrder = await adminDb.collection("orders_new").where("orderId", "==", cleanId).limit(1).get();
+    if (!byOrder.empty) return byOrder.docs[0];
+    const byHashOrder = await adminDb.collection("orders_new").where("orderId", "==", `#${cleanId}`).limit(1).get();
+    if (!byHashOrder.empty) return byHashOrder.docs[0];
+    return null;
+  })();
+}
+
+function mcpInvoiceAmount(revenue: number, deliveryPrice: number, invoiceType: string, explicitPaid: any) {
+  if (explicitPaid !== undefined && explicitPaid !== null && explicitPaid !== "") return mcpToNumber(explicitPaid);
+  const type = String(invoiceType || "").toLowerCase();
+  const total = revenue + deliveryPrice;
+  if (type.includes("полная") || type.includes("full")) return total;
+  if (type.includes("пример") || type.includes("fitting")) return 2000;
+  if (type.includes("50") || type.includes("предоплат") || type.includes("prepay")) return Math.round(total / 2);
+  return 0;
+}
+
+function mcpBuildOrderDoc(args: any) {
+  const items = mcpOrderItems(args);
+  const names = items.map((item: any) => item.name);
+  const revenue = mcpToNumber(args?.revenue ?? args?.amountTotal ?? args?.totalAmount ?? args?.total)
+    || items.reduce((sum: number, item: any) => sum + item.price * item.quantity, 0);
+  const deliveryPrice = mcpToNumber(args?.deliveryPrice ?? args?.deliveryCost ?? args?.shippingCost);
+  const paymentType = String(args?.paymentType || args?.invoiceType || args?.payment || "Предоплата 50%");
+  const paidAmount = mcpInvoiceAmount(revenue, deliveryPrice, paymentType, args?.paidAmount ?? args?.prepaymentAmount);
+  const orderId = String(args?.orderId || args?.id || `MCP-${Date.now().toString(36).toUpperCase()}`).replace(/^#+/, "");
+  const date = mcpDateString(args?.date || args?.orderDate) || new Date().toISOString().slice(0, 10);
+  return {
+    orderId,
+    id: orderId,
+    date,
+    clientName: args?.clientName || args?.customerName || args?.name || "",
+    clientPhone: args?.phone || args?.clientPhone || args?.customerPhone || "",
+    clientInsta: args?.instagram || args?.clientInstagram || args?.clientInsta || "",
+    clientCity: args?.city || args?.clientCity || "",
+    item: names.join(", "),
+    items: names,
+    itemPrices: items.map((item: any) => item.price),
+    itemColors: items.map((item: any) => item.color || ""),
+    itemSizes: items.map((item: any) => item.size || ""),
+    itemHeights: items.map((item: any) => item.height || ""),
+    revenue,
+    deliveryPrice,
+    paidAmount,
+    paymentType,
+    invoiceType: paymentType,
+    source: args?.source || "",
+    deliveryMethod: args?.deliveryMethod || args?.delivery || args?.deliveryType || "",
+    manager: args?.manager || "",
+    blogger: args?.blogger || args?.bloggerName || "",
+    status: args?.status || "Новый",
+    createdBy: "mcp",
+    createdAt: FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
+  };
+}
+
 async function mcpToolResult(name: string, args: any) {
   if (name === "orders.list" && adminDb) {
-    const snap = await adminDb.collection("orders").limit(Number(args?.pageSize || 20)).get();
-    return snap.docs.map((doc: any) => ({ id: doc.id, ...doc.data() }));
+    const page = Math.max(1, Number(args?.page || 1));
+    const pageSize = Math.max(1, Math.min(200, Number(args?.pageSize || 50)));
+    const snap = await adminDb.collection("orders_new").orderBy("createdAt", "desc").limit(5000).get();
+    let orders = snap.docs.map((doc: any) => mcpNormalizeOrder(doc.id, doc.data()));
+    const dateFrom = mcpDateString(args?.date_from || args?.dateFrom);
+    const dateTo = mcpDateString(args?.date_to || args?.dateTo);
+    if (dateFrom) orders = orders.filter((order: any) => !order.date || order.date >= dateFrom);
+    if (dateTo) orders = orders.filter((order: any) => !order.date || order.date <= dateTo);
+    if (args?.status) orders = orders.filter((order: any) => String(order.status || "").toLowerCase().includes(String(args.status).toLowerCase()));
+    if (args?.manager) orders = orders.filter((order: any) => String(order.manager || "").toLowerCase().includes(String(args.manager).toLowerCase()));
+    if (args?.blogger) orders = orders.filter((order: any) => String(order.blogger || "").toLowerCase().includes(String(args.blogger).toLowerCase()));
+    const total = orders.length;
+    const start = (page - 1) * pageSize;
+    return { page, pageSize, total, orders: orders.slice(start, start + pageSize) };
   }
   if (name === "orders.get" && adminDb && args?.id) {
-    const snap = await adminDb.collection("orders").doc(String(args.id)).get();
-    return snap.exists ? { id: snap.id, ...snap.data() } : null;
+    const snap = await mcpFindOrderDoc(String(args.id));
+    return snap?.exists ? mcpNormalizeOrder(snap.id, snap.data()) : null;
+  }
+  if (name === "orders.update" && adminDb && args?.id) {
+    const snap = await mcpFindOrderDoc(String(args.id));
+    if (!snap?.exists) return { ok: false, error: `Заказ ${args.id} не найден` };
+    const patch: any = { updatedAt: FieldValue.serverTimestamp() };
+    for (const key of ["status", "manager", "blogger", "source", "paymentType", "deliveryMethod", "clientName", "clientPhone", "clientInsta", "clientCity"]) {
+      if (args?.[key] !== undefined) patch[key] = args[key];
+    }
+    if (args?.delivery !== undefined) patch.deliveryMethod = args.delivery;
+    if (args?.deliveryPrice !== undefined || args?.deliveryCost !== undefined) patch.deliveryPrice = mcpToNumber(args.deliveryPrice ?? args.deliveryCost);
+    if (args?.paidAmount !== undefined) patch.paidAmount = mcpToNumber(args.paidAmount);
+    if (args?.items !== undefined || args?.products !== undefined || args?.item !== undefined) {
+      const items = mcpOrderItems(args);
+      patch.items = items.map((item: any) => item.name);
+      patch.item = patch.items.join(", ");
+      patch.itemPrices = items.map((item: any) => item.price);
+      patch.itemColors = items.map((item: any) => item.color || "");
+      patch.itemSizes = items.map((item: any) => item.size || "");
+      patch.itemHeights = items.map((item: any) => item.height || "");
+      patch.revenue = items.reduce((sum: number, item: any) => sum + item.price * item.quantity, 0);
+    }
+    await adminDb.collection("orders_new").doc(snap.id).set(patch, { merge: true });
+    const updated = await adminDb.collection("orders_new").doc(snap.id).get();
+    return { ok: true, order: mcpNormalizeOrder(updated.id, updated.data()) };
+  }
+  if (name === "orders.create" && adminDb) {
+    const payload = mcpBuildOrderDoc(args || {});
+    await adminDb.collection("orders_new").doc(payload.orderId).set(payload, { merge: true });
+    const created = await adminDb.collection("orders_new").doc(payload.orderId).get();
+    return { ok: true, order: mcpNormalizeOrder(created.id, created.data()) };
+  }
+  if (name === "analytics.sales" && adminDb) {
+    const snap = await adminDb.collection("orders_new").orderBy("createdAt", "desc").limit(5000).get();
+    const orders = snap.docs.map((doc: any) => mcpNormalizeOrder(doc.id, doc.data()));
+    const now = new Date();
+    const today = now.toLocaleDateString("sv-SE", { timeZone: "Europe/Moscow" });
+    const yesterdayDate = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    const yesterday = yesterdayDate.toLocaleDateString("sv-SE", { timeZone: "Europe/Moscow" });
+    const weekStartDate = new Date(now.getTime() - 6 * 24 * 60 * 60 * 1000);
+    const weekStart = weekStartDate.toLocaleDateString("sv-SE", { timeZone: "Europe/Moscow" });
+    const monthStart = `${today.slice(0, 7)}-01`;
+    const saleOrders = orders.filter((order: any) => !String(order.status || "").toLowerCase().match(/возврат|отмена/));
+    const sumPaid = (list: any[]) => list.reduce((sum, order) => sum + mcpToNumber(order.paidAmount), 0);
+    const todayOrders = saleOrders.filter((order: any) => order.date === today);
+    const yesterdayOrders = saleOrders.filter((order: any) => order.date === yesterday);
+    const weekOrders = saleOrders.filter((order: any) => order.date && order.date >= weekStart && order.date <= today);
+    const monthOrders = saleOrders.filter((order: any) => order.date && order.date >= monthStart && order.date <= today);
+    const monthRevenue = sumPaid(monthOrders);
+    return {
+      today: sumPaid(todayOrders),
+      yesterday: sumPaid(yesterdayOrders),
+      week: sumPaid(weekOrders),
+      month: monthRevenue,
+      averageCheck: monthOrders.length ? Math.round(monthRevenue / monthOrders.length) : 0,
+      ordersCount: monthOrders.length,
+      conversion: monthOrders.length ? 100 : 0,
+      period: { today, yesterday, week_from: weekStart, month_from: monthStart },
+    };
   }
   return {
     ok: true,
