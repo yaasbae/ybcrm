@@ -22,10 +22,26 @@ jobs:
       - uses: google-github-actions/setup-gcloud@v2
 
       - name: Deploy MCP
+        id: deploy_mcp
         run: |
+          MCP_JWT_SECRET="$(openssl rand -hex 32)"
           gcloud run deploy ybcrm-mcp \
             --source mcp \
             --region europe-west1 \
-            --project gen-lang-client-0267383721 \
+            --project gen-lang-client-0565901030 \
             --allow-unauthenticated \
+            --update-env-vars NODE_ENV=production,CRM_JWT_SECRET="$MCP_JWT_SECRET",FIREBASE_PROJECT_ID=gen-lang-client-0267383721,FIREBASE_DATABASE_ID=production,CRM_BASE_URL=https://ybcrm.ru,MCP_PUBLIC_BASE_URL=https://ybcrm.ru,MCP_OAUTH_PIN=ybcrm-mcp-2026-7f8c2a91d4e64bb8 \
+            --quiet
+          MCP_URL="$(gcloud run services describe ybcrm-mcp --region europe-west1 --project gen-lang-client-0565901030 --format='value(status.url)')"
+          echo "mcp_url=$MCP_URL" >> "$GITHUB_OUTPUT"
+
+      - name: Point main CRM to MCP
+        run: |
+          gcloud run deploy ybcrm \
+            --source . \
+            --region europe-west1 \
+            --project gen-lang-client-0565901030 \
+            --min-instances 1 \
+            --no-cpu-throttling \
+            --update-env-vars WEBHOOK_URL=https://ybcrm.ru,SERVER_URL=https://ybcrm.ru,MCP_UPSTREAM_URL=${{ steps.deploy_mcp.outputs.mcp_url }} \
             --quiet
