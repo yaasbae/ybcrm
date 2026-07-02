@@ -23,7 +23,10 @@ export class TasksService {
 
     return {
       id: ref.id,
-      ...task,
+      manager: task.manager,
+      title: task.title,
+      description: task.description,
+      dueDate: task.dueDate,
       status: "new",
       createdAt: new Date().toISOString(),
     };

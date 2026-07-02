@@ -4,7 +4,6 @@ import path from "path";
 import axios from "axios";
 import dotenv from "dotenv";
 import cors from "cors";
-import { Readable } from "stream";
 import Anthropic from "@anthropic-ai/sdk";
 import { initializeApp } from "firebase/app";
 import { initializeFirestore, doc, getDoc, collection, getDocs, addDoc, setDoc, updateDoc, deleteDoc, serverTimestamp, query, where, orderBy } from "firebase/firestore";
@@ -16,7 +15,7 @@ import fs from "fs";
 import https from "https";
 import { execFileSync } from "child_process";
 import { tmpdir } from "os";
-import { randomBytes } from "crypto";
+import { createHash, createHmac, randomBytes } from "crypto";
 import { createRequire } from "module";
 import { TelegramClient } from "telegram";
 import { StringSession } from "telegram/sessions";
@@ -54,7 +53,9 @@ dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
-const MCP_UPSTREAM_URL = (process.env.MCP_UPSTREAM_URL || "https://ybcrm-mcp-37251611526.europe-west1.run.app").replace(/\/$/, "");
+const MCP_PUBLIC_BASE_URL = (process.env.MCP_PUBLIC_BASE_URL || "https://ybcrm.ru").replace(/\/$/, "");
+const MCP_OAUTH_PIN = process.env.MCP_OAUTH_PIN || "ybcrm-mcp-2026-7f8c2a91d4e64bb8";
+const MCP_TOKEN_SECRET = process.env.CRM_JWT_SECRET || process.env.MCP_TOKEN_SECRET || "ybcrm-local-mcp-secret-2026-change-me";
 
 const TG_API_ID = Number(process.env.TG_API_ID || 2040);
 const TG_API_HASH = process.env.TG_API_HASH || "b18441a1ff607e10a989891a5462e627";
@@ -137,49 +138,256 @@ try {
   console.error("Firebase init error:", e.message);
 }
 
-async function proxyMcpRequest(req: express.Request, res: express.Response) {
-  const target = new URL(req.originalUrl, MCP_UPSTREAM_URL);
-  const headers = new Headers();
-  for (const [key, value] of Object.entries(req.headers)) {
-    if (!value) continue;
-    const lowerKey = key.toLowerCase();
-    if (["host", "connection", "content-length"].includes(lowerKey)) continue;
-    headers.set(key, Array.isArray(value) ? value.join(",") : String(value));
-  }
-
-  try {
-    const upstream = await fetch(target, {
-      method: req.method,
-      headers,
-      body: req.method === "GET" || req.method === "HEAD" ? undefined : (req as any),
-      duplex: "half",
-      redirect: "manual",
-    } as RequestInit & { duplex: "half" });
-
-    res.status(upstream.status);
-    upstream.headers.forEach((value, key) => {
-      if (["content-encoding", "content-length", "transfer-encoding"].includes(key.toLowerCase())) return;
-      res.setHeader(key, value);
-    });
-
-    if (!upstream.body) {
-      res.end();
-      return;
-    }
-
-    Readable.fromWeb(upstream.body as any).pipe(res);
-  } catch (error: any) {
-    console.error("MCP proxy error:", error?.message || error);
-    res.status(502).json({ error: "MCP proxy unavailable" });
-  }
-}
-
-app.use(["/mcp", "/oauth", "/.well-known/oauth-authorization-server", "/.well-known/oauth-protected-resource"], proxyMcpRequest);
-
 app.use(cors());
 app.use(express.json({ limit: '20mb' }));
 app.use(express.text({ type: ['text/*', 'application/jwt'], limit: '1mb' }));
 app.use(express.urlencoded({ extended: true, limit: '20mb' }));
+
+function mcpBaseUrl() {
+  return MCP_PUBLIC_BASE_URL;
+}
+
+function mcpBase64Url(value: Buffer | string) {
+  return Buffer.from(value).toString("base64url");
+}
+
+function mcpSign(payload: Record<string, any>) {
+  const body = mcpBase64Url(JSON.stringify(payload));
+  const signature = createHmac("sha256", MCP_TOKEN_SECRET).update(body).digest("base64url");
+  return `${body}.${signature}`;
+}
+
+function mcpVerify(token: string) {
+  const [body, signature] = String(token || "").split(".");
+  if (!body || !signature) return null;
+  const expected = createHmac("sha256", MCP_TOKEN_SECRET).update(body).digest("base64url");
+  if (signature !== expected) return null;
+  try {
+    const payload = JSON.parse(Buffer.from(body, "base64url").toString("utf8"));
+    if (payload.exp && Date.now() > Number(payload.exp)) return null;
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+function mcpVerifyPkce(verifier: string, challenge: string, method = "plain") {
+  if (method === "S256") {
+    return createHash("sha256").update(verifier).digest("base64url") === challenge;
+  }
+  return verifier === challenge;
+}
+
+function mcpEscape(value: unknown) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function mcpHtml(body: string) {
+  return `<!doctype html><html lang="ru"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>YBCRM MCP</title><style>body{margin:0;background:#f6f7f9;color:#1f2937;font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{max-width:520px;margin:8vh auto;padding:32px;background:#fff;border:1px solid #e6e9ef;border-radius:18px;box-shadow:0 16px 40px rgba(31,41,55,.08)}h1{font-size:28px;line-height:1.15;margin:0 0 12px}p{color:#6b7280;line-height:1.5}input,button{width:100%;height:52px;border-radius:12px;font-size:16px}input{border:1px solid #dce1ea;padding:0 14px;box-sizing:border-box}button{margin-top:14px;border:0;background:#111827;color:white;font-weight:700;cursor:pointer}.hint{font-size:13px;color:#9ca3af}</style></head><body><main>${body}</main></body></html>`;
+}
+
+function mcpUnauthorized(res: express.Response) {
+  const base = mcpBaseUrl();
+  res
+    .status(401)
+    .setHeader("WWW-Authenticate", `Bearer realm="ybcrm-mcp", resource_metadata="${base}/.well-known/oauth-protected-resource/mcp"`)
+    .json({ error: "unauthorized" });
+}
+
+function mcpAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const auth = String(req.headers.authorization || "");
+  const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+  const payload = mcpVerify(token);
+  if (!payload || payload.type !== "access") return mcpUnauthorized(res);
+  (req as any).mcp = payload;
+  return next();
+}
+
+function mcpOAuthMetadata(_req: express.Request, res: express.Response) {
+  const base = mcpBaseUrl();
+  res.json({
+    issuer: base,
+    authorization_endpoint: `${base}/oauth/authorize`,
+    token_endpoint: `${base}/oauth/token`,
+    registration_endpoint: `${base}/oauth/register`,
+    response_types_supported: ["code"],
+    grant_types_supported: ["authorization_code"],
+    code_challenge_methods_supported: ["S256", "plain"],
+    token_endpoint_auth_methods_supported: ["none", "client_secret_post"],
+    scopes_supported: ["crm.read", "crm.write"],
+    service_documentation: `${base}/docs`,
+  });
+}
+
+app.get("/.well-known/oauth-authorization-server", mcpOAuthMetadata);
+app.get("/.well-known/oauth-authorization-server/mcp", mcpOAuthMetadata);
+
+app.get(["/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp"], (_req, res) => {
+  const base = mcpBaseUrl();
+  res.json({
+    resource: `${base}/mcp`,
+    authorization_servers: [base],
+    bearer_methods_supported: ["header"],
+    scopes_supported: ["crm.read", "crm.write"],
+  });
+});
+
+app.post("/oauth/register", (req, res) => {
+  const redirectUris = Array.isArray(req.body?.redirect_uris) ? req.body.redirect_uris : [];
+  res.status(201).json({
+    client_id: `ybcrm_${randomBytes(12).toString("hex")}`,
+    client_id_issued_at: Math.floor(Date.now() / 1000),
+    redirect_uris: redirectUris,
+    grant_types: ["authorization_code"],
+    response_types: ["code"],
+    token_endpoint_auth_method: "none",
+  });
+});
+
+app.all("/oauth/authorize", (req, res) => {
+  const query = { ...req.query, ...req.body } as Record<string, any>;
+  const clientId = query.client_id;
+  const redirectUri = query.redirect_uri;
+  const scope = query.scope || "crm.read crm.write";
+  if (!clientId || !redirectUri) {
+    res.status(400).send(mcpHtml("<h1>Не хватает данных</h1><p>ChatGPT не передал client_id или redirect_uri.</p>"));
+    return;
+  }
+  if (MCP_OAUTH_PIN && query.pin !== MCP_OAUTH_PIN) {
+    const hidden = Object.entries(query)
+      .filter(([key]) => key !== "pin")
+      .map(([key, value]) => `<input type="hidden" name="${mcpEscape(key)}" value="${mcpEscape(value)}"/>`)
+      .join("");
+    res
+      .status(query.pin ? 401 : 200)
+      .send(
+        mcpHtml(`<h1>Подключение YBCRM</h1><p>Введите PIN доступа, чтобы подключить ChatGPT к CRM.</p><form method="get" action="/oauth/authorize">${hidden}<input name="pin" autocomplete="one-time-code" placeholder="PIN доступа" autofocus/><button type="submit">Подключить</button></form><p class="hint">PIN нужен только при первом подключении MCP.</p>`),
+      );
+    return;
+  }
+  const code = mcpSign({
+    type: "code",
+    clientId,
+    redirectUri,
+    scope,
+    codeChallenge: query.code_challenge,
+    codeChallengeMethod: query.code_challenge_method,
+    exp: Date.now() + 10 * 60 * 1000,
+  });
+  const url = new URL(String(redirectUri));
+  url.searchParams.set("code", code);
+  if (query.state) url.searchParams.set("state", String(query.state));
+  res.redirect(url.toString());
+});
+
+app.post("/oauth/token", (req, res) => {
+  const codePayload = mcpVerify(String(req.body?.code || ""));
+  if (req.body?.grant_type !== "authorization_code" || !codePayload || codePayload.type !== "code") {
+    res.status(400).json({ error: "invalid_grant" });
+    return;
+  }
+  if (String(codePayload.redirectUri) !== String(req.body?.redirect_uri || "")) {
+    res.status(400).json({ error: "invalid_grant" });
+    return;
+  }
+  if (codePayload.codeChallenge) {
+    const verifier = String(req.body?.code_verifier || "");
+    if (!mcpVerifyPkce(verifier, String(codePayload.codeChallenge), String(codePayload.codeChallengeMethod || "plain"))) {
+      res.status(400).json({ error: "invalid_grant", error_description: "PKCE verification failed" });
+      return;
+    }
+  }
+  const accessToken = mcpSign({
+    type: "access",
+    sub: "chatgpt",
+    scope: codePayload.scope || "crm.read crm.write",
+    exp: Date.now() + 365 * 24 * 60 * 60 * 1000,
+  });
+  res.json({
+    access_token: accessToken,
+    token_type: "Bearer",
+    expires_in: 31_536_000,
+    scope: codePayload.scope || "crm.read crm.write",
+  });
+});
+
+const mcpTools = [
+  "orders.list",
+  "orders.get",
+  "orders.update",
+  "clients.search",
+  "analytics.sales",
+  "instagram.stats",
+  "content.analytics",
+  "finance.summary",
+  "tasks.create",
+  "dashboard",
+].map((name) => ({
+  name,
+  description: `YBCRM tool: ${name}`,
+  inputSchema: { type: "object", additionalProperties: true },
+}));
+
+async function mcpToolResult(name: string, args: any) {
+  if (name === "orders.list" && adminDb) {
+    const snap = await adminDb.collection("orders").limit(Number(args?.pageSize || 20)).get();
+    return snap.docs.map((doc: any) => ({ id: doc.id, ...doc.data() }));
+  }
+  if (name === "orders.get" && adminDb && args?.id) {
+    const snap = await adminDb.collection("orders").doc(String(args.id)).get();
+    return snap.exists ? { id: snap.id, ...snap.data() } : null;
+  }
+  return {
+    ok: true,
+    tool: name,
+    message: "MCP подключен к YBCRM. Для этого инструмента будет добавлена детальная логика CRM.",
+    args: args || {},
+  };
+}
+
+app.get("/mcp", mcpAuth, (_req, res) => {
+  res.status(405).json({ error: "METHOD_NOT_ALLOWED", message: "MCP endpoint expects POST requests." });
+});
+
+app.post("/mcp", mcpAuth, async (req, res) => {
+  const body = req.body || {};
+  const id = body.id ?? null;
+  try {
+    if (body.method === "initialize") {
+      res.json({
+        jsonrpc: "2.0",
+        id,
+        result: {
+          protocolVersion: "2024-11-05",
+          capabilities: { tools: {} },
+          serverInfo: { name: "ybcrm", version: "1.0.0" },
+        },
+      });
+      return;
+    }
+    if (body.method === "tools/list") {
+      res.json({ jsonrpc: "2.0", id, result: { tools: mcpTools } });
+      return;
+    }
+    if (body.method === "tools/call") {
+      const result = await mcpToolResult(String(body.params?.name || ""), body.params?.arguments || {});
+      res.json({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] } });
+      return;
+    }
+    if (body.method === "notifications/initialized") {
+      res.status(202).end();
+      return;
+    }
+    res.json({ jsonrpc: "2.0", id, error: { code: -32601, message: "Method not found" } });
+  } catch (error: any) {
+    res.json({ jsonrpc: "2.0", id, error: { code: -32000, message: error?.message || "MCP error" } });
+  }
+});
 
 app.get("/api/ping", (req, res) => {
   res.send("ybcrm-system 2.0 - Claude AI + ManyChat v8");
