@@ -7,6 +7,7 @@ import {
   ChevronRight,
   Database,
   ExternalLink,
+  Instagram,
   KeyRound,
   Loader2,
   MessageCircle,
@@ -40,6 +41,22 @@ type CdekSettings = {
   senderName?: string;
   senderPhone?: string;
   shipmentPoint?: string;
+};
+
+type InstagramStatus = {
+  configured?: boolean;
+  connected?: boolean;
+  appIdPreview?: string;
+  redirectUri?: string;
+  scopes?: string;
+  pageName?: string;
+  instagramUserId?: string;
+  instagramUsername?: string;
+  followersCount?: number;
+  mediaCount?: number;
+  tokenExpiresAt?: string;
+  connectedAt?: string;
+  lastCheckAt?: string;
 };
 
 const inputClass =
@@ -170,6 +187,15 @@ export const IntegrationsPage: React.FC<Props> = ({ onNavigate }) => {
 
   const [tgState, setTgState] = useState<ApiState>('checking');
   const [tgText, setTgText] = useState('');
+  const [instagramState, setInstagramState] = useState<ApiState>('checking');
+  const [instagramStatus, setInstagramStatus] = useState<InstagramStatus>({});
+  const [instagramAppId, setInstagramAppId] = useState('');
+  const [instagramAppSecret, setInstagramAppSecret] = useState('');
+  const [instagramRedirectUri, setInstagramRedirectUri] = useState('');
+  const [instagramScopes, setInstagramScopes] = useState('');
+  const [instagramResult, setInstagramResult] = useState('');
+  const [savingInstagram, setSavingInstagram] = useState(false);
+  const [checkingInstagram, setCheckingInstagram] = useState(false);
   const [geminiState, setGeminiState] = useState<ApiState>('checking');
   const [geminiKey, setGeminiKey] = useState('');
   const [geminiResult, setGeminiResult] = useState('');
@@ -185,6 +211,7 @@ export const IntegrationsPage: React.FC<Props> = ({ onNavigate }) => {
     setTochkaState('checking');
     setCdekState('checking');
     setTgState('checking');
+    setInstagramState('checking');
     setGeminiState('checking');
 
     fetch('/api/tochka/status')
@@ -212,6 +239,16 @@ export const IntegrationsPage: React.FC<Props> = ({ onNavigate }) => {
         setTgState('missing');
         setTgText('Не удалось проверить Telegram');
       });
+
+    fetch('/api/instagram/status')
+      .then(r => r.json())
+      .then(d => {
+        setInstagramStatus(d || {});
+        setInstagramState(d.connected ? 'connected' : d.configured ? 'partial' : 'missing');
+        setInstagramRedirectUri(d.redirectUri || '');
+        setInstagramScopes(d.scopes || '');
+      })
+      .catch(() => setInstagramState('missing'));
 
     getDoc(doc(db, 'settings', 'ai_config'))
       .then(snap => setGeminiState(snap.exists() && snap.data()?.geminiKey ? 'connected' : 'missing'))
@@ -343,6 +380,82 @@ export const IntegrationsPage: React.FC<Props> = ({ onNavigate }) => {
       setGeminiResult(e.message || 'Ошибка сохранения Gemini');
     } finally {
       setSavingGemini(false);
+    }
+  };
+
+  const saveInstagramApp = async () => {
+    if (!instagramAppId.trim() || (!instagramAppSecret.trim() && !instagramStatus.configured)) {
+      setInstagramResult('Вставь Meta App ID и App Secret.');
+      return;
+    }
+    setSavingInstagram(true);
+    setInstagramResult('');
+    try {
+      const res = await fetch('/api/instagram/save-app', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          appId: instagramAppId.trim(),
+          appSecret: instagramAppSecret.trim(),
+          redirectUri: instagramRedirectUri.trim(),
+          scopes: instagramScopes.trim(),
+        }),
+      });
+      const data = await readApiJson(res);
+      if (!res.ok) throw new Error(data.error || 'Не удалось сохранить Meta App');
+      setInstagramAppId('');
+      setInstagramAppSecret('');
+      setInstagramStatus(data || {});
+      setInstagramState(data.connected ? 'connected' : 'partial');
+      setInstagramRedirectUri(data.redirectUri || instagramRedirectUri);
+      setInstagramScopes(data.scopes || instagramScopes);
+      setInstagramResult('Meta App сохранен. Теперь нажми “Подключить Instagram”.');
+    } catch (e: any) {
+      setInstagramResult(e.message || 'Ошибка сохранения Instagram');
+    } finally {
+      setSavingInstagram(false);
+    }
+  };
+
+  const connectInstagram = async () => {
+    setInstagramResult('');
+    try {
+      const res = await fetch('/api/instagram/oauth/start');
+      const data = await readApiJson(res);
+      if (!res.ok) throw new Error(data.error || 'Не удалось начать подключение Instagram');
+      window.open(data.url, '_blank', 'noopener,noreferrer');
+      setInstagramResult('Открыл авторизацию Meta. После подтверждения вернись сюда и нажми “Проверить”.');
+    } catch (e: any) {
+      setInstagramResult(e.message || 'Ошибка подключения Instagram');
+    }
+  };
+
+  const testInstagram = async () => {
+    setCheckingInstagram(true);
+    setInstagramResult('');
+    try {
+      const res = await fetch('/api/instagram/test', { method: 'POST' });
+      const data = await readApiJson(res);
+      if (!res.ok) throw new Error(data.error || 'Не удалось проверить Instagram');
+      setInstagramResult(`Instagram работает: @${data.account?.username || instagramStatus.instagramUsername || 'аккаунт'}`);
+      loadStatuses();
+    } catch (e: any) {
+      setInstagramResult(e.message || 'Ошибка проверки Instagram');
+    } finally {
+      setCheckingInstagram(false);
+    }
+  };
+
+  const disconnectInstagram = async () => {
+    setInstagramResult('');
+    try {
+      const res = await fetch('/api/instagram/disconnect', { method: 'POST' });
+      const data = await readApiJson(res);
+      if (!res.ok) throw new Error(data.error || 'Не удалось отключить Instagram');
+      setInstagramResult('Instagram отключен. Meta App остался сохранен.');
+      loadStatuses();
+    } catch (e: any) {
+      setInstagramResult(e.message || 'Ошибка отключения Instagram');
     }
   };
 
@@ -652,6 +765,110 @@ export const IntegrationsPage: React.FC<Props> = ({ onNavigate }) => {
           <p className="mt-3 text-[12px] leading-5 text-[#6B7280]">
             Токены Chatwoot лучше хранить в переменных окружения деплоя. Через браузер их не сохраняю специально.
           </p>
+        </ApiCard>
+
+        <ApiCard
+          title="Instagram Graph"
+          subtitle="Подключение Instagram Business через Meta Graph: охваты, публикации, Reels и связка с CRM."
+          icon={Instagram}
+          state={instagramState}
+          accent="bg-[#E4408F]"
+        >
+          <div className="space-y-4">
+            <div className="grid gap-3 md:grid-cols-2">
+              <Field label="Meta App ID">
+                <input
+                  value={instagramAppId}
+                  onChange={e => setInstagramAppId(e.target.value)}
+                  placeholder={instagramStatus.appIdPreview || 'App ID из Meta Developers'}
+                  className={inputClass}
+                />
+              </Field>
+              <Field label="App Secret">
+                <input
+                  value={instagramAppSecret}
+                  onChange={e => setInstagramAppSecret(e.target.value)}
+                  placeholder={instagramStatus.configured ? 'оставь пустым, если не менять' : 'App Secret'}
+                  type="password"
+                  className={inputClass}
+                />
+              </Field>
+              <Field label="Redirect URL">
+                <div className="flex gap-2">
+                  <input
+                    value={instagramRedirectUri}
+                    onChange={e => setInstagramRedirectUri(e.target.value)}
+                    placeholder="https://ybcrm.ru/api/instagram/oauth/callback"
+                    className={inputClass}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => navigator.clipboard?.writeText(instagramRedirectUri)}
+                    className="h-11 shrink-0 rounded-[8px] border border-[#E6E9EF] bg-white px-3 text-[12px] font-semibold text-[#1F2937] hover:bg-[#F6F7F9]"
+                  >
+                    Copy
+                  </button>
+                </div>
+              </Field>
+              <Field label="Scope">
+                <input
+                  value={instagramScopes}
+                  onChange={e => setInstagramScopes(e.target.value)}
+                  placeholder="pages_show_list,instagram_basic..."
+                  className={inputClass}
+                />
+              </Field>
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-3">
+              <div className="rounded-[10px] border border-[#E6E9EF] bg-[#F6F7F9] p-4">
+                <p className={labelClass}>Instagram</p>
+                <p className="mt-2 truncate text-[16px] font-semibold text-[#1F2937]">
+                  {instagramStatus.instagramUsername ? `@${instagramStatus.instagramUsername}` : 'Не подключен'}
+                </p>
+              </div>
+              <div className="rounded-[10px] border border-[#E6E9EF] bg-[#F6F7F9] p-4">
+                <p className={labelClass}>Facebook Page</p>
+                <p className="mt-2 truncate text-[16px] font-semibold text-[#1F2937]">
+                  {instagramStatus.pageName || 'Не выбрана'}
+                </p>
+              </div>
+              <div className="rounded-[10px] border border-[#E6E9EF] bg-[#F6F7F9] p-4">
+                <p className={labelClass}>Аудитория / посты</p>
+                <p className="mt-2 text-[16px] font-semibold text-[#1F2937]">
+                  {(instagramStatus.followersCount || 0).toLocaleString('ru-RU')} / {(instagramStatus.mediaCount || 0).toLocaleString('ru-RU')}
+                </p>
+              </div>
+            </div>
+
+            {instagramResult && (
+              <p className={cn('text-[12px] font-semibold', instagramResult.toLowerCase().includes('ошиб') || instagramResult.includes('Вставь') || instagramResult.includes('Не удалось') ? 'text-[#F06B6B]' : 'text-[#2EBA7F]')}>
+                {instagramResult}
+              </p>
+            )}
+
+            <div className="flex flex-wrap gap-2">
+              <ActionButton onClick={saveInstagramApp} disabled={savingInstagram || !instagramAppId.trim() || (!instagramAppSecret.trim() && !instagramStatus.configured)} tone="blue">
+                {savingInstagram ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                Сохранить Meta App
+              </ActionButton>
+              <ActionButton onClick={connectInstagram} disabled={instagramState === 'missing'} tone="dark">
+                <ExternalLink className="h-4 w-4" />
+                Подключить Instagram
+              </ActionButton>
+              <ActionButton onClick={testInstagram} disabled={checkingInstagram || instagramState !== 'connected'} tone="light">
+                {checkingInstagram ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
+                Проверить
+              </ActionButton>
+              <ActionButton onClick={disconnectInstagram} disabled={instagramState !== 'connected'} tone="light">
+                Отключить
+              </ActionButton>
+            </div>
+
+            <p className="text-[11px] font-medium leading-5 text-[#6B7280]">
+              В Meta App добавь этот Redirect URL. Instagram должен быть Business/Creator и привязан к Facebook Page.
+            </p>
+          </div>
         </ApiCard>
 
         <ApiCard

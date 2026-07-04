@@ -3460,6 +3460,288 @@ app.post("/api/content/instagram-settings", async (req, res) => {
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
+// ─── Instagram Graph / Meta OAuth ───────────────────────────────────────────
+
+const META_GRAPH_VERSION = process.env.META_GRAPH_VERSION || "v21.0";
+const META_DEFAULT_SCOPES = [
+  "pages_show_list",
+  "pages_read_engagement",
+  "instagram_basic",
+  "instagram_manage_insights",
+  "instagram_content_publish",
+].join(",");
+
+function publicBaseUrl(req?: any) {
+  const fromEnv = process.env.WEBHOOK_URL || process.env.SERVER_URL || process.env.PUBLIC_BASE_URL || MCP_PUBLIC_BASE_URL;
+  if (fromEnv) return String(fromEnv).replace(/\/$/, "");
+  if (req) {
+    const proto = req.headers?.["x-forwarded-proto"] || req.protocol || "https";
+    const host = req.headers?.["x-forwarded-host"] || req.headers?.host;
+    if (host) return `${proto}://${host}`.replace(/\/$/, "");
+  }
+  return "https://ybcrm.ru";
+}
+
+function safeInstagramSettings(raw: any) {
+  const data = raw || {};
+  return {
+    configured: Boolean(data.appId && data.appSecret),
+    connected: Boolean(data.instagramUserId && data.accessToken),
+    appIdPreview: data.appId ? `${String(data.appId).slice(0, 5)}...${String(data.appId).slice(-4)}` : "",
+    redirectUri: data.redirectUri || `${publicBaseUrl()}/api/instagram/oauth/callback`,
+    scopes: data.scopes || META_DEFAULT_SCOPES,
+    pageId: data.pageId || "",
+    pageName: data.pageName || "",
+    instagramUserId: data.instagramUserId || "",
+    instagramUsername: data.instagramUsername || "",
+    followersCount: Number(data.followersCount || 0),
+    mediaCount: Number(data.mediaCount || 0),
+    tokenExpiresAt: data.tokenExpiresAt || "",
+    connectedAt: data.connectedAt || "",
+    lastCheckAt: data.lastCheckAt || "",
+  };
+}
+
+async function getInstagramGraphSettings() {
+  if (!db) return {};
+  const snap = await getDoc(doc(db, "settings", "instagram_graph"));
+  return snap.exists() ? snap.data() : {};
+}
+
+async function saveInstagramGraphSettings(data: any) {
+  if (!db) throw new Error("Firebase не инициализирован");
+  await setDoc(doc(db, "settings", "instagram_graph"), data, { merge: true });
+}
+
+function graphErrorMessage(error: any) {
+  return error?.response?.data?.error?.message || error?.response?.data?.message || error?.message || "Ошибка Instagram Graph";
+}
+
+app.get("/api/instagram/status", async (req, res) => {
+  if (!db) return res.status(503).json({ error: "Firebase не инициализирован" });
+  try {
+    const settings = await getInstagramGraphSettings();
+    const status = safeInstagramSettings(settings);
+    if (!settings.redirectUri) status.redirectUri = `${publicBaseUrl(req)}/api/instagram/oauth/callback`;
+    res.json(status);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/instagram/save-app", async (req, res) => {
+  if (!db) return res.status(503).json({ error: "Firebase не инициализирован" });
+  const appId = String(req.body?.appId || "").trim();
+  const redirectUri = String(req.body?.redirectUri || "").trim() || `${publicBaseUrl(req)}/api/instagram/oauth/callback`;
+  const scopes = String(req.body?.scopes || "").trim() || META_DEFAULT_SCOPES;
+  const existing: any = await getInstagramGraphSettings();
+  const appSecret = String(req.body?.appSecret || "").trim() || existing.appSecret || "";
+  if (!appId || !appSecret) return res.status(400).json({ error: "Нужны Meta App ID и App Secret" });
+  try {
+    const nextSettings = {
+      ...existing,
+      appId,
+      appSecret,
+      redirectUri,
+      scopes,
+      updatedAt: new Date().toISOString(),
+    };
+    await saveInstagramGraphSettings({
+      appId,
+      appSecret,
+      redirectUri,
+      scopes,
+      updatedAt: new Date().toISOString(),
+    });
+    res.json({ success: true, ...safeInstagramSettings(nextSettings) });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/instagram/oauth/start", async (req, res) => {
+  if (!db) return res.status(503).json({ error: "Firebase не инициализирован" });
+  try {
+    const settings: any = await getInstagramGraphSettings();
+    const appId = settings.appId || process.env.META_APP_ID;
+    const appSecret = settings.appSecret || process.env.META_APP_SECRET;
+    const redirectUri = settings.redirectUri || `${publicBaseUrl(req)}/api/instagram/oauth/callback`;
+    const scopes = settings.scopes || META_DEFAULT_SCOPES;
+    if (!appId || !appSecret) return res.status(400).json({ error: "Сначала сохрани Meta App ID и App Secret" });
+    const state = randomBytes(18).toString("hex");
+    await saveInstagramGraphSettings({ oauthState: state, oauthStateCreatedAt: new Date().toISOString(), redirectUri, scopes });
+    const url = new URL(`https://www.facebook.com/${META_GRAPH_VERSION}/dialog/oauth`);
+    url.searchParams.set("client_id", appId);
+    url.searchParams.set("redirect_uri", redirectUri);
+    url.searchParams.set("state", state);
+    url.searchParams.set("scope", scopes);
+    url.searchParams.set("response_type", "code");
+    res.json({ url: url.toString(), redirectUri, scopes });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/instagram/oauth/callback", async (req, res) => {
+  if (!db) return res.status(503).send("Firebase не инициализирован");
+  try {
+    const settings: any = await getInstagramGraphSettings();
+    const code = String(req.query.code || "");
+    const state = String(req.query.state || "");
+    if (!code) throw new Error("Meta не вернула code");
+    if (settings.oauthState && state !== settings.oauthState) throw new Error("OAuth state не совпал. Попробуй подключить заново.");
+
+    const appId = settings.appId || process.env.META_APP_ID;
+    const appSecret = settings.appSecret || process.env.META_APP_SECRET;
+    const redirectUri = settings.redirectUri || `${publicBaseUrl(req)}/api/instagram/oauth/callback`;
+    if (!appId || !appSecret) throw new Error("Meta App ID / Secret не настроены");
+
+    const shortTokenResp = await axios.get(`https://graph.facebook.com/${META_GRAPH_VERSION}/oauth/access_token`, {
+      params: { client_id: appId, redirect_uri: redirectUri, client_secret: appSecret, code },
+    });
+    const shortToken = shortTokenResp.data?.access_token;
+    if (!shortToken) throw new Error("Meta не вернула access_token");
+
+    let longToken = shortToken;
+    let expiresIn = Number(shortTokenResp.data?.expires_in || 0);
+    try {
+      const longTokenResp = await axios.get(`https://graph.facebook.com/${META_GRAPH_VERSION}/oauth/access_token`, {
+        params: {
+          grant_type: "fb_exchange_token",
+          client_id: appId,
+          client_secret: appSecret,
+          fb_exchange_token: shortToken,
+        },
+      });
+      longToken = longTokenResp.data?.access_token || shortToken;
+      expiresIn = Number(longTokenResp.data?.expires_in || expiresIn || 0);
+    } catch (exchangeError) {
+      console.warn("[instagram] long token exchange skipped:", graphErrorMessage(exchangeError));
+    }
+
+    const pagesResp = await axios.get(`https://graph.facebook.com/${META_GRAPH_VERSION}/me/accounts`, {
+      params: {
+        access_token: longToken,
+        fields: "id,name,access_token,instagram_business_account{id,username,name,profile_picture_url,followers_count,media_count}",
+        limit: 100,
+      },
+    });
+    const pages = Array.isArray(pagesResp.data?.data) ? pagesResp.data.data : [];
+    const page = pages.find((item: any) => item.instagram_business_account);
+    if (!page?.instagram_business_account?.id) {
+      throw new Error("У подключенных Facebook-страниц не найден Instagram Business аккаунт. Проверь, что Instagram привязан к Page и аккаунт Business/Creator.");
+    }
+
+    const ig = page.instagram_business_account;
+    const tokenExpiresAt = expiresIn ? new Date(Date.now() + expiresIn * 1000).toISOString() : "";
+    const payload = {
+      appId,
+      appSecret,
+      redirectUri,
+      scopes: settings.scopes || META_DEFAULT_SCOPES,
+      accessToken: longToken,
+      pageAccessToken: page.access_token || longToken,
+      tokenExpiresAt,
+      pageId: page.id,
+      pageName: page.name || "",
+      instagramUserId: ig.id,
+      instagramUsername: ig.username || "",
+      profilePictureUrl: ig.profile_picture_url || "",
+      followersCount: Number(ig.followers_count || 0),
+      mediaCount: Number(ig.media_count || 0),
+      oauthState: "",
+      connectedAt: new Date().toISOString(),
+      lastCheckAt: new Date().toISOString(),
+    };
+    await saveInstagramGraphSettings(payload);
+    await setDoc(doc(db, "settings", "instagram"), {
+      accessToken: payload.pageAccessToken,
+      userId: payload.instagramUserId,
+      source: "instagram_graph",
+      updatedAt: new Date().toISOString(),
+    }, { merge: true });
+
+    res.send(`
+      <!doctype html>
+      <html lang="ru">
+        <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Instagram подключен</title></head>
+        <body style="font-family:Inter,Arial,sans-serif;background:#f6f7f9;color:#1f2937;display:grid;place-items:center;min-height:100vh;margin:0">
+          <main style="background:#fff;border:1px solid #e6e9ef;border-radius:14px;padding:28px;max-width:520px;box-shadow:0 16px 40px rgba(31,41,55,.08)">
+            <p style="letter-spacing:.16em;text-transform:uppercase;color:#2EBA7F;font-weight:700;font-size:12px">Instagram Graph</p>
+            <h1 style="margin:8px 0 10px;font-size:28px">Подключено</h1>
+            <p style="color:#6B7280;line-height:1.5">Аккаунт @${payload.instagramUsername || payload.instagramUserId} привязан к CRM. Можно закрыть это окно и вернуться на страницу интеграций.</p>
+            <a href="/integrations" style="display:inline-flex;margin-top:18px;background:#1f2937;color:#fff;text-decoration:none;border-radius:8px;padding:12px 16px;font-weight:700">Вернуться в CRM</a>
+          </main>
+        </body>
+      </html>
+    `);
+  } catch (e: any) {
+    res.status(500).send(`
+      <!doctype html>
+      <html lang="ru">
+        <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Instagram ошибка</title></head>
+        <body style="font-family:Inter,Arial,sans-serif;background:#f6f7f9;color:#1f2937;display:grid;place-items:center;min-height:100vh;margin:0">
+          <main style="background:#fff;border:1px solid #fee2e2;border-radius:14px;padding:28px;max-width:560px;box-shadow:0 16px 40px rgba(31,41,55,.08)">
+            <p style="letter-spacing:.16em;text-transform:uppercase;color:#F06B6B;font-weight:700;font-size:12px">Instagram Graph</p>
+            <h1 style="margin:8px 0 10px;font-size:28px">Не подключилось</h1>
+            <p style="color:#6B7280;line-height:1.5">${graphErrorMessage(e)}</p>
+            <a href="/integrations" style="display:inline-flex;margin-top:18px;background:#1f2937;color:#fff;text-decoration:none;border-radius:8px;padding:12px 16px;font-weight:700">Вернуться в CRM</a>
+          </main>
+        </body>
+      </html>
+    `);
+  }
+});
+
+app.post("/api/instagram/test", async (_req, res) => {
+  if (!db) return res.status(503).json({ error: "Firebase не инициализирован" });
+  try {
+    const settings: any = await getInstagramGraphSettings();
+    const accessToken = settings.pageAccessToken || settings.accessToken;
+    const igUserId = settings.instagramUserId;
+    if (!accessToken || !igUserId) return res.status(400).json({ error: "Instagram Graph еще не подключен" });
+    const { data } = await axios.get(`https://graph.facebook.com/${META_GRAPH_VERSION}/${igUserId}`, {
+      params: {
+        fields: "id,username,name,followers_count,media_count",
+        access_token: accessToken,
+      },
+    });
+    await saveInstagramGraphSettings({
+      instagramUsername: data.username || settings.instagramUsername || "",
+      followersCount: Number(data.followers_count || 0),
+      mediaCount: Number(data.media_count || 0),
+      lastCheckAt: new Date().toISOString(),
+    });
+    res.json({ success: true, account: data });
+  } catch (e: any) {
+    res.status(500).json({ error: graphErrorMessage(e) });
+  }
+});
+
+app.post("/api/instagram/disconnect", async (_req, res) => {
+  if (!db) return res.status(503).json({ error: "Firebase не инициализирован" });
+  try {
+    await saveInstagramGraphSettings({
+      accessToken: "",
+      pageAccessToken: "",
+      tokenExpiresAt: "",
+      pageId: "",
+      pageName: "",
+      instagramUserId: "",
+      instagramUsername: "",
+      profilePictureUrl: "",
+      followersCount: 0,
+      mediaCount: 0,
+      connectedAt: "",
+      lastCheckAt: "",
+      disconnectedAt: new Date().toISOString(),
+    });
+    res.json({ success: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ─── Точка Банк API ─────────────────────────────────────────────────────────
 
 const TOCHKA_API = 'https://enter.tochka.com/uapi';
