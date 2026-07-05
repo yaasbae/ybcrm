@@ -46,7 +46,9 @@ type CdekSettings = {
 type InstagramStatus = {
   configured?: boolean;
   connected?: boolean;
+  authMode?: string;
   appIdPreview?: string;
+  tokenPreview?: string;
   redirectUri?: string;
   scopes?: string;
   pageName?: string;
@@ -189,6 +191,7 @@ export const IntegrationsPage: React.FC<Props> = ({ onNavigate }) => {
   const [tgText, setTgText] = useState('');
   const [instagramState, setInstagramState] = useState<ApiState>('checking');
   const [instagramStatus, setInstagramStatus] = useState<InstagramStatus>({});
+  const [instagramAccessToken, setInstagramAccessToken] = useState('');
   const [instagramAppId, setInstagramAppId] = useState('');
   const [instagramAppSecret, setInstagramAppSecret] = useState('');
   const [instagramRedirectUri, setInstagramRedirectUri] = useState('');
@@ -412,6 +415,33 @@ export const IntegrationsPage: React.FC<Props> = ({ onNavigate }) => {
       setInstagramResult('Meta App сохранен. Теперь нажми “Подключить Instagram”.');
     } catch (e: any) {
       setInstagramResult(e.message || 'Ошибка сохранения Instagram');
+    } finally {
+      setSavingInstagram(false);
+    }
+  };
+
+  const saveInstagramToken = async () => {
+    if (!instagramAccessToken.trim()) {
+      setInstagramResult('Вставь Instagram Access Token.');
+      return;
+    }
+    setSavingInstagram(true);
+    setInstagramResult('');
+    try {
+      const res = await fetch('/api/instagram/save-token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accessToken: instagramAccessToken.trim() }),
+      });
+      const data = await readApiJson(res);
+      if (!res.ok) throw new Error(data.error || 'Не удалось сохранить Instagram token');
+      setInstagramAccessToken('');
+      setInstagramStatus(data || {});
+      setInstagramState(data.connected ? 'connected' : 'partial');
+      setInstagramResult(`Instagram token сохранен: @${data.instagramUsername || data.account?.username || 'аккаунт'}`);
+      loadStatuses();
+    } catch (e: any) {
+      setInstagramResult(e.message || 'Ошибка сохранения Instagram token');
     } finally {
       setSavingInstagram(false);
     }
@@ -769,12 +799,48 @@ export const IntegrationsPage: React.FC<Props> = ({ onNavigate }) => {
 
         <ApiCard
           title="Instagram Graph"
-          subtitle="Подключение Instagram Business через Meta Graph: охваты, публикации, Reels и связка с CRM."
+          subtitle="Готовый Access Token из Meta Graph Explorer или OAuth Meta App: охваты, Reels и связка с CRM."
           icon={Instagram}
           state={instagramState}
           accent="bg-[#E4408F]"
         >
           <div className="space-y-4">
+            <div className="rounded-[10px] border border-[#E6E9EF] bg-[#F6F7F9] p-4">
+              <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <p className={labelClass}>Быстрый вариант</p>
+                  <h3 className="mt-1 text-[18px] font-semibold text-[#1F2937]">Instagram Access Token</h3>
+                  <p className="mt-1 text-[12px] leading-5 text-[#6B7280]">
+                    Это твой текущий способ: вставляешь токен из Graph API Explorer, CRM сама проверит аккаунт и сохранит подключение.
+                  </p>
+                </div>
+                <span className="rounded-[8px] bg-white px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.12em] text-[#6B7280]">
+                  {instagramStatus.authMode === 'token' ? 'Token активен' : 'Без App Secret'}
+                </span>
+              </div>
+              <div className="grid gap-3 lg:grid-cols-[1fr_auto] lg:items-end">
+                <Field label="Access Token">
+                  <input
+                    value={instagramAccessToken}
+                    onChange={e => setInstagramAccessToken(e.target.value)}
+                    placeholder={instagramStatus.tokenPreview || 'Вставь готовый access token'}
+                    type="password"
+                    className={inputClass}
+                  />
+                </Field>
+                <ActionButton onClick={saveInstagramToken} disabled={savingInstagram || !instagramAccessToken.trim()} tone="dark">
+                  {savingInstagram ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                  Сохранить token
+                </ActionButton>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3">
+              <div className="h-px flex-1 bg-[#E6E9EF]" />
+              <span className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#9CA3AF]">OAuth Meta App, если понадобится позже</span>
+              <div className="h-px flex-1 bg-[#E6E9EF]" />
+            </div>
+
             <div className="grid gap-3 md:grid-cols-2">
               <Field label="Meta App ID">
                 <input
@@ -822,6 +888,12 @@ export const IntegrationsPage: React.FC<Props> = ({ onNavigate }) => {
 
             <div className="grid gap-3 sm:grid-cols-3">
               <div className="rounded-[10px] border border-[#E6E9EF] bg-[#F6F7F9] p-4">
+                <p className={labelClass}>Режим</p>
+                <p className="mt-2 truncate text-[16px] font-semibold text-[#1F2937]">
+                  {instagramStatus.authMode === 'token' ? 'Access Token' : 'OAuth Meta'}
+                </p>
+              </div>
+              <div className="rounded-[10px] border border-[#E6E9EF] bg-[#F6F7F9] p-4">
                 <p className={labelClass}>Instagram</p>
                 <p className="mt-2 truncate text-[16px] font-semibold text-[#1F2937]">
                   {instagramStatus.instagramUsername ? `@${instagramStatus.instagramUsername}` : 'Не подключен'}
@@ -833,10 +905,19 @@ export const IntegrationsPage: React.FC<Props> = ({ onNavigate }) => {
                   {instagramStatus.pageName || 'Не выбрана'}
                 </p>
               </div>
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-2">
               <div className="rounded-[10px] border border-[#E6E9EF] bg-[#F6F7F9] p-4">
                 <p className={labelClass}>Аудитория / посты</p>
                 <p className="mt-2 text-[16px] font-semibold text-[#1F2937]">
                   {(instagramStatus.followersCount || 0).toLocaleString('ru-RU')} / {(instagramStatus.mediaCount || 0).toLocaleString('ru-RU')}
+                </p>
+              </div>
+              <div className="rounded-[10px] border border-[#E6E9EF] bg-[#F6F7F9] p-4">
+                <p className={labelClass}>Токен</p>
+                <p className="mt-2 truncate text-[16px] font-semibold text-[#1F2937]">
+                  {instagramStatus.tokenPreview || 'Не сохранен'}
                 </p>
               </div>
             </div>

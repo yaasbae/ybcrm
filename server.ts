@@ -3485,9 +3485,11 @@ function publicBaseUrl(req?: any) {
 function safeInstagramSettings(raw: any) {
   const data = raw || {};
   return {
-    configured: Boolean(data.appId && data.appSecret),
+    configured: Boolean((data.appId && data.appSecret) || data.accessToken),
     connected: Boolean(data.instagramUserId && data.accessToken),
+    authMode: data.authMode || (data.accessToken && !data.appId ? "token" : "oauth"),
     appIdPreview: data.appId ? `${String(data.appId).slice(0, 5)}...${String(data.appId).slice(-4)}` : "",
+    tokenPreview: data.accessToken ? `${String(data.accessToken).slice(0, 8)}...${String(data.accessToken).slice(-6)}` : "",
     redirectUri: data.redirectUri || `${publicBaseUrl()}/api/instagram/oauth/callback`,
     scopes: data.scopes || META_DEFAULT_SCOPES,
     pageId: data.pageId || "",
@@ -3515,6 +3517,76 @@ async function saveInstagramGraphSettings(data: any) {
 
 function graphErrorMessage(error: any) {
   return error?.response?.data?.error?.message || error?.response?.data?.message || error?.message || "Ошибка Instagram Graph";
+}
+
+async function resolveInstagramByToken(accessToken: string) {
+  const instagramFields = "id,username,name,account_type,media_count";
+  try {
+    const { data } = await axios.get(`https://graph.instagram.com/${META_GRAPH_VERSION}/me`, {
+      params: { fields: instagramFields, access_token: accessToken },
+    });
+    if (data?.id) {
+      return {
+        source: "instagram_token",
+        tokenForContent: accessToken,
+        payload: {
+          authMode: "token",
+          accessToken,
+          pageAccessToken: "",
+          pageId: "",
+          pageName: "",
+          instagramUserId: data.id,
+          instagramUsername: data.username || data.name || "",
+          followersCount: 0,
+          mediaCount: Number(data.media_count || 0),
+          accountType: data.account_type || "",
+          tokenExpiresAt: "",
+          connectedAt: new Date().toISOString(),
+          lastCheckAt: new Date().toISOString(),
+        },
+        account: data,
+      };
+    }
+  } catch (directError) {
+    try {
+      const { data } = await axios.get(`https://graph.facebook.com/${META_GRAPH_VERSION}/me/accounts`, {
+        params: {
+          access_token: accessToken,
+          fields: "id,name,access_token,instagram_business_account{id,username,name,profile_picture_url,followers_count,media_count}",
+          limit: 100,
+        },
+      });
+      const pages = Array.isArray(data?.data) ? data.data : [];
+      const page = pages.find((item: any) => item.instagram_business_account);
+      if (page?.instagram_business_account?.id) {
+        const ig = page.instagram_business_account;
+        return {
+          source: "facebook_page_token",
+          tokenForContent: page.access_token || accessToken,
+          payload: {
+            authMode: "token",
+            accessToken,
+            pageAccessToken: page.access_token || accessToken,
+            pageId: page.id,
+            pageName: page.name || "",
+            instagramUserId: ig.id,
+            instagramUsername: ig.username || ig.name || "",
+            profilePictureUrl: ig.profile_picture_url || "",
+            followersCount: Number(ig.followers_count || 0),
+            mediaCount: Number(ig.media_count || 0),
+            tokenExpiresAt: "",
+            connectedAt: new Date().toISOString(),
+            lastCheckAt: new Date().toISOString(),
+          },
+          account: ig,
+        };
+      }
+      throw new Error("В токене не найден Instagram Business аккаунт");
+    } catch (pageError) {
+      throw new Error(`${graphErrorMessage(directError)} / ${graphErrorMessage(pageError)}`);
+    }
+  }
+  throw new Error("Meta не вернула Instagram аккаунт по этому токену");
 }
 
 app.get("/api/instagram/status", async (req, res) => {
@@ -3556,6 +3628,28 @@ app.post("/api/instagram/save-app", async (req, res) => {
     res.json({ success: true, ...safeInstagramSettings(nextSettings) });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/instagram/save-token", async (req, res) => {
+  if (!db) return res.status(503).json({ error: "Firebase не инициализирован" });
+  const accessToken = String(req.body?.accessToken || "").trim();
+  if (!accessToken) return res.status(400).json({ error: "Вставь Instagram Access Token" });
+  try {
+    const resolved = await resolveInstagramByToken(accessToken);
+    await saveInstagramGraphSettings({
+      ...resolved.payload,
+      updatedAt: new Date().toISOString(),
+    });
+    await setDoc(doc(db, "settings", "instagram"), {
+      accessToken: resolved.tokenForContent,
+      userId: resolved.payload.instagramUserId,
+      source: resolved.source,
+      updatedAt: new Date().toISOString(),
+    }, { merge: true });
+    res.json({ success: true, source: resolved.source, account: resolved.account, ...safeInstagramSettings(resolved.payload) });
+  } catch (e: any) {
+    res.status(500).json({ error: graphErrorMessage(e) });
   }
 });
 
@@ -3700,12 +3794,24 @@ app.post("/api/instagram/test", async (_req, res) => {
     const accessToken = settings.pageAccessToken || settings.accessToken;
     const igUserId = settings.instagramUserId;
     if (!accessToken || !igUserId) return res.status(400).json({ error: "Instagram Graph еще не подключен" });
-    const { data } = await axios.get(`https://graph.facebook.com/${META_GRAPH_VERSION}/${igUserId}`, {
-      params: {
-        fields: "id,username,name,followers_count,media_count",
-        access_token: accessToken,
-      },
-    });
+    let data: any;
+    try {
+      const resp = await axios.get(`https://graph.facebook.com/${META_GRAPH_VERSION}/${igUserId}`, {
+        params: {
+          fields: "id,username,name,followers_count,media_count",
+          access_token: accessToken,
+        },
+      });
+      data = resp.data;
+    } catch (facebookError) {
+      const resp = await axios.get(`https://graph.instagram.com/${META_GRAPH_VERSION}/me`, {
+        params: {
+          fields: "id,username,name,account_type,media_count",
+          access_token: accessToken,
+        },
+      });
+      data = resp.data;
+    }
     await saveInstagramGraphSettings({
       instagramUsername: data.username || settings.instagramUsername || "",
       followersCount: Number(data.followers_count || 0),
