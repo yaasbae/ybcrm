@@ -3521,8 +3521,9 @@ function graphErrorMessage(error: any) {
 
 async function resolveInstagramByToken(accessToken: string) {
   const instagramFields = "id,username,name,account_type,media_count";
+  let directTokenError = "";
   try {
-    const { data } = await axios.get(`https://graph.instagram.com/${META_GRAPH_VERSION}/me`, {
+    const { data } = await axios.get("https://graph.instagram.com/me", {
       params: { fields: instagramFields, access_token: accessToken },
     });
     if (data?.id) {
@@ -3548,6 +3549,7 @@ async function resolveInstagramByToken(accessToken: string) {
       };
     }
   } catch (directError) {
+    directTokenError = graphErrorMessage(directError);
     try {
       const { data } = await axios.get(`https://graph.facebook.com/${META_GRAPH_VERSION}/me/accounts`, {
         params: {
@@ -3583,7 +3585,7 @@ async function resolveInstagramByToken(accessToken: string) {
       }
       throw new Error("В токене не найден Instagram Business аккаунт");
     } catch (pageError) {
-      throw new Error(`${graphErrorMessage(directError)} / ${graphErrorMessage(pageError)}`);
+      throw new Error(`Instagram token: ${directTokenError}. Facebook Page token: ${graphErrorMessage(pageError)}`);
     }
   }
   throw new Error("Meta не вернула Instagram аккаунт по этому токену");
@@ -3804,7 +3806,7 @@ app.post("/api/instagram/test", async (_req, res) => {
       });
       data = resp.data;
     } catch (facebookError) {
-      const resp = await axios.get(`https://graph.instagram.com/${META_GRAPH_VERSION}/me`, {
+      const resp = await axios.get("https://graph.instagram.com/me", {
         params: {
           fields: "id,username,name,account_type,media_count",
           access_token: accessToken,

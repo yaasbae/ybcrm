@@ -799,7 +799,7 @@ export const IntegrationsPage: React.FC<Props> = ({ onNavigate }) => {
 
         <ApiCard
           title="Instagram Graph"
-          subtitle="Готовый Access Token из Meta Graph Explorer или OAuth Meta App: охваты, Reels и связка с CRM."
+          subtitle="Вставь готовый Instagram Access Token: охваты, Reels и связка с CRM. OAuth оставлен как запасной способ."
           icon={Instagram}
           state={instagramState}
           accent="bg-[#E4408F]"
@@ -811,7 +811,7 @@ export const IntegrationsPage: React.FC<Props> = ({ onNavigate }) => {
                   <p className={labelClass}>Быстрый вариант</p>
                   <h3 className="mt-1 text-[18px] font-semibold text-[#1F2937]">Instagram Access Token</h3>
                   <p className="mt-1 text-[12px] leading-5 text-[#6B7280]">
-                    Это твой текущий способ: вставляешь токен из Graph API Explorer, CRM сама проверит аккаунт и сохранит подключение.
+                    Это твой текущий способ: вставляешь полный токен из Generate Instagram Access Token, CRM проверит его напрямую и сохранит аккаунт.
                   </p>
                 </div>
                 <span className="rounded-[8px] bg-white px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.12em] text-[#6B7280]">
@@ -823,7 +823,7 @@ export const IntegrationsPage: React.FC<Props> = ({ onNavigate }) => {
                   <input
                     value={instagramAccessToken}
                     onChange={e => setInstagramAccessToken(e.target.value)}
-                    placeholder={instagramStatus.tokenPreview || 'Вставь готовый access token'}
+                    placeholder={instagramStatus.tokenPreview || 'IGAA... / EAA... вставь полностью'}
                     type="password"
                     className={inputClass}
                   />
@@ -923,7 +923,7 @@ export const IntegrationsPage: React.FC<Props> = ({ onNavigate }) => {
             </div>
 
             {instagramResult && (
-              <p className={cn('text-[12px] font-semibold', instagramResult.toLowerCase().includes('ошиб') || instagramResult.includes('Вставь') || instagramResult.includes('Не удалось') ? 'text-[#F06B6B]' : 'text-[#2EBA7F]')}>
+              <p className={cn('text-[12px] font-semibold', instagramResult.toLowerCase().includes('ошиб') || instagramResult.toLowerCase().includes('invalid') || instagramResult.includes('Вставь') || instagramResult.includes('Не удалось') ? 'text-[#F06B6B]' : 'text-[#2EBA7F]')}>
                 {instagramResult}
               </p>
             )}
@@ -947,7 +947,7 @@ export const IntegrationsPage: React.FC<Props> = ({ onNavigate }) => {
             </div>
 
             <p className="text-[11px] font-medium leading-5 text-[#6B7280]">
-              В Meta App добавь этот Redirect URL. Instagram должен быть Business/Creator и привязан к Facebook Page.
+              Для быстрого варианта App ID и Secret не нужны. Meta App/OAuth используй только если потом понадобится подключение через Facebook Page.
             </p>
           </div>
         </ApiCard>
