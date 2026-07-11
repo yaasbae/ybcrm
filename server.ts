@@ -3520,75 +3520,93 @@ function graphErrorMessage(error: any) {
 }
 
 async function resolveInstagramByToken(accessToken: string) {
-  const instagramFields = "id,username,name,account_type,media_count";
-  let directTokenError = "";
-  try {
-    const { data } = await axios.get("https://graph.instagram.com/me", {
-      params: { fields: instagramFields, access_token: accessToken },
-    });
-    if (data?.id) {
-      return {
-        source: "instagram_token",
-        tokenForContent: accessToken,
-        payload: {
-          authMode: "token",
-          accessToken,
-          pageAccessToken: "",
-          pageId: "",
-          pageName: "",
-          instagramUserId: data.id,
-          instagramUsername: data.username || data.name || "",
-          followersCount: 0,
-          mediaCount: Number(data.media_count || 0),
-          accountType: data.account_type || "",
-          tokenExpiresAt: "",
-          connectedAt: new Date().toISOString(),
-          lastCheckAt: new Date().toISOString(),
-        },
-        account: data,
-      };
-    }
-  } catch (directError) {
-    directTokenError = graphErrorMessage(directError);
+  const token = accessToken
+    .trim()
+    .replace(/^Bearer\s+/i, "")
+    .replace(/^["']|["']$/g, "")
+    .replace(/[\s\u200B-\u200D\uFEFF]/g, "");
+  const errors: string[] = [];
+  const connectedAt = new Date().toISOString();
+
+  const buildResult = (source: string, account: any, tokenForContent = token, page?: any) => ({
+    source,
+    tokenForContent,
+    payload: {
+      authMode: "token",
+      accessToken: token,
+      pageAccessToken: page?.access_token || "",
+      pageId: page?.id || "",
+      pageName: page?.name || "",
+      instagramUserId: account.user_id || account.id,
+      instagramUsername: account.username || account.name || "",
+      profilePictureUrl: account.profile_picture_url || "",
+      followersCount: Number(account.followers_count || 0),
+      mediaCount: Number(account.media_count || 0),
+      accountType: account.account_type || "",
+      tokenExpiresAt: "",
+      connectedAt,
+      lastCheckAt: connectedAt,
+    },
+    account,
+  });
+
+  // New Instagram Login tokens (IGAA...) use graph.instagram.com.
+  for (const endpoint of [
+    `https://graph.instagram.com/${META_GRAPH_VERSION}/me`,
+    "https://graph.instagram.com/me",
+  ]) {
     try {
-      const { data } = await axios.get(`https://graph.facebook.com/${META_GRAPH_VERSION}/me/accounts`, {
-        params: {
-          access_token: accessToken,
-          fields: "id,name,access_token,instagram_business_account{id,username,name,profile_picture_url,followers_count,media_count}",
-          limit: 100,
-        },
+      const { data } = await axios.get(endpoint, {
+        params: { fields: "id,user_id,username,account_type", access_token: token },
       });
-      const pages = Array.isArray(data?.data) ? data.data : [];
-      const page = pages.find((item: any) => item.instagram_business_account);
-      if (page?.instagram_business_account?.id) {
-        const ig = page.instagram_business_account;
-        return {
-          source: "facebook_page_token",
-          tokenForContent: page.access_token || accessToken,
-          payload: {
-            authMode: "token",
-            accessToken,
-            pageAccessToken: page.access_token || accessToken,
-            pageId: page.id,
-            pageName: page.name || "",
-            instagramUserId: ig.id,
-            instagramUsername: ig.username || ig.name || "",
-            profilePictureUrl: ig.profile_picture_url || "",
-            followersCount: Number(ig.followers_count || 0),
-            mediaCount: Number(ig.media_count || 0),
-            tokenExpiresAt: "",
-            connectedAt: new Date().toISOString(),
-            lastCheckAt: new Date().toISOString(),
-          },
-          account: ig,
-        };
-      }
-      throw new Error("В токене не найден Instagram Business аккаунт");
-    } catch (pageError) {
-      throw new Error(`Instagram token: ${directTokenError}. Facebook Page token: ${graphErrorMessage(pageError)}`);
+      if (data?.user_id || data?.id) return buildResult("instagram_token", data);
+    } catch (error) {
+      errors.push(`Instagram Login: ${graphErrorMessage(error)}`);
     }
   }
-  throw new Error("Meta не вернула Instagram аккаунт по этому токену");
+
+  // Classic Instagram Graph tokens can resolve /me directly to the IG account.
+  try {
+    const { data: identity } = await axios.get(`https://graph.facebook.com/${META_GRAPH_VERSION}/me`, {
+      params: { fields: "id,name", access_token: token },
+    });
+    if (identity?.id) {
+      try {
+        const { data: account } = await axios.get(`https://graph.facebook.com/${META_GRAPH_VERSION}/${identity.id}`, {
+          params: {
+            fields: "id,username,name,profile_picture_url,followers_count,media_count",
+            access_token: token,
+          },
+        });
+        if (account?.id && account?.username) return buildResult("instagram_graph_token", account);
+      } catch (error) {
+        errors.push(`Instagram Graph account: ${graphErrorMessage(error)}`);
+      }
+    }
+  } catch (error) {
+    errors.push(`Facebook Graph identity: ${graphErrorMessage(error)}`);
+  }
+
+  // Facebook user tokens expose Instagram through a managed Facebook Page.
+  try {
+    const { data } = await axios.get(`https://graph.facebook.com/${META_GRAPH_VERSION}/me/accounts`, {
+      params: {
+        access_token: token,
+        fields: "id,name,access_token,instagram_business_account{id,username,name,profile_picture_url,followers_count,media_count}",
+        limit: 100,
+      },
+    });
+    const pages = Array.isArray(data?.data) ? data.data : [];
+    const page = pages.find((item: any) => item.instagram_business_account);
+    if (page?.instagram_business_account?.id) {
+      return buildResult("facebook_page_token", page.instagram_business_account, page.access_token || token, page);
+    }
+    errors.push("Facebook Page: Instagram Business аккаунт не найден");
+  } catch (error) {
+    errors.push(`Facebook Page: ${graphErrorMessage(error)}`);
+  }
+
+  throw new Error(errors.join(". "));
 }
 
 app.get("/api/instagram/status", async (req, res) => {
