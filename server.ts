@@ -3463,6 +3463,7 @@ app.post("/api/content/instagram-settings", async (req, res) => {
 // ─── Instagram Graph / Meta OAuth ───────────────────────────────────────────
 
 const META_GRAPH_VERSION = process.env.META_GRAPH_VERSION || "v21.0";
+const META_DEFAULT_PAGE_ID = process.env.META_FACEBOOK_PAGE_ID || "125330923998398";
 const META_DEFAULT_SCOPES = [
   "pages_show_list",
   "pages_read_engagement",
@@ -3519,7 +3520,27 @@ function graphErrorMessage(error: any) {
   return error?.response?.data?.error?.message || error?.response?.data?.message || error?.message || "Ошибка Instagram Graph";
 }
 
-async function resolveInstagramByToken(accessToken: string) {
+async function findInstagramPage(accessToken: string, preferredPageId = META_DEFAULT_PAGE_ID) {
+  const fields = "id,name,access_token,instagram_business_account{id,username}";
+  const { data } = await axios.get(`https://graph.facebook.com/${META_GRAPH_VERSION}/me/accounts`, {
+    params: { access_token: accessToken, fields, limit: 100 },
+  });
+  const pages = Array.isArray(data?.data) ? data.data : [];
+  const managedPage = pages.find((item: any) => item.instagram_business_account);
+  if (managedPage?.instagram_business_account?.id) return managedPage;
+
+  // Some Business Portfolio tokens can open an assigned Page directly while
+  // /me/accounts still returns an empty list. Use the configured Page as fallback.
+  if (preferredPageId) {
+    const pageResponse = await axios.get(`https://graph.facebook.com/${META_GRAPH_VERSION}/${preferredPageId}`, {
+      params: { access_token: accessToken, fields },
+    });
+    if (pageResponse.data?.instagram_business_account?.id) return pageResponse.data;
+  }
+  return null;
+}
+
+async function resolveInstagramByToken(accessToken: string, preferredPageId = META_DEFAULT_PAGE_ID) {
   const token = accessToken
     .trim()
     .replace(/^Bearer\s+/i, "")
@@ -3589,17 +3610,20 @@ async function resolveInstagramByToken(accessToken: string) {
 
   // Facebook user tokens expose Instagram through a managed Facebook Page.
   try {
-    const { data } = await axios.get(`https://graph.facebook.com/${META_GRAPH_VERSION}/me/accounts`, {
-      params: {
-        access_token: token,
-        fields: "id,name,access_token,instagram_business_account{id,username,name,profile_picture_url,followers_count,media_count}",
-        limit: 100,
-      },
-    });
-    const pages = Array.isArray(data?.data) ? data.data : [];
-    const page = pages.find((item: any) => item.instagram_business_account);
+    const page = await findInstagramPage(token, preferredPageId);
     if (page?.instagram_business_account?.id) {
-      return buildResult("facebook_page_token", page.instagram_business_account, page.access_token || token, page);
+      const contentToken = page.access_token || token;
+      let account = page.instagram_business_account;
+      try {
+        const accountResponse = await axios.get(
+          `https://graph.facebook.com/${META_GRAPH_VERSION}/${account.id}`,
+          { params: { access_token: contentToken, fields: "id,username,name,followers_count,media_count" } },
+        );
+        account = { ...account, ...accountResponse.data };
+      } catch (metricsError) {
+        errors.push(`Instagram metrics: ${graphErrorMessage(metricsError)}`);
+      }
+      return buildResult("facebook_page_token", account, contentToken, page);
     }
     errors.push("Facebook Page: Instagram Business аккаунт не найден");
   } catch (error) {
@@ -3656,7 +3680,8 @@ app.post("/api/instagram/save-token", async (req, res) => {
   const accessToken = String(req.body?.accessToken || "").trim();
   if (!accessToken) return res.status(400).json({ error: "Вставь Instagram Access Token" });
   try {
-    const resolved = await resolveInstagramByToken(accessToken);
+    const existing: any = await getInstagramGraphSettings();
+    const resolved = await resolveInstagramByToken(accessToken, existing.pageId || META_DEFAULT_PAGE_ID);
     await saveInstagramGraphSettings({
       ...resolved.payload,
       updatedAt: new Date().toISOString(),
@@ -3733,15 +3758,7 @@ app.get("/api/instagram/oauth/callback", async (req, res) => {
       console.warn("[instagram] long token exchange skipped:", graphErrorMessage(exchangeError));
     }
 
-    const pagesResp = await axios.get(`https://graph.facebook.com/${META_GRAPH_VERSION}/me/accounts`, {
-      params: {
-        access_token: longToken,
-        fields: "id,name,access_token,instagram_business_account{id,username,name,profile_picture_url,followers_count,media_count}",
-        limit: 100,
-      },
-    });
-    const pages = Array.isArray(pagesResp.data?.data) ? pagesResp.data.data : [];
-    const page = pages.find((item: any) => item.instagram_business_account);
+    const page = await findInstagramPage(longToken, settings.pageId || META_DEFAULT_PAGE_ID);
     if (!page?.instagram_business_account?.id) {
       throw new Error("У подключенных Facebook-страниц не найден Instagram Business аккаунт. Проверь, что Instagram привязан к Page и аккаунт Business/Creator.");
     }
