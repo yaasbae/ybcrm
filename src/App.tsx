@@ -20,17 +20,18 @@ const ContentStudioPage = lazy(() => import("./components/ContentStudioPage").th
 const PaymentPage = lazy(() => import("./components/PaymentPage").then(m => ({ default: m.PaymentPage })));
 const CdekPage = lazy(() => import("./components/CdekPage").then(m => ({ default: m.CdekPage })));
 const IntegrationsPage = lazy(() => import("./components/IntegrationsPage").then(m => ({ default: m.IntegrationsPage })));
+const InstagramInboxPage = lazy(() => import("./components/InstagramInboxPage").then(m => ({ default: m.InstagramInboxPage })));
 import { auth, completeGoogleRedirectSignIn, getGoogleAuthErrorMessage, signInWithGoogle, signInWithEmail, logOut } from "./firebase";
 import { onAuthStateChanged, User as FirebaseUser } from "firebase/auth";
 import { cn } from "./lib/utils";
 import {
   LogIn, LogOut, User as UserIcon, AlertCircle,
   DollarSign, Calculator, LayoutDashboard, Package, Bot, ShoppingBag,
-  UserCircle, Star, Calendar as CalendarIcon, BookOpen, Send, Sparkles, Wand2, Truck, ReceiptText, PlugZap
+  UserCircle, Star, Calendar as CalendarIcon, BookOpen, Send, Sparkles, Wand2, Truck, ReceiptText, PlugZap, Instagram
 } from "lucide-react";
 import { motion } from "motion/react";
 
-type AppView = 'home' | 'calculator' | 'analytics' | 'orders' | 'clients' | 'marketing' | 'order-form' | 'products' | 'ai-agent' | 'public-product' | 'public-payment' | 'finance' | 'payroll' | 'handbook' | 'broadcast' | 'broadcast-v2' | 'bot' | 'content' | 'studio' | 'cdek' | 'integrations';
+type AppView = 'home' | 'calculator' | 'analytics' | 'orders' | 'clients' | 'marketing' | 'order-form' | 'products' | 'ai-agent' | 'public-product' | 'public-payment' | 'finance' | 'payroll' | 'handbook' | 'broadcast' | 'broadcast-v2' | 'bot' | 'content' | 'studio' | 'cdek' | 'integrations' | 'instagram';
 
 const viewRoutes: Record<Exclude<AppView, 'public-product' | 'public-payment'>, string> = {
   home: '/',
@@ -52,6 +53,7 @@ const viewRoutes: Record<Exclude<AppView, 'public-product' | 'public-payment'>, 
   studio: '/studio',
   cdek: '/cdek',
   integrations: '/integrations',
+  instagram: '/instagram',
 };
 
 const routeViews = Object.fromEntries(
@@ -206,7 +208,7 @@ export default function App() {
     };
   }, []);
 
-  const handleNavigate = (newView: 'calculator' | 'analytics' | 'orders' | 'clients' | 'marketing' | 'order-form' | 'products' | 'ai-agent' | 'finance' | 'payroll' | 'handbook' | 'broadcast' | 'broadcast-v2' | 'bot' | 'content' | 'studio' | 'cdek' | 'integrations' | 'home', clientData?: any) => {
+  const handleNavigate = (newView: 'calculator' | 'analytics' | 'orders' | 'clients' | 'marketing' | 'order-form' | 'products' | 'ai-agent' | 'finance' | 'payroll' | 'handbook' | 'broadcast' | 'broadcast-v2' | 'bot' | 'content' | 'studio' | 'cdek' | 'integrations' | 'instagram' | 'home', clientData?: any) => {
     if (clientData) setInitialClient(clientData);
     else setInitialClient(null);
     setView(newView);
@@ -428,6 +430,7 @@ export default function App() {
                 { id: 'handbook',  label: 'Справ.',   icon: BookOpen },
                 { id: 'cdek',      label: 'СДЭК',     icon: Truck },
                 { id: 'integrations', label: 'API',    icon: PlugZap },
+                { id: 'instagram', label: 'Инста',    icon: Instagram },
                 { id: 'broadcast', label: 'Рассыл.',  icon: Send },
                 { id: 'bot',       label: 'Бот',       icon: Bot },
                 { id: 'content',   label: 'Контент',   icon: Sparkles },
@@ -552,6 +555,10 @@ export default function App() {
 
           {view === 'integrations' && (
             <IntegrationsPage onNavigate={(target) => handleNavigate(target)} />
+          )}
+
+          {view === 'instagram' && (
+            <InstagramInboxPage />
           )}
 
           {view === 'broadcast' && (

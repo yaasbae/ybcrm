@@ -3902,6 +3902,242 @@ app.post("/api/instagram/disconnect", async (_req, res) => {
   }
 });
 
+// ─── Instagram Direct inbox ────────────────────────────────────────────────
+
+function normalizeInstagramHandle(value: any) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/^https?:\/\/(www\.)?instagram\.com\//, "")
+    .replace(/^@/, "")
+    .replace(/[/?#].*$/, "");
+}
+
+async function instagramInboxCredentials() {
+  const settings: any = await getInstagramGraphSettings();
+  const accessToken = settings.pageAccessToken || settings.accessToken;
+  const pageId = settings.pageId || META_DEFAULT_PAGE_ID;
+  const instagramUserId = settings.instagramUserId;
+  if (!accessToken || !pageId || !instagramUserId) {
+    throw new Error("Instagram Direct не подключен. Сначала подключи Instagram Graph в разделе API.");
+  }
+  return { settings, accessToken, pageId, instagramUserId };
+}
+
+function normalizeInstagramMessage(item: any, ownIds: string[] = []) {
+  const fromId = String(item?.from?.id || "");
+  const isOutgoing = ownIds.includes(fromId);
+  return {
+    id: String(item?.id || ""),
+    text: String(item?.message || item?.text || ""),
+    createdAt: item?.created_time || item?.timestamp || new Date().toISOString(),
+    from: item?.from || null,
+    to: item?.to?.data || item?.to || [],
+    attachments: item?.attachments?.data || item?.attachments || [],
+    direction: isOutgoing ? "outgoing" : "incoming",
+  };
+}
+
+async function saveInstagramMessages(conversationId: string, messages: any[], extra: any = {}) {
+  if (!adminDb) return;
+  const batch = adminDb.batch();
+  messages.forEach((message: any) => {
+    if (!message?.id) return;
+    batch.set(adminDb.collection("instagram_messages").doc(message.id), {
+      ...message,
+      conversationId,
+      ...extra,
+      syncedAt: new Date().toISOString(),
+    }, { merge: true });
+  });
+  await batch.commit();
+}
+
+async function getContactsForInstagramSearch(search = "") {
+  if (!adminDb) return [];
+  const snap = await adminDb.collection("contacts").get();
+  const needle = String(search || "").trim().toLowerCase();
+  return snap.docs.map((entry: any) => ({ id: entry.id, ...entry.data() })).filter((client: any) => {
+    if (!needle) return true;
+    return [client.fullName, client.name, client.phone, client.insta, client.instagram, client.email]
+      .some((value) => String(value || "").toLowerCase().includes(needle));
+  });
+}
+
+async function findClientByInstagram(participants: any[], linkedClientId = "", prefetchedClients?: any[]) {
+  if (!adminDb) return null;
+  if (linkedClientId) {
+    const linked = await adminDb.collection("contacts").doc(linkedClientId).get();
+    if (linked.exists) return { id: linked.id, ...linked.data() };
+  }
+  const handles = participants
+    .flatMap((participant: any) => [participant?.username, participant?.name])
+    .map(normalizeInstagramHandle)
+    .filter(Boolean);
+  if (!handles.length) return null;
+  const clients = prefetchedClients || await getContactsForInstagramSearch();
+  return clients.find((client: any) => {
+    const clientHandles = [client.insta, client.instagram, client.instagramUsername]
+      .map(normalizeInstagramHandle)
+      .filter(Boolean);
+    return clientHandles.some((handle: string) => handles.includes(handle));
+  }) || null;
+}
+
+async function fetchInstagramConversationMessages(conversationId: string, accessToken: string, ownIds: string[]) {
+  const fields = "id,message,from,to,created_time,attachments";
+  const response = await axios.get(`https://graph.facebook.com/${META_GRAPH_VERSION}/${conversationId}/messages`, {
+    params: { access_token: accessToken, fields, limit: 100 },
+  });
+  return (Array.isArray(response.data?.data) ? response.data.data : [])
+    .map((item: any) => normalizeInstagramMessage(item, ownIds))
+    .sort((a: any, b: any) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+}
+
+app.get("/api/instagram/conversations", async (req, res) => {
+  try {
+    const { accessToken, pageId, instagramUserId } = await instagramInboxCredentials();
+    const fields = "id,updated_time,participants";
+    const response = await axios.get(`https://graph.facebook.com/${META_GRAPH_VERSION}/${pageId}/conversations`, {
+      params: { access_token: accessToken, platform: "instagram", fields, limit: Math.min(Number(req.query.limit || 40), 100) },
+    });
+    const rows = Array.isArray(response.data?.data) ? response.data.data : [];
+    // Read the client database once for the entire sync, not once per dialog.
+    const contacts = adminDb ? await getContactsForInstagramSearch() : [];
+    const conversations = await Promise.all(rows.map(async (row: any) => {
+      const participants = row?.participants?.data || [];
+      const ownIds = [String(pageId), String(instagramUserId)];
+      const customer = participants.find((item: any) => !ownIds.includes(String(item?.id || ""))) || participants[0] || null;
+      const stored = adminDb ? await adminDb.collection("instagram_conversations").doc(row.id).get().catch(() => null) : null;
+      const storedData: any = stored?.exists ? stored.data() : {};
+      let messages: any[] = [];
+      try {
+        messages = await fetchInstagramConversationMessages(row.id, accessToken, ownIds);
+        await saveInstagramMessages(row.id, messages, { customerId: customer?.id || "" });
+      } catch (messageError) {
+        console.warn("[instagram] conversation messages:", graphErrorMessage(messageError));
+      }
+      const lastMessage = messages[messages.length - 1] || null;
+      const linkedClient = await findClientByInstagram(participants, storedData?.clientId || "", contacts);
+      const result = {
+        id: row.id,
+        updatedAt: row.updated_time || lastMessage?.createdAt || "",
+        participants,
+        customer,
+        lastMessage,
+        linkedClient,
+      };
+      if (adminDb) await adminDb.collection("instagram_conversations").doc(row.id).set({
+        ...result,
+        linkedClient: linkedClient || null,
+        clientId: linkedClient?.id || storedData?.clientId || "",
+        syncedAt: new Date().toISOString(),
+      }, { merge: true });
+      return result;
+    }));
+    conversations.sort((a: any, b: any) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+    res.json({ conversations, paging: response.data?.paging || null });
+  } catch (error: any) {
+    res.status(error?.response?.status || 500).json({ error: graphErrorMessage(error) });
+  }
+});
+
+app.get("/api/instagram/conversations/:id/messages", async (req, res) => {
+  try {
+    const { accessToken, pageId, instagramUserId } = await instagramInboxCredentials();
+    const messages = await fetchInstagramConversationMessages(req.params.id, accessToken, [String(pageId), String(instagramUserId)]);
+    await saveInstagramMessages(req.params.id, messages);
+    res.json({ messages });
+  } catch (error: any) {
+    res.status(error?.response?.status || 500).json({ error: graphErrorMessage(error) });
+  }
+});
+
+app.post("/api/instagram/conversations/:id/messages", async (req, res) => {
+  const recipientId = String(req.body?.recipientId || "").trim();
+  const text = String(req.body?.text || "").trim();
+  if (!recipientId || !text) return res.status(400).json({ error: "Нужны получатель и текст сообщения" });
+  try {
+    const { accessToken, pageId, instagramUserId } = await instagramInboxCredentials();
+    let response: any;
+    let lastError: any;
+    for (const senderId of [pageId, instagramUserId]) {
+      try {
+        response = await axios.post(`https://graph.facebook.com/${META_GRAPH_VERSION}/${senderId}/messages`, {
+          recipient: { id: recipientId },
+          message: { text },
+          messaging_type: "RESPONSE",
+        }, { params: { access_token: accessToken } });
+        break;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    if (!response) throw lastError || new Error("Meta не приняла сообщение");
+    const message = {
+      id: String(response.data?.message_id || `local-${Date.now()}`),
+      text,
+      createdAt: new Date().toISOString(),
+      from: { id: instagramUserId },
+      to: [{ id: recipientId }],
+      attachments: [],
+      direction: "outgoing",
+      source: "manager",
+    };
+    await saveInstagramMessages(req.params.id, [message]);
+    if (adminDb) {
+      const conversation = await adminDb.collection("instagram_conversations").doc(req.params.id).get();
+      const conversationData: any = conversation.exists ? conversation.data() : {};
+      await adminDb.collection("ai_sales_knowledge").add({
+        channel: "instagram",
+        conversationId: req.params.id,
+        clientId: conversationData?.clientId || "",
+        customerHandle: conversationData?.customer?.username || conversationData?.customer?.name || "",
+        customerMessage: String(req.body?.contextMessage || ""),
+        managerResponse: text,
+        status: "approved",
+        source: "manager_reply",
+        createdAt: new Date().toISOString(),
+      });
+      await adminDb.collection("instagram_conversations").doc(req.params.id).set({
+        lastMessage: message,
+        updatedAt: message.createdAt,
+      }, { merge: true });
+    }
+    res.json({ success: true, message, meta: response.data });
+  } catch (error: any) {
+    res.status(error?.response?.status || 500).json({ error: graphErrorMessage(error) });
+  }
+});
+
+app.get("/api/instagram/client-search", async (req, res) => {
+  try {
+    const clients = (await getContactsForInstagramSearch(String(req.query.q || ""))).slice(0, 30);
+    res.json({ clients });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post("/api/instagram/conversations/:id/link-client", async (req, res) => {
+  const clientId = String(req.body?.clientId || "").trim();
+  if (!adminDb) return res.status(503).json({ error: "Серверная база не подключена" });
+  if (!clientId) return res.status(400).json({ error: "Выбери клиента" });
+  try {
+    const client = await adminDb.collection("contacts").doc(clientId).get();
+    if (!client.exists) return res.status(404).json({ error: "Клиент не найден" });
+    const linkedClient = { id: client.id, ...client.data() };
+    await adminDb.collection("instagram_conversations").doc(req.params.id).set({
+      clientId,
+      linkedClient,
+      linkedAt: new Date().toISOString(),
+    }, { merge: true });
+    res.json({ success: true, linkedClient });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // ─── Точка Банк API ─────────────────────────────────────────────────────────
 
 const TOCHKA_API = 'https://enter.tochka.com/uapi';
