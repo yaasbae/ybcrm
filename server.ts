@@ -3506,14 +3506,31 @@ function safeInstagramSettings(raw: any) {
 }
 
 async function getInstagramGraphSettings() {
+  if (adminDb) {
+    const snap = await adminDb.collection("settings").doc("instagram_graph").get();
+    return snap.exists ? snap.data() : {};
+  }
   if (!db) return {};
   const snap = await getDoc(doc(db, "settings", "instagram_graph"));
   return snap.exists() ? snap.data() : {};
 }
 
 async function saveInstagramGraphSettings(data: any) {
+  if (adminDb) {
+    await adminDb.collection("settings").doc("instagram_graph").set(data, { merge: true });
+    return;
+  }
   if (!db) throw new Error("Firebase не инициализирован");
   await setDoc(doc(db, "settings", "instagram_graph"), data, { merge: true });
+}
+
+async function saveInstagramContentSettings(data: any) {
+  if (adminDb) {
+    await adminDb.collection("settings").doc("instagram").set(data, { merge: true });
+    return;
+  }
+  if (!db) throw new Error("Firebase не инициализирован");
+  await setDoc(doc(db, "settings", "instagram"), data, { merge: true });
 }
 
 function graphErrorMessage(error: any) {
@@ -3686,12 +3703,12 @@ app.post("/api/instagram/save-token", async (req, res) => {
       ...resolved.payload,
       updatedAt: new Date().toISOString(),
     });
-    await setDoc(doc(db, "settings", "instagram"), {
+    await saveInstagramContentSettings({
       accessToken: resolved.tokenForContent,
       userId: resolved.payload.instagramUserId,
       source: resolved.source,
       updatedAt: new Date().toISOString(),
-    }, { merge: true });
+    });
     res.json({ success: true, source: resolved.source, account: resolved.account, ...safeInstagramSettings(resolved.payload) });
   } catch (e: any) {
     res.status(500).json({ error: graphErrorMessage(e) });
@@ -3785,12 +3802,12 @@ app.get("/api/instagram/oauth/callback", async (req, res) => {
       lastCheckAt: new Date().toISOString(),
     };
     await saveInstagramGraphSettings(payload);
-    await setDoc(doc(db, "settings", "instagram"), {
+    await saveInstagramContentSettings({
       accessToken: payload.pageAccessToken,
       userId: payload.instagramUserId,
       source: "instagram_graph",
       updatedAt: new Date().toISOString(),
-    }, { merge: true });
+    });
 
     res.send(`
       <!doctype html>
