@@ -799,7 +799,7 @@ export const IntegrationsPage: React.FC<Props> = ({ onNavigate }) => {
 
         <ApiCard
           title="Instagram Graph"
-          subtitle="Вставь готовый Instagram Access Token: охваты, Reels и связка с CRM. OAuth оставлен как запасной способ."
+          subtitle="Подключение охватов, Reels и статистики Instagram к CRM."
           icon={Instagram}
           state={instagramState}
           accent="bg-[#E4408F]"
@@ -808,14 +808,14 @@ export const IntegrationsPage: React.FC<Props> = ({ onNavigate }) => {
             <div className="rounded-[10px] border border-[#E6E9EF] bg-[#F6F7F9] p-4">
               <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
                 <div>
-                  <p className={labelClass}>Быстрый вариант</p>
+                  <p className={labelClass}>Подключение</p>
                   <h3 className="mt-1 text-[18px] font-semibold text-[#1F2937]">Instagram Access Token</h3>
                   <p className="mt-1 text-[12px] leading-5 text-[#6B7280]">
-                    Это твой текущий способ: вставляешь полный токен из Generate Instagram Access Token, CRM проверит его напрямую и сохранит аккаунт.
+                    Вставь полный токен из Generate Instagram Access Token. CRM сама определит аккаунт и сохранит подключение.
                   </p>
                 </div>
                 <span className="rounded-[8px] bg-white px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.12em] text-[#6B7280]">
-                  {instagramStatus.authMode === 'token' ? 'Token активен' : 'Без App Secret'}
+                  {instagramState === 'connected' ? 'Подключено' : 'Только Access Token'}
                 </span>
               </div>
               <div className="grid gap-3 lg:grid-cols-[1fr_auto] lg:items-end">
@@ -830,84 +830,18 @@ export const IntegrationsPage: React.FC<Props> = ({ onNavigate }) => {
                 </Field>
                 <ActionButton onClick={saveInstagramToken} disabled={savingInstagram || !instagramAccessToken.trim()} tone="dark">
                   {savingInstagram ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-                  Сохранить token
+                  Сохранить токен
                 </ActionButton>
               </div>
             </div>
 
-            <div className="flex items-center gap-3">
-              <div className="h-px flex-1 bg-[#E6E9EF]" />
-              <span className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#9CA3AF]">OAuth Meta App, если понадобится позже</span>
-              <div className="h-px flex-1 bg-[#E6E9EF]" />
-            </div>
-
-            <div className="grid gap-3 md:grid-cols-2">
-              <Field label="Meta App ID">
-                <input
-                  value={instagramAppId}
-                  onChange={e => setInstagramAppId(e.target.value)}
-                  placeholder={instagramStatus.appIdPreview || 'App ID из Meta Developers'}
-                  className={inputClass}
-                />
-              </Field>
-              <Field label="App Secret">
-                <input
-                  value={instagramAppSecret}
-                  onChange={e => setInstagramAppSecret(e.target.value)}
-                  placeholder={instagramStatus.configured ? 'оставь пустым, если не менять' : 'App Secret'}
-                  type="password"
-                  className={inputClass}
-                />
-              </Field>
-              <Field label="Redirect URL">
-                <div className="flex gap-2">
-                  <input
-                    value={instagramRedirectUri}
-                    onChange={e => setInstagramRedirectUri(e.target.value)}
-                    placeholder="https://ybcrm.ru/api/instagram/oauth/callback"
-                    className={inputClass}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => navigator.clipboard?.writeText(instagramRedirectUri)}
-                    className="h-11 shrink-0 rounded-[8px] border border-[#E6E9EF] bg-white px-3 text-[12px] font-semibold text-[#1F2937] hover:bg-[#F6F7F9]"
-                  >
-                    Copy
-                  </button>
-                </div>
-              </Field>
-              <Field label="Scope">
-                <input
-                  value={instagramScopes}
-                  onChange={e => setInstagramScopes(e.target.value)}
-                  placeholder="pages_show_list,instagram_basic..."
-                  className={inputClass}
-                />
-              </Field>
-            </div>
-
             <div className="grid gap-3 sm:grid-cols-3">
-              <div className="rounded-[10px] border border-[#E6E9EF] bg-[#F6F7F9] p-4">
-                <p className={labelClass}>Режим</p>
-                <p className="mt-2 truncate text-[16px] font-semibold text-[#1F2937]">
-                  {instagramStatus.authMode === 'token' ? 'Access Token' : 'OAuth Meta'}
-                </p>
-              </div>
               <div className="rounded-[10px] border border-[#E6E9EF] bg-[#F6F7F9] p-4">
                 <p className={labelClass}>Instagram</p>
                 <p className="mt-2 truncate text-[16px] font-semibold text-[#1F2937]">
                   {instagramStatus.instagramUsername ? `@${instagramStatus.instagramUsername}` : 'Не подключен'}
                 </p>
               </div>
-              <div className="rounded-[10px] border border-[#E6E9EF] bg-[#F6F7F9] p-4">
-                <p className={labelClass}>Facebook Page</p>
-                <p className="mt-2 truncate text-[16px] font-semibold text-[#1F2937]">
-                  {instagramStatus.pageName || 'Не выбрана'}
-                </p>
-              </div>
-            </div>
-
-            <div className="grid gap-3 sm:grid-cols-2">
               <div className="rounded-[10px] border border-[#E6E9EF] bg-[#F6F7F9] p-4">
                 <p className={labelClass}>Аудитория / посты</p>
                 <p className="mt-2 text-[16px] font-semibold text-[#1F2937]">
@@ -929,14 +863,6 @@ export const IntegrationsPage: React.FC<Props> = ({ onNavigate }) => {
             )}
 
             <div className="flex flex-wrap gap-2">
-              <ActionButton onClick={saveInstagramApp} disabled={savingInstagram || !instagramAppId.trim() || (!instagramAppSecret.trim() && !instagramStatus.configured)} tone="blue">
-                {savingInstagram ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-                Сохранить Meta App
-              </ActionButton>
-              <ActionButton onClick={connectInstagram} disabled={instagramState === 'missing'} tone="dark">
-                <ExternalLink className="h-4 w-4" />
-                Подключить Instagram
-              </ActionButton>
               <ActionButton onClick={testInstagram} disabled={checkingInstagram || instagramState !== 'connected'} tone="light">
                 {checkingInstagram ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
                 Проверить
@@ -945,10 +871,6 @@ export const IntegrationsPage: React.FC<Props> = ({ onNavigate }) => {
                 Отключить
               </ActionButton>
             </div>
-
-            <p className="text-[11px] font-medium leading-5 text-[#6B7280]">
-              Для быстрого варианта App ID и Secret не нужны. Meta App/OAuth используй только если потом понадобится подключение через Facebook Page.
-            </p>
           </div>
         </ApiCard>
 

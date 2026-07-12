@@ -3574,7 +3574,7 @@ async function resolveInstagramByToken(accessToken: string) {
       try {
         const { data: account } = await axios.get(`https://graph.facebook.com/${META_GRAPH_VERSION}/${identity.id}`, {
           params: {
-            fields: "id,username,name,profile_picture_url,followers_count,media_count",
+            fields: "id,username,name,followers_count,media_count",
             access_token: token,
           },
         });
