@@ -3918,13 +3918,54 @@ function normalizeInstagramHandle(value: any) {
 
 async function instagramInboxCredentials() {
   const settings: any = await getInstagramGraphSettings();
+  const mainAccessToken = String(settings.accessToken || "").trim();
+
+  // A valid Facebook user token is not necessarily enabled for Instagram
+  // Direct. Meta otherwise returns a misleading "Page Access Token" error.
+  if (mainAccessToken) {
+    try {
+      const permissionsResponse = await axios.get(`https://graph.facebook.com/${META_GRAPH_VERSION}/me/permissions`, {
+        params: { access_token: mainAccessToken },
+        timeout: 10_000,
+      });
+      const granted = new Set((permissionsResponse.data?.data || [])
+        .filter((item: any) => item?.status === "granted")
+        .map((item: any) => String(item?.permission || "")));
+      const missing = ["instagram_basic", "instagram_manage_messages", "pages_manage_metadata"]
+        .filter((permission) => !granted.has(permission));
+      if (missing.length) {
+        throw new Error(`Токен обновлён, но для Instagram Direct не выданы разрешения: ${missing.join(", ")}. Создай токен с этими разрешениями и сохрани его заново.`);
+      }
+    } catch (error: any) {
+      // Preserve our actionable permission error. A failed diagnostic request
+      // itself should not replace the actual Graph request below.
+      if (String(error?.message || "").startsWith("Токен обновлён")) throw error;
+    }
+  }
+
   // Keep both tokens. A Page token can expire independently while the
   // long-lived user token is still valid, so Direct requests must be able to
   // fall back instead of failing just because pageAccessToken was saved first.
-  const accessTokens = [...new Set([settings.pageAccessToken, settings.accessToken]
+  const tokenCandidates = [settings.pageAccessToken, mainAccessToken];
+  const pageId = settings.pageId || META_DEFAULT_PAGE_ID;
+
+  // /me/accounts may be empty for Business Portfolio tokens. Refresh the Page
+  // token directly from the known Page before every inbox sync.
+  if (mainAccessToken && pageId) {
+    try {
+      const pageResponse = await axios.get(`https://graph.facebook.com/${META_GRAPH_VERSION}/${pageId}`, {
+        params: { access_token: mainAccessToken, fields: "access_token" },
+        timeout: 10_000,
+      });
+      if (pageResponse.data?.access_token) tokenCandidates.unshift(pageResponse.data.access_token);
+    } catch (error) {
+      console.warn("[instagram] page token refresh:", graphErrorMessage(error));
+    }
+  }
+
+  const accessTokens = [...new Set(tokenCandidates
     .map((value) => String(value || "").trim())
     .filter(Boolean))];
-  const pageId = settings.pageId || META_DEFAULT_PAGE_ID;
   const instagramUserId = settings.instagramUserId;
   if (!accessTokens.length || !pageId || !instagramUserId) {
     throw new Error("Instagram Direct не подключен. Сначала подключи Instagram Graph в разделе API.");
@@ -3934,14 +3975,17 @@ async function instagramInboxCredentials() {
 
 async function withInstagramTokenFallback<T>(accessTokens: string[], request: (accessToken: string) => Promise<T>) {
   let lastError: any;
+  let pageTokenError: any;
   for (const accessToken of accessTokens) {
     try {
       return await request(accessToken);
     } catch (error) {
       lastError = error;
+      const message = graphErrorMessage(error);
+      if (!/must be called with a Page Access Token/i.test(message)) pageTokenError ||= error;
     }
   }
-  throw lastError || new Error("Meta не приняла сохранённые токены Instagram");
+  throw pageTokenError || lastError || new Error("Meta не приняла сохранённые токены Instagram");
 }
 
 function normalizeInstagramMessage(item: any, ownIds: string[] = []) {
