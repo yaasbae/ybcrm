@@ -3467,7 +3467,10 @@ const META_DEFAULT_PAGE_ID = process.env.META_FACEBOOK_PAGE_ID || "1253309239983
 const META_DEFAULT_SCOPES = [
   "pages_show_list",
   "pages_read_engagement",
+  "pages_manage_metadata",
+  "pages_messaging",
   "instagram_basic",
+  "instagram_manage_messages",
   "instagram_manage_insights",
   "instagram_content_publish",
 ].join(",");
@@ -3915,13 +3918,30 @@ function normalizeInstagramHandle(value: any) {
 
 async function instagramInboxCredentials() {
   const settings: any = await getInstagramGraphSettings();
-  const accessToken = settings.pageAccessToken || settings.accessToken;
+  // Keep both tokens. A Page token can expire independently while the
+  // long-lived user token is still valid, so Direct requests must be able to
+  // fall back instead of failing just because pageAccessToken was saved first.
+  const accessTokens = [...new Set([settings.pageAccessToken, settings.accessToken]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean))];
   const pageId = settings.pageId || META_DEFAULT_PAGE_ID;
   const instagramUserId = settings.instagramUserId;
-  if (!accessToken || !pageId || !instagramUserId) {
+  if (!accessTokens.length || !pageId || !instagramUserId) {
     throw new Error("Instagram Direct не подключен. Сначала подключи Instagram Graph в разделе API.");
   }
-  return { settings, accessToken, pageId, instagramUserId };
+  return { settings, accessTokens, pageId, instagramUserId };
+}
+
+async function withInstagramTokenFallback<T>(accessTokens: string[], request: (accessToken: string) => Promise<T>) {
+  let lastError: any;
+  for (const accessToken of accessTokens) {
+    try {
+      return await request(accessToken);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError || new Error("Meta не приняла сохранённые токены Instagram");
 }
 
 function normalizeInstagramMessage(item: any, ownIds: string[] = []) {
@@ -3996,11 +4016,14 @@ async function fetchInstagramConversationMessages(conversationId: string, access
 
 app.get("/api/instagram/conversations", async (req, res) => {
   try {
-    const { accessToken, pageId, instagramUserId } = await instagramInboxCredentials();
+    const { accessTokens, pageId, instagramUserId } = await instagramInboxCredentials();
     const fields = "id,updated_time,participants";
-    const response = await axios.get(`https://graph.facebook.com/${META_GRAPH_VERSION}/${pageId}/conversations`, {
-      params: { access_token: accessToken, platform: "instagram", fields, limit: Math.min(Number(req.query.limit || 40), 100) },
-    });
+    const { response, accessToken } = await withInstagramTokenFallback(accessTokens, async (token) => ({
+      accessToken: token,
+      response: await axios.get(`https://graph.facebook.com/${META_GRAPH_VERSION}/${pageId}/conversations`, {
+        params: { access_token: token, platform: "instagram", fields, limit: Math.min(Number(req.query.limit || 40), 100) },
+      }),
+    }));
     const rows = Array.isArray(response.data?.data) ? response.data.data : [];
     // Read the client database once for the entire sync, not once per dialog.
     const contacts = adminDb ? await getContactsForInstagramSearch() : [];
@@ -4044,8 +4067,9 @@ app.get("/api/instagram/conversations", async (req, res) => {
 
 app.get("/api/instagram/conversations/:id/messages", async (req, res) => {
   try {
-    const { accessToken, pageId, instagramUserId } = await instagramInboxCredentials();
-    const messages = await fetchInstagramConversationMessages(req.params.id, accessToken, [String(pageId), String(instagramUserId)]);
+    const { accessTokens, pageId, instagramUserId } = await instagramInboxCredentials();
+    const messages = await withInstagramTokenFallback(accessTokens, (accessToken) =>
+      fetchInstagramConversationMessages(req.params.id, accessToken, [String(pageId), String(instagramUserId)]));
     await saveInstagramMessages(req.params.id, messages);
     res.json({ messages });
   } catch (error: any) {
@@ -4058,20 +4082,23 @@ app.post("/api/instagram/conversations/:id/messages", async (req, res) => {
   const text = String(req.body?.text || "").trim();
   if (!recipientId || !text) return res.status(400).json({ error: "Нужны получатель и текст сообщения" });
   try {
-    const { accessToken, pageId, instagramUserId } = await instagramInboxCredentials();
+    const { accessTokens, pageId, instagramUserId } = await instagramInboxCredentials();
     let response: any;
     let lastError: any;
-    for (const senderId of [pageId, instagramUserId]) {
-      try {
-        response = await axios.post(`https://graph.facebook.com/${META_GRAPH_VERSION}/${senderId}/messages`, {
-          recipient: { id: recipientId },
-          message: { text },
-          messaging_type: "RESPONSE",
-        }, { params: { access_token: accessToken } });
-        break;
-      } catch (error) {
-        lastError = error;
+    for (const accessToken of accessTokens) {
+      for (const senderId of [pageId, instagramUserId]) {
+        try {
+          response = await axios.post(`https://graph.facebook.com/${META_GRAPH_VERSION}/${senderId}/messages`, {
+            recipient: { id: recipientId },
+            message: { text },
+            messaging_type: "RESPONSE",
+          }, { params: { access_token: accessToken } });
+          break;
+        } catch (error) {
+          lastError = error;
+        }
       }
+      if (response) break;
     }
     if (!response) throw lastError || new Error("Meta не приняла сообщение");
     const message = {

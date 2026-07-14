@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
+  AlertTriangle,
   ArrowLeft,
   Check,
   Instagram,
@@ -79,6 +80,7 @@ export const InstagramInboxPage: React.FC = () => {
   const [clients, setClients] = useState<Client[]>([]);
   const [clientLoading, setClientLoading] = useState(false);
   const [mobileChat, setMobileChat] = useState(false);
+  const needsReconnect = /access token|session has expired|token.*expired|oauth/i.test(error);
 
   const selected = conversations.find((item) => item.id === selectedId) || null;
   const filtered = useMemo(() => {
@@ -202,7 +204,12 @@ export const InstagramInboxPage: React.FC = () => {
         </button>
       </header>
 
-      {error && <div className="mb-3 rounded-[8px] border border-red-200 bg-red-50 px-4 py-3 text-[12px] font-medium text-[#F06B6B]">{error}</div>}
+      {error && (
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-[8px] border border-red-200 bg-red-50 px-4 py-3 text-[12px] font-medium text-[#F06B6B]">
+          <span className="flex min-w-0 items-center gap-2"><AlertTriangle className="h-4 w-4 shrink-0" /><span>{error}</span></span>
+          {needsReconnect && <a href="/integrations" className="shrink-0 rounded-[8px] bg-[#1F2937] px-3 py-2 text-[11px] font-semibold text-white">Переподключить Instagram</a>}
+        </div>
+      )}
 
       <section className="grid min-h-[680px] overflow-hidden rounded-[8px] border border-[#E6E9EF] bg-white lg:h-[calc(100vh-210px)] lg:grid-cols-[320px_minmax(420px,1fr)_300px]">
         <aside className={cn('border-r border-[#E6E9EF]', mobileChat && 'hidden lg:block')}>
@@ -277,4 +284,3 @@ export const InstagramInboxPage: React.FC = () => {
     </div>
   );
 };
-
