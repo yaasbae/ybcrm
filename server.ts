@@ -3474,6 +3474,14 @@ const META_DEFAULT_SCOPES = [
   "instagram_manage_insights",
   "instagram_content_publish",
 ].join(",");
+const INSTAGRAM_LOGIN_SCOPES = [
+  "instagram_business_basic",
+  "instagram_business_manage_messages",
+  "instagram_business_manage_comments",
+  "instagram_business_manage_insights",
+  "instagram_business_content_publish",
+].join(",");
+const INSTAGRAM_GRAPH_BASE_URL = "https://graph.instagram.com";
 
 function publicBaseUrl(req?: any) {
   const fromEnv = process.env.WEBHOOK_URL || process.env.SERVER_URL || process.env.PUBLIC_BASE_URL || MCP_PUBLIC_BASE_URL;
@@ -3492,10 +3500,11 @@ function safeInstagramSettings(raw: any) {
     configured: Boolean((data.appId && data.appSecret) || data.accessToken),
     connected: Boolean(data.instagramUserId && data.accessToken),
     authMode: data.authMode || (data.accessToken && !data.appId ? "token" : "oauth"),
+    apiMode: data.apiMode || (String(data.accessToken || "").startsWith("IG") ? "instagram_login" : "facebook_login"),
     appIdPreview: data.appId ? `${String(data.appId).slice(0, 5)}...${String(data.appId).slice(-4)}` : "",
     tokenPreview: data.accessToken ? `${String(data.accessToken).slice(0, 8)}...${String(data.accessToken).slice(-6)}` : "",
     redirectUri: data.redirectUri || `${publicBaseUrl()}/api/instagram/oauth/callback`,
-    scopes: data.scopes || META_DEFAULT_SCOPES,
+    scopes: data.scopes || (data.apiMode === "instagram_login" ? INSTAGRAM_LOGIN_SCOPES : META_DEFAULT_SCOPES),
     pageId: data.pageId || "",
     pageName: data.pageName || "",
     instagramUserId: data.instagramUserId || "",
@@ -3574,6 +3583,8 @@ async function resolveInstagramByToken(accessToken: string, preferredPageId = ME
     tokenForContent,
     payload: {
       authMode: "token",
+      apiMode: source === "instagram_token" ? "instagram_login" : "facebook_login",
+      source,
       accessToken: token,
       pageAccessToken: page?.access_token || "",
       pageId: page?.id || "",
@@ -3584,6 +3595,7 @@ async function resolveInstagramByToken(accessToken: string, preferredPageId = ME
       followersCount: Number(account.followers_count || 0),
       mediaCount: Number(account.media_count || 0),
       accountType: account.account_type || "",
+      scopes: source === "instagram_token" ? INSTAGRAM_LOGIN_SCOPES : META_DEFAULT_SCOPES,
       tokenExpiresAt: "",
       connectedAt,
       lastCheckAt: connectedAt,
@@ -3919,6 +3931,23 @@ function normalizeInstagramHandle(value: any) {
 async function instagramInboxCredentials() {
   const settings: any = await getInstagramGraphSettings();
   const mainAccessToken = String(settings.accessToken || "").trim();
+  const apiMode: "instagram_login" | "facebook_login" = settings.apiMode === "instagram_login" || settings.source === "instagram_token" || /^IG/i.test(mainAccessToken)
+    ? "instagram_login"
+    : "facebook_login";
+  const instagramUserId = String(settings.instagramUserId || "").trim();
+
+  if (apiMode === "instagram_login") {
+    if (!mainAccessToken || !instagramUserId) {
+      throw new Error("Instagram Login не подключен. Вставь токен IGAA… в разделе API.");
+    }
+    return {
+      settings,
+      apiMode,
+      accessTokens: [mainAccessToken],
+      pageId: "",
+      instagramUserId,
+    };
+  }
 
   // A valid Facebook user token is not necessarily enabled for Instagram
   // Direct. Meta otherwise returns a misleading "Page Access Token" error.
@@ -3966,11 +3995,10 @@ async function instagramInboxCredentials() {
   const accessTokens = [...new Set(tokenCandidates
     .map((value) => String(value || "").trim())
     .filter(Boolean))];
-  const instagramUserId = settings.instagramUserId;
   if (!accessTokens.length || !pageId || !instagramUserId) {
     throw new Error("Instagram Direct не подключен. Сначала подключи Instagram Graph в разделе API.");
   }
-  return { settings, accessTokens, pageId, instagramUserId };
+  return { settings, apiMode, accessTokens, pageId, instagramUserId };
 }
 
 async function withInstagramTokenFallback<T>(accessTokens: string[], request: (accessToken: string) => Promise<T>) {
@@ -4048,42 +4076,88 @@ async function findClientByInstagram(participants: any[], linkedClientId = "", p
   }) || null;
 }
 
-async function fetchInstagramConversationMessages(conversationId: string, accessToken: string, ownIds: string[]) {
+async function fetchInstagramConversationMessages(
+  conversationId: string,
+  accessToken: string,
+  ownIds: string[],
+  apiMode: "instagram_login" | "facebook_login" = "facebook_login",
+) {
   const fields = "id,message,from,to,created_time,attachments";
-  const response = await axios.get(`https://graph.facebook.com/${META_GRAPH_VERSION}/${conversationId}/messages`, {
-    params: { access_token: accessToken, fields, limit: 100 },
+  const baseUrl = apiMode === "instagram_login" ? INSTAGRAM_GRAPH_BASE_URL : "https://graph.facebook.com";
+  const endpoint = apiMode === "instagram_login"
+    ? `${baseUrl}/${META_GRAPH_VERSION}/${conversationId}`
+    : `${baseUrl}/${META_GRAPH_VERSION}/${conversationId}/messages`;
+  const response = await axios.get(endpoint, {
+    params: {
+      access_token: accessToken,
+      fields: apiMode === "instagram_login" ? `messages{${fields}}` : fields,
+      ...(apiMode === "facebook_login" ? { limit: 100 } : {}),
+    },
+    timeout: 20_000,
   });
-  return (Array.isArray(response.data?.data) ? response.data.data : [])
+  const rows = apiMode === "instagram_login" ? response.data?.messages?.data : response.data?.data;
+  return (Array.isArray(rows) ? rows : [])
     .map((item: any) => normalizeInstagramMessage(item, ownIds))
     .sort((a: any, b: any) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
 }
 
+function participantsFromInstagramMessages(messages: any[], ownIds: string[]) {
+  const participants = new Map<string, any>();
+  messages.forEach((message: any) => {
+    const actors = [message?.from, ...(Array.isArray(message?.to) ? message.to : [])];
+    actors.forEach((actor: any) => {
+      const id = String(actor?.id || "");
+      if (id && !ownIds.includes(id)) participants.set(id, actor);
+    });
+  });
+  return [...participants.values()];
+}
+
 app.get("/api/instagram/conversations", async (req, res) => {
   try {
-    const { accessTokens, pageId, instagramUserId } = await instagramInboxCredentials();
-    const fields = "id,updated_time,participants";
+    const { apiMode, accessTokens, pageId, instagramUserId } = await instagramInboxCredentials();
+    const directMessageFields = "id,message,from,to,created_time,attachments";
+    const fields = apiMode === "instagram_login"
+      ? `id,updated_time,messages.limit(20){${directMessageFields}}`
+      : "id,updated_time,participants";
+    const ownerId = apiMode === "instagram_login" ? instagramUserId : pageId;
+    const baseUrl = apiMode === "instagram_login" ? INSTAGRAM_GRAPH_BASE_URL : "https://graph.facebook.com";
     const { response, accessToken } = await withInstagramTokenFallback(accessTokens, async (token) => ({
       accessToken: token,
-      response: await axios.get(`https://graph.facebook.com/${META_GRAPH_VERSION}/${pageId}/conversations`, {
-        params: { access_token: token, platform: "instagram", fields, limit: Math.min(Number(req.query.limit || 40), 100) },
+      response: await axios.get(`${baseUrl}/${META_GRAPH_VERSION}/${ownerId}/conversations`, {
+        params: {
+          access_token: token,
+          platform: "instagram",
+          fields,
+          limit: Math.min(Number(req.query.limit || 40), 100),
+        },
+        timeout: 20_000,
       }),
     }));
     const rows = Array.isArray(response.data?.data) ? response.data.data : [];
     // Read the client database once for the entire sync, not once per dialog.
     const contacts = adminDb ? await getContactsForInstagramSearch() : [];
     const conversations = await Promise.all(rows.map(async (row: any) => {
-      const participants = row?.participants?.data || [];
       const ownIds = [String(pageId), String(instagramUserId)];
-      const customer = participants.find((item: any) => !ownIds.includes(String(item?.id || ""))) || participants[0] || null;
       const stored = adminDb ? await adminDb.collection("instagram_conversations").doc(row.id).get().catch(() => null) : null;
       const storedData: any = stored?.exists ? stored.data() : {};
-      let messages: any[] = [];
-      try {
-        messages = await fetchInstagramConversationMessages(row.id, accessToken, ownIds);
-        await saveInstagramMessages(row.id, messages, { customerId: customer?.id || "" });
-      } catch (messageError) {
-        console.warn("[instagram] conversation messages:", graphErrorMessage(messageError));
+      let messages: any[] = Array.isArray(row?.messages?.data)
+        ? row.messages.data
+          .map((item: any) => normalizeInstagramMessage(item, ownIds))
+          .sort((a: any, b: any) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
+        : [];
+      if (!messages.length) {
+        try {
+          messages = await fetchInstagramConversationMessages(row.id, accessToken, ownIds, apiMode);
+        } catch (messageError) {
+          console.warn("[instagram] conversation messages:", graphErrorMessage(messageError));
+        }
       }
+      const participants = row?.participants?.data?.length
+        ? row.participants.data
+        : participantsFromInstagramMessages(messages, ownIds);
+      const customer = participants.find((item: any) => !ownIds.includes(String(item?.id || ""))) || participants[0] || null;
+      if (messages.length) await saveInstagramMessages(row.id, messages, { customerId: customer?.id || "" });
       const lastMessage = messages[messages.length - 1] || null;
       const linkedClient = await findClientByInstagram(participants, storedData?.clientId || "", contacts);
       const result = {
@@ -4111,9 +4185,9 @@ app.get("/api/instagram/conversations", async (req, res) => {
 
 app.get("/api/instagram/conversations/:id/messages", async (req, res) => {
   try {
-    const { accessTokens, pageId, instagramUserId } = await instagramInboxCredentials();
+    const { apiMode, accessTokens, pageId, instagramUserId } = await instagramInboxCredentials();
     const messages = await withInstagramTokenFallback(accessTokens, (accessToken) =>
-      fetchInstagramConversationMessages(req.params.id, accessToken, [String(pageId), String(instagramUserId)]));
+      fetchInstagramConversationMessages(req.params.id, accessToken, [String(pageId), String(instagramUserId)], apiMode));
     await saveInstagramMessages(req.params.id, messages);
     res.json({ messages });
   } catch (error: any) {
@@ -4126,17 +4200,23 @@ app.post("/api/instagram/conversations/:id/messages", async (req, res) => {
   const text = String(req.body?.text || "").trim();
   if (!recipientId || !text) return res.status(400).json({ error: "Нужны получатель и текст сообщения" });
   try {
-    const { accessTokens, pageId, instagramUserId } = await instagramInboxCredentials();
+    const { apiMode, accessTokens, pageId, instagramUserId } = await instagramInboxCredentials();
     let response: any;
     let lastError: any;
     for (const accessToken of accessTokens) {
-      for (const senderId of [pageId, instagramUserId]) {
+      const senderIds = apiMode === "instagram_login" ? [instagramUserId] : [pageId, instagramUserId];
+      const baseUrl = apiMode === "instagram_login" ? INSTAGRAM_GRAPH_BASE_URL : "https://graph.facebook.com";
+      for (const senderId of senderIds) {
         try {
-          response = await axios.post(`https://graph.facebook.com/${META_GRAPH_VERSION}/${senderId}/messages`, {
+          response = await axios.post(`${baseUrl}/${META_GRAPH_VERSION}/${senderId}/messages`, {
             recipient: { id: recipientId },
             message: { text },
-            messaging_type: "RESPONSE",
-          }, { params: { access_token: accessToken } });
+            ...(apiMode === "facebook_login" ? { messaging_type: "RESPONSE" } : {}),
+          }, {
+            params: { access_token: accessToken },
+            headers: { Authorization: `Bearer ${accessToken}` },
+            timeout: 20_000,
+          });
           break;
         } catch (error) {
           lastError = error;

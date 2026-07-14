@@ -47,6 +47,7 @@ type InstagramStatus = {
   configured?: boolean;
   connected?: boolean;
   authMode?: string;
+  apiMode?: 'instagram_login' | 'facebook_login';
   appIdPreview?: string;
   tokenPreview?: string;
   redirectUri?: string;
@@ -809,13 +810,15 @@ export const IntegrationsPage: React.FC<Props> = ({ onNavigate }) => {
               <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
                 <div>
                   <p className={labelClass}>Подключение</p>
-                  <h3 className="mt-1 text-[18px] font-semibold text-[#1F2937]">Instagram Access Token</h3>
+                  <h3 className="mt-1 text-[18px] font-semibold text-[#1F2937]">Instagram Login Token</h3>
                   <p className="mt-1 text-[12px] leading-5 text-[#6B7280]">
-                    Вставь полный токен из Generate Instagram Access Token. CRM сама определит аккаунт и сохранит подключение.
+                    Рекомендуемый вариант — токен IGAA… с прямым входом через Instagram. CRM также сохранит поддержку старого EAA… токена.
                   </p>
                 </div>
                 <span className="rounded-[8px] bg-white px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.12em] text-[#6B7280]">
-                  {instagramState === 'connected' ? 'Подключено' : 'Только Access Token'}
+                  {instagramState === 'connected'
+                    ? (instagramStatus.apiMode === 'instagram_login' ? 'Instagram Login' : 'Facebook Login')
+                    : 'Нужен Access Token'}
                 </span>
               </div>
               <div className="grid gap-3 lg:grid-cols-[1fr_auto] lg:items-end">
@@ -833,6 +836,10 @@ export const IntegrationsPage: React.FC<Props> = ({ onNavigate }) => {
                   Сохранить токен
                 </ActionButton>
               </div>
+              <p className="mt-3 text-[11px] leading-5 text-[#6B7280]">
+                Для IGAA…: instagram_business_basic, instagram_business_manage_messages, instagram_business_manage_comments,
+                instagram_business_manage_insights и instagram_business_content_publish.
+              </p>
             </div>
 
             <div className="grid gap-3 sm:grid-cols-3">
