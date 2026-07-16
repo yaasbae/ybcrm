@@ -4117,9 +4117,10 @@ app.get("/api/instagram/conversations", async (req, res) => {
   try {
     const { apiMode, accessTokens, pageId, instagramUserId } = await instagramInboxCredentials();
     const requestedLimit = Math.min(Math.max(Number(req.query.limit || 40), 1), 100);
-    const directMessageFields = "id,message,from,to,created_time,attachments";
     const fields = apiMode === "instagram_login"
-      ? `id,updated_time,messages.limit(20){${directMessageFields}}`
+      // Instagram Login documents conversation discovery separately from the
+      // messages edge. Expanding messages here can yield an empty data page.
+      ? "id,updated_time"
       : "id,updated_time,participants";
     const ownerId = apiMode === "instagram_login" ? instagramUserId : pageId;
     const baseUrl = apiMode === "instagram_login" ? INSTAGRAM_GRAPH_BASE_URL : "https://graph.facebook.com";
@@ -4144,7 +4145,7 @@ app.get("/api/instagram/conversations", async (req, res) => {
     // Keep walking the cursor until we find dialogs or exhaust a bounded number
     // of pages. Never pass Meta's `next` URL to the browser because it embeds the
     // access token.
-    while (rows.length < requestedLimit && paging?.next && pagesScanned < 20) {
+    while (rows.length < requestedLimit && paging?.next && pagesScanned < 5) {
       const nextResponse = await axios.get(paging.next, { timeout: 20_000 });
       const nextRows = Array.isArray(nextResponse.data?.data) ? nextResponse.data.data : [];
       rows.push(...nextRows);
