@@ -23,7 +23,8 @@ jobs:
             --source . \
             --region europe-west1 \
             --project gen-lang-client-0565901030 \
-            --min-instances 1 \
-            --no-cpu-throttling \
+            --min-instances 0 \
+            --max-instances 3 \
+            --cpu-throttling \
             --update-env-vars WEBHOOK_URL=https://ybcrm.ru,SERVER_URL=https://ybcrm.ru \
             --quiet
