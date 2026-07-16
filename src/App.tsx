@@ -20,7 +20,7 @@ const ContentStudioPage = lazy(() => import("./components/ContentStudioPage").th
 const PaymentPage = lazy(() => import("./components/PaymentPage").then(m => ({ default: m.PaymentPage })));
 const CdekPage = lazy(() => import("./components/CdekPage").then(m => ({ default: m.CdekPage })));
 const IntegrationsPage = lazy(() => import("./components/IntegrationsPage").then(m => ({ default: m.IntegrationsPage })));
-const InstagramInboxPage = lazy(() => import("./components/InstagramInboxPage").then(m => ({ default: m.InstagramInboxPage })));
+const InstagramHubPage = lazy(() => import("./components/InstagramHubPage").then(m => ({ default: m.InstagramHubPage })));
 import { auth, completeGoogleRedirectSignIn, getGoogleAuthErrorMessage, signInWithGoogle, signInWithEmail, logOut } from "./firebase";
 import { onAuthStateChanged, User as FirebaseUser } from "firebase/auth";
 import { cn } from "./lib/utils";
@@ -558,7 +558,7 @@ export default function App() {
           )}
 
           {view === 'instagram' && (
-            <InstagramInboxPage />
+            <InstagramHubPage />
           )}
 
           {view === 'broadcast' && (

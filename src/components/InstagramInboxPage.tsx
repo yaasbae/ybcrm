@@ -66,7 +66,7 @@ function formatTime(value?: string) {
   return date.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' });
 }
 
-export const InstagramInboxPage: React.FC = () => {
+export const InstagramInboxPage: React.FC<{ embedded?: boolean }> = ({ embedded = false }) => {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selectedId, setSelectedId] = useState('');
   const [messages, setMessages] = useState<Message[]>([]);
@@ -120,12 +120,27 @@ export const InstagramInboxPage: React.FC = () => {
 
   useEffect(() => {
     loadConversations();
-    const timer = window.setInterval(() => loadConversations(true), 30000);
-    return () => window.clearInterval(timer);
+    const timer = window.setInterval(() => loadConversations(true), 15000);
+    const onFocus = () => loadConversations(true);
+    window.addEventListener('focus', onFocus);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener('focus', onFocus);
+    };
   }, []);
 
   useEffect(() => {
-    if (selectedId) loadMessages(selectedId);
+    if (!selectedId) return;
+    let active = true;
+    const refresh = async () => {
+      if (active) await loadMessages(selectedId);
+    };
+    refresh();
+    const timer = window.setInterval(refresh, 10000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
   }, [selectedId]);
 
   useEffect(() => {
@@ -188,8 +203,8 @@ export const InstagramInboxPage: React.FC = () => {
   };
 
   return (
-    <div className="mx-auto w-full max-w-[1880px] px-3 pb-8 sm:px-5">
-      <header className="flex flex-wrap items-center justify-between gap-3 py-5">
+    <div className={cn('w-full', embedded ? '' : 'mx-auto max-w-[1880px] px-3 pb-8 sm:px-5')}>
+      {!embedded && <header className="flex flex-wrap items-center justify-between gap-3 py-5">
         <div className="flex items-center gap-3">
           <div className="flex h-10 w-10 items-center justify-center rounded-[8px] bg-[#E83E8C] text-white">
             <Instagram className="h-5 w-5" />
@@ -202,7 +217,7 @@ export const InstagramInboxPage: React.FC = () => {
         <button onClick={() => loadConversations()} disabled={loading} className="flex h-10 items-center gap-2 rounded-[8px] border border-[#E6E9EF] bg-white px-4 text-[12px] font-semibold text-[#1F2937] hover:bg-[#F6F7F9] disabled:opacity-50">
           <RefreshCw className={cn('h-4 w-4', loading && 'animate-spin')} /> Обновить
         </button>
-      </header>
+      </header>}
 
       {error && (
         <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-[8px] border border-red-200 bg-red-50 px-4 py-3 text-[12px] font-medium text-[#F06B6B]">
@@ -221,7 +236,7 @@ export const InstagramInboxPage: React.FC = () => {
           </div>
           <div className="h-[620px] overflow-y-auto lg:h-[calc(100%-65px)]">
             {loading ? <div className="grid h-40 place-items-center"><Loader2 className="h-5 w-5 animate-spin text-[#7D7DE6]" /></div> : null}
-            {!loading && !filtered.length ? <div className="px-5 py-10 text-center text-[13px] text-[#9CA3AF]">Диалогов пока нет</div> : null}
+            {!loading && !filtered.length ? <div className="px-5 py-10 text-center"><MessageCircle className="mx-auto h-7 w-7 text-[#CBD0D8]" /><p className="mt-3 text-[13px] font-medium text-[#6B7280]">Meta вернула 0 диалогов</p><p className="mt-2 text-[11px] leading-5 text-[#9CA3AF]">Список обновляется автоматически. В режиме тестирования Meta показывает только переписки с пользователями, добавленными в роли приложения; для реальных клиентов нужен опубликованный сценарий и расширенный доступ.</p></div> : null}
             {filtered.map((conversation) => (
               <button key={conversation.id} onClick={() => selectConversation(conversation)} className={cn('flex w-full gap-3 border-b border-[#EEF0F4] px-4 py-3 text-left hover:bg-[#F6F7F9]', selectedId === conversation.id && 'bg-[#F1F2FB]')}>
                 <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-[#FCE8F1] text-[#E83E8C]"><UserRound className="h-5 w-5" /></span>

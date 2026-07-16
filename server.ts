@@ -4016,6 +4016,242 @@ async function withInstagramTokenFallback<T>(accessTokens: string[], request: (a
   throw pageTokenError || lastError || new Error("Meta не приняла сохранённые токены Instagram");
 }
 
+type InstagramGraphContext = {
+  apiMode: "instagram_login" | "facebook_login";
+  accessTokens: string[];
+  instagramUserId: string;
+  baseUrl: string;
+};
+
+async function instagramGraphContext(): Promise<InstagramGraphContext> {
+  const { apiMode, accessTokens, instagramUserId } = await instagramInboxCredentials();
+  return {
+    apiMode,
+    accessTokens,
+    instagramUserId,
+    baseUrl: apiMode === "instagram_login" ? INSTAGRAM_GRAPH_BASE_URL : "https://graph.facebook.com",
+  };
+}
+
+async function instagramGraphGet<T = any>(
+  context: InstagramGraphContext,
+  path: string,
+  params: Record<string, any> = {},
+): Promise<T> {
+  return withInstagramTokenFallback(context.accessTokens, async (accessToken) => {
+    const response = await axios.get(`${context.baseUrl}/${META_GRAPH_VERSION}/${path.replace(/^\//, "")}`, {
+      params: { ...params, access_token: accessToken },
+      timeout: 25_000,
+    });
+    return response.data as T;
+  });
+}
+
+async function instagramProfile(context: InstagramGraphContext) {
+  const richFields = "id,user_id,username,name,biography,website,profile_picture_url,followers_count,follows_count,media_count,account_type";
+  try {
+    return await instagramGraphGet(context, context.instagramUserId, { fields: richFields });
+  } catch (error) {
+    // A few profile fields vary between Instagram Login and Facebook Login.
+    // Keep the whole hub working even if Meta does not expose one optional field.
+    const basic = await instagramGraphGet<any>(context, context.instagramUserId, {
+      fields: "id,user_id,username,name,profile_picture_url,followers_count,media_count,account_type",
+    });
+    return { ...basic, warning: graphErrorMessage(error) };
+  }
+}
+
+async function instagramMedia(context: InstagramGraphContext, limit = 24) {
+  const fields = "id,caption,media_type,media_product_type,media_url,thumbnail_url,permalink,timestamp,username,comments_count,like_count,children{id,media_type,media_url,thumbnail_url}";
+  const result = await instagramGraphGet<any>(context, `${context.instagramUserId}/media`, {
+    fields,
+    limit: Math.min(Math.max(limit, 1), 50),
+  });
+  return Array.isArray(result?.data) ? result.data : [];
+}
+
+function normalizeInstagramInsight(row: any) {
+  const values = Array.isArray(row?.values)
+    ? row.values.map((item: any) => ({ value: item?.value ?? 0, endTime: item?.end_time || "" }))
+    : [];
+  const totalValue = row?.total_value?.value;
+  return {
+    name: String(row?.name || ""),
+    title: String(row?.title || row?.name || ""),
+    description: String(row?.description || ""),
+    period: String(row?.period || ""),
+    values,
+    totalValue: typeof totalValue === "number" ? totalValue : null,
+  };
+}
+
+async function instagramAccountInsights(context: InstagramGraphContext, days = 30) {
+  const until = Math.floor(Date.now() / 1000);
+  const since = until - Math.min(Math.max(days, 7), 90) * 24 * 60 * 60;
+  const metrics = [
+    "reach",
+    "profile_views",
+    "accounts_engaged",
+    "total_interactions",
+    "follower_count",
+    "website_clicks",
+    "profile_links_taps",
+    "views",
+  ];
+  const attempts = await Promise.all(metrics.map(async (metric) => {
+    const common = { metric, period: "day", since, until };
+    try {
+      const result = await instagramGraphGet<any>(context, `${context.instagramUserId}/insights`, common);
+      return { metric, insight: result?.data?.[0] ? normalizeInstagramInsight(result.data[0]) : null, error: "" };
+    } catch (dailyError) {
+      try {
+        const result = await instagramGraphGet<any>(context, `${context.instagramUserId}/insights`, {
+          ...common,
+          metric_type: "total_value",
+        });
+        return { metric, insight: result?.data?.[0] ? normalizeInstagramInsight(result.data[0]) : null, error: "" };
+      } catch (totalError) {
+        return { metric, insight: null, error: graphErrorMessage(totalError || dailyError) };
+      }
+    }
+  }));
+  return {
+    days: Math.min(Math.max(days, 7), 90),
+    metrics: attempts.filter((item) => item.insight).map((item) => item.insight),
+    unavailable: attempts.filter((item) => !item.insight).map(({ metric, error }) => ({ metric, error })),
+  };
+}
+
+async function instagramMediaInsights(context: InstagramGraphContext, media: any[]) {
+  const metrics = "reach,views,total_interactions,likes,comments,shares,saved";
+  const rows = await Promise.all(media.slice(0, 12).map(async (item: any) => {
+    try {
+      const result = await instagramGraphGet<any>(context, `${item.id}/insights`, { metric: metrics });
+      return {
+        mediaId: String(item.id),
+        metrics: (Array.isArray(result?.data) ? result.data : []).map(normalizeInstagramInsight),
+        error: "",
+      };
+    } catch (error) {
+      return { mediaId: String(item.id), metrics: [], error: graphErrorMessage(error) };
+    }
+  }));
+  return rows;
+}
+
+async function instagramCommentsForMedia(context: InstagramGraphContext, media: any[]) {
+  const rows = await Promise.all(media.slice(0, 24).map(async (item: any) => {
+    const richFields = "id,text,timestamp,like_count,hidden,from,replies.limit(20){id,text,timestamp,like_count,from}";
+    let comments: any[] = [];
+    let error = "";
+    try {
+      const result = await instagramGraphGet<any>(context, `${item.id}/comments`, { fields: richFields, limit: 100 });
+      comments = Array.isArray(result?.data) ? result.data : [];
+    } catch (richError) {
+      try {
+        const result = await instagramGraphGet<any>(context, `${item.id}/comments`, {
+          fields: "id,text,timestamp,from,replies.limit(20){id,text,timestamp,from}",
+          limit: 100,
+        });
+        comments = Array.isArray(result?.data) ? result.data : [];
+      } catch (fallbackError) {
+        error = graphErrorMessage(fallbackError || richError);
+      }
+    }
+    return {
+      media: {
+        id: item.id,
+        caption: item.caption || "",
+        mediaType: item.media_type || "",
+        thumbnailUrl: item.thumbnail_url || item.media_url || "",
+        permalink: item.permalink || "",
+        timestamp: item.timestamp || "",
+      },
+      comments,
+      error,
+    };
+  }));
+  return rows;
+}
+
+app.get("/api/instagram/profile", async (_req, res) => {
+  try {
+    const context = await instagramGraphContext();
+    res.json({ profile: await instagramProfile(context), apiMode: context.apiMode });
+  } catch (error: any) {
+    res.status(error?.response?.status || 500).json({ error: graphErrorMessage(error) });
+  }
+});
+
+app.get("/api/instagram/insights", async (req, res) => {
+  try {
+    const context = await instagramGraphContext();
+    const days = Number(req.query.days || 30);
+    res.json(await instagramAccountInsights(context, days));
+  } catch (error: any) {
+    res.status(error?.response?.status || 500).json({ error: graphErrorMessage(error) });
+  }
+});
+
+app.get("/api/instagram/media", async (req, res) => {
+  try {
+    const context = await instagramGraphContext();
+    const media = await instagramMedia(context, Number(req.query.limit || 24));
+    const insights = req.query.insights === "0" ? [] : await instagramMediaInsights(context, media);
+    res.json({ media, insights });
+  } catch (error: any) {
+    res.status(error?.response?.status || 500).json({ error: graphErrorMessage(error) });
+  }
+});
+
+app.get("/api/instagram/comments", async (req, res) => {
+  try {
+    const context = await instagramGraphContext();
+    const media = await instagramMedia(context, Number(req.query.mediaLimit || 24));
+    const groups = await instagramCommentsForMedia(context, media);
+    res.json({ groups });
+  } catch (error: any) {
+    res.status(error?.response?.status || 500).json({ error: graphErrorMessage(error) });
+  }
+});
+
+app.post("/api/instagram/comments/:id/replies", async (req, res) => {
+  const message = String(req.body?.message || "").trim();
+  if (!message) return res.status(400).json({ error: "Напиши текст ответа" });
+  try {
+    const context = await instagramGraphContext();
+    const data = await withInstagramTokenFallback(context.accessTokens, async (accessToken) => {
+      const response = await axios.post(
+        `${context.baseUrl}/${META_GRAPH_VERSION}/${req.params.id}/replies`,
+        { message },
+        { params: { access_token: accessToken }, timeout: 20_000 },
+      );
+      return response.data;
+    });
+    res.json({ success: true, id: data?.id || "" });
+  } catch (error: any) {
+    res.status(error?.response?.status || 500).json({ error: graphErrorMessage(error) });
+  }
+});
+
+app.post("/api/instagram/comments/:id/visibility", async (req, res) => {
+  const hidden = Boolean(req.body?.hidden);
+  try {
+    const context = await instagramGraphContext();
+    await withInstagramTokenFallback(context.accessTokens, async (accessToken) => {
+      const response = await axios.post(
+        `${context.baseUrl}/${META_GRAPH_VERSION}/${req.params.id}`,
+        { hide: hidden },
+        { params: { access_token: accessToken }, timeout: 20_000 },
+      );
+      return response.data;
+    });
+    res.json({ success: true, hidden });
+  } catch (error: any) {
+    res.status(error?.response?.status || 500).json({ error: graphErrorMessage(error) });
+  }
+});
+
 function normalizeInstagramMessage(item: any, ownIds: string[] = []) {
   const fromId = String(item?.from?.id || "");
   const isOutgoing = ownIds.includes(fromId);
