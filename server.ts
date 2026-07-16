@@ -4116,6 +4116,7 @@ function participantsFromInstagramMessages(messages: any[], ownIds: string[]) {
 app.get("/api/instagram/conversations", async (req, res) => {
   try {
     const { apiMode, accessTokens, pageId, instagramUserId } = await instagramInboxCredentials();
+    const requestedLimit = Math.min(Math.max(Number(req.query.limit || 40), 1), 100);
     const directMessageFields = "id,message,from,to,created_time,attachments";
     const fields = apiMode === "instagram_login"
       ? `id,updated_time,messages.limit(20){${directMessageFields}}`
@@ -4129,12 +4130,28 @@ app.get("/api/instagram/conversations", async (req, res) => {
           access_token: token,
           platform: "instagram",
           fields,
-          limit: Math.min(Number(req.query.limit || 40), 100),
+          limit: requestedLimit,
         },
         timeout: 20_000,
       }),
     }));
-    const rows = Array.isArray(response.data?.data) ? response.data.data : [];
+    const rows = Array.isArray(response.data?.data) ? [...response.data.data] : [];
+    let paging = response.data?.paging || null;
+    let pagesScanned = 1;
+
+    // Instagram can return an empty page together with a valid `next` cursor
+    // (for example when the current slice contains no Instagram conversations).
+    // Keep walking the cursor until we find dialogs or exhaust a bounded number
+    // of pages. Never pass Meta's `next` URL to the browser because it embeds the
+    // access token.
+    while (rows.length < requestedLimit && paging?.next && pagesScanned < 20) {
+      const nextResponse = await axios.get(paging.next, { timeout: 20_000 });
+      const nextRows = Array.isArray(nextResponse.data?.data) ? nextResponse.data.data : [];
+      rows.push(...nextRows);
+      paging = nextResponse.data?.paging || null;
+      pagesScanned += 1;
+    }
+    if (rows.length > requestedLimit) rows.length = requestedLimit;
     // Read the client database once for the entire sync, not once per dialog.
     const contacts = adminDb ? await getContactsForInstagramSearch() : [];
     const conversations = await Promise.all(rows.map(async (row: any) => {
@@ -4177,7 +4194,10 @@ app.get("/api/instagram/conversations", async (req, res) => {
       return result;
     }));
     conversations.sort((a: any, b: any) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
-    res.json({ conversations, paging: response.data?.paging || null });
+    res.json({
+      conversations,
+      paging: { hasNext: Boolean(paging?.next), pagesScanned },
+    });
   } catch (error: any) {
     res.status(error?.response?.status || 500).json({ error: graphErrorMessage(error) });
   }
