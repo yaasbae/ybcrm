@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   ArrowLeft,
@@ -80,6 +80,9 @@ export const InstagramInboxPage: React.FC = () => {
   const [clients, setClients] = useState<Client[]>([]);
   const [clientLoading, setClientLoading] = useState(false);
   const [mobileChat, setMobileChat] = useState(false);
+  const conversationsRequestActive = useRef(false);
+  const messagesRequestActiveFor = useRef('');
+  const messagesRequestGeneration = useRef(0);
   const needsReconnect = /access token|session has expired|token.*expired|oauth/i.test(error);
 
   const selected = conversations.find((item) => item.id === selectedId) || null;
@@ -91,41 +94,67 @@ export const InstagramInboxPage: React.FC = () => {
   }, [conversations, query]);
 
   const loadConversations = async (quiet = false) => {
+    if (conversationsRequestActive.current) return;
+    conversationsRequestActive.current = true;
     if (!quiet) setLoading(true);
-    setError('');
+    if (!quiet) setError('');
     try {
       const data = await api<{ conversations: Conversation[] }>('/api/instagram/conversations?limit=50');
-      setConversations(data.conversations || []);
-      setSelectedId((current) => current || data.conversations?.[0]?.id || '');
+      const nextConversations = data.conversations || [];
+      setConversations(nextConversations);
+      setSelectedId((current) => nextConversations.some((item) => item.id === current)
+        ? current
+        : nextConversations[0]?.id || '');
     } catch (e: any) {
       setError(e.message);
     } finally {
+      conversationsRequestActive.current = false;
       setLoading(false);
     }
   };
 
-  const loadMessages = async (conversationId: string) => {
-    if (!conversationId) return;
-    setMessagesLoading(true);
-    setError('');
+  const loadMessages = async (conversationId: string, quiet = false) => {
+    if (!conversationId || messagesRequestActiveFor.current === conversationId) return;
+    messagesRequestActiveFor.current = conversationId;
+    const requestGeneration = ++messagesRequestGeneration.current;
+    if (!quiet) setMessagesLoading(true);
+    if (!quiet) setError('');
     try {
       const data = await api<{ messages: Message[] }>(`/api/instagram/conversations/${conversationId}/messages`);
-      setMessages(data.messages || []);
+      if (requestGeneration === messagesRequestGeneration.current) setMessages(data.messages || []);
     } catch (e: any) {
-      setError(e.message);
+      if (requestGeneration === messagesRequestGeneration.current) setError(e.message);
     } finally {
-      setMessagesLoading(false);
+      if (messagesRequestActiveFor.current === conversationId) messagesRequestActiveFor.current = '';
+      if (!quiet && requestGeneration === messagesRequestGeneration.current) setMessagesLoading(false);
     }
   };
 
   useEffect(() => {
     loadConversations();
     const timer = window.setInterval(() => loadConversations(true), 30000);
-    return () => window.clearInterval(timer);
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === 'visible') loadConversations(true);
+    };
+    window.addEventListener('focus', refreshWhenVisible);
+    document.addEventListener('visibilitychange', refreshWhenVisible);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener('focus', refreshWhenVisible);
+      document.removeEventListener('visibilitychange', refreshWhenVisible);
+    };
   }, []);
 
   useEffect(() => {
-    if (selectedId) loadMessages(selectedId);
+    if (!selectedId) {
+      setMessages([]);
+      return;
+    }
+    loadMessages(selectedId);
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') loadMessages(selectedId, true);
+    }, 10000);
+    return () => window.clearInterval(timer);
   }, [selectedId]);
 
   useEffect(() => {
