@@ -4118,38 +4118,24 @@ app.get("/api/instagram/conversations", async (req, res) => {
     const { apiMode, accessTokens, pageId, instagramUserId } = await instagramInboxCredentials();
     const requestedLimit = Math.min(Math.max(Number(req.query.limit || 40), 1), 100);
     const fields = apiMode === "instagram_login"
-      // Use Meta's documented default fields for Instagram Login conversation
-      // discovery. Message details are fetched from each conversation below.
-      ? ""
+      // Instagram Login documents conversation discovery separately from the
+      // messages edge. Expanding messages here can yield an empty data page.
+      ? "id,updated_time"
       : "id,updated_time,participants";
     const ownerId = apiMode === "instagram_login" ? instagramUserId : pageId;
     const baseUrl = apiMode === "instagram_login" ? INSTAGRAM_GRAPH_BASE_URL : "https://graph.facebook.com";
-    const { response, accessToken } = await withInstagramTokenFallback(accessTokens, async (token) => {
-      const params = {
-        access_token: token,
-        platform: "instagram",
-        ...(fields ? { fields } : {}),
-        limit: requestedLimit,
-      };
-      let response = await axios.get(`${baseUrl}/${META_GRAPH_VERSION}/${ownerId}/conversations`, {
-        params,
+    const { response, accessToken } = await withInstagramTokenFallback(accessTokens, async (token) => ({
+      accessToken: token,
+      response: await axios.get(`${baseUrl}/${META_GRAPH_VERSION}/${ownerId}/conversations`, {
+        params: {
+          access_token: token,
+          platform: "instagram",
+          fields,
+          limit: requestedLimit,
+        },
         timeout: 20_000,
-      });
-
-      // Both forms are documented by Meta. Some Instagram Login tokens resolve
-      // conversation discovery correctly only through the token's `me` alias.
-      if (apiMode === "instagram_login" && !response.data?.data?.length) {
-        const meResponse = await axios.get(`${baseUrl}/${META_GRAPH_VERSION}/me/conversations`, {
-          params,
-          timeout: 20_000,
-        });
-        if (meResponse.data?.data?.length) response = meResponse;
-      }
-      return {
-        accessToken: token,
-        response,
-      };
-    });
+      }),
+    }));
     const rows = Array.isArray(response.data?.data) ? [...response.data.data] : [];
     let paging = response.data?.paging || null;
     let pagesScanned = 1;
