@@ -3462,7 +3462,10 @@ app.post("/api/content/instagram-settings", async (req, res) => {
 
 // ─── Instagram Graph / Meta OAuth ───────────────────────────────────────────
 
-const META_GRAPH_VERSION = process.env.META_GRAPH_VERSION || "v21.0";
+// Meta's current Instagram API examples return v23.0. Older v21 responses can
+// silently omit newer Insights fields and behave incorrectly on Instagram
+// Login conversation edges.
+const META_GRAPH_VERSION = process.env.META_GRAPH_VERSION || "v23.0";
 const META_DEFAULT_PAGE_ID = process.env.META_FACEBOOK_PAGE_ID || "125330923998398";
 const META_DEFAULT_SCOPES = [
   "pages_show_list",
@@ -4097,23 +4100,31 @@ async function instagramAccountInsights(context: InstagramGraphContext, days = 3
     "website_clicks",
     "profile_links_taps",
     "views",
+    "likes",
+    "comments",
+    "shares",
+    "saves",
+    "replies",
+    "content_views",
   ];
   const attempts = await Promise.all(metrics.map(async (metric) => {
-    const common = { metric, period: "day", since, until };
-    try {
-      const result = await instagramGraphGet<any>(context, `${context.instagramUserId}/insights`, common);
-      return { metric, insight: result?.data?.[0] ? normalizeInstagramInsight(result.data[0]) : null, error: "" };
-    } catch (dailyError) {
+    const variants = [
+      { metric, period: "day", since, until },
+      { metric, period: "day", metric_type: "total_value", since, until },
+      { metric, period: "total_over_range", metric_type: "total_value", since, until },
+    ];
+    let lastError = "";
+    for (const params of variants) {
       try {
-        const result = await instagramGraphGet<any>(context, `${context.instagramUserId}/insights`, {
-          ...common,
-          metric_type: "total_value",
-        });
-        return { metric, insight: result?.data?.[0] ? normalizeInstagramInsight(result.data[0]) : null, error: "" };
-      } catch (totalError) {
-        return { metric, insight: null, error: graphErrorMessage(totalError || dailyError) };
+        const result = await instagramGraphGet<any>(context, `${context.instagramUserId}/insights`, params);
+        if (result?.data?.[0]) {
+          return { metric, insight: normalizeInstagramInsight(result.data[0]), error: "" };
+        }
+      } catch (error) {
+        lastError = graphErrorMessage(error);
       }
     }
+    return { metric, insight: null, error: lastError };
   }));
   return {
     days: Math.min(Math.max(days, 7), 90),
@@ -4123,14 +4134,25 @@ async function instagramAccountInsights(context: InstagramGraphContext, days = 3
 }
 
 async function instagramMediaInsights(context: InstagramGraphContext, media: any[]) {
-  const metrics = "reach,views,total_interactions,likes,comments,shares,saved";
   const rows = await Promise.all(media.slice(0, 12).map(async (item: any) => {
+    const baseMetrics = "reach,views,total_interactions,likes,comments,shares,saved";
+    const extraMetrics = String(item?.media_product_type || "").toUpperCase() === "REELS"
+      ? "plays,ig_reels_video_view_total_time,ig_reels_avg_watch_time,clips_replays_count,ig_reels_aggregated_all_plays_count,reels_skip_rate"
+      : "profile_visits,follows,profile_activity";
     try {
-      const result = await instagramGraphGet<any>(context, `${item.id}/insights`, { metric: metrics });
+      const result = await instagramGraphGet<any>(context, `${item.id}/insights`, { metric: baseMetrics });
+      let extra: any[] = [];
+      let extraError = "";
+      try {
+        const extraResult = await instagramGraphGet<any>(context, `${item.id}/insights`, { metric: extraMetrics });
+        extra = Array.isArray(extraResult?.data) ? extraResult.data : [];
+      } catch (error) {
+        extraError = graphErrorMessage(error);
+      }
       return {
         mediaId: String(item.id),
-        metrics: (Array.isArray(result?.data) ? result.data : []).map(normalizeInstagramInsight),
-        error: "",
+        metrics: [...(Array.isArray(result?.data) ? result.data : []), ...extra].map(normalizeInstagramInsight),
+        error: extraError,
       };
     } catch (error) {
       return { mediaId: String(item.id), metrics: [], error: graphErrorMessage(error) };
@@ -4156,6 +4178,20 @@ async function instagramCommentsForMedia(context: InstagramGraphContext, media: 
         comments = Array.isArray(result?.data) ? result.data : [];
       } catch (fallbackError) {
         error = graphErrorMessage(fallbackError || richError);
+      }
+    }
+    // Some Instagram Login responses expose the comments connection through
+    // field expansion even when the direct /comments edge returns an empty
+    // page. Try that documented Graph form before concluding there is no data.
+    if (!comments.length && Number(item?.comments_count || 0) > 0) {
+      try {
+        const expanded = await instagramGraphGet<any>(context, item.id, {
+          fields: `comments.limit(100){${richFields}}`,
+        });
+        const expandedRows = expanded?.comments?.data;
+        if (Array.isArray(expandedRows)) comments = expandedRows;
+      } catch (expandedError) {
+        error ||= graphErrorMessage(expandedError);
       }
     }
     return {
@@ -4358,25 +4394,27 @@ app.get("/api/instagram/conversations", async (req, res) => {
   try {
     const { apiMode, accessTokens, pageId, instagramUserId } = await instagramInboxCredentials();
     const requestedLimit = Math.min(Math.max(Number(req.query.limit || 40), 1), 100);
-    const fields = apiMode === "instagram_login"
-      // Instagram Login documents conversation discovery separately from the
-      // messages edge. Expanding messages here can yield an empty data page.
-      ? "id,updated_time"
-      : "id,updated_time,participants";
+    const fields = apiMode === "instagram_login" ? "" : "id,updated_time,participants";
     const ownerId = apiMode === "instagram_login" ? instagramUserId : pageId;
     const baseUrl = apiMode === "instagram_login" ? INSTAGRAM_GRAPH_BASE_URL : "https://graph.facebook.com";
-    const { response, accessToken } = await withInstagramTokenFallback(accessTokens, async (token) => ({
-      accessToken: token,
-      response: await axios.get(`${baseUrl}/${META_GRAPH_VERSION}/${ownerId}/conversations`, {
-        params: {
-          access_token: token,
-          platform: "instagram",
-          fields,
-          limit: requestedLimit,
-        },
-        timeout: 20_000,
-      }),
-    }));
+    const { response, accessToken, discoveryPath } = await withInstagramTokenFallback(accessTokens, async (token) => {
+      const params = {
+        access_token: token,
+        ...(apiMode === "facebook_login" ? { platform: "instagram", fields } : {}),
+        limit: requestedLimit,
+      };
+      const candidates = apiMode === "instagram_login"
+        ? [`${ownerId}/conversations`, "me/conversations"]
+        : [`${ownerId}/conversations`];
+      let firstResponse: any = null;
+      let firstPath = candidates[0];
+      for (const path of candidates) {
+        const candidate = await axios.get(`${baseUrl}/${META_GRAPH_VERSION}/${path}`, { params, timeout: 20_000 });
+        firstResponse ||= candidate;
+        if (candidate.data?.data?.length) return { accessToken: token, response: candidate, discoveryPath: path };
+      }
+      return { accessToken: token, response: firstResponse, discoveryPath: firstPath };
+    });
     const rows = Array.isArray(response.data?.data) ? [...response.data.data] : [];
     let paging = response.data?.paging || null;
     let pagesScanned = 1;
@@ -4438,7 +4476,7 @@ app.get("/api/instagram/conversations", async (req, res) => {
     conversations.sort((a: any, b: any) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
     res.json({
       conversations,
-      paging: { hasNext: Boolean(paging?.next), pagesScanned },
+      paging: { hasNext: Boolean(paging?.next), pagesScanned, discoveryPath },
       notice: !conversations.length
         ? (paging?.next
           ? `Meta вернула ${pagesScanned} пустых страниц Direct, хотя курсор продолжения существует. Обычно так происходит, когда приложение находится в режиме тестирования и собеседники не добавлены в роли приложения.`
