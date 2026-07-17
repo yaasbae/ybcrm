@@ -4209,7 +4209,12 @@ app.get("/api/instagram/comments", async (req, res) => {
     const context = await instagramGraphContext();
     const media = await instagramMedia(context, Number(req.query.mediaLimit || 24));
     const groups = await instagramCommentsForMedia(context, media);
-    res.json({ groups });
+    const knownCommentCount = media.reduce((sum: number, item: any) => sum + Number(item?.comments_count || 0), 0);
+    const returnedCommentCount = groups.reduce((sum: number, group: any) => sum + Number(group?.comments?.length || 0), 0);
+    const warning = knownCommentCount > 0 && returnedCommentCount === 0
+      ? `Instagram показывает ${knownCommentCount} комментариев в счётчиках публикаций, но не передал их тексты через API. Токен принят, однако доступ к комментариям ограничен режимом тестирования или уровнем доступа приложения Meta.`
+      : "";
+    res.json({ groups, knownCommentCount, returnedCommentCount, warning });
   } catch (error: any) {
     res.status(error?.response?.status || 500).json({ error: graphErrorMessage(error) });
   }
@@ -4434,6 +4439,11 @@ app.get("/api/instagram/conversations", async (req, res) => {
     res.json({
       conversations,
       paging: { hasNext: Boolean(paging?.next), pagesScanned },
+      notice: !conversations.length
+        ? (paging?.next
+          ? `Meta вернула ${pagesScanned} пустых страниц Direct, хотя курсор продолжения существует. Обычно так происходит, когда приложение находится в режиме тестирования и собеседники не добавлены в роли приложения.`
+          : "Meta не вернула доступных Instagram-диалогов для этого токена.")
+        : "",
     });
   } catch (error: any) {
     res.status(error?.response?.status || 500).json({ error: graphErrorMessage(error) });

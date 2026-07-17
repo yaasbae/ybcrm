@@ -74,6 +74,7 @@ export const InstagramInboxPage: React.FC<{ embedded?: boolean }> = ({ embedded 
   const [messagesLoading, setMessagesLoading] = useState(false);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
   const [query, setQuery] = useState('');
   const [draft, setDraft] = useState('');
   const [clientQuery, setClientQuery] = useState('');
@@ -94,8 +95,9 @@ export const InstagramInboxPage: React.FC<{ embedded?: boolean }> = ({ embedded 
     if (!quiet) setLoading(true);
     setError('');
     try {
-      const data = await api<{ conversations: Conversation[] }>('/api/instagram/conversations?limit=50');
+      const data = await api<{ conversations: Conversation[]; notice?: string }>('/api/instagram/conversations?limit=50');
       setConversations(data.conversations || []);
+      setNotice(data.notice || '');
       setSelectedId((current) => current || data.conversations?.[0]?.id || '');
     } catch (e: any) {
       setError(e.message);
@@ -223,6 +225,12 @@ export const InstagramInboxPage: React.FC<{ embedded?: boolean }> = ({ embedded 
         <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-[8px] border border-red-200 bg-red-50 px-4 py-3 text-[12px] font-medium text-[#F06B6B]">
           <span className="flex min-w-0 items-center gap-2"><AlertTriangle className="h-4 w-4 shrink-0" /><span>{error}</span></span>
           {needsReconnect && <a href="/integrations" className="shrink-0 rounded-[8px] bg-[#1F2937] px-3 py-2 text-[11px] font-semibold text-white">Переподключить Instagram</a>}
+        </div>
+      )}
+
+      {!error && notice && (
+        <div className="mb-3 flex items-start gap-2 rounded-[8px] border border-amber-200 bg-amber-50 px-4 py-3 text-[12px] leading-5 text-amber-900">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" /><span>{notice} Список продолжает обновляться автоматически.</span>
         </div>
       )}
 

@@ -135,6 +135,7 @@ export const InstagramHubPage: React.FC = () => {
   const [commentsLoading, setCommentsLoading] = useState(false);
   const [error, setError] = useState('');
   const [commentError, setCommentError] = useState('');
+  const [commentWarning, setCommentWarning] = useState('');
   const [replyDrafts, setReplyDrafts] = useState<Record<string, string>>({});
   const [workingComment, setWorkingComment] = useState('');
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
@@ -167,8 +168,9 @@ export const InstagramHubPage: React.FC = () => {
     if (!quiet) setCommentsLoading(true);
     setCommentError('');
     try {
-      const data = await api<{ groups: CommentGroup[] }>('/api/instagram/comments?mediaLimit=24');
+      const data = await api<{ groups: CommentGroup[]; warning?: string }>('/api/instagram/comments?mediaLimit=24');
       setComments(data.groups || []);
+      setCommentWarning(data.warning || '');
     } catch (e: any) {
       setCommentError(e.message);
     } finally {
@@ -333,6 +335,7 @@ export const InstagramHubPage: React.FC = () => {
         <section className="rounded-xl border border-[#E6E9EF] bg-white p-4 sm:p-5">
           <div className="mb-4"><h2 className="text-base font-semibold text-[#1F2937]">Все комментарии</h2><p className="mt-1 text-xs text-[#9CA3AF]">Комментарии к последним публикациям, ответы и модерация</p></div>
           {commentError && <div className="mb-4"><Issue>{commentError}</Issue></div>}
+          {commentWarning && <div className="mb-4"><Issue>{commentWarning} Для комментариев реальных клиентов приложению нужен расширенный доступ и публикация в Meta.</Issue></div>}
           {commentGroupErrors.length > 0 && <div className="mb-4"><Issue>Для {commentGroupErrors.length} публикаций Meta не разрешила прочитать комментарии. Проверь разрешение instagram_business_manage_comments.</Issue></div>}
           {commentsLoading ? <div className="grid h-56 place-items-center"><Loader2 className="h-6 w-6 animate-spin text-[#7D7DE6]" /></div> : null}
           {!commentsLoading && !allComments.length ? <div className="grid h-56 place-items-center text-center text-sm text-[#9CA3AF]">В последних публикациях комментариев нет либо Meta не дала к ним доступ.</div> : null}
