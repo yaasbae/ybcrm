@@ -97,6 +97,12 @@ const metricLabels: Record<string, string> = {
   website_clicks: 'Переходы на сайт',
   profile_links_taps: 'Нажатия на ссылки',
   views: 'Просмотры',
+  likes: 'Лайки',
+  comments: 'Комментарии',
+  shares: 'Репосты',
+  saves: 'Сохранения',
+  replies: 'Ответы',
+  content_views: 'Просмотры контента',
 };
 
 function formatNumber(value: number | null | undefined) {
@@ -196,7 +202,7 @@ export const InstagramHubPage: React.FC = () => {
   const metrics = useMemo(() => Object.fromEntries(insights.map((item) => [item.name, item])), [insights]);
   const chartData = useMemo(() => {
     const rows = new Map<string, any>();
-    ['reach', 'profile_views'].forEach((name) => {
+    ['reach', 'follower_count'].forEach((name) => {
       metrics[name]?.values.forEach((item) => {
         const key = item.endTime || String(rows.size);
         const current = rows.get(key) || { key, date: item.endTime ? new Date(item.endTime).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' }) : '' };
@@ -299,7 +305,7 @@ export const InstagramHubPage: React.FC = () => {
               <section className="grid gap-4 xl:grid-cols-[minmax(0,1.6fr)_minmax(300px,.7fr)]">
                 <article className="min-h-[360px] rounded-xl border border-[#E6E9EF] bg-white p-4 sm:p-5">
                   <div><h2 className="text-base font-semibold text-[#1F2937]">Динамика за 30 дней</h2><p className="mt-1 text-xs text-[#9CA3AF]">Данные напрямую из Instagram Insights</p></div>
-                  {chartData.length ? <div className="mt-5 h-[270px] w-full"><ResponsiveContainer width="100%" height="100%"><LineChart data={chartData} margin={{ top: 8, right: 12, left: -18, bottom: 0 }}><CartesianGrid stroke="#EEF0F4" vertical={false} /><XAxis dataKey="date" tick={{ fontSize: 10, fill: '#9CA3AF' }} axisLine={false} tickLine={false} minTickGap={28} /><YAxis tick={{ fontSize: 10, fill: '#9CA3AF' }} axisLine={false} tickLine={false} /><Tooltip contentStyle={{ border: '1px solid #E6E9EF', borderRadius: 10, fontSize: 12 }} /><Line type="monotone" dataKey="reach" name="Охват" stroke="#7D7DE6" strokeWidth={2.5} dot={false} /><Line type="monotone" dataKey="profile_views" name="Просмотры профиля" stroke="#E83E8C" strokeWidth={2.5} dot={false} /></LineChart></ResponsiveContainer></div> : <div className="grid h-[270px] place-items-center text-center text-sm text-[#9CA3AF]">Meta не вернула дневную динамику для доступных метрик.</div>}
+                  {chartData.length ? <div className="mt-5 h-[270px] w-full"><ResponsiveContainer width="100%" height="100%"><LineChart data={chartData} margin={{ top: 8, right: 12, left: -18, bottom: 0 }}><CartesianGrid stroke="#EEF0F4" vertical={false} /><XAxis dataKey="date" tick={{ fontSize: 10, fill: '#9CA3AF' }} axisLine={false} tickLine={false} minTickGap={28} /><YAxis tick={{ fontSize: 10, fill: '#9CA3AF' }} axisLine={false} tickLine={false} /><Tooltip contentStyle={{ border: '1px solid #E6E9EF', borderRadius: 10, fontSize: 12 }} /><Line type="monotone" dataKey="reach" name="Охват" stroke="#7D7DE6" strokeWidth={2.5} dot={false} /><Line type="monotone" dataKey="follower_count" name="Новые подписчики" stroke="#E83E8C" strokeWidth={2.5} dot={false} /></LineChart></ResponsiveContainer></div> : <div className="grid h-[270px] place-items-center text-center text-sm text-[#9CA3AF]">Meta не вернула дневную динамику для доступных метрик.</div>}
                 </article>
                 <article className="rounded-xl border border-[#E6E9EF] bg-white p-5">
                   <div className="flex items-center gap-3">
@@ -310,6 +316,17 @@ export const InstagramHubPage: React.FC = () => {
                   <dl className="mt-5 grid grid-cols-2 gap-3 border-t border-[#EEF0F4] pt-4"><div><dt className="text-[11px] text-[#9CA3AF]">Публикации</dt><dd className="mt-1 text-lg font-semibold text-[#1F2937]">{formatNumber(profile?.media_count)}</dd></div><div><dt className="text-[11px] text-[#9CA3AF]">Подписки</dt><dd className="mt-1 text-lg font-semibold text-[#1F2937]">{formatNumber(profile?.follows_count)}</dd></div></dl>
                   {profile?.website && <a href={profile.website} target="_blank" rel="noreferrer" className="mt-4 flex items-center gap-1.5 break-all text-xs font-semibold text-[#7D7DE6] hover:underline">{profile.website}<ExternalLink className="h-3.5 w-3.5 shrink-0" /></a>}
                 </article>
+              </section>
+              <section className="rounded-xl border border-[#E6E9EF] bg-white p-4 sm:p-5">
+                <div className="mb-4"><h2 className="text-base font-semibold text-[#1F2937]">Все показатели за 30 дней</h2><p className="mt-1 text-xs text-[#9CA3AF]">Суммарные значения Instagram Insights</p></div>
+                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                  {['views', 'accounts_engaged', 'website_clicks', 'likes', 'comments', 'shares', 'saves', 'replies'].map((name) => (
+                    <div key={name} className="rounded-lg border border-[#EEF0F4] bg-[#F8F9FB] px-4 py-3">
+                      <p className="text-[11px] font-medium text-[#6B7280]">{metricLabels[name] || name}</p>
+                      <p className="mt-2 text-xl font-semibold text-[#1F2937]">{formatNumber(insightValue(metrics[name]))}</p>
+                    </div>
+                  ))}
+                </div>
               </section>
               {unavailable.length > 0 && <Issue>Instagram не отдал часть метрик ({unavailable.map((item) => metricLabels[item.metric] || item.metric).join(', ')}). Это нормально для метрик, которым не хватает аудитории или которые недоступны этому типу аккаунта.</Issue>}
             </>

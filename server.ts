@@ -15,7 +15,7 @@ import fs from "fs";
 import https from "https";
 import { execFileSync } from "child_process";
 import { tmpdir } from "os";
-import { createHash, createHmac, randomBytes } from "crypto";
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "crypto";
 import { createRequire } from "module";
 import { TelegramClient } from "telegram";
 import { StringSession } from "telegram/sessions";
@@ -139,7 +139,12 @@ try {
 }
 
 app.use(cors());
-app.use(express.json({ limit: '20mb' }));
+app.use(express.json({
+  limit: '20mb',
+  verify: (req: any, _res, buffer) => {
+    req.rawBody = Buffer.from(buffer);
+  },
+}));
 app.use(express.text({ type: ['text/*', 'application/jwt'], limit: '1mb' }));
 app.use(express.urlencoded({ extended: true, limit: '20mb' }));
 
@@ -4275,7 +4280,6 @@ app.get("/api/instagram/diagnostics", async (_req, res) => {
       subscriptionsError,
       webhook: {
         callbackUrl: `${publicBaseUrl()}/api/instagram/webhook`,
-        verifyToken: INSTAGRAM_WEBHOOK_VERIFY_TOKEN,
       },
     });
   } catch (error: any) {
@@ -4294,12 +4298,24 @@ app.get("/api/instagram/webhook", (req, res) => {
 });
 
 app.post("/api/instagram/webhook", async (req, res) => {
-  // Acknowledge Meta quickly, then persist the event. Meta retries non-200
-  // deliveries, so duplicate message IDs are intentionally merged below.
-  res.status(200).send("EVENT_RECEIVED");
   try {
+    const settings: any = await getInstagramGraphSettings();
+    const signature = String(req.headers["x-hub-signature-256"] || "");
+    if (settings?.appSecret) {
+      const expected = `sha256=${createHmac("sha256", String(settings.appSecret))
+        .update((req as any).rawBody || Buffer.from(JSON.stringify(req.body || {})))
+        .digest("hex")}`;
+      const actualBuffer = Buffer.from(signature);
+      const expectedBuffer = Buffer.from(expected);
+      if (!signature || actualBuffer.length !== expectedBuffer.length || !timingSafeEqual(actualBuffer, expectedBuffer)) {
+        return res.sendStatus(403);
+      }
+    }
+    // Acknowledge Meta quickly. Duplicate event IDs are merged in Firestore.
+    res.status(200).send("EVENT_RECEIVED");
     const body: any = req.body || {};
     if (body.object !== "instagram" || !adminDb) return;
+    const context = await instagramGraphContext().catch(() => null);
     const entries = Array.isArray(body.entry) ? body.entry : [];
     for (const entry of entries) {
       const ownerId = String(entry?.id || "");
@@ -4310,6 +4326,16 @@ app.post("/api/instagram/webhook", async (req, res) => {
         const incoming = recipientId === ownerId || senderId !== ownerId;
         const customerId = incoming ? senderId : recipientId;
         if (!customerId) continue;
+        let customer: any = { id: customerId };
+        if (context) {
+          try {
+            customer = await instagramGraphGet<any>(context, customerId, {
+              fields: "id,name,username,profile_pic,follower_count,is_user_follow_business,is_business_follow_user,is_verified_user",
+            });
+          } catch (profileError) {
+            console.warn("[instagram] webhook profile:", graphErrorMessage(profileError));
+          }
+        }
         const rawMessage = event?.message || event?.message_edit || {};
         const message = {
           id: String(rawMessage?.mid || `webhook-${customerId}-${event?.timestamp || Date.now()}`),
@@ -4326,8 +4352,8 @@ app.post("/api/instagram/webhook", async (req, res) => {
         await adminDb.collection("instagram_conversations").doc(conversationId).set({
           id: conversationId,
           updatedAt: message.createdAt,
-          participants: [{ id: customerId }],
-          customer: { id: customerId },
+          participants: [customer],
+          customer,
           lastMessage: message,
           source: "instagram_webhook",
           syncedAt: new Date().toISOString(),
@@ -4350,6 +4376,7 @@ app.post("/api/instagram/webhook", async (req, res) => {
     }
   } catch (error) {
     console.error("[instagram] webhook:", graphErrorMessage(error));
+    if (!res.headersSent) res.status(500).send("WEBHOOK_ERROR");
   }
 });
 
@@ -4666,7 +4693,7 @@ app.get("/api/instagram/conversations", async (req, res) => {
       paging: { hasNext: Boolean(paging?.next), pagesScanned, discoveryPath },
       notice: !conversations.length
         ? (paging?.next
-          ? `Meta вернула ${pagesScanned} пустых страниц Direct, хотя курсор продолжения существует. Обычно так происходит, когда приложение находится в режиме тестирования и собеседники не добавлены в роли приложения.`
+          ? `Meta вернула ${pagesScanned} пустых страниц Direct, хотя курсор продолжения существует. Подписка CRM на новые сообщения уже включена; старая история скрыта режимом тестирования Meta.`
           : "Meta не вернула доступных Instagram-диалогов для этого токена.")
         : "",
     });
