@@ -4219,6 +4219,65 @@ app.get("/api/instagram/profile", async (_req, res) => {
   }
 });
 
+app.get("/api/instagram/diagnostics", async (_req, res) => {
+  try {
+    const context = await instagramGraphContext();
+    const permissions: any[] = [];
+    let permissionsError = "";
+    for (const path of ["me/permissions", `${context.instagramUserId}/permissions`]) {
+      try {
+        const result = await instagramGraphGet<any>(context, path);
+        if (Array.isArray(result?.data)) permissions.push(...result.data);
+        if (permissions.length) break;
+      } catch (error) {
+        permissionsError = graphErrorMessage(error);
+      }
+    }
+
+    const conversationVariants: any[] = [];
+    for (const path of [`${context.instagramUserId}/conversations`, "me/conversations"]) {
+      for (const platform of [false, true]) {
+        try {
+          const result = await instagramGraphGet<any>(context, path, {
+            limit: 100,
+            ...(platform ? { platform: "instagram" } : {}),
+          });
+          conversationVariants.push({
+            path,
+            platform,
+            count: Array.isArray(result?.data) ? result.data.length : 0,
+            hasNext: Boolean(result?.paging?.next),
+            cursors: result?.paging?.cursors || null,
+          });
+        } catch (error) {
+          conversationVariants.push({ path, platform, count: 0, hasNext: false, error: graphErrorMessage(error) });
+        }
+      }
+    }
+
+    let subscriptions: any = null;
+    let subscriptionsError = "";
+    try {
+      subscriptions = await instagramGraphGet<any>(context, `${context.instagramUserId}/subscribed_apps`);
+    } catch (error) {
+      subscriptionsError = graphErrorMessage(error);
+    }
+
+    res.json({
+      apiVersion: META_GRAPH_VERSION,
+      apiMode: context.apiMode,
+      instagramUserId: context.instagramUserId,
+      permissions,
+      permissionsError,
+      conversationVariants,
+      subscriptions,
+      subscriptionsError,
+    });
+  } catch (error: any) {
+    res.status(error?.response?.status || 500).json({ error: graphErrorMessage(error) });
+  }
+});
+
 app.get("/api/instagram/insights", async (req, res) => {
   try {
     const context = await instagramGraphContext();
@@ -4418,13 +4477,14 @@ app.get("/api/instagram/conversations", async (req, res) => {
     const rows = Array.isArray(response.data?.data) ? [...response.data.data] : [];
     let paging = response.data?.paging || null;
     let pagesScanned = 1;
+    const maxPages = req.query.deep === "1" ? 50 : 5;
 
     // Instagram can return an empty page together with a valid `next` cursor
     // (for example when the current slice contains no Instagram conversations).
     // Keep walking the cursor until we find dialogs or exhaust a bounded number
     // of pages. Never pass Meta's `next` URL to the browser because it embeds the
     // access token.
-    while (rows.length < requestedLimit && paging?.next && pagesScanned < 5) {
+    while (rows.length < requestedLimit && paging?.next && pagesScanned < maxPages) {
       const nextResponse = await axios.get(paging.next, { timeout: 20_000 });
       const nextRows = Array.isArray(nextResponse.data?.data) ? nextResponse.data.data : [];
       rows.push(...nextRows);
