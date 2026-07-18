@@ -46,8 +46,13 @@ type Insight = {
   title: string;
   description: string;
   period: string;
-  values: Array<{ value: number; endTime: string }>;
+  values: Array<{ value: number | Record<string, number>; endTime: string }>;
   totalValue: number | null;
+  breakdowns?: Array<{
+    dimension_keys?: string[];
+    results?: Array<{ dimension_values?: string[]; value?: number }>;
+  }>;
+  queryBreakdown?: string;
 };
 type Media = {
   id: string;
@@ -103,6 +108,23 @@ const metricLabels: Record<string, string> = {
   saves: 'Сохранения',
   replies: 'Ответы',
   content_views: 'Просмотры контента',
+  online_followers: 'Активность подписчиков по часам',
+  follows_and_unfollows: 'Подписки и отписки',
+  follower_demographics: 'Демография подписчиков',
+  reached_audience_demographics: 'Демография охваченной аудитории',
+  engaged_audience_demographics: 'Демография вовлечённой аудитории',
+  impressions: 'Показы',
+  saved: 'Сохранения',
+  plays: 'Воспроизведения',
+  ig_reels_video_view_total_time: 'Время просмотра',
+  ig_reels_avg_watch_time: 'Среднее время просмотра',
+  clips_replays_count: 'Повторные просмотры',
+  ig_reels_aggregated_all_plays_count: 'Все воспроизведения',
+  reels_skip_rate: 'Доля пропусков',
+  profile_visits: 'Переходы в профиль',
+  follows: 'Подписки из публикации',
+  profile_activity: 'Действия в профиле',
+  navigation: 'Навигация по истории',
 };
 
 function formatNumber(value: number | null | undefined) {
@@ -118,7 +140,22 @@ function formatDate(value?: string) {
 function insightValue(metric?: Insight) {
   if (!metric) return 0;
   if (typeof metric.totalValue === 'number') return metric.totalValue;
-  return metric.values.reduce((sum, item) => sum + Number(item.value || 0), 0);
+  return metric.values.reduce((sum, item) => sum + (typeof item.value === 'number' ? item.value : 0), 0);
+}
+
+function insightBreakdownRows(metric?: Insight) {
+  if (!metric?.breakdowns?.length) return [];
+  return metric.breakdowns.flatMap((breakdown) => (breakdown.results || []).map((result) => ({
+    label: (result.dimension_values || []).join(' · ') || '—',
+    value: Number(result.value || 0),
+  }))).sort((a, b) => b.value - a.value);
+}
+
+function onlineFollowerRows(metric?: Insight) {
+  const hours = metric?.values.find((item) => item.value && typeof item.value === 'object')?.value;
+  if (!hours || typeof hours !== 'object') return [];
+  return Object.entries(hours).map(([hour, value]) => ({ label: `${String(hour).padStart(2, '0')}:00`, value: Number(value || 0) }))
+    .sort((a, b) => b.value - a.value);
 }
 
 function Issue({ children }: { children: React.ReactNode }) {
@@ -136,6 +173,8 @@ export const InstagramHubPage: React.FC = () => {
   const [unavailable, setUnavailable] = useState<Array<{ metric: string; error: string }>>([]);
   const [media, setMedia] = useState<Media[]>([]);
   const [mediaInsights, setMediaInsights] = useState<MediaInsight[]>([]);
+  const [stories, setStories] = useState<Media[]>([]);
+  const [storyInsights, setStoryInsights] = useState<MediaInsight[]>([]);
   const [comments, setComments] = useState<CommentGroup[]>([]);
   const [loading, setLoading] = useState(true);
   const [commentsLoading, setCommentsLoading] = useState(false);
@@ -149,10 +188,11 @@ export const InstagramHubPage: React.FC = () => {
   const loadHub = async (quiet = false) => {
     if (!quiet) setLoading(true);
     setError('');
-    const [profileResult, insightResult, mediaResult] = await Promise.allSettled([
+    const [profileResult, insightResult, mediaResult, storyResult] = await Promise.allSettled([
       api<{ profile: Profile }>('/api/instagram/profile'),
-      api<{ metrics: Insight[]; unavailable: Array<{ metric: string; error: string }> }>('/api/instagram/insights?days=30'),
+      api<{ metrics: Insight[]; unavailable: Array<{ metric: string; error: string }> }>('/api/instagram/insights?days=90'),
       api<{ media: Media[]; insights: MediaInsight[] }>('/api/instagram/media?limit=24'),
+      api<{ stories: Media[]; insights: MediaInsight[] }>('/api/instagram/stories'),
     ]);
     const failures: string[] = [];
     if (profileResult.status === 'fulfilled') setProfile(profileResult.value.profile);
@@ -165,6 +205,10 @@ export const InstagramHubPage: React.FC = () => {
       setMedia(mediaResult.value.media || []);
       setMediaInsights(mediaResult.value.insights || []);
     } else failures.push(`Публикации: ${mediaResult.reason?.message || 'ошибка'}`);
+    if (storyResult.status === 'fulfilled') {
+      setStories(storyResult.value.stories || []);
+      setStoryInsights(storyResult.value.insights || []);
+    } else failures.push(`Истории: ${storyResult.reason?.message || 'ошибка'}`);
     setError(failures.join(' · '));
     setLastUpdated(new Date());
     setLoading(false);
@@ -200,6 +244,10 @@ export const InstagramHubPage: React.FC = () => {
   }, [tab]);
 
   const metrics = useMemo(() => Object.fromEntries(insights.map((item) => [item.name, item])), [insights]);
+  const audienceMetrics = useMemo(() => insights.filter((item) =>
+    Boolean(item.queryBreakdown) || ['online_followers', 'follows_and_unfollows'].includes(item.name)), [insights]);
+  const mediaMetricNames = useMemo(() => [...new Set(mediaInsights.flatMap((item) => item.metrics.map((metric) => metric.name)))], [mediaInsights]);
+  const storyMetricNames = useMemo(() => [...new Set(storyInsights.flatMap((item) => item.metrics.map((metric) => metric.name)))], [storyInsights]);
   const chartData = useMemo(() => {
     const rows = new Map<string, any>();
     ['reach', 'follower_count'].forEach((name) => {
@@ -293,7 +341,7 @@ export const InstagramHubPage: React.FC = () => {
               <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
                 {[
                   { label: 'Подписчики', value: profile?.followers_count, icon: Users, color: 'text-[#7D7DE6]', bg: 'bg-[#F1F2FB]' },
-                  { label: 'Охват за 30 дней', value: insightValue(metrics.reach), icon: Eye, color: 'text-[#2EBA7F]', bg: 'bg-emerald-50' },
+                  { label: 'Охват за 90 дней', value: insightValue(metrics.reach), icon: Eye, color: 'text-[#2EBA7F]', bg: 'bg-emerald-50' },
                   { label: 'Взаимодействия', value: insightValue(metrics.total_interactions), icon: Heart, color: 'text-[#E83E8C]', bg: 'bg-pink-50' },
                   { label: 'Просмотры профиля', value: insightValue(metrics.profile_views), icon: BarChart3, color: 'text-[#F59E0B]', bg: 'bg-amber-50' },
                 ].map((item) => {
@@ -304,7 +352,7 @@ export const InstagramHubPage: React.FC = () => {
 
               <section className="grid gap-4 xl:grid-cols-[minmax(0,1.6fr)_minmax(300px,.7fr)]">
                 <article className="min-h-[360px] rounded-xl border border-[#E6E9EF] bg-white p-4 sm:p-5">
-                  <div><h2 className="text-base font-semibold text-[#1F2937]">Динамика за 30 дней</h2><p className="mt-1 text-xs text-[#9CA3AF]">Данные напрямую из Instagram Insights</p></div>
+                  <div><h2 className="text-base font-semibold text-[#1F2937]">Динамика за 90 дней</h2><p className="mt-1 text-xs text-[#9CA3AF]">Данные напрямую из Instagram Insights</p></div>
                   {chartData.length ? <div className="mt-5 h-[270px] w-full"><ResponsiveContainer width="100%" height="100%"><LineChart data={chartData} margin={{ top: 8, right: 12, left: -18, bottom: 0 }}><CartesianGrid stroke="#EEF0F4" vertical={false} /><XAxis dataKey="date" tick={{ fontSize: 10, fill: '#9CA3AF' }} axisLine={false} tickLine={false} minTickGap={28} /><YAxis tick={{ fontSize: 10, fill: '#9CA3AF' }} axisLine={false} tickLine={false} /><Tooltip contentStyle={{ border: '1px solid #E6E9EF', borderRadius: 10, fontSize: 12 }} /><Line type="monotone" dataKey="reach" name="Охват" stroke="#7D7DE6" strokeWidth={2.5} dot={false} /><Line type="monotone" dataKey="follower_count" name="Новые подписчики" stroke="#E83E8C" strokeWidth={2.5} dot={false} /></LineChart></ResponsiveContainer></div> : <div className="grid h-[270px] place-items-center text-center text-sm text-[#9CA3AF]">Meta не вернула дневную динамику для доступных метрик.</div>}
                 </article>
                 <article className="rounded-xl border border-[#E6E9EF] bg-white p-5">
@@ -318,7 +366,7 @@ export const InstagramHubPage: React.FC = () => {
                 </article>
               </section>
               <section className="rounded-xl border border-[#E6E9EF] bg-white p-4 sm:p-5">
-                <div className="mb-4"><h2 className="text-base font-semibold text-[#1F2937]">Все показатели за 30 дней</h2><p className="mt-1 text-xs text-[#9CA3AF]">Суммарные значения Instagram Insights</p></div>
+                <div className="mb-4"><h2 className="text-base font-semibold text-[#1F2937]">Все показатели за 90 дней</h2><p className="mt-1 text-xs text-[#9CA3AF]">Суммарные значения Instagram Insights</p></div>
                 <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
                   {['views', 'accounts_engaged', 'website_clicks', 'likes', 'comments', 'shares', 'saves', 'replies'].map((name) => (
                     <div key={name} className="rounded-lg border border-[#EEF0F4] bg-[#F8F9FB] px-4 py-3">
@@ -328,7 +376,19 @@ export const InstagramHubPage: React.FC = () => {
                   ))}
                 </div>
               </section>
-              {unavailable.length > 0 && <Issue>Instagram не отдал часть метрик ({unavailable.map((item) => metricLabels[item.metric] || item.metric).join(', ')}). Это нормально для метрик, которым не хватает аудитории или которые недоступны этому типу аккаунта.</Issue>}
+              {audienceMetrics.length > 0 && (
+                <section className="rounded-xl border border-[#E6E9EF] bg-white p-4 sm:p-5">
+                  <div className="mb-4"><h2 className="text-base font-semibold text-[#1F2937]">Аудитория</h2><p className="mt-1 text-xs text-[#9CA3AF]">Активность, подписки и доступные демографические срезы</p></div>
+                  <div className="grid gap-3 lg:grid-cols-2 2xl:grid-cols-3">
+                    {audienceMetrics.map((metric) => {
+                      const rows = metric.name === 'online_followers' ? onlineFollowerRows(metric) : insightBreakdownRows(metric);
+                      const title = `${metricLabels[metric.name] || metric.title}${metric.queryBreakdown ? ` · ${metric.queryBreakdown}` : ''}`;
+                      return <article key={`${metric.name}-${metric.queryBreakdown || metric.period}`} className="rounded-lg border border-[#EEF0F4] bg-[#F8F9FB] p-4"><div className="flex items-center justify-between gap-3"><h3 className="text-xs font-semibold text-[#1F2937]">{title}</h3>{metric.totalValue !== null && <b className="text-sm text-[#7D7DE6]">{formatNumber(metric.totalValue)}</b>}</div>{rows.length ? <div className="mt-3 space-y-2">{rows.slice(0, 8).map((row) => { const max = Math.max(...rows.map((item) => item.value), 1); return <div key={row.label}><div className="flex justify-between gap-3 text-[11px]"><span className="truncate text-[#6B7280]">{row.label}</span><b className="text-[#1F2937]">{formatNumber(row.value)}</b></div><div className="mt-1 h-1.5 overflow-hidden rounded-full bg-[#E6E9EF]"><div className="h-full rounded-full bg-[#7D7DE6]" style={{ width: `${Math.max(3, row.value / max * 100)}%` }} /></div></div>; })}</div> : <p className="mt-3 text-[11px] leading-5 text-[#9CA3AF]">Meta вернула метрику без доступной разбивки.</p>}</article>;
+                    })}
+                  </div>
+                </section>
+              )}
+              {unavailable.length > 0 && <Issue>Meta не отдала {unavailable.length} дополнительных сочетаний метрик и срезов. Недоступные показатели не подменяются нулями; после выдачи `instagram_business_manage_insights` они проверятся автоматически.</Issue>}
             </>
           )}
         </div>
@@ -345,6 +405,9 @@ export const InstagramHubPage: React.FC = () => {
               return <article key={item.id} className="overflow-hidden rounded-xl border border-[#E6E9EF] bg-white transition-shadow hover:shadow-md"><div className="aspect-square bg-[#F6F7F9]">{item.thumbnail_url || item.media_url ? <img src={item.thumbnail_url || item.media_url} alt="" loading="lazy" className="h-full w-full object-cover" /> : <div className="grid h-full place-items-center text-[#9CA3AF]"><Instagram className="h-8 w-8" /></div>}</div><div className="p-3"><div className="flex items-center justify-between gap-2"><span className="rounded-md bg-[#F1F2FB] px-2 py-1 text-[10px] font-semibold text-[#7D7DE6]">{item.media_product_type || item.media_type || 'POST'}</span><time className="text-[10px] text-[#9CA3AF]">{formatDate(item.timestamp)}</time></div><p className="mt-3 line-clamp-2 min-h-10 text-xs leading-5 text-[#4B5563]">{item.caption || 'Без подписи'}</p><div className="mt-3 flex items-center gap-4 border-t border-[#EEF0F4] pt-3 text-xs text-[#6B7280]"><span className="flex items-center gap-1"><Heart className="h-3.5 w-3.5" />{formatNumber(item.like_count ?? insightValue(itemMetrics.likes))}</span><span className="flex items-center gap-1"><MessageCircle className="h-3.5 w-3.5" />{formatNumber(item.comments_count ?? insightValue(itemMetrics.comments))}</span><span className="ml-auto flex items-center gap-1"><Eye className="h-3.5 w-3.5" />{formatNumber(insightValue(itemMetrics.reach || itemMetrics.views))}</span></div>{item.permalink && <a href={item.permalink} target="_blank" rel="noreferrer" className="mt-3 inline-flex items-center gap-1 text-[11px] font-semibold text-[#7D7DE6] hover:underline">Открыть в Instagram <ExternalLink className="h-3 w-3" /></a>}</div></article>;
             })}
           </div>
+          {media.length > 0 && mediaMetricNames.length > 0 && <div className="mt-5 overflow-x-auto rounded-lg border border-[#E6E9EF]"><table className="min-w-full border-collapse text-left text-[11px]"><thead className="bg-[#F6F7F9] text-[#6B7280]"><tr><th className="sticky left-0 z-10 min-w-56 bg-[#F6F7F9] px-3 py-3 font-semibold">Публикация</th>{mediaMetricNames.map((name) => <th key={name} className="min-w-28 whitespace-nowrap px-3 py-3 font-semibold">{metricLabels[name] || name}</th>)}</tr></thead><tbody>{media.map((item) => { const itemMetrics = Object.fromEntries((mediaInsights.find((row) => row.mediaId === item.id)?.metrics || []).map((metric) => [metric.name, metric])); return <tr key={item.id} className="border-t border-[#EEF0F4] hover:bg-[#FAFAFB]"><td className="sticky left-0 max-w-72 bg-white px-3 py-3"><div className="truncate font-medium text-[#1F2937]">{item.caption || 'Без подписи'}</div><div className="mt-1 text-[10px] text-[#9CA3AF]">{formatDate(item.timestamp)} · {item.media_product_type || item.media_type}</div></td>{mediaMetricNames.map((name) => <td key={name} className="whitespace-nowrap px-3 py-3 font-semibold text-[#1F2937]">{itemMetrics[name] ? formatNumber(insightValue(itemMetrics[name])) : '—'}</td>)}</tr>; })}</tbody></table></div>}
+
+          <div className="mt-7 border-t border-[#EEF0F4] pt-5"><div className="mb-4"><h2 className="text-base font-semibold text-[#1F2937]">Активные Stories</h2><p className="mt-1 text-xs text-[#9CA3AF]">Instagram предоставляет истории только пока они доступны; CRM сохраняет их новые события через Webhook</p></div>{!stories.length ? <div className="rounded-lg bg-[#F8F9FB] px-4 py-8 text-center text-xs text-[#9CA3AF]">Сейчас Meta не вернула активных Stories.</div> : <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{stories.map((story) => { const itemMetrics = Object.fromEntries((storyInsights.find((row) => row.mediaId === story.id)?.metrics || []).map((metric) => [metric.name, metric])); return <article key={story.id} className="rounded-lg border border-[#E6E9EF] p-3"><div className="flex gap-3">{story.thumbnail_url || story.media_url ? <img src={story.thumbnail_url || story.media_url} alt="" className="h-20 w-14 rounded-md object-cover" /> : <span className="grid h-20 w-14 place-items-center rounded-md bg-[#F6F7F9]"><Instagram className="h-5 w-5 text-[#9CA3AF]" /></span>}<div className="min-w-0 flex-1"><time className="text-[10px] text-[#9CA3AF]">{formatDate(story.timestamp)}</time><div className="mt-2 grid grid-cols-2 gap-2">{storyMetricNames.slice(0, 8).map((name) => <div key={name}><p className="truncate text-[10px] text-[#9CA3AF]">{metricLabels[name] || name}</p><b className="text-xs text-[#1F2937]">{itemMetrics[name] ? formatNumber(insightValue(itemMetrics[name])) : '—'}</b></div>)}</div></div></div></article>; })}</div>}</div>
         </section>
       )}
 

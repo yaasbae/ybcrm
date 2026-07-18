@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   ArrowLeft,
@@ -39,6 +39,8 @@ type Conversation = {
   customer?: { id?: string; name?: string; username?: string } | null;
   lastMessage?: Message | null;
   linkedClient?: Client | null;
+  importedMessageCount?: number;
+  historyLimited?: boolean;
 };
 
 async function api<T>(url: string, options?: RequestInit): Promise<T> {
@@ -75,12 +77,15 @@ export const InstagramInboxPage: React.FC<{ embedded?: boolean }> = ({ embedded 
   const [sending, setSending] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [historyNotice, setHistoryNotice] = useState('');
+  const [syncStatus, setSyncStatus] = useState('');
   const [query, setQuery] = useState('');
   const [draft, setDraft] = useState('');
   const [clientQuery, setClientQuery] = useState('');
   const [clients, setClients] = useState<Client[]>([]);
   const [clientLoading, setClientLoading] = useState(false);
   const [mobileChat, setMobileChat] = useState(false);
+  const syncingRef = useRef(false);
   const needsReconnect = /access token|session has expired|token.*expired|oauth/i.test(error);
 
   const selected = conversations.find((item) => item.id === selectedId) || null;
@@ -95,7 +100,7 @@ export const InstagramInboxPage: React.FC<{ embedded?: boolean }> = ({ embedded 
     if (!quiet) setLoading(true);
     setError('');
     try {
-      const data = await api<{ conversations: Conversation[]; notice?: string }>('/api/instagram/conversations?limit=50');
+      const data = await api<{ conversations: Conversation[]; notice?: string }>('/api/instagram/conversations?limit=500');
       setConversations(data.conversations || []);
       setNotice(data.notice || '');
       setSelectedId((current) => current || data.conversations?.[0]?.id || '');
@@ -106,13 +111,34 @@ export const InstagramInboxPage: React.FC<{ embedded?: boolean }> = ({ embedded 
     }
   };
 
+  const syncHistoryBatch = async (reset = false) => {
+    if (syncingRef.current) return;
+    syncingRef.current = true;
+    setSyncStatus('Импортируется старая история Direct…');
+    try {
+      const data = await api<{ imported: number; complete: boolean; historyLimit?: string }>('/api/instagram/conversations/sync', {
+        method: 'POST',
+        body: JSON.stringify({ reset }),
+      });
+      setSyncStatus(data.complete
+        ? `История синхронизирована${data.imported ? ` · добавлено ${data.imported}` : ''}`
+        : `Импорт продолжается · обработано ещё ${data.imported} диалогов`);
+      if (data.imported) await loadConversations(true);
+    } catch (e: any) {
+      setSyncStatus(`Импорт истории: ${e.message}`);
+    } finally {
+      syncingRef.current = false;
+    }
+  };
+
   const loadMessages = async (conversationId: string) => {
     if (!conversationId) return;
     setMessagesLoading(true);
     setError('');
     try {
-      const data = await api<{ messages: Message[] }>(`/api/instagram/conversations/${conversationId}/messages`);
+      const data = await api<{ messages: Message[]; historyNotice?: string }>(`/api/instagram/conversations/${conversationId}/messages`);
       setMessages(data.messages || []);
+      setHistoryNotice(data.historyNotice || '');
     } catch (e: any) {
       setError(e.message);
     } finally {
@@ -122,7 +148,11 @@ export const InstagramInboxPage: React.FC<{ embedded?: boolean }> = ({ embedded 
 
   useEffect(() => {
     loadConversations();
-    const timer = window.setInterval(() => loadConversations(true), 15000);
+    syncHistoryBatch();
+    const timer = window.setInterval(() => {
+      loadConversations(true);
+      syncHistoryBatch();
+    }, 15000);
     const onFocus = () => loadConversations(true);
     window.addEventListener('focus', onFocus);
     return () => {
@@ -228,6 +258,8 @@ export const InstagramInboxPage: React.FC<{ embedded?: boolean }> = ({ embedded 
         </div>
       )}
 
+      {!error && syncStatus && <div className="mb-3 flex items-center justify-between gap-3 rounded-[8px] border border-[#E6E9EF] bg-white px-4 py-2.5 text-[11px] text-[#6B7280]"><span>{syncStatus}</span><button onClick={() => syncHistoryBatch(true)} disabled={syncingRef.current} className="h-8 cursor-pointer rounded-[8px] border border-[#E6E9EF] px-3 font-semibold text-[#1F2937] hover:bg-[#F6F7F9] disabled:opacity-40">Импортировать заново</button></div>}
+
       {!error && notice && (
         <div className="mb-3 flex items-start gap-2 rounded-[8px] border border-amber-200 bg-amber-50 px-4 py-3 text-[12px] leading-5 text-amber-900">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" /><span>{notice} Список продолжает обновляться автоматически.</span>
@@ -267,6 +299,7 @@ export const InstagramInboxPage: React.FC<{ embedded?: boolean }> = ({ embedded 
                 <div className="min-w-0"><h2 className="truncate text-[14px] font-semibold text-[#1F2937]">{displayName(selected)}</h2><p className="truncate text-[11px] text-[#9CA3AF]">@{selected.customer?.username || selected.customer?.name || selected.customer?.id}</p></div>
               </div>
               <div className="flex-1 space-y-2 overflow-y-auto bg-[#F8F9FB] p-4 sm:p-6">
+                {historyNotice && <div className="mx-auto mb-3 max-w-2xl rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-center text-[11px] leading-5 text-amber-900">{historyNotice}</div>}
                 {messagesLoading ? <div className="grid h-full place-items-center"><Loader2 className="h-5 w-5 animate-spin text-[#7D7DE6]" /></div> : null}
                 {!messagesLoading && messages.map((message) => (
                   <div key={message.id} className={cn('flex', message.direction === 'outgoing' ? 'justify-end' : 'justify-start')}>

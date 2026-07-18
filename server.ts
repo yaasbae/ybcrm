@@ -4079,6 +4079,12 @@ async function instagramMedia(context: InstagramGraphContext, limit = 24) {
   return Array.isArray(result?.data) ? result.data : [];
 }
 
+async function instagramStories(context: InstagramGraphContext) {
+  const fields = "id,caption,media_type,media_product_type,media_url,thumbnail_url,permalink,timestamp,username,comments_count,like_count";
+  const result = await instagramGraphGet<any>(context, `${context.instagramUserId}/stories`, { fields, limit: 100 });
+  return Array.isArray(result?.data) ? result.data : [];
+}
+
 function normalizeInstagramInsight(row: any) {
   const values = Array.isArray(row?.values)
     ? row.values.map((item: any) => ({ value: item?.value ?? 0, endTime: item?.end_time || "" }))
@@ -4091,6 +4097,7 @@ function normalizeInstagramInsight(row: any) {
     period: String(row?.period || ""),
     values,
     totalValue: typeof totalValue === "number" ? totalValue : null,
+    breakdowns: Array.isArray(row?.total_value?.breakdowns) ? row.total_value.breakdowns : [],
   };
 }
 
@@ -4132,38 +4139,99 @@ async function instagramAccountInsights(context: InstagramGraphContext, days = 3
     }
     return { metric, insight: null, error: lastError };
   }));
+
+  // Audience metrics use different periods and breakdown parameters from the
+  // ordinary counters. Querying them separately prevents one unsupported
+  // combination from hiding all otherwise available Insights.
+  const audienceQueries = [
+    { metric: "online_followers", variants: [
+      { period: "lifetime" },
+      { period: "day", since, until },
+    ] },
+    { metric: "follows_and_unfollows", variants: [
+      { period: "day", metric_type: "total_value", breakdown: "follow_type", since, until },
+      { period: "total_over_range", metric_type: "total_value", breakdown: "follow_type", since, until },
+      { period: "day", metric_type: "total_value", since, until },
+    ] },
+    ...["follower_demographics", "reached_audience_demographics", "engaged_audience_demographics"]
+      .flatMap((metric) => ["country", "city", "age", "gender"].map((breakdown) => ({
+        metric: `${metric}:${breakdown}`,
+        sourceMetric: metric,
+        variants: [
+          { period: "lifetime", metric_type: "total_value", breakdown, timeframe: "last_90_days" },
+          { period: "lifetime", metric_type: "total_value", breakdown },
+          { period: "total_over_range", metric_type: "total_value", breakdown, since, until },
+        ],
+      }))),
+  ];
+  const audienceAttempts = await Promise.all(audienceQueries.map(async (query: any) => {
+    let lastError = "";
+    for (const variant of query.variants) {
+      try {
+        const result = await instagramGraphGet<any>(context, `${context.instagramUserId}/insights`, {
+          metric: query.sourceMetric || query.metric,
+          ...variant,
+        });
+        if (result?.data?.[0]) {
+          return {
+            metric: query.metric,
+            insight: { ...normalizeInstagramInsight(result.data[0]), queryBreakdown: variant.breakdown || "" },
+            error: "",
+          };
+        }
+      } catch (error) {
+        lastError = graphErrorMessage(error);
+      }
+    }
+    return { metric: query.metric, insight: null, error: lastError };
+  }));
+  const allAttempts = [...attempts, ...audienceAttempts];
   return {
     days: Math.min(Math.max(days, 7), 90),
-    metrics: attempts.filter((item) => item.insight).map((item) => item.insight),
-    unavailable: attempts.filter((item) => !item.insight).map(({ metric, error }) => ({ metric, error })),
+    metrics: allAttempts.filter((item) => item.insight).map((item) => item.insight),
+    unavailable: allAttempts.filter((item) => !item.insight).map(({ metric, error }) => ({ metric, error })),
   };
 }
 
 async function instagramMediaInsights(context: InstagramGraphContext, media: any[]) {
-  const rows = await Promise.all(media.slice(0, 12).map(async (item: any) => {
-    const baseMetrics = "reach,views,total_interactions,likes,comments,shares,saved";
-    const extraMetrics = String(item?.media_product_type || "").toUpperCase() === "REELS"
-      ? "plays,ig_reels_video_view_total_time,ig_reels_avg_watch_time,clips_replays_count,ig_reels_aggregated_all_plays_count,reels_skip_rate"
-      : "profile_visits,follows,profile_activity";
+  const rows: any[] = [];
+  const selected = media.slice(0, 24);
+  for (let offset = 0; offset < selected.length; offset += 4) {
+    const chunkRows = await Promise.all(selected.slice(offset, offset + 4).map(async (item: any) => {
+    const productType = String(item?.media_product_type || "").toUpperCase();
+    const metricNames = productType === "REELS"
+      ? ["reach", "views", "impressions", "total_interactions", "likes", "comments", "shares", "saved", "plays", "ig_reels_video_view_total_time", "ig_reels_avg_watch_time", "clips_replays_count", "ig_reels_aggregated_all_plays_count", "reels_skip_rate", "facebook_views", "crossposted_views"]
+      : productType === "STORY"
+        ? ["reach", "views", "impressions", "replies", "navigation", "profile_visits", "follows", "profile_activity", "shares", "total_interactions"]
+        : ["reach", "views", "impressions", "total_interactions", "likes", "comments", "shares", "saved", "profile_visits", "follows", "profile_activity"];
+    const found = new Map<string, any>();
+    const errors: string[] = [];
+    // Meta rejects a whole comma-separated request when just one metric is not
+    // supported by a media type. Try the fast grouped form first, then recover
+    // every supported metric individually.
     try {
-      const result = await instagramGraphGet<any>(context, `${item.id}/insights`, { metric: baseMetrics });
-      let extra: any[] = [];
-      let extraError = "";
-      try {
-        const extraResult = await instagramGraphGet<any>(context, `${item.id}/insights`, { metric: extraMetrics });
-        extra = Array.isArray(extraResult?.data) ? extraResult.data : [];
-      } catch (error) {
-        extraError = graphErrorMessage(error);
-      }
-      return {
-        mediaId: String(item.id),
-        metrics: [...(Array.isArray(result?.data) ? result.data : []), ...extra].map(normalizeInstagramInsight),
-        error: extraError,
-      };
-    } catch (error) {
-      return { mediaId: String(item.id), metrics: [], error: graphErrorMessage(error) };
+      const result = await instagramGraphGet<any>(context, `${item.id}/insights`, { metric: metricNames.join(",") });
+      for (const row of Array.isArray(result?.data) ? result.data : []) found.set(String(row?.name || ""), row);
+    } catch (groupError) {
+      errors.push(graphErrorMessage(groupError));
+      const individual = await Promise.all(metricNames.map(async (metric) => {
+        try {
+          const result = await instagramGraphGet<any>(context, `${item.id}/insights`, { metric });
+          return result?.data?.[0] || null;
+        } catch {
+          return null;
+        }
+      }));
+      for (const row of individual.filter(Boolean)) found.set(String(row?.name || ""), row);
     }
-  }));
+    return {
+      mediaId: String(item.id),
+      metrics: [...found.values()].map(normalizeInstagramInsight),
+      error: found.size ? "" : errors[0] || "Meta не вернула Insights для этой публикации",
+    };
+    }));
+    rows.push(...chunkRows);
+  }
   return rows;
 }
 
@@ -4430,6 +4498,17 @@ app.get("/api/instagram/media", async (req, res) => {
   }
 });
 
+app.get("/api/instagram/stories", async (_req, res) => {
+  try {
+    const context = await instagramGraphContext();
+    const stories = await instagramStories(context);
+    const insights = await instagramMediaInsights(context, stories);
+    res.json({ stories, insights });
+  } catch (error: any) {
+    res.status(error?.response?.status || 500).json({ error: graphErrorMessage(error) });
+  }
+});
+
 app.get("/api/instagram/comments", async (req, res) => {
   try {
     const context = await instagramGraphContext();
@@ -4580,10 +4659,73 @@ function participantsFromInstagramMessages(messages: any[], ownIds: string[]) {
   return [...participants.values()];
 }
 
+async function hydrateInstagramConversations(
+  rows: any[],
+  options: {
+    apiMode: "instagram_login" | "facebook_login";
+    accessToken: string;
+    pageId: string;
+    instagramUserId: string;
+    contacts: any[];
+  },
+) {
+  const ownIds = [String(options.pageId), String(options.instagramUserId)];
+  const results: any[] = [];
+  // Keep concurrency bounded: an account can have thousands of conversations
+  // and Cloud Run/Meta should not receive hundreds of message calls at once.
+  for (let offset = 0; offset < rows.length; offset += 8) {
+    const chunk = rows.slice(offset, offset + 8);
+    const hydrated = await Promise.all(chunk.map(async (row: any) => {
+      const stored = adminDb ? await adminDb.collection("instagram_conversations").doc(row.id).get().catch(() => null) : null;
+      const storedData: any = stored?.exists ? stored.data() : {};
+      let messages: any[] = Array.isArray(row?.messages?.data)
+        ? row.messages.data
+          .map((item: any) => normalizeInstagramMessage(item, ownIds))
+          .sort((a: any, b: any) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
+        : [];
+      let historyLimited = false;
+      if (!messages.length) {
+        try {
+          messages = await fetchInstagramConversationMessages(row.id, options.accessToken, ownIds, options.apiMode);
+        } catch (messageError) {
+          historyLimited = true;
+          console.warn("[instagram] conversation messages:", graphErrorMessage(messageError));
+        }
+      }
+      const participants = row?.participants?.data?.length
+        ? row.participants.data
+        : participantsFromInstagramMessages(messages, ownIds);
+      const customer = participants.find((item: any) => !ownIds.includes(String(item?.id || ""))) || participants[0] || null;
+      if (messages.length) await saveInstagramMessages(row.id, messages, { customerId: customer?.id || "" });
+      const lastMessage = messages[messages.length - 1] || null;
+      const linkedClient = await findClientByInstagram(participants, storedData?.clientId || "", options.contacts);
+      const result = {
+        id: row.id,
+        updatedAt: row.updated_time || lastMessage?.createdAt || "",
+        participants,
+        customer,
+        lastMessage,
+        linkedClient,
+        importedMessageCount: messages.length,
+        historyLimited: historyLimited || (options.apiMode === "instagram_login" && messages.length >= 20),
+      };
+      if (adminDb) await adminDb.collection("instagram_conversations").doc(row.id).set({
+        ...result,
+        linkedClient: linkedClient || null,
+        clientId: linkedClient?.id || storedData?.clientId || "",
+        syncedAt: new Date().toISOString(),
+      }, { merge: true });
+      return result;
+    }));
+    results.push(...hydrated);
+  }
+  return results;
+}
+
 app.get("/api/instagram/conversations", async (req, res) => {
   try {
     const { apiMode, accessTokens, pageId, instagramUserId } = await instagramInboxCredentials();
-    const requestedLimit = Math.min(Math.max(Number(req.query.limit || 40), 1), 100);
+    const requestedLimit = Math.min(Math.max(Number(req.query.limit || 100), 1), 1000);
     const fields = apiMode === "instagram_login" ? "" : "id,updated_time,participants";
     const ownerId = apiMode === "instagram_login" ? instagramUserId : pageId;
     const baseUrl = apiMode === "instagram_login" ? INSTAGRAM_GRAPH_BASE_URL : "https://graph.facebook.com";
@@ -4591,7 +4733,7 @@ app.get("/api/instagram/conversations", async (req, res) => {
       const params = {
         access_token: token,
         ...(apiMode === "facebook_login" ? { platform: "instagram", fields } : {}),
-        limit: requestedLimit,
+        limit: Math.min(requestedLimit, 100),
       };
       const candidates = apiMode === "instagram_login"
         ? [`${ownerId}/conversations`, "me/conversations"]
@@ -4608,7 +4750,9 @@ app.get("/api/instagram/conversations", async (req, res) => {
     const rows = Array.isArray(response.data?.data) ? [...response.data.data] : [];
     let paging = response.data?.paging || null;
     let pagesScanned = 1;
-    const maxPages = req.query.deep === "1" ? 50 : 5;
+    // Normal inbox refresh stays cheap; the dedicated history-sync endpoint
+    // walks every cursor in persistent batches.
+    const maxPages = req.query.deep === "1" ? 50 : 1;
 
     // Instagram can return an empty page together with a valid `next` cursor
     // (for example when the current slice contains no Instagram conversations).
@@ -4625,45 +4769,9 @@ app.get("/api/instagram/conversations", async (req, res) => {
     if (rows.length > requestedLimit) rows.length = requestedLimit;
     // Read the client database once for the entire sync, not once per dialog.
     const contacts = adminDb ? await getContactsForInstagramSearch() : [];
-    const graphConversations = await Promise.all(rows.map(async (row: any) => {
-      const ownIds = [String(pageId), String(instagramUserId)];
-      const stored = adminDb ? await adminDb.collection("instagram_conversations").doc(row.id).get().catch(() => null) : null;
-      const storedData: any = stored?.exists ? stored.data() : {};
-      let messages: any[] = Array.isArray(row?.messages?.data)
-        ? row.messages.data
-          .map((item: any) => normalizeInstagramMessage(item, ownIds))
-          .sort((a: any, b: any) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
-        : [];
-      if (!messages.length) {
-        try {
-          messages = await fetchInstagramConversationMessages(row.id, accessToken, ownIds, apiMode);
-        } catch (messageError) {
-          console.warn("[instagram] conversation messages:", graphErrorMessage(messageError));
-        }
-      }
-      const participants = row?.participants?.data?.length
-        ? row.participants.data
-        : participantsFromInstagramMessages(messages, ownIds);
-      const customer = participants.find((item: any) => !ownIds.includes(String(item?.id || ""))) || participants[0] || null;
-      if (messages.length) await saveInstagramMessages(row.id, messages, { customerId: customer?.id || "" });
-      const lastMessage = messages[messages.length - 1] || null;
-      const linkedClient = await findClientByInstagram(participants, storedData?.clientId || "", contacts);
-      const result = {
-        id: row.id,
-        updatedAt: row.updated_time || lastMessage?.createdAt || "",
-        participants,
-        customer,
-        lastMessage,
-        linkedClient,
-      };
-      if (adminDb) await adminDb.collection("instagram_conversations").doc(row.id).set({
-        ...result,
-        linkedClient: linkedClient || null,
-        clientId: linkedClient?.id || storedData?.clientId || "",
-        syncedAt: new Date().toISOString(),
-      }, { merge: true });
-      return result;
-    }));
+    const graphConversations = await hydrateInstagramConversations(rows, {
+      apiMode, accessToken, pageId: String(pageId), instagramUserId: String(instagramUserId), contacts,
+    });
     const conversations = [...graphConversations];
     if (adminDb) {
       try {
@@ -4702,6 +4810,87 @@ app.get("/api/instagram/conversations", async (req, res) => {
   }
 });
 
+app.post("/api/instagram/conversations/sync", async (req, res) => {
+  try {
+    const { apiMode, accessTokens, pageId, instagramUserId } = await instagramInboxCredentials();
+    const ownerId = apiMode === "instagram_login" ? instagramUserId : pageId;
+    const baseUrl = apiMode === "instagram_login" ? INSTAGRAM_GRAPH_BASE_URL : "https://graph.facebook.com";
+    const stateRef = adminDb?.collection("instagram_meta").doc("conversation_history_sync") || null;
+    const stateSnap = stateRef ? await stateRef.get().catch(() => null) : null;
+    const savedState: any = stateSnap?.exists ? stateSnap.data() : {};
+    const reset = Boolean(req.body?.reset);
+    const lastCompleteAt = savedState?.lastCompleteAt ? new Date(savedState.lastCompleteAt).getTime() : 0;
+    if (!reset && savedState?.complete && lastCompleteAt && Date.now() - lastCompleteAt < 15 * 60 * 1000) {
+      return res.json({
+        imported: 0,
+        nextCursor: "",
+        complete: true,
+        cached: true,
+        historyLimit: "Meta разрешает получить список прошлых диалогов, но тексты только 20 последних сообщений каждого диалога.",
+      });
+    }
+    const requestedCursor = reset ? "" : String(req.body?.cursor || savedState?.cursor || "");
+    const contacts = adminDb ? await getContactsForInstagramSearch() : [];
+
+    const result = await withInstagramTokenFallback(accessTokens, async (accessToken) => {
+      const commonParams: any = {
+        access_token: accessToken,
+        limit: 50,
+        ...(requestedCursor ? { after: requestedCursor } : {}),
+        ...(apiMode === "facebook_login" ? { platform: "instagram", fields: "id,updated_time,participants" } : {}),
+      };
+      const candidates = apiMode === "instagram_login"
+        ? [`${ownerId}/conversations`, "me/conversations"]
+        : [`${ownerId}/conversations`];
+      let response: any = null;
+      let discoveryPath = candidates[0];
+      for (const path of candidates) {
+        const candidate = await axios.get(`${baseUrl}/${META_GRAPH_VERSION}/${path}`, { params: commonParams, timeout: 25_000 });
+        response ||= candidate;
+        if (candidate.data?.data?.length) {
+          response = candidate;
+          discoveryPath = path;
+          break;
+        }
+      }
+      const rows = Array.isArray(response?.data?.data) ? response.data.data : [];
+      const conversations = await hydrateInstagramConversations(rows, {
+        apiMode,
+        accessToken,
+        pageId: String(pageId),
+        instagramUserId: String(instagramUserId),
+        contacts,
+      });
+      return {
+        conversations,
+        nextCursor: String(response?.data?.paging?.cursors?.after || ""),
+        hasNext: Boolean(response?.data?.paging?.next),
+        discoveryPath,
+      };
+    });
+
+    const complete = !result.hasNext || !result.nextCursor || result.nextCursor === requestedCursor;
+    if (stateRef) {
+      await stateRef.set({
+        cursor: complete ? "" : result.nextCursor,
+        complete,
+        importedInLastBatch: result.conversations.length,
+        lastBatchAt: new Date().toISOString(),
+        ...(complete ? { lastCompleteAt: new Date().toISOString() } : {}),
+      }, { merge: true });
+    }
+    res.json({
+      imported: result.conversations.length,
+      nextCursor: complete ? "" : result.nextCursor,
+      complete,
+      discoveryPath: result.discoveryPath,
+      historyLimit: "Meta разрешает получить список прошлых диалогов, но тексты только 20 последних сообщений каждого диалога.",
+    });
+  } catch (error: any) {
+    res.status(error?.response?.status || 500).json({ error: graphErrorMessage(error) });
+  }
+});
+
 app.get("/api/instagram/conversations/:id/messages", async (req, res) => {
   try {
     if (req.params.id.startsWith("webhook-") && adminDb) {
@@ -4714,10 +4903,25 @@ app.get("/api/instagram/conversations/:id/messages", async (req, res) => {
       return res.json({ messages });
     }
     const { apiMode, accessTokens, pageId, instagramUserId } = await instagramInboxCredentials();
-    const messages = await withInstagramTokenFallback(accessTokens, (accessToken) =>
+    const graphMessages = await withInstagramTokenFallback(accessTokens, (accessToken) =>
       fetchInstagramConversationMessages(req.params.id, accessToken, [String(pageId), String(instagramUserId)], apiMode));
-    await saveInstagramMessages(req.params.id, messages);
-    res.json({ messages });
+    await saveInstagramMessages(req.params.id, graphMessages);
+    const byId = new Map(graphMessages.map((message: any) => [String(message.id), message]));
+    if (adminDb) {
+      const snapshot = await adminDb.collection("instagram_messages")
+        .where("conversationId", "==", req.params.id)
+        .get();
+      snapshot.docs.forEach((entry: any) => byId.set(entry.id, { id: entry.id, ...entry.data() }));
+    }
+    const messages = [...byId.values()]
+      .sort((a: any, b: any) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+    res.json({
+      messages,
+      historyLimited: apiMode === "instagram_login" && graphMessages.length >= 20,
+      historyNotice: apiMode === "instagram_login" && graphMessages.length >= 20
+        ? "Meta отдаёт содержимое только 20 последних сообщений этого старого диалога. Новые сообщения дальше сохраняются в CRM без этого ограничения."
+        : "",
+    });
   } catch (error: any) {
     res.status(error?.response?.status || 500).json({ error: graphErrorMessage(error) });
   }
