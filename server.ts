@@ -3485,6 +3485,7 @@ const INSTAGRAM_LOGIN_SCOPES = [
   "instagram_business_content_publish",
 ].join(",");
 const INSTAGRAM_GRAPH_BASE_URL = "https://graph.instagram.com";
+const INSTAGRAM_WEBHOOK_VERIFY_TOKEN = process.env.INSTAGRAM_WEBHOOK_VERIFY_TOKEN || "ybcrm-instagram-2026";
 
 function publicBaseUrl(req?: any) {
   const fromEnv = process.env.WEBHOOK_URL || process.env.SERVER_URL || process.env.PUBLIC_BASE_URL || MCP_PUBLIC_BASE_URL;
@@ -4272,7 +4273,110 @@ app.get("/api/instagram/diagnostics", async (_req, res) => {
       conversationVariants,
       subscriptions,
       subscriptionsError,
+      webhook: {
+        callbackUrl: `${publicBaseUrl()}/api/instagram/webhook`,
+        verifyToken: INSTAGRAM_WEBHOOK_VERIFY_TOKEN,
+      },
     });
+  } catch (error: any) {
+    res.status(error?.response?.status || 500).json({ error: graphErrorMessage(error) });
+  }
+});
+
+app.get("/api/instagram/webhook", (req, res) => {
+  const mode = String(req.query["hub.mode"] || "");
+  const token = String(req.query["hub.verify_token"] || "");
+  const challenge = String(req.query["hub.challenge"] || "");
+  if (mode === "subscribe" && token === INSTAGRAM_WEBHOOK_VERIFY_TOKEN) {
+    return res.status(200).send(challenge);
+  }
+  return res.sendStatus(403);
+});
+
+app.post("/api/instagram/webhook", async (req, res) => {
+  // Acknowledge Meta quickly, then persist the event. Meta retries non-200
+  // deliveries, so duplicate message IDs are intentionally merged below.
+  res.status(200).send("EVENT_RECEIVED");
+  try {
+    const body: any = req.body || {};
+    if (body.object !== "instagram" || !adminDb) return;
+    const entries = Array.isArray(body.entry) ? body.entry : [];
+    for (const entry of entries) {
+      const ownerId = String(entry?.id || "");
+      const messaging = Array.isArray(entry?.messaging) ? entry.messaging : [];
+      for (const event of messaging) {
+        const senderId = String(event?.sender?.id || "");
+        const recipientId = String(event?.recipient?.id || "");
+        const incoming = recipientId === ownerId || senderId !== ownerId;
+        const customerId = incoming ? senderId : recipientId;
+        if (!customerId) continue;
+        const rawMessage = event?.message || event?.message_edit || {};
+        const message = {
+          id: String(rawMessage?.mid || `webhook-${customerId}-${event?.timestamp || Date.now()}`),
+          text: String(rawMessage?.text || ""),
+          createdAt: event?.timestamp ? new Date(Number(event.timestamp)).toISOString() : new Date().toISOString(),
+          from: { id: senderId },
+          to: [{ id: recipientId }],
+          attachments: rawMessage?.attachments || [],
+          direction: incoming ? "incoming" : "outgoing",
+          source: "instagram_webhook",
+        };
+        const conversationId = `webhook-${customerId}`;
+        await saveInstagramMessages(conversationId, [message], { customerId });
+        await adminDb.collection("instagram_conversations").doc(conversationId).set({
+          id: conversationId,
+          updatedAt: message.createdAt,
+          participants: [{ id: customerId }],
+          customer: { id: customerId },
+          lastMessage: message,
+          source: "instagram_webhook",
+          syncedAt: new Date().toISOString(),
+        }, { merge: true });
+      }
+
+      const changes = Array.isArray(entry?.changes) ? entry.changes : [];
+      for (const change of changes) {
+        if (!["comments", "live_comments"].includes(String(change?.field || ""))) continue;
+        const value = change?.value || {};
+        const commentId = String(value?.id || "");
+        if (!commentId) continue;
+        await adminDb.collection("instagram_comments").doc(commentId).set({
+          ...value,
+          id: commentId,
+          field: change.field,
+          receivedAt: new Date().toISOString(),
+        }, { merge: true });
+      }
+    }
+  } catch (error) {
+    console.error("[instagram] webhook:", graphErrorMessage(error));
+  }
+});
+
+app.post("/api/instagram/subscriptions/ensure", async (_req, res) => {
+  try {
+    const context = await instagramGraphContext();
+    const subscribedFields = [
+      "messages",
+      "messaging_postbacks",
+      "messaging_seen",
+      "messaging_referral",
+      "message_reactions",
+      "comments",
+      "live_comments",
+      "mentions",
+      "story_insights",
+    ];
+    const result = await withInstagramTokenFallback(context.accessTokens, async (accessToken) => {
+      const response = await axios.post(
+        `${context.baseUrl}/${META_GRAPH_VERSION}/${context.instagramUserId}/subscribed_apps`,
+        { subscribed_fields: subscribedFields },
+        { params: { access_token: accessToken }, timeout: 25_000 },
+      );
+      return response.data;
+    });
+    const subscriptions = await instagramGraphGet<any>(context, `${context.instagramUserId}/subscribed_apps`);
+    res.json({ success: Boolean(result?.success), subscribedFields, subscriptions });
   } catch (error: any) {
     res.status(error?.response?.status || 500).json({ error: graphErrorMessage(error) });
   }
@@ -4494,7 +4598,7 @@ app.get("/api/instagram/conversations", async (req, res) => {
     if (rows.length > requestedLimit) rows.length = requestedLimit;
     // Read the client database once for the entire sync, not once per dialog.
     const contacts = adminDb ? await getContactsForInstagramSearch() : [];
-    const conversations = await Promise.all(rows.map(async (row: any) => {
+    const graphConversations = await Promise.all(rows.map(async (row: any) => {
       const ownIds = [String(pageId), String(instagramUserId)];
       const stored = adminDb ? await adminDb.collection("instagram_conversations").doc(row.id).get().catch(() => null) : null;
       const storedData: any = stored?.exists ? stored.data() : {};
@@ -4533,6 +4637,29 @@ app.get("/api/instagram/conversations", async (req, res) => {
       }, { merge: true });
       return result;
     }));
+    const conversations = [...graphConversations];
+    if (adminDb) {
+      try {
+        const cached = await adminDb.collection("instagram_conversations")
+          .orderBy("updatedAt", "desc")
+          .limit(requestedLimit)
+          .get();
+        const knownIds = new Set(conversations.map((item: any) => String(item.id)));
+        for (const entry of cached.docs) {
+          if (knownIds.has(entry.id)) continue;
+          const cachedConversation: any = { id: entry.id, ...entry.data() };
+          const participants = Array.isArray(cachedConversation.participants) ? cachedConversation.participants : [];
+          cachedConversation.linkedClient = await findClientByInstagram(
+            participants,
+            cachedConversation.clientId || "",
+            contacts,
+          );
+          conversations.push(cachedConversation);
+        }
+      } catch (cacheError) {
+        console.warn("[instagram] cached conversations:", graphErrorMessage(cacheError));
+      }
+    }
     conversations.sort((a: any, b: any) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
     res.json({
       conversations,
@@ -4550,6 +4677,15 @@ app.get("/api/instagram/conversations", async (req, res) => {
 
 app.get("/api/instagram/conversations/:id/messages", async (req, res) => {
   try {
+    if (req.params.id.startsWith("webhook-") && adminDb) {
+      const snapshot = await adminDb.collection("instagram_messages")
+        .where("conversationId", "==", req.params.id)
+        .get();
+      const messages = snapshot.docs
+        .map((entry: any) => ({ id: entry.id, ...entry.data() }))
+        .sort((a: any, b: any) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+      return res.json({ messages });
+    }
     const { apiMode, accessTokens, pageId, instagramUserId } = await instagramInboxCredentials();
     const messages = await withInstagramTokenFallback(accessTokens, (accessToken) =>
       fetchInstagramConversationMessages(req.params.id, accessToken, [String(pageId), String(instagramUserId)], apiMode));
