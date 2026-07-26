@@ -6,6 +6,93 @@
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
 }
 
+/* Orders — shadcnspace-inspired, scoped design layer */
+.yb-orders-space {
+  --orders-primary: #6d5ce7;
+  --orders-ring: rgba(109, 92, 231, 0.18);
+  --orders-border: #e7e7ec;
+  --orders-muted: #f7f7f9;
+  color: #18181b;
+}
+
+.yb-orders-space .yb-orders-hero,
+.yb-orders-space .yb-orders-list {
+  box-shadow:
+    0 1px 2px rgba(24, 24, 27, 0.025),
+    0 10px 28px rgba(24, 24, 27, 0.035);
+}
+
+.yb-orders-space button,
+.yb-orders-space input,
+.yb-orders-space select {
+  transition:
+    color 160ms ease,
+    background-color 160ms ease,
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    opacity 160ms ease;
+}
+
+.yb-orders-space button:focus-visible,
+.yb-orders-space input:focus-visible,
+.yb-orders-space select:focus-visible,
+.yb-orders-space [role="button"]:focus-visible {
+  outline: 2px solid transparent;
+  box-shadow: 0 0 0 3px var(--orders-ring);
+}
+
+.yb-orders-space .yb-order-row > td {
+  border-bottom: 1px solid var(--orders-border);
+}
+
+.yb-orders-space .yb-order-row:hover > td {
+  background: #fafafa;
+}
+
+.yb-orders-space .yb-order-expand {
+  white-space: nowrap;
+}
+
+.yb-orders-space .yb-order-mobile-card {
+  box-shadow: 0 1px 2px rgba(24, 24, 27, 0.035);
+}
+
+@media (max-width: 767px) {
+  .yb-orders-space {
+    margin-inline: -0.5rem;
+  }
+
+  .yb-orders-space .yb-orders-hero {
+    margin-inline: 0.75rem;
+    padding: 1rem;
+  }
+
+  .yb-orders-space .yb-orders-list {
+    border-radius: 1rem;
+  }
+
+  .yb-orders-space .yb-order-mobile-card {
+    min-width: 0;
+    overflow: hidden;
+    background: #fff;
+  }
+
+  .yb-orders-space .yb-order-mobile-card [role="button"] {
+    min-width: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .yb-orders-space *,
+  .yb-orders-space *::before,
+  .yb-orders-space *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
+
 :root {
   --bg: #f6f7f9;
   --card-bg: #ffffff;

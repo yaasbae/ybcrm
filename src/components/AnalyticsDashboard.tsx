@@ -33,6 +33,7 @@ export interface OrderData {
   clientName: string;
   clientInsta: string;
   clientCity: string;
+  clientAddress?: string;
   status: string;
   source: string;
   item: string;
@@ -84,6 +85,7 @@ export interface OrderData {
     toCityCode?: string | number;
     toCity?: string;
     deliveryPoint?: string;
+    deliveryPointAddress?: string;
     toAddress?: string;
     weight?: string | number;
     length?: string | number;
@@ -201,6 +203,9 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
     orderId: '',
     clientName: '',
     clientPhone: '',
+    clientInsta: '',
+    clientCity: '',
+    clientAddress: '',
     item: '',
     items: [],
     itemPrices: [],
@@ -350,8 +355,9 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
       paidAmount: orderDraft.paidAmount || invoiceAmount,
       clientPhone: orderDraft.clientPhone || '',
       clientName: orderDraft.clientName || '',
-      clientInsta: '',
-      clientCity: '',
+      clientInsta: orderDraft.clientInsta || '',
+      clientCity: orderDraft.clientCity || '',
+      clientAddress: orderDraft.clientAddress || '',
       status: orderDraft.status || 'Новый',
       source: orderDraft.source || '',
       item: orderDraft.item || newOrderItemText,
@@ -376,6 +382,7 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
       label: orderDraft.label || '',
       manager: orderDraft.manager || '',
       blogger: bloggerName,
+      ...(orderDraft.cdekPayload ? { cdekPayload: orderDraft.cdekPayload } : {}),
       isFirebase: true
     };
 
@@ -391,6 +398,9 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
         orderId: '',
         clientName: '',
         clientPhone: '',
+        clientInsta: '',
+        clientCity: '',
+        clientAddress: '',
         item: '',
         items: [],
         itemPrices: [],

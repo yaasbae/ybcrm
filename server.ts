@@ -23,6 +23,7 @@ import { Api } from "telegram";
 import { Telegraf, Markup } from "telegraf";
 import { GoogleGenAI, Modality } from "@google/genai";
 import sharp from "sharp";
+import { PDFDocument } from "pdf-lib";
 
 const _require = createRequire(import.meta.url);
 const Database = _require("better-sqlite3");
@@ -745,10 +746,175 @@ let cdekToken: string | null = null;
 let tokenExpiry: number = 0;
 let cdekTokenKey: string | null = null;
 const cdekDeliveryPointsCache = new Map<number, { expiresAt: number; points: any[] }>();
+let cdekCitiesIndexCache: {
+  baseUrl: string;
+  expiresAt: number;
+  cities: any[];
+} | null = null;
+let cdekCitiesIndexPromise: Promise<any[]> | null = null;
+
+const normalizeCdekCitySearch = (value: unknown) => String(value || "")
+  .trim()
+  .toLocaleLowerCase("ru-RU")
+  .replace(/ё/g, "е")
+  .replace(/^(?:г(?:ород)?\.?\s+)/, "")
+  .replace(/[‐‑‒–—−-]+/g, " ")
+  .replace(/[^a-zа-я0-9\s]/gi, " ")
+  .replace(/\s+/g, " ")
+  .trim();
+
+const CDEK_CITY_ALIASES = new Map<string, string>([
+  ["спб", "Санкт-Петербург"],
+  ["питер", "Санкт-Петербург"],
+  ["петербург", "Санкт-Петербург"],
+  ["санкт", "Санкт-Петербург"],
+  ["санкт пет", "Санкт-Петербург"],
+  ["санкт петербург", "Санкт-Петербург"],
+  ["санкт петрбург", "Санкт-Петербург"],
+  ["мск", "Москва"],
+  ["екб", "Екатеринбург"],
+  ["екат", "Екатеринбург"],
+  ["екатерин", "Екатеринбург"],
+  ["нск", "Новосибирск"],
+  ["новосиб", "Новосибирск"],
+  ["нн", "Нижний Новгород"],
+  ["нижний", "Нижний Новгород"],
+  ["краснояр", "Красноярск"],
+  ["владивост", "Владивосток"],
+  ["калининг", "Калининград"],
+  ["ростов на дону", "Ростов-на-Дону"],
+  ["ростов", "Ростов-на-Дону"],
+  ["йошкар ола", "Йошкар-Ола"],
+  ["улан удэ", "Улан-Удэ"],
+  ["ханты мансийск", "Ханты-Мансийск"],
+]);
+
+function levenshteinDistance(left: string, right: string) {
+  if (left === right) return 0;
+  if (!left.length) return right.length;
+  if (!right.length) return left.length;
+  const previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+  for (let leftIndex = 1; leftIndex <= left.length; leftIndex += 1) {
+    let diagonal = previous[0];
+    previous[0] = leftIndex;
+    for (let rightIndex = 1; rightIndex <= right.length; rightIndex += 1) {
+      const above = previous[rightIndex];
+      const substitution = diagonal + (left[leftIndex - 1] === right[rightIndex - 1] ? 0 : 1);
+      previous[rightIndex] = Math.min(
+        previous[rightIndex] + 1,
+        previous[rightIndex - 1] + 1,
+        substitution,
+      );
+      diagonal = above;
+    }
+  }
+  return previous[right.length];
+}
+
+async function loadCdekCitiesIndex(token: string, baseUrl: string) {
+  if (
+    cdekCitiesIndexCache
+    && cdekCitiesIndexCache.baseUrl === baseUrl
+    && cdekCitiesIndexCache.expiresAt > Date.now()
+  ) {
+    return cdekCitiesIndexCache.cities;
+  }
+  if (cdekCitiesIndexPromise) return cdekCitiesIndexPromise;
+
+  cdekCitiesIndexPromise = (async () => {
+    const cities: any[] = [];
+    const pageSize = 1000;
+    const concurrency = 8;
+    for (let firstPage = 0; firstPage < 100; firstPage += concurrency) {
+      const pageResults = await Promise.all(
+        Array.from({ length: concurrency }, (_, offset) => firstPage + offset).map(async page => {
+          for (let attempt = 0; attempt < 2; attempt += 1) {
+            try {
+              const response = await axios.get(`${baseUrl}/location/cities`, {
+                headers: { Authorization: `Bearer ${token}` },
+                params: { country_codes: "RU", size: pageSize, page },
+                timeout: 20_000,
+              });
+              return {
+                success: true,
+                batch: Array.isArray(response.data) ? response.data : [],
+              };
+            } catch (error) {
+              if (attempt === 1) return { success: false, batch: [] };
+            }
+          }
+          return { success: false, batch: [] };
+        }),
+      );
+      for (const result of pageResults) {
+        if (result.success) cities.push(...result.batch);
+      }
+      if (pageResults.some(result => result.success && result.batch.length < pageSize)) break;
+    }
+    const uniqueCities = Array.from(
+      new Map(
+        cities
+          .filter(city => city?.code && city?.city)
+          .map(city => [
+            String(city.code),
+            {
+              code: city.code,
+              city: city.city,
+              region: city.region || "",
+            },
+          ]),
+      ).values(),
+    );
+    cdekCitiesIndexCache = {
+      baseUrl,
+      expiresAt: Date.now() + 1000 * 60 * 60 * 6,
+      cities: uniqueCities,
+    };
+    return uniqueCities;
+  })().finally(() => {
+    cdekCitiesIndexPromise = null;
+  });
+  return cdekCitiesIndexPromise;
+}
+
+function rankCdekCities(cities: any[], query: string) {
+  const normalizedQuery = normalizeCdekCitySearch(query);
+  if (!normalizedQuery) return [];
+  const queryTokens = normalizedQuery.split(" ");
+  return cities
+    .map(city => {
+      const cityName = normalizeCdekCitySearch(city.city);
+      const regionName = normalizeCdekCitySearch(city.region);
+      const searchable = `${cityName} ${regionName}`.trim();
+      let score = Number.POSITIVE_INFINITY;
+      if (cityName === normalizedQuery) score = 0;
+      else if (cityName.startsWith(normalizedQuery)) score = 10 + (cityName.length - normalizedQuery.length);
+      else if (cityName.includes(normalizedQuery)) score = 30 + cityName.indexOf(normalizedQuery);
+      else if (queryTokens.every(token => searchable.includes(token))) score = 45;
+      else if (normalizedQuery.length >= 5) {
+        const distance = levenshteinDistance(cityName, normalizedQuery);
+        const allowedDistance = Math.max(1, Math.min(3, Math.floor(normalizedQuery.length * 0.22)));
+        if (distance <= allowedDistance) score = 60 + distance * 5;
+      }
+      if (!Number.isFinite(score)) return null;
+      if (cityName === regionName) score -= 2;
+      return { city, score };
+    })
+    .filter(Boolean)
+    .sort((left: any, right: any) => left.score - right.score || String(left.city.city).localeCompare(String(right.city.city), "ru"))
+    .slice(0, 20)
+    .map((entry: any) => entry.city);
+}
 
 async function getCdekSettings() {
-  const snap = db ? await getDoc(doc(db, "settings", "cdek_api")).catch(() => null) : null;
-  const saved = snap?.exists?.() ? snap.data() : {};
+  let saved: any = {};
+  if (adminDb) {
+    const snap = await adminDb.collection("settings").doc("cdek_api").get().catch(() => null);
+    saved = snap?.exists ? snap.data() : {};
+  } else if (db) {
+    const snap = await getDoc(doc(db, "settings", "cdek_api")).catch(() => null);
+    saved = snap?.exists?.() ? snap.data() : {};
+  }
   const isTest = typeof saved?.isTest === "boolean" ? saved.isTest : IS_TEST;
   return {
     clientId: saved?.clientId || process.env.CDEK_CLIENT_ID || "",
@@ -861,6 +1027,8 @@ app.post("/api/cdek/save-settings", async (req, res) => {
     cdekToken = null;
     tokenExpiry = 0;
     cdekTokenKey = null;
+    cdekCitiesIndexCache = null;
+    cdekCitiesIndexPromise = null;
     res.json({ success: true, configured: Boolean(payload.clientId && payload.clientSecret) });
   } catch (error: any) {
     res.status(500).json({ error: "Не удалось сохранить настройки СДЭК", message: error.message });
@@ -890,26 +1058,35 @@ app.get("/api/cdek/diagnostics", async (_req, res) => {
 
 app.get("/api/cdek/cities", async (req, res) => {
   try {
-    const { q } = req.query;
+    const rawQuery = String(req.query.q || "").trim();
+    if (rawQuery.length < 2) return res.json([]);
     const token = await getCdekToken();
     const settings = await getCdekSettings();
-    const response = await axios.get(`${settings.baseUrl}/location/cities`, {
+    const normalizedQuery = normalizeCdekCitySearch(rawQuery);
+    const canonicalQuery = CDEK_CITY_ALIASES.get(normalizedQuery) || rawQuery;
+    const directResponse = await axios.get(`${settings.baseUrl}/location/cities`, {
       headers: { Authorization: `Bearer ${token}` },
-      params: { city: q, size: 20, country_codes: "RU" }
+      params: { city: canonicalQuery, size: 20, country_codes: "RU" },
+      timeout: 15_000,
     });
-    const sortedCities = response.data.sort((a: any, b: any) => {
-      const searchLower = String(q).toLowerCase();
-      const aName = a.city.toLowerCase();
-      const bName = b.city.toLowerCase();
-      if (aName === searchLower && bName !== searchLower) return -1;
-      if (bName === searchLower && aName !== searchLower) return 1;
-      const aIsMain = a.region === a.city;
-      const bIsMain = b.region === b.city;
-      if (aIsMain && !bIsMain) return -1;
-      if (bIsMain && !aIsMain) return 1;
-      return 0;
-    }).slice(0, 10);
-    res.json(sortedCities);
+    const directCities = Array.isArray(directResponse.data) ? directResponse.data : [];
+    const rankedDirectCities = rankCdekCities(directCities, canonicalQuery);
+    const canonicalNormalized = normalizeCdekCitySearch(canonicalQuery);
+    const hasExactDirectCity = directCities.some(
+      city => normalizeCdekCitySearch(city?.city) === canonicalNormalized,
+    );
+    const hasPrefixDirectCity = rankedDirectCities.some(
+      city => normalizeCdekCitySearch(city?.city).startsWith(canonicalNormalized),
+    );
+    if (hasExactDirectCity || hasPrefixDirectCity) {
+      return res.json(rankedDirectCities.slice(0, 10));
+    }
+
+    const allCities = await loadCdekCitiesIndex(token, settings.baseUrl);
+    const mergedCities = Array.from(
+      new Map([...directCities, ...allCities].filter(city => city?.code).map(city => [String(city.code), city])).values(),
+    );
+    res.json(rankCdekCities(mergedCities, canonicalQuery).slice(0, 10));
   } catch (error: any) {
     const cdekError = getCdekError(error);
     res.status(cdekError.status).json({ error: "Ошибка поиска СДЭК", ...cdekError });
@@ -945,7 +1122,8 @@ app.get("/api/cdek/deliverypoints", async (req, res) => {
     }
     const response = await axios.get(`${settings.baseUrl}/deliverypoints`, {
       headers: { Authorization: `Bearer ${token}` },
-      params: { city_code: cityCode, type: "PVZ", size: 50 },
+      params: { city_code: cityCode, type: "PVZ", size: 1000 },
+      timeout: 20_000,
     });
     const points = Array.isArray(response.data) ? response.data : [];
     cdekDeliveryPointsCache.set(cityCode, {
@@ -958,6 +1136,189 @@ app.get("/api/cdek/deliverypoints", async (req, res) => {
     res.status(cdekError.status).json({ error: "Ошибка поиска ПВЗ СДЭК", ...cdekError });
   }
 });
+
+app.get("/api/cdek/deliverypoint", async (req, res) => {
+  try {
+    const pointCode = String(req.query.code || "").trim();
+    if (!pointCode) return res.status(400).json({ error: "Нужен код ПВЗ" });
+    const token = await getCdekToken();
+    const settings = await getCdekSettings();
+    const response = await axios.get(`${settings.baseUrl}/deliverypoints`, {
+      headers: { Authorization: `Bearer ${token}` },
+      params: { code: pointCode },
+      timeout: 15_000,
+    });
+    const points = Array.isArray(response.data) ? response.data : [];
+    const exactPoint = points.find(point => String(point?.code || "").toLowerCase() === pointCode.toLowerCase())
+      || points[0]
+      || null;
+    if (!exactPoint) return res.status(404).json({ error: "ПВЗ СДЭК не найден" });
+    res.json(exactPoint);
+  } catch (error: any) {
+    const cdekError = getCdekError(error);
+    res.status(cdekError.status).json({ error: "Ошибка поиска ПВЗ СДЭК", ...cdekError });
+  }
+});
+
+type CdekWaybillResult = {
+  pdf?: Buffer;
+  printUuid: string;
+  pending: boolean;
+  status?: string;
+  orderUuid: string;
+  cdekNumber?: string | null;
+  recovered?: boolean;
+};
+
+const getCdekEntityStatus = (entity: any, fallback = "PROCESSING") => {
+  const statuses = Array.isArray(entity?.statuses) ? entity.statuses : [];
+  const latest = statuses.reduce((current: any, candidate: any) => {
+    if (!current) return candidate;
+    const currentTime = Date.parse(String(current?.date_time || "")) || 0;
+    const candidateTime = Date.parse(String(candidate?.date_time || "")) || 0;
+    return candidateTime >= currentTime ? candidate : current;
+  }, null);
+  return String(latest?.code || entity?.status?.code || entity?.status || fallback).toUpperCase();
+};
+
+const getCdekCrmStatusPatch = (cdekStatus: string, currentStatus?: string) => {
+  const normalized = String(cdekStatus || "").toUpperCase();
+  const protectedStatus = /возврат|отмен/i.test(String(currentStatus || ""));
+  if (protectedStatus) return {};
+  if (normalized === "DELIVERED") {
+    return {
+      status: "Доставлен",
+      isShipped: true,
+      cdekDeliveredAt: new Date().toISOString(),
+    };
+  }
+  return {};
+};
+
+const getCdekRequestError = (data: any) => {
+  const requests = Array.isArray(data?.requests) ? data.requests : [];
+  const invalidRequest = requests.find((request: any) =>
+    String(request?.state || "").toUpperCase() === "INVALID" ||
+    (Array.isArray(request?.errors) && request.errors.length > 0));
+  if (!invalidRequest) return "";
+  const messages = (invalidRequest.errors || [])
+    .map((error: any) => String(error?.message || error?.code || "").trim())
+    .filter(Boolean);
+  return messages.join("; ") || "СДЭК отклонил запрос";
+};
+
+async function findCdekOrderByNumber(orderNumber: string, token: string, baseUrl: string) {
+  if (!orderNumber) return null;
+  const response = await axios.get(`${baseUrl}/orders`, {
+    headers: { Authorization: `Bearer ${token}` },
+    params: { im_number: orderNumber },
+  });
+  const entity = response.data?.entity || response.data?.entities?.[0] || null;
+  const requestError = getCdekRequestError(response.data);
+  const status = getCdekEntityStatus(entity, "");
+  if (!entity?.uuid || requestError || status === "INVALID") return null;
+  return {
+    uuid: String(entity.uuid),
+    number: String(entity.cdek_number || entity.cdekNumber || "").trim() || null,
+    status: status || "CREATED",
+    data: response.data,
+  };
+}
+
+async function resolveCdekOrder(orderUuid: string, orderNumber: string, token: string, baseUrl: string) {
+  let storedOrderValid = false;
+  if (orderUuid) {
+    try {
+      const response = await axios.get(`${baseUrl}/orders/${orderUuid}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const entity = response.data?.entity || response.data;
+      storedOrderValid = Boolean(entity?.uuid) && !getCdekRequestError(response.data) && getCdekEntityStatus(entity, "") !== "INVALID";
+      if (storedOrderValid) {
+        return {
+          uuid: String(entity.uuid),
+          number: String(entity.cdek_number || entity.cdekNumber || "").trim() || null,
+          status: getCdekEntityStatus(entity, "CREATED"),
+          data: response.data,
+          recovered: false,
+        };
+      }
+    } catch {
+      storedOrderValid = false;
+    }
+  }
+  const recovered = await findCdekOrderByNumber(orderNumber, token, baseUrl);
+  return recovered ? { ...recovered, recovered: true } : null;
+}
+
+async function createCdekWaybillPdf(
+  orderUuid: string,
+  existingPrintUuid = "",
+  orderNumber = "",
+  maxWaitMs = 14_000,
+): Promise<CdekWaybillResult> {
+  const token = await getCdekToken();
+  const settings = await getCdekSettings();
+  let printUuid = String(existingPrintUuid || "").trim();
+  let pdfUrl = "";
+  const resolvedOrder = await resolveCdekOrder(orderUuid, orderNumber, token, settings.baseUrl);
+  if (!resolvedOrder) throw new Error("Заказ СДЭК не найден или был отклонён. Пересоздайте накладную.");
+  if (resolvedOrder.uuid !== orderUuid) printUuid = "";
+  orderUuid = resolvedOrder.uuid;
+
+  if (!printUuid) {
+    const createResponse = await axios.post(`${settings.baseUrl}/print/orders`, {
+      orders: [{ order_uuid: orderUuid }],
+      copy_count: 1,
+    }, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const printEntity = createResponse.data?.entity || createResponse.data;
+    printUuid = String(printEntity?.uuid || createResponse.data?.entity_uuid || "").trim();
+    pdfUrl = String(printEntity?.url || "").trim();
+    if (!printUuid) throw new Error("СДЭК не вернул ID печатной формы");
+  }
+
+  const deadline = Date.now() + Math.max(0, maxWaitMs);
+  let status = "PROCESSING";
+  do {
+    const statusResponse = await axios.get(`${settings.baseUrl}/print/orders/${printUuid}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const statusEntity = statusResponse.data?.entity || statusResponse.data;
+    pdfUrl = String(statusEntity?.url || "").trim();
+    status = getCdekEntityStatus(statusEntity, "PROCESSING");
+    const requestError = getCdekRequestError(statusResponse.data);
+    if (!pdfUrl && requestError) throw new Error(`СДЭК не сформировал накладную: ${requestError}`);
+    if (!pdfUrl && ["INVALID", "ERROR", "REMOVED"].includes(status)) {
+      throw new Error("СДЭК не смог сформировать печатную накладную");
+    }
+    if (!pdfUrl && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 1_000));
+  } while (!pdfUrl && Date.now() < deadline);
+
+  if (!pdfUrl) return {
+    printUuid,
+    pending: true,
+    status,
+    orderUuid,
+    cdekNumber: resolvedOrder.number,
+    recovered: resolvedOrder.recovered,
+  };
+
+  const pdfResponse = await axios.get(pdfUrl, {
+    responseType: "arraybuffer",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  return {
+    pdf: Buffer.from(pdfResponse.data),
+    printUuid,
+    pending: false,
+    status: "READY",
+    orderUuid,
+    cdekNumber: resolvedOrder.number,
+    recovered: resolvedOrder.recovered,
+  };
+}
 
 app.post("/api/cdek/create-order", async (req, res) => {
   try {
@@ -975,6 +1336,7 @@ app.post("/api/cdek/create-order", async (req, res) => {
     const itemName = String(body.itemName || "Заказ YBCRM").trim();
     const itemCost = Math.max(0, Math.round(Number(body.itemCost || 0) * 100) / 100);
     const codAmount = Math.max(0, Math.round(Number(body.codAmount || 0) * 100) / 100);
+    const deliveryCost = Math.max(0, Math.round(Number(body.deliveryCost || 0) * 100) / 100);
     const weight = Math.max(1, Number(body.weight || 700));
     const length = Math.max(1, Number(body.length || 30));
     const width = Math.max(1, Number(body.width || 20));
@@ -1043,14 +1405,107 @@ app.post("/api/cdek/create-order", async (req, res) => {
     }
 
     const cdekPayload = stripUndefined(payload);
+    const existingSnapshot: any = await getOrderSnapshot(orderId).catch(() => null);
+    const existingSnapshotFound = existingSnapshot &&
+      (typeof existingSnapshot.exists === "function" ? existingSnapshot.exists() : Boolean(existingSnapshot.exists));
+    const existingData = existingSnapshotFound ? existingSnapshot.data() : null;
+    const resolvedExisting = await resolveCdekOrder(
+      String(existingData?.cdekUuid || ""),
+      orderId,
+      token,
+      settings.baseUrl,
+    ).catch(() => null);
+
+    if (resolvedExisting) {
+      const updatePayload = stripUndefined({
+        ...cdekPayload,
+        uuid: resolvedExisting.uuid,
+      });
+      const updateResponse = await axios.patch(`${settings.baseUrl}/orders`, updatePayload, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const updateError = getCdekRequestError(updateResponse.data);
+      const updateEntity = updateResponse.data?.entity || updateResponse.data?.entities?.[0] || updateResponse.data;
+      if (updateError || getCdekEntityStatus(updateEntity, "") === "INVALID") {
+        throw new Error(`СДЭК не разрешил изменить накладную: ${updateError || "некорректные данные"}`);
+      }
+
+      const updatedUuid = String(
+        updateEntity?.uuid || updateEntity?.entity_uuid || resolvedExisting.uuid,
+      ).trim();
+      const updatedNumber = String(
+        updateEntity?.cdek_number || updateEntity?.cdekNumber || resolvedExisting.number || "",
+      ).trim() || null;
+      const updatedFields = stripUndefined({
+        cdekUuid: updatedUuid,
+        cdekNumber: updatedNumber,
+        cdekStatus: getCdekEntityStatus(updateEntity, resolvedExisting.status || "CREATED"),
+        cdekPrintUuid: null,
+        cdekPrintStatus: null,
+        cdekPrintCreatedAt: null,
+        cdekUpdatedAt: new Date().toISOString(),
+        cdekLastCheckedAt: new Date().toISOString(),
+        cdekPayload: {
+          tariffCode,
+          deliveryType,
+          toCityCode,
+          deliveryPoint,
+          deliveryPointAddress: String(body.deliveryPointAddress || "").trim(),
+          toCity: String(body.toCity || "").trim(),
+          toAddress,
+          weight,
+          length,
+          width,
+          height,
+          itemCost,
+          codAmount,
+          deliveryCost,
+        },
+      });
+      await persistOrderPatch(orderId, updatedFields);
+
+      if (db) {
+        await addDoc(collection(db, "cdek_logs"), {
+          orderId,
+          cdekUuid: updatedUuid,
+          cdekNumber: updatedNumber,
+          action: "update",
+          request: updatePayload,
+          response: stripUndefined(updateResponse.data),
+          createdAt: serverTimestamp(),
+        }).catch((logError: any) => {
+          console.warn("[cdek] update log write skipped:", logError?.message || logError);
+        });
+      }
+
+      return res.json({
+        success: true,
+        existing: true,
+        updated: true,
+        recovered: resolvedExisting.recovered,
+        cdekUuid: updatedUuid,
+        cdekNumber: updatedNumber,
+        data: updateResponse.data,
+      });
+    }
+
     const response = await axios.post(`${settings.baseUrl}/orders`, cdekPayload, {
       headers: { Authorization: `Bearer ${token}` },
     });
 
-    const entity = response.data?.entity || response.data?.entities?.[0] || response.data;
-    const cdekUuid = entity?.uuid || entity?.entity_uuid || response.data?.entity_uuid || null;
+    let entity = response.data?.entity || response.data?.entities?.[0] || response.data;
+    let cdekUuid = entity?.uuid || entity?.entity_uuid || response.data?.entity_uuid || null;
     let cdekNumber = entity?.cdek_number || entity?.cdekNumber || null;
     let cdekOrderDetails: any = null;
+    const createError = getCdekRequestError(response.data);
+    if (createError || getCdekEntityStatus(entity, "") === "INVALID") {
+      const recovered = await findCdekOrderByNumber(orderId, token, settings.baseUrl).catch(() => null);
+      if (!recovered) throw new Error(`СДЭК отклонил создание заказа: ${createError || "некорректный заказ"}`);
+      entity = recovered.data?.entity || entity;
+      cdekUuid = recovered.uuid;
+      cdekNumber = recovered.number;
+      cdekOrderDetails = recovered.data;
+    }
     if (!cdekNumber && cdekUuid) {
       try {
         const detailResponse = await axios.get(`${settings.baseUrl}/orders/${cdekUuid}`, {
@@ -1058,7 +1513,7 @@ app.post("/api/cdek/create-order", async (req, res) => {
         });
         cdekOrderDetails = detailResponse.data;
         const detailEntity = detailResponse.data?.entity || detailResponse.data;
-        cdekNumber = detailEntity?.cdek_number || detailEntity?.cdekNumber || detailEntity?.number || null;
+        cdekNumber = detailEntity?.cdek_number || detailEntity?.cdekNumber || null;
       } catch (detailsError: any) {
         console.warn("[cdek] number lookup skipped:", detailsError?.response?.data || detailsError?.message || detailsError);
       }
@@ -1073,11 +1528,16 @@ app.post("/api/cdek/create-order", async (req, res) => {
         deliveryType,
         toCityCode,
         deliveryPoint,
+        deliveryPointAddress: String(body.deliveryPointAddress || "").trim(),
+        toCity: String(body.toCity || "").trim(),
         toAddress,
         weight,
         length,
         width,
         height,
+        itemCost,
+        codAmount,
+        deliveryCost,
       },
     };
 
@@ -1121,23 +1581,343 @@ app.get("/api/cdek/order/:uuid", async (req, res) => {
     });
     const entity = response.data?.entity || response.data;
     const cdekNumber = entity?.cdek_number || entity?.cdekNumber || entity?.number || null;
-    const cdekStatus = entity?.statuses?.[0]?.code || entity?.status?.code || entity?.status || "created";
+    const cdekStatus = getCdekEntityStatus(entity, "CREATED");
+    const existingSnapshot = orderId ? await getOrderSnapshot(orderId).catch(() => null) : null;
+    const existingOrder = existingSnapshot?.data?.() || {};
     const patch = stripUndefined({
       cdekUuid: uuid,
       cdekNumber,
       cdekStatus,
       cdekLastCheckedAt: new Date().toISOString(),
+      ...getCdekCrmStatusPatch(cdekStatus, existingOrder.status),
     });
 
-    if (db && orderId) {
-      await updateDoc(doc(db, "orders_new", orderId), patch).catch(() => {});
-    }
+    if (orderId) await persistOrderPatch(orderId, patch);
 
-    res.json({ success: true, cdekUuid: uuid, cdekNumber, cdekStatus, data: response.data });
+    res.json({
+      success: true,
+      cdekUuid: uuid,
+      cdekNumber,
+      cdekStatus,
+      crmStatus: patch.status || existingOrder.status || "",
+      data: response.data,
+    });
   } catch (error: any) {
     const details = error.response?.data || error.message;
     console.error("[cdek] order lookup error:", JSON.stringify(details, null, 2));
     res.status(error.response?.status || 500).json({ error: "Не удалось получить заказ СДЭК", details });
+  }
+});
+
+app.post("/api/cdek/sync-statuses", async (_req, res) => {
+  try {
+    if (!adminDb && !db) return res.status(503).json({ error: "DB не подключена" });
+    const token = await getCdekToken();
+    const settings = await getCdekSettings();
+    const allOrders: Array<{ id: string; data: any }> = [];
+    if (adminDb) {
+      const snap = await adminDb.collection("orders_new").get();
+      snap.docs.forEach((item: any) => allOrders.push({ id: item.id, data: item.data() }));
+    } else if (db) {
+      const snap = await getDocs(collection(db, "orders_new"));
+      snap.docs.forEach((item: any) => allOrders.push({ id: item.id, data: item.data() }));
+    }
+
+    const staleBefore = Date.now() - 10 * 60 * 1000;
+    const candidates = allOrders
+      .filter(({ data }) => {
+        if (!String(data?.cdekUuid || "").trim()) return false;
+        if (/доставлен|возврат|отмен/i.test(String(data?.status || ""))) return false;
+        const lastChecked = Date.parse(String(data?.cdekLastCheckedAt || "")) || 0;
+        return lastChecked < staleBefore;
+      })
+      .slice(0, 30);
+
+    const updated: any[] = [];
+    for (let index = 0; index < candidates.length; index += 4) {
+      const batch = candidates.slice(index, index + 4);
+      const results = await Promise.all(batch.map(async ({ id, data }) => {
+        try {
+          const response = await axios.get(`${settings.baseUrl}/orders/${encodeURIComponent(data.cdekUuid)}`, {
+            headers: { Authorization: `Bearer ${token}` },
+            timeout: 15_000,
+          });
+          const entity = response.data?.entity || response.data;
+          const cdekStatus = getCdekEntityStatus(entity, data.cdekStatus || "CREATED");
+          const cdekNumber = entity?.cdek_number || entity?.cdekNumber || entity?.number || data.cdekNumber || null;
+          const crmPatch = getCdekCrmStatusPatch(cdekStatus, data.status);
+          const patch = stripUndefined({
+            cdekStatus,
+            cdekNumber,
+            cdekLastCheckedAt: new Date().toISOString(),
+            ...crmPatch,
+          });
+          await persistOrderPatch(id, patch);
+          return { orderId: id, cdekStatus, status: crmPatch.status || data.status, delivered: crmPatch.status === "Доставлен" };
+        } catch (error: any) {
+          console.warn(`[cdek] status sync failed order=${id}:`, error?.response?.data || error?.message || error);
+          return null;
+        }
+      }));
+      updated.push(...results.filter(Boolean));
+    }
+
+    res.json({
+      success: true,
+      checked: candidates.length,
+      delivered: updated.filter(item => item.delivered).length,
+      updated,
+    });
+  } catch (error: any) {
+    const details = error.response?.data || error.message;
+    console.error("[cdek] statuses sync error:", details);
+    res.status(error.response?.status || 500).json({ error: "Не удалось синхронизировать статусы СДЭК", details });
+  }
+});
+
+async function getOrderSnapshot(orderId: string): Promise<any> {
+  if (adminDb) {
+    try {
+      return await adminDb.collection("orders_new").doc(orderId).get();
+    } catch (error: any) {
+      console.warn("[orders] Admin Firestore unavailable, using client connection:", error?.message || error);
+    }
+  }
+  if (!db) throw new Error("Firestore не настроен");
+  return getDoc(doc(db, "orders_new", orderId));
+}
+
+async function persistOrderPatch(orderId: string, patch: Record<string, unknown>): Promise<void> {
+  let adminError: unknown = null;
+  if (adminDb) {
+    try {
+      await adminDb.collection("orders_new").doc(orderId).set(patch, { merge: true });
+      return;
+    } catch (error: any) {
+      adminError = error;
+      console.warn("[orders] Admin Firestore write unavailable, using client connection:", error?.message || error);
+    }
+  }
+  if (db) {
+    try {
+      await updateDoc(doc(db, "orders_new", orderId), patch);
+      return;
+    } catch (error: any) {
+      throw new Error(`Не удалось сохранить заказ ${orderId}: ${error?.message || error}`);
+    }
+  }
+  throw adminError || new Error("Firestore не настроен");
+}
+
+app.get("/api/cdek/order/:uuid/waybill.pdf", async (req, res) => {
+  try {
+    const orderUuid = String(req.params.uuid || "").trim();
+    const orderId = String(req.query.orderId || "").trim();
+    if (!orderUuid) return res.status(400).json({ error: "Нужен uuid заказа СДЭК" });
+    let existingPrintUuid = String(req.query.printUuid || "").trim();
+    if (!existingPrintUuid && orderId) {
+      const snapshot: any = await getOrderSnapshot(orderId);
+      const exists = snapshot && (typeof snapshot.exists === "function" ? snapshot.exists() : Boolean(snapshot.exists));
+      if (exists) existingPrintUuid = String(snapshot.data()?.cdekPrintUuid || "").trim();
+    }
+    const result = await createCdekWaybillPdf(orderUuid, existingPrintUuid, orderId);
+    const printPatch = stripUndefined({
+      cdekUuid: result.orderUuid,
+      cdekNumber: result.cdekNumber || undefined,
+      cdekPrintUuid: result.printUuid,
+      cdekPrintCreatedAt: new Date().toISOString(),
+      cdekPrintStatus: result.pending ? result.status || "PROCESSING" : "READY",
+    });
+    if (orderId) await persistOrderPatch(orderId, printPatch);
+    if (result.pending || !result.pdf) {
+      res.setHeader("Retry-After", "2");
+      return res.status(202).json({
+        pending: true,
+        printUuid: result.printUuid,
+        status: result.status || "PROCESSING",
+        retryAfterMs: 2_000,
+        message: "СДЭК готовит накладную. CRM продолжит ожидание автоматически.",
+      });
+    }
+    const safeOrderId = (orderId || "order").replace(/[^a-zA-Z0-9_-]/g, "-");
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename="cdek-${safeOrderId}.pdf"`);
+    res.setHeader("Cache-Control", "private, no-store");
+    return res.send(result.pdf);
+  } catch (error: any) {
+    const details = error.response?.data || error.message;
+    console.error("[cdek] waybill print error:", JSON.stringify(details, null, 2));
+    return res.status(error.response?.status || 500).json({ error: "Не удалось получить печатную накладную СДЭК", details });
+  }
+});
+
+const escapeDocumentXml = (value: unknown) => String(value ?? "")
+  .replace(/&/g, "&amp;")
+  .replace(/</g, "&lt;")
+  .replace(/>/g, "&gt;")
+  .replace(/"/g, "&quot;")
+  .replace(/'/g, "&apos;");
+
+const splitDocumentLines = (value: unknown, max = 54, maxLines = 3) => {
+  const words = String(value || "—").trim().split(/\s+/);
+  const lines: string[] = [];
+  let current = "";
+  for (let index = 0; index < words.length; index += 1) {
+    const word = words[index];
+    const next = current ? `${current} ${word}` : word;
+    if (next.length > max && current) {
+      lines.push(current);
+      if (lines.length >= maxLines - 1) {
+        const remainder = words.slice(index).join(" ");
+        current = remainder.length > max ? `${remainder.slice(0, Math.max(1, max - 1)).trim()}…` : remainder;
+        break;
+      }
+      current = word;
+    } else current = next;
+  }
+  if (current && lines.length < maxLines) lines.push(current);
+  return lines.length ? lines : ["—"];
+};
+
+app.get("/api/orders/:orderId/document.pdf", async (req, res) => {
+  try {
+    const orderId = String(req.params.orderId || "").trim();
+    if (!orderId || !db) return res.status(400).json({ error: "Нужен номер заказа" });
+    const snapshot: any = await getOrderSnapshot(orderId);
+    const orderExists = typeof snapshot.exists === "function" ? snapshot.exists() : Boolean(snapshot.exists);
+    if (!orderExists) return res.status(404).json({ error: "Заказ не найден" });
+    const order: any = snapshot.data();
+    const items = Array.isArray(order.items) && order.items.length
+      ? order.items.map((item: unknown) => String(item || "").trim()).filter(Boolean)
+      : String(order.item || "Заказ").split(",").map((item: string) => item.trim()).filter(Boolean);
+    const prices = Array.isArray(order.itemPrices) ? order.itemPrices : [];
+    const colors = Array.isArray(order.itemColors) ? order.itemColors : [];
+    const sizes = Array.isArray(order.itemSizes) ? order.itemSizes : [];
+    const heights = Array.isArray(order.itemHeights) ? order.itemHeights : [];
+    const revenue = Number(order.revenue) || 0;
+    const deliveryPrice = Number(order.deliveryPrice) || 0;
+    const total = revenue + deliveryPrice;
+    const invoiceAmount = Number(order.paidAmount) || total;
+    const rawDate = order.date?.toDate ? order.date.toDate() : new Date(order.date || Date.now());
+    const orderDate = Number.isNaN(rawDate.getTime()) ? new Date() : rawDate;
+    const instagram = String(order.clientInsta || "")
+      .replace(/^@/, "")
+      .replace(/^https?:\/\/(www\.)?instagram\.com\//i, "")
+      .split(/[/?#]/)[0];
+    const address = order.clientAddress || order.cdekPayload?.toAddress || order.cdekPayload?.deliveryPoint || order.clientCity || "—";
+    const paymentUrl = order.paymentUrl || `${String(process.env.SERVER_URL || "https://ybcrm.ru").replace(/\/$/, "")}/pay/${encodeURIComponent(orderId)}`;
+    const rub = (value: number) => `${Math.round(value).toLocaleString("ru-RU")} ₽`;
+
+    const clientLines = [order.clientName || "—", order.clientPhone ? `+${order.clientPhone}` : "—", instagram ? `@${instagram}` : ""]
+      .filter(Boolean)
+      .map((line, index) => `<text x="84" y="${420 + index * 34}" class="value">${escapeDocumentXml(line)}</text>`)
+      .join("");
+    const addressLines = splitDocumentLines(address, 30, 3)
+      .map((line, index) => `<text x="664" y="${420 + index * 34}" class="value">${escapeDocumentXml(line)}</text>`)
+      .join("");
+    const itemRows = (items.length ? items : ["Заказ"]).slice(0, 6).map((item: string, index: number) => {
+      const y = 690 + index * 82;
+      const meta = [colors[index], sizes[index], heights[index]].filter(Boolean).join(" · ") || "—";
+      const price = Number(prices[index]) || (items.length === 1 ? revenue : 0);
+      return `<line x1="70" x2="1170" y1="${y + 48}" y2="${y + 48}" stroke="#E5E7EB"/><text x="84" y="${y}" class="item">${escapeDocumentXml(item)}</text><text x="84" y="${y + 28}" class="meta">${escapeDocumentXml(meta)}</text><text x="1040" y="${y + 12}" text-anchor="end" class="item">${escapeDocumentXml(rub(price))}</text><text x="1135" y="${y + 12}" text-anchor="end" class="meta">× 1</text>`;
+    }).join("");
+
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="1754" viewBox="0 0 1240 1754">
+      <rect width="1240" height="1754" fill="#FFFFFF"/>
+      <style>.brand{font:900 34px Arial,sans-serif;letter-spacing:8px;fill:#111827}.title{font:700 52px Arial,sans-serif;fill:#111827}.label{font:700 15px Arial,sans-serif;letter-spacing:2px;fill:#9CA3AF}.value{font:600 24px Arial,sans-serif;fill:#374151}.item{font:700 23px Arial,sans-serif;fill:#1F2937}.meta{font:500 18px Arial,sans-serif;fill:#6B7280}.money{font:800 28px Arial,sans-serif;fill:#111827}.small{font:500 16px Arial,sans-serif;fill:#6B7280}</style>
+      <text x="70" y="92" class="brand">YAASBAE</text><text x="1170" y="78" text-anchor="end" class="item">ЗАКАЗ № ${escapeDocumentXml(orderId)}</text><text x="1170" y="108" text-anchor="end" class="small">${escapeDocumentXml(orderDate.toLocaleDateString("ru-RU"))}</text>
+      <line x1="70" x2="1170" y1="145" y2="145" stroke="#111827" stroke-width="3"/>
+      <text x="70" y="235" class="title">Документ заказа</text><text x="70" y="278" class="small">Состав заказа, доставка и сумма к оплате</text>
+      <rect x="70" y="340" width="530" height="200" rx="18" fill="#FAFAFA" stroke="#E5E7EB"/><text x="84" y="382" class="label">КЛИЕНТ</text>${clientLines}
+      <rect x="650" y="340" width="520" height="200" rx="18" fill="#FAFAFA" stroke="#E5E7EB"/><text x="664" y="382" class="label">ДОСТАВКА</text>${addressLines}<text x="664" y="518" class="small">${escapeDocumentXml(order.cdekNumber ? `СДЭК № ${order.cdekNumber}` : order.deliveryMethod || "—")}</text>
+      <text x="84" y="625" class="label">НАИМЕНОВАНИЕ</text><text x="1135" y="625" text-anchor="end" class="label">СТОИМОСТЬ</text>${itemRows}
+      <rect x="650" y="1240" width="520" height="260" rx="18" fill="#F7F7FF" stroke="#D7D7F5"/>
+      <text x="680" y="1290" class="small">Изделия</text><text x="1135" y="1290" text-anchor="end" class="item">${escapeDocumentXml(rub(revenue))}</text>
+      <text x="680" y="1345" class="small">Доставка</text><text x="1135" y="1345" text-anchor="end" class="item">${escapeDocumentXml(rub(deliveryPrice))}</text><line x1="680" x2="1135" y1="1380" y2="1380" stroke="#111827" stroke-width="2"/>
+      <text x="680" y="1430" class="money">Итого</text><text x="1135" y="1430" text-anchor="end" class="money">${escapeDocumentXml(rub(total))}</text><text x="680" y="1472" class="small">Счёт к оплате: ${escapeDocumentXml(rub(invoiceAmount))}</text>
+      <text x="70" y="1550" class="label">ССЫЛКА НА ОПЛАТУ</text><text x="70" y="1585" class="small">${escapeDocumentXml(paymentUrl)}</text>
+      <line x1="70" x2="1170" y1="1650" y2="1650" stroke="#E5E7EB"/><text x="70" y="1690" class="small">YAASBAE · документ сформирован в CRM</text><text x="1170" y="1690" text-anchor="end" class="small">${escapeDocumentXml(new Date().toLocaleString("ru-RU"))}</text>
+    </svg>`;
+
+    const coverPng = await sharp(Buffer.from(svg)).png().toBuffer();
+    const pdfDocument = await PDFDocument.create();
+    const coverImage = await pdfDocument.embedPng(coverPng);
+    const itemSummary = (items.length ? items : ["Заказ"]).slice(0, 2).join(", ");
+    const itemMeta = [colors[0], sizes[0], heights[0]].filter(Boolean).join(" · ") || "—";
+    const paymentStatus = /paid|succeeded|оплач/i.test(String(order.paymentStatus || order.status || ""))
+      ? "Оплачено онлайн"
+      : String(order.paymentType || "Счёт на оплату");
+    const compactAddressLines = splitDocumentLines(address, 30, 2);
+    const compactAddressSvg = compactAddressLines
+      .map((line, index) => `<text x="410" y="${348 + index * 29}" class="${index === 0 ? "value" : "small"}">${escapeDocumentXml(line)}</text>`)
+      .join("");
+    const compactSummarySvg = `<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="560" viewBox="0 0 1240 560">
+      <rect width="1240" height="560" rx="28" fill="#F8F7FF"/>
+      <rect x="1" y="1" width="1238" height="558" rx="27" fill="none" stroke="#D9D3FF" stroke-width="2"/>
+      <style>.brand{font:900 28px Arial,sans-serif;letter-spacing:7px;fill:#4F36E8}.order{font:800 27px Arial,sans-serif;fill:#111827}.label{font:700 13px Arial,sans-serif;letter-spacing:1.5px;fill:#8B93A5}.value{font:650 20px Arial,sans-serif;fill:#1F2937}.small{font:500 17px Arial,sans-serif;fill:#667085}.total{font:800 28px Arial,sans-serif;fill:#4F36E8}</style>
+      <text x="38" y="58" class="brand">YAASBAE</text><text x="1200" y="56" text-anchor="end" class="order">ЗАКАЗ № ${escapeDocumentXml(orderId)}</text>
+      <line x1="38" x2="1200" y1="82" y2="82" stroke="#D9D3FF" stroke-width="2"/>
+      <text x="38" y="126" class="label">КЛИЕНТ</text><text x="38" y="162" class="value">${escapeDocumentXml(order.clientName || "—")}</text><text x="38" y="194" class="small">${escapeDocumentXml(instagram ? `@${instagram}` : order.clientPhone ? `+${order.clientPhone}` : "—")}</text>
+      <text x="410" y="126" class="label">ТОВАР</text><text x="410" y="162" class="value">${escapeDocumentXml(itemSummary)}</text><text x="410" y="194" class="small">${escapeDocumentXml(itemMeta)}</text>
+      <rect x="850" y="104" width="350" height="132" rx="18" fill="#FFFFFF" stroke="#DED9FF"/>
+      <text x="878" y="140" class="small">Товар</text><text x="1170" y="140" text-anchor="end" class="value">${escapeDocumentXml(rub(revenue))}</text>
+      <text x="878" y="177" class="small">Доставка</text><text x="1170" y="177" text-anchor="end" class="value">${escapeDocumentXml(rub(deliveryPrice))}</text>
+      <line x1="878" x2="1170" y1="194" y2="194" stroke="#D9D3FF"/><text x="878" y="225" class="value">Итого</text><text x="1170" y="225" text-anchor="end" class="total">${escapeDocumentXml(rub(total))}</text>
+      <line x1="38" x2="1200" y1="270" y2="270" stroke="#E2E4EA"/>
+      <text x="38" y="312" class="label">ДОСТАВКА</text><text x="38" y="348" class="value">${escapeDocumentXml(order.deliveryMethod || "СДЭК")} · ${escapeDocumentXml(rub(deliveryPrice))}</text>
+      <text x="410" y="312" class="label">АДРЕС</text>${compactAddressSvg}
+      <text x="850" y="312" class="label">ОПЛАТА</text><text x="850" y="348" class="value">${escapeDocumentXml(paymentStatus)}</text>
+      <rect x="38" y="398" width="1162" height="106" rx="16" fill="#FFFFFF" stroke="#E2E4EA"/>
+      <text x="62" y="438" class="label">СЧЁТ И ДОКУМЕНТЫ ЗАКАЗА</text><text x="62" y="477" class="small">${escapeDocumentXml(paymentUrl)}</text>
+      <text x="1170" y="466" text-anchor="end" class="small">Объявленная стоимость: ${escapeDocumentXml(rub(revenue))}</text>
+    </svg>`;
+    const compactSummaryPng = await sharp(Buffer.from(compactSummarySvg)).png().toBuffer();
+
+    if (order.cdekUuid) {
+      const cdekResult = await createCdekWaybillPdf(
+        String(order.cdekUuid),
+        String(order.cdekPrintUuid || ""),
+        orderId,
+      );
+      const printPatch = stripUndefined({
+        cdekUuid: cdekResult.orderUuid,
+        cdekNumber: cdekResult.cdekNumber || undefined,
+        cdekPrintUuid: cdekResult.printUuid,
+        cdekPrintCreatedAt: new Date().toISOString(),
+        cdekPrintStatus: cdekResult.pending ? cdekResult.status || "PROCESSING" : "READY",
+      });
+      await persistOrderPatch(orderId, printPatch);
+      if (cdekResult.pending || !cdekResult.pdf) {
+        res.setHeader("Retry-After", "2");
+        return res.status(202).json({
+          pending: true,
+          printUuid: cdekResult.printUuid,
+          status: cdekResult.status || "PROCESSING",
+          retryAfterMs: 2_000,
+          message: "СДЭК готовит накладную. CRM продолжит ожидание автоматически.",
+        });
+      }
+      const cdekPdf = cdekResult.pdf;
+      const sourcePdf = await PDFDocument.load(cdekPdf);
+      const [cdekPage] = await pdfDocument.copyPages(sourcePdf, [0]);
+      pdfDocument.addPage(cdekPage);
+      const summaryImage = await pdfDocument.embedPng(compactSummaryPng);
+      cdekPage.drawImage(summaryImage, { x: 24, y: 24, width: 547.28, height: 247 });
+    } else {
+      const coverPage = pdfDocument.addPage([595.28, 841.89]);
+      coverPage.drawImage(coverImage, { x: 0, y: 0, width: 595.28, height: 841.89 });
+    }
+
+    const bytes = await pdfDocument.save();
+    const safeOrderId = orderId.replace(/[^a-zA-Z0-9_-]/g, "-");
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename="YAASBAE-order-${safeOrderId}.pdf"`);
+    res.setHeader("Cache-Control", "private, no-store");
+    return res.send(Buffer.from(bytes));
+  } catch (error: any) {
+    const details = error.response?.data || error.message;
+    console.error("[orders] document pdf error:", JSON.stringify(details, null, 2));
+    return res.status(error.response?.status || 500).json({ error: "Не удалось сформировать комплект документов", details });
   }
 });
 
@@ -5087,6 +5867,15 @@ async function writeTochkaSettingsDoc(id: string, payload: Record<string, any>) 
   await setDoc(doc(db, 'settings', id), payload, { merge: true });
 }
 
+async function writeTochkaLog(payload: Record<string, any>) {
+  const cleanPayload = stripUndefined(payload);
+  if (adminDb) {
+    await adminDb.collection('tochka_logs').add(cleanPayload);
+    return;
+  }
+  if (db) await addDoc(collection(db, 'tochka_logs'), cleanPayload);
+}
+
 function buildTochkaCacheId(...parts: string[]) {
   return Buffer.from(parts.map(part => String(part || '')).join('|'))
     .toString('base64')
@@ -5335,7 +6124,9 @@ async function fetchTochkaQrById(token: string, merchantId: string, accountId: s
         timeout: 20000,
       });
       const paymentUrl = getTochkaPaymentUrl(response.data);
-      if (paymentUrl) return { data: response.data, paymentUrl };
+      const paymentStatus = getTochkaOperationStatus(response.data)
+        || findTochkaValueByKeys(response.data, ['qrcStatus', 'qrStatus', 'status']);
+      if (paymentUrl || paymentStatus) return { data: response.data, paymentUrl, paymentStatus };
       lastError = new Error('QR response has no payment url');
     } catch (error: any) {
       lastError = error;
@@ -6164,7 +6955,8 @@ function getTochkaPaymentTarget(orderId: any, kind?: any) {
   const explicitFinal = String(kind || '').toLowerCase() === 'final';
   const suffixFinal = paymentLinkId.toLowerCase().endsWith('-final');
   const isFinal = explicitFinal || suffixFinal;
-  const cleanOrderId = suffixFinal ? paymentLinkId.slice(0, -6) : paymentLinkId;
+  const withoutFinalSuffix = suffixFinal ? paymentLinkId.slice(0, -6) : paymentLinkId;
+  const cleanOrderId = withoutFinalSuffix.replace(/^#+\s*/, '').trim();
   return { paymentLinkId, cleanOrderId, isFinal };
 }
 
@@ -6263,12 +7055,30 @@ app.post('/api/tochka/create-payment', async (req, res) => {
   const { orderId, amount, description } = req.body;
   const paymentAmount = Number(amount);
   if (!orderId || !Number.isFinite(paymentAmount) || paymentAmount <= 0) return res.status(400).json({ error: 'Нужны orderId и amount больше 0' });
-  if (!db) return res.status(503).json({ error: 'DB не подключена' });
+  if (!db && !adminDb) return res.status(503).json({ error: 'DB не подключена' });
   try {
+    const paymentTarget = getTochkaPaymentTarget(String(orderId));
+    const existingOrder = await getOrderSnapshot(paymentTarget.cleanOrderId).catch(() => null);
+    const existingPaymentUrl = paymentTarget.isFinal
+      ? existingOrder?.data()?.finalPaymentUrl
+      : existingOrder?.data()?.paymentUrl;
+    const existingPaymentId = paymentTarget.isFinal
+      ? existingOrder?.data()?.finalPaymentId
+      : existingOrder?.data()?.paymentId;
+    const existingPaymentAmount = Number(paymentTarget.isFinal
+      ? existingOrder?.data()?.finalPaymentAmount
+      : existingOrder?.data()?.paymentAmount);
+    if (existingPaymentUrl && (!existingPaymentAmount || Math.abs(existingPaymentAmount - paymentAmount) < 0.01)) {
+      return res.json({
+        success: true,
+        existing: true,
+        paymentUrl: existingPaymentUrl,
+        paymentId: existingPaymentId || '',
+      });
+    }
     const token = await getTochkaToken();
     if (!token) return res.status(400).json({ error: 'Токен Точки не настроен' });
-    const snap = await getDoc(doc(db, 'settings', 'tochka_api'));
-    const tochkaSettings = snap?.data() || {};
+    const tochkaSettings = await readTochkaSettingsDoc('tochka_api');
     let customerCode = tochkaSettings.customerCode;
     const merchantId = tochkaSettings.merchantId;
     let accountId = tochkaSettings.accountId;
@@ -6278,7 +7088,7 @@ app.post('/api/tochka/create-payment', async (req, res) => {
       : ['sbp'];
     const webhookUrl = process.env.SERVER_URL ? `${process.env.SERVER_URL}/api/tochka/webhook` : null;
     console.log(`[tochka] create-payment start order=${orderId} amount=${paymentAmount}`);
-    await addDoc(collection(db, 'tochka_logs'), {
+    await writeTochkaLog({
       orderId,
       amount: paymentAmount,
       description: description || '',
@@ -6395,7 +7205,7 @@ app.post('/api/tochka/create-payment', async (req, res) => {
     if (!paymentUrl) {
       console.error('[tochka] create-payment no paymentUrl:', JSON.stringify(paymentData).slice(0, 500));
       const tochkaErrorData = lastPaymentError?.response?.data || null;
-      await addDoc(collection(db, 'tochka_logs'), {
+      await writeTochkaLog({
         orderId,
         amount: paymentAmount,
         status: 'error',
@@ -6435,10 +7245,10 @@ app.post('/api/tochka/create-payment', async (req, res) => {
             paymentCreatedAt: createdAt,
             paymentAmount,
           };
-      await updateDoc(doc(db, 'orders_new', target.cleanOrderId), paymentFields).catch(() => {});
+      await persistOrderPatch(target.cleanOrderId, paymentFields);
     }
     console.log(`[tochka] create-payment success order=${orderId} paymentId=${paymentId || 'n/a'}`);
-    await addDoc(collection(db, 'tochka_logs'), {
+    await writeTochkaLog({
       orderId,
       amount: paymentAmount,
       paymentId: paymentId || null,
@@ -6451,7 +7261,7 @@ app.post('/api/tochka/create-payment', async (req, res) => {
   } catch (e: any) {
     const errData = e.response?.data;
     console.error('[tochka] create-payment error:', errData || e.message);
-    await addDoc(collection(db, 'tochka_logs'), {
+    await writeTochkaLog({
       orderId,
       amount: paymentAmount,
       status: 'error',
@@ -6468,19 +7278,45 @@ app.get('/api/tochka/find-payment', async (req, res) => {
   const orderId = String(req.query.orderId || '').trim();
   const target = getTochkaPaymentTarget(orderId, req.query.kind);
   const amount = req.query.amount ? Number(req.query.amount) : undefined;
+  const requestedPaymentId = String(req.query.paymentId || '').trim();
   if (!orderId) return res.status(400).json({ error: 'Нужен orderId' });
-  if (!db) return res.status(503).json({ error: 'DB не подключена' });
+  if (!db && !adminDb) return res.status(503).json({ error: 'DB не подключена' });
 
   try {
     const token = await getTochkaToken();
     if (!token) return res.status(400).json({ error: 'Токен Точки не настроен' });
-    const snap = await getDoc(doc(db, 'settings', 'tochka_api'));
-    const customerCode = snap?.data()?.customerCode;
+    const settings = await readTochkaSettingsDoc('tochka_api');
+    const customerCode = settings?.customerCode;
     if (!customerCode) return res.status(400).json({ error: 'customerCode Точки не настроен' });
 
-    const operation = await findTochkaOperation(token, customerCode, target.paymentLinkId, amount)
-      || (target.isFinal ? await findTochkaOperation(token, customerCode, target.cleanOrderId, amount) : null);
-    const operationId = getTochkaOperationId(operation);
+    const orderSnapshot = await getOrderSnapshot(target.cleanOrderId).catch(() => null);
+    const orderData = orderSnapshot?.data?.() || {};
+    const storedPaymentId = requestedPaymentId
+      || String(target.isFinal ? orderData.finalPaymentId : orderData.paymentId || '').trim();
+    let operation: any = null;
+    let operationId = '';
+
+    if (storedPaymentId && settings?.merchantId && settings?.accountId) {
+      const qrDetails = await fetchTochkaQrById(
+        token,
+        String(settings.merchantId),
+        String(settings.accountId),
+        storedPaymentId,
+      ).catch(() => null);
+      if (qrDetails?.data) {
+        operation = {
+          ...qrDetails.data,
+          status: qrDetails.paymentStatus || getTochkaOperationStatus(qrDetails.data),
+        };
+        operationId = storedPaymentId;
+      }
+    }
+
+    if (!operation) {
+      operation = await findTochkaOperation(token, customerCode, target.paymentLinkId, amount)
+        || (target.isFinal ? await findTochkaOperation(token, customerCode, target.cleanOrderId, amount) : null);
+      operationId = getTochkaOperationId(operation);
+    }
     if (!operation || !operationId) {
       return res.status(404).json({ error: `Оплата по заказу ${orderId} в Точке не найдена` });
     }
@@ -6489,8 +7325,8 @@ app.get('/api/tochka/find-payment', async (req, res) => {
     const paymentStatus = getTochkaOperationStatus(operation) || 'found';
     const paymentFields = buildTochkaPaymentFields(target, operationId, paymentStatus, paymentAmount, operation);
 
-    await updateDoc(doc(db, 'orders_new', target.cleanOrderId), paymentFields).catch(() => {});
-    await addDoc(collection(db, 'tochka_logs'), {
+    await persistOrderPatch(target.cleanOrderId, paymentFields);
+    await writeTochkaLog({
       orderId,
       paymentId: operationId,
       amount: paymentAmount,
@@ -6646,43 +7482,33 @@ app.post('/api/tochka/webhook', async (req, res) => {
         : req.body;
     console.log('[tochka] webhook:', JSON.stringify(body).slice(0, 200));
     // Найти заказ по operationId и обновить статус
-    if (db && (body.operationId || body.paymentLinkId)) {
+    if ((adminDb || db) && (body.operationId || body.paymentLinkId)) {
       const status = ['Paid', 'paid', 'APPROVED'].includes(body.status) ? 'paid' : body.status;
       if (body.paymentLinkId) {
         const target = getTochkaPaymentTarget(body.paymentLinkId);
         const patch = buildTochkaPaymentFields(target, body.operationId || '', status, normalizeTochkaAmount(body.amount));
-        await updateDoc(doc(db, 'orders_new', target.cleanOrderId), patch).catch(() => {});
+        await persistOrderPatch(target.cleanOrderId, patch);
       }
       if (body.operationId) {
-        const ordersSnap = await getDocs(query(collection(db, 'orders_new'), where('paymentId', '==', body.operationId)));
-        for (const d of ordersSnap.docs) {
-          const patch = buildTochkaPaymentFields({ isFinal: false }, body.operationId, status, normalizeTochkaAmount(body.amount));
-          await updateDoc(d.ref, patch);
-        }
-        const legacyOrdersSnap = ordersSnap.empty
-          ? await getDocs(query(collection(db, 'orders'), where('paymentId', '==', body.operationId))).catch(() => null)
-          : null;
-        if (legacyOrdersSnap) {
-          for (const d of legacyOrdersSnap.docs) {
-            const patch = buildTochkaPaymentFields({ isFinal: false }, body.operationId, status, normalizeTochkaAmount(body.amount));
-            await updateDoc(doc(db, 'orders_new', d.id), patch).catch(() => {});
+        const updateMatches = async (field: 'paymentId' | 'finalPaymentId', isFinal: boolean) => {
+          const patch = buildTochkaPaymentFields(
+            { isFinal },
+            body.operationId,
+            status,
+            normalizeTochkaAmount(body.amount),
+          );
+          if (adminDb) {
+            const snap = await adminDb.collection('orders_new').where(field, '==', body.operationId).get();
+            await Promise.all(snap.docs.map((d: any) => d.ref.set(patch, { merge: true })));
+            return snap.size;
           }
-        }
-
-        const finalSnap = await getDocs(query(collection(db, 'orders_new'), where('finalPaymentId', '==', body.operationId)));
-        for (const d of finalSnap.docs) {
-          const patch = buildTochkaPaymentFields({ isFinal: true }, body.operationId, status, normalizeTochkaAmount(body.amount));
-          await updateDoc(d.ref, patch);
-        }
-        const legacyFinalSnap = finalSnap.empty
-          ? await getDocs(query(collection(db, 'orders'), where('finalPaymentId', '==', body.operationId))).catch(() => null)
-          : null;
-        if (legacyFinalSnap) {
-          for (const d of legacyFinalSnap.docs) {
-            const patch = buildTochkaPaymentFields({ isFinal: true }, body.operationId, status, normalizeTochkaAmount(body.amount));
-            await updateDoc(doc(db, 'orders_new', d.id), patch).catch(() => {});
-          }
-        }
+          if (!db) return 0;
+          const snap = await getDocs(query(collection(db, 'orders_new'), where(field, '==', body.operationId)));
+          await Promise.all(snap.docs.map((d: any) => updateDoc(d.ref, patch)));
+          return snap.size;
+        };
+        await updateMatches('paymentId', false);
+        await updateMatches('finalPaymentId', true);
       }
     }
     res.json({ success: true });
