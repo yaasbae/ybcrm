@@ -1879,18 +1879,25 @@ const OrderSummaryRow = React.memo(({
         <p className="mt-2 text-[13px] font-black text-zinc-950">#{displayOrderId}</p>
       </td>
       <td className="px-5 py-5 align-top">
-        <p className="max-w-[210px] truncate text-[13px] font-bold text-zinc-950">{order.clientName || '—'}</p>
-        <p className="mt-2 text-[12px] font-semibold text-zinc-400">{order.clientPhone ? `+${order.clientPhone}` : '—'}</p>
-        {normalizeInstagramUsername(order.clientInsta) && (
-          <a
-            href={getInstagramProfileUrl(order.clientInsta)}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="mt-1.5 inline-flex max-w-[210px] items-center gap-1 truncate text-[11px] font-semibold text-[#7D7DE6] hover:underline"
-          >
-            <Instagram className="h-3.5 w-3.5 shrink-0" /> @{normalizeInstagramUsername(order.clientInsta)}
-          </a>
-        )}
+        <div className="flex items-start gap-3">
+          <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-zinc-100 text-[11px] font-semibold text-zinc-600">
+            {String(order.clientName || 'К').split(/\s+/).slice(0, 2).map(part => part[0]).join('').toUpperCase()}
+          </span>
+          <div className="min-w-0">
+            <p className="max-w-[180px] truncate text-[13px] font-semibold text-zinc-950">{order.clientName || '—'}</p>
+            <p className="mt-1 text-[11px] font-medium text-zinc-400">{order.clientPhone ? `+${order.clientPhone}` : '—'}</p>
+            {normalizeInstagramUsername(order.clientInsta) && (
+              <a
+                href={getInstagramProfileUrl(order.clientInsta)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="mt-1 inline-flex max-w-[180px] items-center gap-1 truncate text-[10px] font-medium text-violet-600 hover:underline"
+              >
+                <Instagram className="h-3 w-3 shrink-0" /> @{normalizeInstagramUsername(order.clientInsta)}
+              </a>
+            )}
+          </div>
+        </div>
       </td>
       <td className="px-5 py-5 align-top">
         <select
@@ -4792,6 +4799,21 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
     }, 250);
   };
 
+  const orderWorkspaceSummary = useMemo(() => {
+    const source = filteredOrders || [];
+    const revenue = source.reduce((sum, order) => sum + (Number(order.revenue) || 0) + (Number(order.deliveryPrice) || 0), 0);
+    const awaitingPayment = source.filter(order => {
+      const status = String(order.paymentStatus || '').toLowerCase();
+      return !isPaidTochkaStatus(status) && !String(order.status || '').toLowerCase().includes('оплачен');
+    }).length;
+    const inDelivery = source.filter(order => {
+      const status = String(order.status || '').toLowerCase();
+      return status.includes('отгружен') || (Boolean(order.cdekNumber) && !status.includes('доставлен'));
+    }).length;
+    const delivered = source.filter(order => String(order.status || '').toLowerCase().includes('доставлен')).length;
+    return { total: source.length, revenue, awaitingPayment, inDelivery, delivered };
+  }, [filteredOrders]);
+
   return (
     <div className="yb-orders-space space-y-5 text-[#1F2937]">
       <div className="yb-orders-hero flex flex-col gap-4 rounded-2xl border border-zinc-200/80 bg-white p-5 lg:flex-row lg:items-center lg:justify-between">
@@ -4832,6 +4854,54 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
           </button>
         </div>
       </div>
+
+      <section className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+        {[
+          {
+            label: 'Всего заказов',
+            value: String(orderWorkspaceSummary.total),
+            hint: 'в текущей выборке',
+            icon: ShoppingBag,
+            tone: 'bg-violet-50 text-violet-700',
+          },
+          {
+            label: 'Сумма заказов',
+            value: formatCurrency(orderWorkspaceSummary.revenue),
+            hint: 'товары и доставка',
+            icon: Wallet,
+            tone: 'bg-emerald-50 text-emerald-700',
+          },
+          {
+            label: 'Ждут оплаты',
+            value: String(orderWorkspaceSummary.awaitingPayment),
+            hint: 'нужно проверить',
+            icon: CreditCard,
+            tone: 'bg-amber-50 text-amber-700',
+          },
+          {
+            label: 'Логистика',
+            value: `${orderWorkspaceSummary.inDelivery} / ${orderWorkspaceSummary.delivered}`,
+            hint: 'в пути / доставлено',
+            icon: Truck,
+            tone: 'bg-sky-50 text-sky-700',
+          },
+        ].map(metric => (
+          <article key={metric.label} className="yb-orders-metric rounded-2xl border border-zinc-200/80 bg-white p-4">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-[11px] font-medium text-zinc-500">{metric.label}</p>
+                <p className="mt-2 truncate text-[20px] font-semibold tracking-[-0.03em] text-zinc-950 sm:text-[24px]">
+                  {metric.value}
+                </p>
+              </div>
+              <span className={cn('grid h-9 w-9 shrink-0 place-items-center rounded-xl', metric.tone)}>
+                <metric.icon className="h-4 w-4" />
+              </span>
+            </div>
+            <p className="mt-2 text-[10px] font-medium text-zinc-400">{metric.hint}</p>
+          </article>
+        ))}
+      </section>
 
       <div>
         <div className="hidden">
@@ -6479,15 +6549,18 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
 
       {/* Orders List Table */}
       <div className={cn(softCardClass, "yb-orders-list overflow-hidden rounded-2xl border-zinc-200/80")}>
-        <div className="flex flex-col justify-between gap-3 border-b border-[#E6E9EF] p-3 sm:flex-row sm:items-center">
+        <div className="flex flex-col justify-between gap-4 border-b border-zinc-200/80 p-5 sm:flex-row sm:items-center">
           <div className="flex items-center gap-3">
-            <h3 className="text-[14px] font-medium leading-5 text-[#1F2937]">Список заказов</h3>
-            <div className="flex h-8 items-center gap-1.5 rounded-[6px] border border-[#E6E9EF] bg-white px-2.5">
+            <div>
+              <h3 className="text-[16px] font-semibold leading-5 text-zinc-950">Все заказы</h3>
+              <p className="mt-1 text-[11px] text-zinc-400">{filteredOrders.length} записей · нажмите «Открыть» для полной карточки</p>
+            </div>
+            <div className="hidden h-9 items-center gap-1.5 rounded-lg border border-zinc-200 bg-white px-3 sm:flex">
               <Calendar className="h-3.5 w-3.5 text-[#9CA3AF]" />
               <select
                 value={ordersFilterMonth}
                 onChange={(e) => setOrdersFilterMonth(parseInt(e.target.value))}
-                className="cursor-pointer bg-transparent text-[11px] font-medium text-[#7D7DE6] outline-none"
+                className="cursor-pointer bg-transparent text-[11px] font-medium text-zinc-700 outline-none"
               >
                 <option value={-1}>Все месяцы</option>
                 {['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'].map((m, idx) => (
@@ -6501,15 +6574,15 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
               <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#9CA3AF]" />
               <input
                 type="text"
-                placeholder="Поиск..."
+                placeholder="Найти заказ, клиента или товар..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                className="h-8 w-full rounded-[6px] border border-[#E6E9EF] bg-white pl-9 pr-3 text-[11px] font-medium text-[#1F2937] outline-none transition-all placeholder:text-[#9CA3AF] focus:border-[#7D7DE6] focus:ring-2 focus:ring-[#7D7DE6]/10 sm:w-56"
+                className="h-10 w-full rounded-xl border border-zinc-200 bg-zinc-50/70 pl-9 pr-3 text-[11px] font-medium text-zinc-900 outline-none placeholder:text-zinc-400 focus:border-violet-300 focus:bg-white focus:ring-2 focus:ring-violet-500/10 sm:w-72"
               />
             </div>
           </div>
         </div>
-        <div className="flex gap-1.5 overflow-x-auto border-b border-[#E6E9EF] px-3 py-2">
+        <div className="flex gap-2 overflow-x-auto border-b border-zinc-200/80 bg-zinc-50/50 px-5 py-3">
           {['Все', ...optionList(handbookStatuses, STATUS_OPTIONS)].map(status => {
             const value = status === 'Все' ? '' : status;
             const active = orderStatusFilter === value;
@@ -6519,10 +6592,10 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                 type="button"
                 onClick={() => setOrderStatusFilter(value)}
                 className={cn(
-                  'h-8 shrink-0 rounded-[6px] border px-3 text-[10px] font-medium uppercase tracking-[0.12em] transition-colors',
+                  'h-8 shrink-0 rounded-full border px-3 text-[10px] font-medium transition-colors',
                   active
-                    ? 'border-[#1F2937] bg-[#1F2937] text-white'
-                    : 'border-[#E6E9EF] bg-white text-[#6B7280] hover:bg-[#F6F7F9]'
+                    ? 'border-zinc-900 bg-zinc-900 text-white'
+                    : 'border-zinc-200 bg-white text-zinc-600 hover:border-zinc-300'
                 )}
               >
                 {status}
