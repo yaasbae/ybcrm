@@ -20,7 +20,7 @@ export function createContainer(): Container {
   const orders = new OrdersService(firebase);
   const clients = new ClientsService(firebase, orders);
   const analytics = new AnalyticsService(orders);
-  const instagram = new InstagramService(config, http);
+  const instagram = new InstagramService(config, http, firebase);
   const contentAnalytics = new ContentAnalyticsService(instagram, orders);
   const finance = new FinanceService(firebase, orders);
   const tasks = new TasksService(firebase);

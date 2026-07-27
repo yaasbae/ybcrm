@@ -55,6 +55,7 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
 const MCP_PUBLIC_BASE_URL = (process.env.MCP_PUBLIC_BASE_URL || "https://ybcrm.ru").replace(/\/$/, "");
+const MCP_UPSTREAM_URL = String(process.env.MCP_UPSTREAM_URL || "").replace(/\/$/, "");
 const MCP_OAUTH_PIN = process.env.MCP_OAUTH_PIN || "ybcrm-mcp-2026-7f8c2a91d4e64bb8";
 const MCP_TOKEN_SECRET = process.env.CRM_JWT_SECRET || process.env.MCP_TOKEN_SECRET || "ybcrm-local-mcp-secret-2026-change-me";
 
@@ -148,6 +149,69 @@ app.use(express.json({
 }));
 app.use(express.text({ type: ['text/*', 'application/jwt'], limit: '1mb' }));
 app.use(express.urlencoded({ extended: true, limit: '20mb' }));
+
+const MCP_PROXY_PATHS = new Set([
+  "/.well-known/oauth-authorization-server",
+  "/.well-known/oauth-authorization-server/mcp",
+  "/.well-known/oauth-protected-resource",
+  "/.well-known/oauth-protected-resource/mcp",
+  "/oauth/register",
+  "/oauth/authorize",
+  "/oauth/token",
+  "/mcp",
+]);
+
+// ybcrm.ru is the stable public OAuth/MCP address used by ChatGPT, while the
+// production MCP implementation is deployed as its own Cloud Run service.
+// Forward the complete OAuth handshake and MCP traffic there. Without this
+// bridge the public domain falls back to the legacy in-process implementation,
+// where several tools are only placeholders.
+app.use(async (req, res, next) => {
+  if (!MCP_UPSTREAM_URL || !MCP_PROXY_PATHS.has(req.path)) return next();
+
+  try {
+    const forwardedHeaders: Record<string, string> = {};
+    for (const name of [
+      "authorization",
+      "accept",
+      "content-type",
+      "mcp-protocol-version",
+      "mcp-session-id",
+      "last-event-id",
+    ]) {
+      const value = req.headers[name];
+      if (typeof value === "string") forwardedHeaders[name] = value;
+    }
+    forwardedHeaders["x-forwarded-host"] = req.get("host") || "ybcrm.ru";
+    forwardedHeaders["x-forwarded-proto"] = String(req.headers["x-forwarded-proto"] || req.protocol || "https");
+
+    const upstream = await axios.request({
+      method: req.method,
+      url: `${MCP_UPSTREAM_URL}${req.path}`,
+      params: req.query,
+      data: req.method === "GET" || req.method === "HEAD" ? undefined : req.body,
+      headers: forwardedHeaders,
+      maxRedirects: 0,
+      responseType: "arraybuffer",
+      timeout: 120_000,
+      validateStatus: () => true,
+    });
+
+    for (const name of ["content-type", "location", "www-authenticate", "mcp-session-id"]) {
+      const value = upstream.headers[name];
+      if (value) res.setHeader(name, String(value));
+    }
+    res.status(upstream.status);
+    if (req.method === "HEAD" || upstream.status === 204 || upstream.status === 304) return res.end();
+    return res.send(Buffer.from(upstream.data));
+  } catch (error: any) {
+    console.error("[mcp proxy]", error?.message || error);
+    return res.status(502).json({
+      error: "MCP_UPSTREAM_UNAVAILABLE",
+      message: "Отдельный MCP-сервис временно недоступен",
+    });
+  }
+});
 
 function mcpBaseUrl() {
   return MCP_PUBLIC_BASE_URL;

@@ -15,7 +15,7 @@ const ConfigSchema = z.object({
   googleApplicationCredentials: z.string().optional(),
   metaAccessToken: z.string().optional(),
   metaIgUserId: z.string().optional(),
-  metaGraphVersion: z.string().default("v20.0"),
+  metaGraphVersion: z.string().default("v23.0"),
   crmBaseUrl: z.string().url().default("https://ybcrm.ru"),
   mcpPublicBaseUrl: z.string().url().default("https://ybcrm.ru"),
   mcpOAuthPin: z.string().min(4).optional(),
