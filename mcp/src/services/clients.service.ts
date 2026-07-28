@@ -16,7 +16,7 @@ function normalizeClient(id: string, data: Record<string, any>): Client {
     instagram: data.instagram || data.insta,
     city: data.city,
     ordersCount: Number(data.ordersCount || data.orders || 0),
-    totalAmount: Number(data.totalAmount || data.sum || 0),
+    totalAmount: Number(data.totalAmount || data.totalSpent || data.sum || 0),
     raw: data,
   };
 }

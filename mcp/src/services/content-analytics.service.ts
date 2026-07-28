@@ -7,8 +7,18 @@ export class ContentAnalyticsService {
     private readonly orders: OrdersService,
   ) {}
 
-  async analytics() {
-    const [instagram, orders] = await Promise.all([this.instagram.stats().catch(() => null), this.orders.listAll()]);
+  async analytics(input: { dateFrom?: string; dateTo?: string; date_from?: string; date_to?: string } = {}) {
+    const dateFrom = input.dateFrom || input.date_from;
+    const dateTo = input.dateTo || input.date_to;
+    const [instagram, allOrders] = await Promise.all([
+      this.instagram.stats({ dateFrom, dateTo }).catch(() => null),
+      this.orders.listAll(),
+    ]);
+    const orders = allOrders.filter((order) => {
+      if (dateFrom && (!order.date || order.date < dateFrom)) return false;
+      if (dateTo && (!order.date || order.date > dateTo)) return false;
+      return true;
+    });
     const media = instagram?.media || [];
 
     const reels = media.map((item: any) => {
@@ -29,6 +39,14 @@ export class ContentAnalyticsService {
       };
     });
 
-    return { reels };
+    return {
+      requestedPeriod: { dateFrom: dateFrom || null, dateTo: dateTo || null },
+      appliedPeriod: { dateFrom: dateFrom || null, dateTo: dateTo || null },
+      attribution: {
+        method: "source/blogger/reelId",
+        warning: "ROMI и конверсия доступны только для заказов, где заполнена связь с публикацией или источником.",
+      },
+      reels,
+    };
   }
 }

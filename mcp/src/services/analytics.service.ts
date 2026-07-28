@@ -1,5 +1,13 @@
 import type { Order, SalesAnalytics } from "../types/domain.js";
+import { z } from "zod";
 import type { OrdersService } from "./orders.service.js";
+
+export const SalesAnalyticsSchema = z.object({
+  dateFrom: z.string().optional(),
+  dateTo: z.string().optional(),
+  date_from: z.string().optional(),
+  date_to: z.string().optional(),
+});
 
 function startOfDay(date: Date) {
   const copy = new Date(date);
@@ -47,8 +55,28 @@ export function calculateSalesAnalytics(orders: Order[], now = new Date()): Sale
 export class AnalyticsService {
   constructor(private readonly orders: OrdersService) {}
 
-  async sales(): Promise<SalesAnalytics> {
-    const orders = await this.orders.listAll();
-    return calculateSalesAnalytics(orders);
+  async sales(input: z.infer<typeof SalesAnalyticsSchema> = {}) {
+    const parsed = SalesAnalyticsSchema.parse(input);
+    const dateFrom = parsed.dateFrom || parsed.date_from;
+    const dateTo = parsed.dateTo || parsed.date_to;
+    let orders = await this.orders.listAll();
+    if (dateFrom) orders = orders.filter((order) => Boolean(order.date && order.date >= dateFrom));
+    if (dateTo) orders = orders.filter((order) => Boolean(order.date && order.date <= dateTo));
+
+    if (!dateFrom && !dateTo) return calculateSalesAnalytics(orders);
+
+    const paidOrders = orders.filter((order) => order.paidAmount > 0 || /оплачен|готов|доставлен/i.test(String(order.status || "")));
+    const revenue = sumPaid(paidOrders);
+    const grossRevenue = orders.reduce((sum, order) => sum + order.amountTotal + order.deliveryCost, 0);
+    return {
+      requestedPeriod: { dateFrom: dateFrom || null, dateTo: dateTo || null },
+      appliedPeriod: { dateFrom: dateFrom || null, dateTo: dateTo || null },
+      revenue,
+      grossRevenue,
+      ordersCount: orders.length,
+      paidOrdersCount: paidOrders.length,
+      averageCheck: paidOrders.length ? revenue / paidOrders.length : 0,
+      conversion: orders.length ? Math.round((paidOrders.length / orders.length) * 1000) / 10 : 0,
+    };
   }
 }

@@ -3,12 +3,15 @@ import { z } from "zod";
 export const EmptySchema = {};
 
 export const OrdersListToolSchema = {
+  dateFrom: z.string().optional().describe("Дата начала YYYY-MM-DD (предпочтительное имя)"),
+  dateTo: z.string().optional().describe("Дата конца YYYY-MM-DD включительно (предпочтительное имя)"),
   date_from: z.string().optional().describe("Дата начала YYYY-MM-DD"),
   date_to: z.string().optional().describe("Дата конца YYYY-MM-DD"),
   status: z.string().optional().describe("Статус заказа"),
   manager: z.string().optional().describe("Менеджер"),
   blogger: z.string().optional().describe("Блогер"),
   page: z.number().int().positive().optional().describe("Страница"),
+  pageSize: z.number().int().min(1).max(100).optional().describe("Количество заказов на странице"),
 };
 
 export const OrderGetToolSchema = {
@@ -55,8 +58,17 @@ export const ClientsSearchToolSchema = {
 };
 
 export const InstagramStatsToolSchema = {
+  dateFrom: z.string().optional().describe("Начало периода YYYY-MM-DD (предпочтительное имя)"),
+  dateTo: z.string().optional().describe("Конец периода YYYY-MM-DD (предпочтительное имя)"),
   since: z.string().optional().describe("Начало периода YYYY-MM-DD"),
   until: z.string().optional().describe("Конец периода YYYY-MM-DD"),
+};
+
+export const PeriodToolSchema = {
+  dateFrom: z.string().optional().describe("Начало периода YYYY-MM-DD"),
+  dateTo: z.string().optional().describe("Конец периода YYYY-MM-DD включительно"),
+  date_from: z.string().optional().describe("Начало периода YYYY-MM-DD (устаревшее имя)"),
+  date_to: z.string().optional().describe("Конец периода YYYY-MM-DD включительно (устаревшее имя)"),
 };
 
 export const TaskCreateToolSchema = {

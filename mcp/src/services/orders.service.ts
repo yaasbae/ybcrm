@@ -7,10 +7,13 @@ import type { FirebaseService } from "./firebase.service.js";
 export const OrdersListSchema = z.object({
   date_from: z.string().optional(),
   date_to: z.string().optional(),
+  dateFrom: z.string().optional(),
+  dateTo: z.string().optional(),
   status: z.string().optional(),
   manager: z.string().optional(),
   blogger: z.string().optional(),
   page: z.coerce.number().int().positive().default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).default(50),
 });
 
 export const OrdersUpdateSchema = z.object({
@@ -53,7 +56,7 @@ export const OrdersCreateSchema = z.object({
   status: z.string().optional(),
 });
 
-export type OrdersListInput = z.infer<typeof OrdersListSchema>;
+export type OrdersListInput = z.input<typeof OrdersListSchema>;
 export type OrdersCreateInput = z.infer<typeof OrdersCreateSchema>;
 
 function toNumber(value: unknown): number {
@@ -80,6 +83,33 @@ function toDateString(value: any): string | undefined {
   if (value instanceof Date) return value.toISOString().slice(0, 10);
   if (typeof value?.seconds === "number") return new Date(value.seconds * 1000).toISOString().slice(0, 10);
   return undefined;
+}
+
+export function normalizeOrderNumber(value: unknown): string {
+  return String(value || "")
+    .trim()
+    .replace(/^#+/, "")
+    .toUpperCase()
+    .replaceAll("С", "C")
+    .replaceAll("Е", "E")
+    .replace(/\s+/g, "");
+}
+
+function orderTimestamp(order: Order): number {
+  const raw = order.raw || {};
+  const candidates = [
+    raw.createdAt,
+    raw.updatedAt,
+    order.date,
+  ];
+  for (const value of candidates) {
+    if (!value) continue;
+    if (typeof (value as any)?.toDate === "function") return (value as any).toDate().getTime();
+    if (typeof (value as any)?.seconds === "number") return (value as any).seconds * 1000;
+    const parsed = new Date(String(value));
+    if (!Number.isNaN(parsed.getTime())) return parsed.getTime();
+  }
+  return 0;
 }
 
 function normalizeItems(data: Record<string, any>): OrderItem[] {
@@ -130,11 +160,11 @@ export function normalizeOrder(id: string, data: Record<string, any>): Order {
     status: data.status,
     clientName: data.clientName || data.customerName || data.name,
     phone: data.phone || data.clientPhone || data.customerPhone,
-    instagram: data.instagram || data.clientInstagram,
+    instagram: data.instagram || data.clientInstagram || data.clientInsta || data.insta,
     manager: data.manager || data.managerName,
     blogger: data.blogger || data.bloggerName,
     source: data.source,
-    delivery: data.delivery || data.deliveryType,
+    delivery: data.delivery || data.deliveryType || data.deliveryMethod,
     paymentType: data.paymentType || data.invoiceType || data.payment || data.prepaymentType,
     amountTotal,
     paidAmount,
@@ -152,12 +182,19 @@ export class OrdersService {
 
   async list(input: OrdersListInput) {
     const params = OrdersListSchema.parse(input);
-    const pageSize = 50;
-    const snap = await this.firebase.db().collection(this.collectionName).orderBy("createdAt", "desc").limit(2000).get();
-    let orders = snap.docs.map((doc) => normalizeOrder(doc.id, doc.data()));
+    const dateFrom = params.dateFrom || params.date_from;
+    const dateTo = params.dateTo || params.date_to;
+    const pageSize = params.pageSize;
+    // Imported orders predate the createdAt field. Firestore orderBy silently
+    // excludes documents where that field is absent, which made MCP report an
+    // empty CRM while the web application still displayed those orders.
+    const snap = await this.firebase.db().collection(this.collectionName).limit(5000).get();
+    let orders = snap.docs
+      .map((doc) => normalizeOrder(doc.id, doc.data()))
+      .sort((a, b) => orderTimestamp(b) - orderTimestamp(a));
 
-    if (params.date_from) orders = orders.filter((order) => !order.date || order.date >= params.date_from!);
-    if (params.date_to) orders = orders.filter((order) => !order.date || order.date <= params.date_to!);
+    if (dateFrom) orders = orders.filter((order) => Boolean(order.date && order.date >= dateFrom));
+    if (dateTo) orders = orders.filter((order) => Boolean(order.date && order.date <= dateTo));
     if (params.status) orders = orders.filter((order) => String(order.status || "").toLowerCase() === params.status!.toLowerCase());
     if (params.manager) orders = orders.filter((order) => String(order.manager || "").toLowerCase().includes(params.manager!.toLowerCase()));
     if (params.blogger) orders = orders.filter((order) => String(order.blogger || "").toLowerCase().includes(params.blogger!.toLowerCase()));
@@ -168,24 +205,50 @@ export class OrdersService {
       page: params.page,
       pageSize,
       total,
+      requestedPeriod: { dateFrom: dateFrom || null, dateTo: dateTo || null },
+      appliedPeriod: { dateFrom: dateFrom || null, dateTo: dateTo || null },
       orders: orders.slice(start, start + pageSize),
     };
   }
 
   async listAll(limit = 5000): Promise<Order[]> {
-    const snap = await this.firebase.db().collection(this.collectionName).orderBy("createdAt", "desc").limit(limit).get();
-    return snap.docs.map((doc) => normalizeOrder(doc.id, doc.data()));
+    const snap = await this.firebase.db().collection(this.collectionName).limit(limit).get();
+    return snap.docs
+      .map((doc) => normalizeOrder(doc.id, doc.data()))
+      .sort((a, b) => orderTimestamp(b) - orderTimestamp(a));
   }
 
   async get(id: string): Promise<Order> {
     if (!id) throw badRequest("Нужен ID заказа");
-    const byDoc = await this.firebase.db().collection(this.collectionName).doc(id).get();
-    if (byDoc.exists) return normalizeOrder(byDoc.id, byDoc.data() || {});
+    const clean = normalizeOrderNumber(id);
+    const variants = new Set([
+      String(id).trim(),
+      String(id).trim().replace(/^#+/, ""),
+      `#${String(id).trim().replace(/^#+/, "")}`,
+      clean,
+      `#${clean}`,
+      clean.replaceAll("C", "С").replaceAll("E", "Е"),
+      `#${clean.replaceAll("C", "С").replaceAll("E", "Е")}`,
+    ]);
 
-    const byOrderId = await this.firebase.db().collection(this.collectionName).where("orderId", "==", id).limit(1).get();
-    if (!byOrderId.empty) {
-      const doc = byOrderId.docs[0];
-      return normalizeOrder(doc.id, doc.data());
+    for (const variant of variants) {
+      const byDoc = await this.firebase.db().collection(this.collectionName).doc(variant).get();
+      if (byDoc.exists) return normalizeOrder(byDoc.id, byDoc.data() || {});
+    }
+
+    for (const variant of variants) {
+      const byOrderId = await this.firebase.db().collection(this.collectionName).where("orderId", "==", variant).limit(1).get();
+      if (!byOrderId.empty) {
+        const doc = byOrderId.docs[0];
+        return normalizeOrder(doc.id, doc.data());
+      }
+    }
+
+    // Last-resort normalization handles historical Latin/Cyrillic lookalikes.
+    const all = await this.listAll();
+    const match = all.find((order) => normalizeOrderNumber(order.orderId || order.id) === clean);
+    if (match) {
+      return match;
     }
 
     throw notFound(`Заказ ${id} не найден`);

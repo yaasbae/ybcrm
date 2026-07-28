@@ -8,6 +8,7 @@ import {
   OrderGetToolSchema,
   OrdersListToolSchema,
   OrderUpdateToolSchema,
+  PeriodToolSchema,
   TaskCreateToolSchema,
 } from "./schemas.js";
 
@@ -78,9 +79,9 @@ export function registerTools(server: McpServer, container: Container) {
     {
       title: "Sales analytics",
       description: "Продажи сегодня, вчера, за неделю, месяц, средний чек, заказы, конверсия",
-      inputSchema: EmptySchema,
+      inputSchema: PeriodToolSchema,
     },
-    async () => jsonContent(await container.analytics.sales()),
+    async (args) => jsonContent(await container.analytics.sales(args as any)),
   );
 
   server.registerTool(
@@ -98,9 +99,9 @@ export function registerTools(server: McpServer, container: Container) {
     {
       title: "Content analytics",
       description: "Связка Reels/контента Meta с заказами CRM, деньгами, ROMI и конверсией",
-      inputSchema: EmptySchema,
+      inputSchema: PeriodToolSchema,
     },
-    async () => jsonContent(await container.contentAnalytics.analytics()),
+    async (args) => jsonContent(await container.contentAnalytics.analytics(args as any)),
   );
 
   server.registerTool(
