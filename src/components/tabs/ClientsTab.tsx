@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import {
   Users, Search, Plus, X, RefreshCcw, Award,
   DollarSign, MapPin, Phone, Instagram, ExternalLink,
@@ -21,6 +21,8 @@ interface ClientsTabProps {
 }
 
 type BroadcastEntry = { sentAt: string; status: 'sent' | 'error' | 'no_tg'; message: string; broadcastId: string };
+type ContactStatus = 'в работе' | 'написали' | 'ответил' | 'не ответил' | 'отказ' | 'перезвонить';
+type ClientView = 'queue' | 'in_work' | 'contacted' | 'answered' | 'snoozed' | 'all';
 
 function normalizePhone(value: string): string {
   const digits = String(value || '').replace(/\D/g, '');
@@ -46,12 +48,16 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
   const [fbLoading, setFbLoading] = useState(false);
   const [clientPage, setClientPage] = useState(100);
   const PAGE_SIZE = 100;
+  const loadMoreRef = useRef<HTMLDivElement | null>(null);
+  const [clientView, setClientView] = useState<ClientView>('queue');
+  const [quickSavingPhone, setQuickSavingPhone] = useState<string | null>(null);
+  const [quickSavedPhone, setQuickSavedPhone] = useState<string | null>(null);
 
   // Communication tracking
   const [contactHistory, setContactHistory] = useState<any[]>([]);
   const [contactHistoryLoading, setContactHistoryLoading] = useState(false);
   const [newContactNote, setNewContactNote] = useState('');
-  const [newContactStatus, setNewContactStatus] = useState<'написали' | 'ответил' | 'не ответил' | 'отказ' | 'перезвонить'>('написали');
+  const [newContactStatus, setNewContactStatus] = useState<ContactStatus>('написали');
   const [newContactTag, setNewContactTag] = useState('');
   const [isSendingContact, setIsSendingContact] = useState(false);
   const [showContactForm, setShowContactForm] = useState(false);
@@ -68,7 +74,7 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
   // Inline quick contact form
   const [inlineExpandedPhone, setInlineExpandedPhone] = useState<string | null>(null);
   const [inlineNote, setInlineNote] = useState('');
-  const [inlineStatus, setInlineStatus] = useState<'написали' | 'ответил' | 'не ответил' | 'отказ' | 'перезвонить'>('написали');
+  const [inlineStatus, setInlineStatus] = useState<ContactStatus>('написали');
   const [inlineTag, setInlineTag] = useState('');
   const [inlineSaving, setInlineSaving] = useState(false);
   const [inlineEmailPhone, setInlineEmailPhone] = useState<string | null>(null);
@@ -196,13 +202,63 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
 
   useEffect(() => {
     setFbLoading(true);
-    getDocs(query(collection(db, 'contacts'), orderBy('totalSpent', 'desc')))
-      .then(snap => {
-        setFbClients(snap.docs.map(d => d.data()));
-      })
-      .catch(() => {})
-      .finally(() => setFbLoading(false));
+    const q = query(collection(db, 'contacts'), orderBy('totalSpent', 'desc'));
+    const unsubscribe = onSnapshot(q, (snap) => {
+      setFbClients(snap.docs.map(d => ({ ...d.data(), firestoreId: d.id })));
+      setFbLoading(false);
+    }, () => setFbLoading(false));
+    return () => unsubscribe();
   }, [importDone]);
+
+  const saveQuickContact = async (client: any, status: ContactStatus, note: string) => {
+    const phone = client.phone || client.userId || client.firestoreId;
+    if (!phone) return;
+    const manager = auth.currentUser;
+    const entry = {
+      clientPhone: phone,
+      clientName: client.fullName || client.name || 'Клиент',
+      managerId: manager?.uid || 'unknown',
+      managerName: manager?.displayName || manager?.email || 'Менеджер',
+      managerPhoto: manager?.photoURL || null,
+      date: new Date().toISOString(),
+      status,
+      tag: client.lastContactTag || null,
+      note,
+    };
+
+    await addDoc(collection(db, 'manager_contacts'), entry);
+    await setDoc(doc(db, 'contacts', String(client.firestoreId || phone)), {
+      lastContactAt: entry.date,
+      lastContactStatus: status,
+      lastContactManager: entry.managerName,
+      lastContactNote: note,
+    }, { merge: true });
+  };
+
+  const openInstagram = (client: any) => {
+    const username = String(client.insta || '').replace(/^@/, '').trim();
+    if (!username) return;
+    window.open(`https://instagram.com/${encodeURIComponent(username)}`, '_blank', 'noopener,noreferrer');
+    if (!client.lastContactAt) {
+      void saveQuickContact(client, 'в работе', 'Менеджер открыл Instagram клиента').catch(console.error);
+    }
+  };
+
+  const markAsContacted = async (client: any) => {
+    const phone = String(client.phone || client.userId || client.firestoreId || '');
+    if (!phone || quickSavingPhone) return;
+    setQuickSavingPhone(phone);
+    try {
+      await saveQuickContact(client, 'написали', 'Сообщение отправлено клиенту');
+      setQuickSavedPhone(phone);
+      window.setTimeout(() => setQuickSavedPhone(current => current === phone ? null : current), 1800);
+    } catch (error) {
+      console.error(error);
+      alert('Не удалось сохранить касание. Проверьте соединение и повторите.');
+    } finally {
+      setQuickSavingPhone(null);
+    }
+  };
 
   const handleImportAll = async () => {
     if (!window.confirm('Загрузить клиентов из новой таблицы и импортировать в Firebase?')) return;
@@ -293,13 +349,18 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
     const phone = selectedLoyaltyClient.phone || selectedLoyaltyClient.name;
     if (!phone) return;
     setContactHistoryLoading(true);
-    getDocs(query(
+    const unsubscribe = onSnapshot(query(
       collection(db, 'manager_contacts'),
-      where('clientPhone', '==', phone),
-      orderBy('date', 'desc')
-    )).then(snap => {
-      setContactHistory(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-    }).catch(() => {}).finally(() => setContactHistoryLoading(false));
+      where('clientPhone', '==', phone)
+    ), (snap) => {
+      setContactHistory(
+        snap.docs
+          .map(d => ({ id: d.id, ...d.data() } as any))
+          .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))
+      );
+      setContactHistoryLoading(false);
+    }, () => setContactHistoryLoading(false));
+    return () => unsubscribe();
   }, [selectedLoyaltyClient]);
 
   const handleAddContact = async () => {
@@ -440,15 +501,37 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
         (client.city || '').toLowerCase().includes(q);
 
       if (!matchesSearch) return false;
+      const status = String(client.lastContactStatus || '').toLowerCase();
+      if (clientView === 'queue' && client.lastContactAt) return false;
+      if (clientView === 'in_work' && status !== 'в работе') return false;
+      if (clientView === 'contacted' && (!client.lastContactAt || status === 'в работе')) return false;
+      if (clientView === 'answered' && status !== 'ответил') return false;
+      if (clientView === 'snoozed' && status !== 'перезвонить') return false;
       if (contactFilter === 'all') return true;
       if (contactFilter === 'never') return !client.lastContactAt;
 
       const days = getContactDays(client);
       return days !== null && days >= contactFilter;
     });
-  }, [baseClients, contactFilter, searchTerm]);
+  }, [baseClients, clientView, contactFilter, searchTerm]);
 
-  const visibleClients = searchTerm ? filteredClients : filteredClients.slice(0, clientPage);
+  const visibleClients = filteredClients.slice(0, clientPage);
+
+  useEffect(() => {
+    setClientPage(PAGE_SIZE);
+  }, [clientView, contactFilter, searchTerm]);
+
+  useEffect(() => {
+    const node = loadMoreRef.current;
+    if (!node || clientPage >= filteredClients.length) return;
+    const observer = new IntersectionObserver((entries) => {
+      if (entries[0]?.isIntersecting) {
+        setClientPage(page => Math.min(page + PAGE_SIZE, filteredClients.length));
+      }
+    }, { rootMargin: '400px 0px' });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [clientPage, filteredClients.length]);
 
   const clientStats = useMemo(() => {
     const contacted = baseClients.filter((client: any) => client.lastContactAt).length;
@@ -478,6 +561,15 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
     { key: 60, label: '60 дн' },
     { key: 90, label: '90 дн' },
   ] as const;
+
+  const clientViews: Array<{ key: ClientView; label: string; count: number }> = [
+    { key: 'queue', label: 'Очередь', count: baseClients.filter((c: any) => !c.lastContactAt).length },
+    { key: 'in_work', label: 'В работе', count: baseClients.filter((c: any) => c.lastContactStatus === 'в работе').length },
+    { key: 'contacted', label: 'Уже писали', count: baseClients.filter((c: any) => c.lastContactAt && c.lastContactStatus !== 'в работе').length },
+    { key: 'answered', label: 'Ответили', count: baseClients.filter((c: any) => c.lastContactStatus === 'ответил').length },
+    { key: 'snoozed', label: 'Отложены', count: baseClients.filter((c: any) => c.lastContactStatus === 'перезвонить').length },
+    { key: 'all', label: 'Все', count: baseClients.length },
+  ];
 
   return (
     <>
@@ -551,21 +643,45 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
             </div>
           </div>
 
-          <div className="flex flex-wrap gap-2 border-t border-[#E6E9EF] p-3">
-            {contactFilters.map(f => (
-              <button
-                key={String(f.key)}
-                onClick={() => setContactFilter(f.key)}
-                className={cn(
-                  "h-9 rounded-[8px] border px-4 text-[12px] font-semibold uppercase tracking-[0.12em] transition",
-                  contactFilter === f.key
-                    ? "border-[#1F2937] bg-[#1F2937] text-white"
-                    : "border-[#E6E9EF] bg-white text-[#6B7280] hover:border-[#CBD5E1] hover:text-[#1F2937]"
-                )}
-              >
-                {f.label}
-              </button>
-            ))}
+          <div className="border-t border-[#E6E9EF] p-3">
+            <div className="-mx-1 flex gap-2 overflow-x-auto px-1 pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+              {clientViews.map(view => (
+                <button
+                  key={view.key}
+                  onClick={() => {
+                    setClientView(view.key);
+                    setContactFilter('all');
+                  }}
+                  className={cn(
+                    "inline-flex h-10 shrink-0 items-center gap-2 rounded-[8px] border px-4 text-[12px] font-semibold transition",
+                    clientView === view.key
+                      ? "border-[#1F2937] bg-[#1F2937] text-white"
+                      : "border-[#E6E9EF] bg-white text-[#6B7280] hover:border-[#CBD5E1] hover:text-[#1F2937]"
+                  )}
+                >
+                  {view.label}
+                  <span className={cn(
+                    "rounded-full px-1.5 py-0.5 text-[10px]",
+                    clientView === view.key ? "bg-white/15 text-white" : "bg-[#F1F3F6] text-[#9CA3AF]"
+                  )}>{view.count}</span>
+                </button>
+              ))}
+            </div>
+            <div className="mt-3 flex items-center justify-between gap-3">
+              <p className="text-[12px] text-[#9CA3AF]">Статус меняется для всех менеджеров сразу</p>
+              <label className="flex shrink-0 items-center gap-2 text-[12px] font-medium text-[#6B7280]">
+                Давность
+                <select
+                  value={String(contactFilter)}
+                  onChange={(e) => setContactFilter(e.target.value === 'all' || e.target.value === 'never' ? e.target.value : Number(e.target.value) as any)}
+                  className="h-9 rounded-[8px] border border-[#E6E9EF] bg-white px-2 outline-none focus:border-[#7D7DE6]"
+                >
+                  {contactFilters.map(filter => (
+                    <option key={String(filter.key)} value={String(filter.key)}>{filter.label}</option>
+                  ))}
+                </select>
+              </label>
+            </div>
           </div>
         </div>
 
@@ -616,15 +732,17 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
                           <td className="px-4 py-4">
                             <div className="space-y-1">
                               {client.insta ? (
-                                <a
-                                  href={`https://instagram.com/${client.insta.replace('@', '')}`}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  onClick={e => e.stopPropagation()}
-                                  className="inline-flex max-w-full items-center gap-1 truncate text-[13px] font-semibold text-[#7D7DE6]"
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    openInstagram(client);
+                                  }}
+                                  className="inline-flex min-h-9 max-w-full items-center gap-1.5 truncate rounded-[8px] bg-[#7D7DE6]/10 px-2.5 text-[13px] font-semibold text-[#6868D8] transition hover:bg-[#7D7DE6]/15"
                                 >
-                                  <Instagram size={13} />@{client.insta.replace('@', '')}
-                                </a>
+                                  <Instagram size={14} />@{client.insta.replace('@', '')}
+                                  <ExternalLink size={12} />
+                                </button>
                               ) : (
                                 <span className="text-[13px] text-[#CBD5E1]">Instagram не указан</span>
                               )}
@@ -690,6 +808,19 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
                                 <p className="text-[11px] font-medium text-[#9CA3AF]">
                                   рассылка: {new Date(contact.broadcast.sentAt).toLocaleDateString('ru-RU')} · {contact.broadcast.status}
                                 </p>
+                              )}
+                              {client.insta && contact.status !== 'написали' && contact.status !== 'ответил' && (
+                                <button
+                                  type="button"
+                                  onClick={() => void markAsContacted(client)}
+                                  disabled={quickSavingPhone === String(phone)}
+                                  className="inline-flex h-9 items-center justify-center gap-1.5 rounded-[8px] bg-[#2EBA7F] px-3 text-[11px] font-semibold text-white transition hover:bg-[#25A870]"
+                                >
+                                  {quickSavingPhone === String(phone)
+                                    ? <RefreshCcw size={14} className="animate-spin" />
+                                    : <CheckCircle size={14} />}
+                                  {quickSavedPhone === String(phone) ? 'Сохранено' : 'Написал'}
+                                </button>
                               )}
                               <div className="grid gap-2 md:grid-cols-[110px_120px_1fr_auto]">
                                 <select
@@ -770,6 +901,32 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
                         </div>
                         <p className="shrink-0 text-right text-[16px] font-semibold text-[#2EBA7F]">{formatCurrency(client.totalSpent ?? client.total ?? 0)}</p>
                       </div>
+                      <div className="mt-3 grid grid-cols-2 gap-2" onClick={e => e.stopPropagation()}>
+                        {client.insta ? (
+                          <button
+                            type="button"
+                            onClick={() => openInstagram(client)}
+                            className="inline-flex h-12 items-center justify-center gap-2 rounded-[8px] bg-[#7D7DE6] px-3 text-[13px] font-semibold text-white shadow-[0_8px_18px_rgba(125,125,230,0.18)]"
+                          >
+                            <Instagram size={17} /> Открыть Instagram
+                          </button>
+                        ) : (
+                          <div className="inline-flex h-12 items-center justify-center rounded-[8px] border border-[#E6E9EF] bg-[#F6F7F9] px-3 text-[12px] font-medium text-[#9CA3AF]">
+                            Instagram не указан
+                          </div>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => void markAsContacted(client)}
+                          disabled={!client.insta || contact.status === 'написали' || contact.status === 'ответил' || quickSavingPhone === String(phone)}
+                          className="inline-flex h-12 items-center justify-center gap-2 rounded-[8px] border border-[#2EBA7F]/30 bg-[#2EBA7F]/10 px-3 text-[13px] font-semibold text-[#0A9B62] disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          {quickSavingPhone === String(phone)
+                            ? <RefreshCcw size={17} className="animate-spin" />
+                            : <CheckCircle size={17} />}
+                          {quickSavedPhone === String(phone) ? 'Сохранено' : 'Написал'}
+                        </button>
+                      </div>
                       <div className="mt-3 grid grid-cols-2 gap-2">
                         <div className="rounded-[8px] border border-[#E6E9EF] p-3">
                           <p className="text-[10px] font-semibold uppercase tracking-[0.15em] text-[#9CA3AF]">Заказы</p>
@@ -841,16 +998,11 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
             </>
           )}
 
-          {clientPage < filteredClients.length && !searchTerm ? (
-            <div className="border-t border-[#E6E9EF] p-4 text-center">
-              <button
-                onClick={() => setClientPage(p => p + PAGE_SIZE)}
-                className="rounded-[8px] border border-[#E6E9EF] bg-white px-5 py-2.5 text-[13px] font-semibold text-[#6B7280] transition hover:border-[#CBD5E1] hover:text-[#1F2937]"
-              >
-                Показать еще {Math.min(PAGE_SIZE, filteredClients.length - clientPage)} из {filteredClients.length - clientPage}
-              </button>
-            </div>
-          ) : null}
+          <div ref={loadMoreRef} className="border-t border-[#E6E9EF] p-4 text-center text-[12px] font-medium text-[#9CA3AF]">
+            {clientPage < filteredClients.length
+              ? `Показано ${visibleClients.length} из ${filteredClients.length} · следующие загрузятся автоматически`
+              : filteredClients.length > 0 ? `Показаны все ${filteredClients.length}` : ''}
+          </div>
         </div>
       </section>
 
