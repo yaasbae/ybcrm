@@ -4,6 +4,7 @@ import {
   RefreshCcw, AlertCircle, Download,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
+import { isPrepaymentOrder, PREPAYMENT_FILTER_VALUE } from '../lib/orderFilters';
 import { db } from '../firebase';
 import { doc, onSnapshot, setDoc, collection, deleteDoc, updateDoc, query } from 'firebase/firestore';
 const AnalyticsTab = lazy(() => import('./tabs/AnalyticsTab').then(m => ({ default: m.AnalyticsTab })));
@@ -869,7 +870,10 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
       .sort((a: OrderData, b: OrderData) => b.date.getTime() - a.date.getTime())
       .filter((o: OrderData) => {
         const matchesMonth = ordersFilterMonth === -1 || o.month === ordersFilterMonth;
-        const matchesStatus = !orderStatusFilter || String(o.status || '').toLowerCase() === orderStatusFilter.toLowerCase();
+        const matchesStatus = !orderStatusFilter
+          || (orderStatusFilter === PREPAYMENT_FILTER_VALUE
+            ? isPrepaymentOrder(o)
+            : String(o.status || '').toLowerCase() === orderStatusFilter.toLowerCase());
         const matchesBlogger = !orderBloggerFilter || String(o.blogger || '').trim() === orderBloggerFilter;
         const search = searchTerm.toLowerCase();
         const matchesSearch = !searchTerm ||

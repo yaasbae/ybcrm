@@ -14,12 +14,13 @@ import {
 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { formatCurrency, cn } from '../../lib/utils';
+import { PREPAYMENT_FILTER_VALUE } from '../../lib/orderFilters';
 import { motion, AnimatePresence } from 'motion/react';
 import { OrderData } from '../AnalyticsDashboard';
 import { db } from '../../firebase';
 import { collection, doc, getDocs, onSnapshot, orderBy, query, setDoc } from 'firebase/firestore';
 
-const STATUS_OPTIONS = ['Черновик', 'Новый', 'В работе', 'Оплачен', 'Отгружен', 'Доставлен', 'Возврат', 'Отмена', 'Обмен'];
+const STATUS_OPTIONS = ['Черновик', 'Новый', 'В работе', 'Оплачен', 'Упакован', 'Отгружен', 'Доставлен', 'Возврат', 'Отмена', 'Обмен'];
 const DELIVERY_OPTIONS = ['СДЭК', 'Почта РФ', 'Боксберри', 'Самовывоз', 'Курьер', 'DBS'];
 const SOURCE_OPTIONS = ['Instagram', 'WhatsApp', 'ТГ', 'Блогер', 'Контент', 'Сарафан', 'Повторный'];
 const PAYMENT_TYPE_OPTIONS = ['QR код', 'Сплитами', 'Долями', 'Наличкой', 'Наложенный СДЭК'];
@@ -6583,22 +6584,29 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
           </div>
         </div>
         <div className="flex gap-2 overflow-x-auto border-b border-zinc-200/80 bg-zinc-50/50 px-5 py-3">
-          {['Все', ...optionList(handbookStatuses, STATUS_OPTIONS)].map(status => {
-            const value = status === 'Все' ? '' : status;
+          {[
+            { label: 'Все', value: '' },
+            { label: 'Предоплата', value: PREPAYMENT_FILTER_VALUE },
+            ...optionList(handbookStatuses, STATUS_OPTIONS)
+              .filter(status => status.trim().toLowerCase() !== 'предоплата')
+              .map(status => ({ label: status, value: status })),
+          ].map(({ label, value }) => {
             const active = orderStatusFilter === value;
             return (
               <button
-                key={status}
+                key={value || 'all'}
                 type="button"
                 onClick={() => setOrderStatusFilter(value)}
                 className={cn(
                   'h-8 shrink-0 rounded-full border px-3 text-[10px] font-medium transition-colors',
                   active
-                    ? 'border-zinc-900 bg-zinc-900 text-white'
+                    ? value === PREPAYMENT_FILTER_VALUE
+                      ? 'border-amber-500 bg-amber-500 text-white'
+                      : 'border-zinc-900 bg-zinc-900 text-white'
                     : 'border-zinc-200 bg-white text-zinc-600 hover:border-zinc-300'
                 )}
               >
-                {status}
+                {label}
               </button>
             );
           })}
