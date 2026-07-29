@@ -23,6 +23,18 @@ interface ClientsTabProps {
 type BroadcastEntry = { sentAt: string; status: 'sent' | 'error' | 'no_tg'; message: string; broadcastId: string };
 type ContactStatus = 'в работе' | 'написали' | 'ответил' | 'не ответил' | 'отказ' | 'перезвонить';
 type ClientView = 'queue' | 'in_work' | 'contacted' | 'answered' | 'snoozed' | 'all';
+type ContactAgeFilter = 'all' | '0-5' | '6-15' | '16-30' | '31-60' | '61-90' | '91-120' | '120+';
+
+const CONTACT_AGE_FILTERS: Array<{ key: ContactAgeFilter; label: string; min: number; max?: number }> = [
+  { key: 'all', label: 'Все даты', min: 0 },
+  { key: '0-5', label: '0–5 дней', min: 0, max: 5 },
+  { key: '6-15', label: '6–15 дней', min: 6, max: 15 },
+  { key: '16-30', label: '16–30 дней', min: 16, max: 30 },
+  { key: '31-60', label: '31–60 дней', min: 31, max: 60 },
+  { key: '61-90', label: '61–90 дней', min: 61, max: 90 },
+  { key: '91-120', label: '91–120 дней', min: 91, max: 120 },
+  { key: '120+', label: 'Старше 120', min: 121 },
+];
 
 function normalizePhone(value: string): string {
   const digits = String(value || '').replace(/\D/g, '');
@@ -64,7 +76,7 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
   const [activePanel, setActivePanel] = useState<'info' | 'contacts'>('info');
 
   // Contact filter
-  const [contactFilter, setContactFilter] = useState<'all' | 'never' | 5 | 10 | 20 | 30 | 60 | 90>('all');
+  const [contactFilter, setContactFilter] = useState<ContactAgeFilter>('all');
 
   // Add client
   const [isAddClientOpen, setIsAddClientOpen] = useState(false);
@@ -473,7 +485,15 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
     if (!client.lastContactAt) return null;
     const time = new Date(client.lastContactAt).getTime();
     if (Number.isNaN(time)) return null;
-    return Math.floor((Date.now() - time) / 86400000);
+    return Math.max(0, Math.floor((Date.now() - time) / 86400000));
+  };
+
+  const matchesContactAge = (client: any, filter: ContactAgeFilter) => {
+    if (filter === 'all') return true;
+    const days = getContactDays(client);
+    if (days === null) return false;
+    const range = CONTACT_AGE_FILTERS.find(item => item.key === filter);
+    return Boolean(range && days >= range.min && (range.max === undefined || days <= range.max));
   };
 
   const formatContactDate = (value?: string) => {
@@ -514,11 +534,7 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
       if (clientView === 'contacted' && (!client.lastContactAt || status === 'в работе')) return false;
       if (clientView === 'answered' && status !== 'ответил') return false;
       if (clientView === 'snoozed' && status !== 'перезвонить') return false;
-      if (contactFilter === 'all') return true;
-      if (contactFilter === 'never') return !client.lastContactAt;
-
-      const days = getContactDays(client);
-      return days !== null && days >= contactFilter;
+      return matchesContactAge(client, contactFilter);
     });
   }, [baseClients, clientView, contactFilter, searchTerm]);
 
@@ -557,17 +573,6 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
       needsContact,
     };
   }, [baseClients, stats.uniqueClients]);
-
-  const contactFilters = [
-    { key: 'all', label: 'Все' },
-    { key: 'never', label: 'Не писали' },
-    { key: 5, label: '5 дн' },
-    { key: 10, label: '10 дн' },
-    { key: 20, label: '20 дн' },
-    { key: 30, label: '30 дн' },
-    { key: 60, label: '60 дн' },
-    { key: 90, label: '90 дн' },
-  ] as const;
 
   const clientViews: Array<{ key: ClientView; label: string; count: number }> = [
     { key: 'queue', label: 'Очередь', count: baseClients.filter((c: any) => !c.lastContactAt).length },
@@ -674,20 +679,39 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
                 </button>
               ))}
             </div>
-            <div className="mt-3 flex items-center justify-between gap-3">
+            <div className="mt-3">
               <p className="text-[12px] text-[#9CA3AF]">Статус меняется для всех менеджеров сразу</p>
-              <label className="flex shrink-0 items-center gap-2 text-[12px] font-medium text-[#6B7280]">
-                Давность
-                <select
-                  value={String(contactFilter)}
-                  onChange={(e) => setContactFilter(e.target.value === 'all' || e.target.value === 'never' ? e.target.value : Number(e.target.value) as any)}
-                  className="h-9 rounded-[8px] border border-[#E6E9EF] bg-white px-2 outline-none focus:border-[#7D7DE6]"
-                >
-                  {contactFilters.map(filter => (
-                    <option key={String(filter.key)} value={String(filter.key)}>{filter.label}</option>
-                  ))}
-                </select>
-              </label>
+              {clientView === 'contacted' && (
+                <div className="mt-3 border-t border-[#EEF0F4] pt-3">
+                  <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-[#9CA3AF]">
+                    Когда писали
+                  </p>
+                  <div className="-mx-1 flex gap-2 overflow-x-auto px-1 pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                    {CONTACT_AGE_FILTERS.map(filter => {
+                      const count = baseClients.filter((client: any) =>
+                        client.lastContactAt &&
+                        client.lastContactStatus !== 'в работе' &&
+                        matchesContactAge(client, filter.key)
+                      ).length;
+                      return (
+                        <button
+                          key={filter.key}
+                          onClick={() => setContactFilter(filter.key)}
+                          className={cn(
+                            "inline-flex h-9 shrink-0 items-center gap-2 rounded-[8px] border px-3 text-[11px] font-semibold transition",
+                            contactFilter === filter.key
+                              ? "border-[#7D7DE6] bg-[#F0EFFF] text-[#6666D9]"
+                              : "border-[#E6E9EF] bg-white text-[#6B7280] hover:border-[#C9C9F5]"
+                          )}
+                        >
+                          {filter.label}
+                          <span className="text-[10px] text-[#9CA3AF]">{count}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </div>
