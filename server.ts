@@ -1399,6 +1399,9 @@ app.post("/api/cdek/create-order", async (req, res) => {
     const toAddress = String(body.toAddress || "").trim();
     const itemName = String(body.itemName || "Заказ YBCRM").trim();
     const itemCost = Math.max(0, Math.round(Number(body.itemCost || 0) * 100) / 100);
+    // Declared value is used by CDEK only to calculate insurance. It must not
+    // inherit the retail price of the CRM order unless explicitly requested.
+    const declaredCost = Math.max(0, Math.round(Number(body.declaredCost ?? 0) * 100) / 100);
     const codAmount = Math.max(0, Math.round(Number(body.codAmount || 0) * 100) / 100);
     const deliveryCost = Math.max(0, Math.round(Number(body.deliveryCost || 0) * 100) / 100);
     const weight = Math.max(1, Number(body.weight || 700));
@@ -1445,7 +1448,7 @@ app.post("/api/cdek/create-order", async (req, res) => {
           name: itemName,
           ware_key: String(body.wareKey || orderId),
           payment: { value: codAmount },
-          cost: itemCost || codAmount || 1,
+          cost: declaredCost,
           amount: 1,
           weight,
         }],
@@ -1522,6 +1525,7 @@ app.post("/api/cdek/create-order", async (req, res) => {
           width,
           height,
           itemCost,
+          declaredCost,
           codAmount,
           deliveryCost,
         },
@@ -1600,6 +1604,7 @@ app.post("/api/cdek/create-order", async (req, res) => {
         width,
         height,
         itemCost,
+        declaredCost,
         codAmount,
         deliveryCost,
       },
