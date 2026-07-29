@@ -10,7 +10,7 @@ import {
   Tag, Trash2, Phone, UserCircle, ChevronRight, ChevronLeft, QrCode as QrCodeIcon,
   CheckCircle2, Copy, Send, Truck, Wallet, CreditCard, Database, Filter,
   ArrowUpRight, ArrowDownRight, Printer, Upload, Instagram, FileText, Pencil, Download,
-  MoreVertical, Share2, ExternalLink
+  MoreVertical, Share2, ExternalLink, Pin
 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { formatCurrency, cn } from '../../lib/utils';
@@ -1146,7 +1146,7 @@ const CdekOrderBlock: React.FC<{
 
   useEffect(() => {
     const q = cityQuery.trim();
-    if (q.length < 2) {
+    if (q.length < 2 || toCityCode) {
       setCities([]);
       return;
     }
@@ -1175,7 +1175,7 @@ const CdekOrderBlock: React.FC<{
       }
     }, 350);
     return () => window.clearTimeout(timer);
-  }, [cityQuery]);
+  }, [cityQuery, toCityCode]);
 
   useEffect(() => {
     const shouldLoadPoints = pointsRequested || deliveryPointQuery.trim().length >= 2 || Boolean(deliveryPoint);
@@ -1803,6 +1803,7 @@ const OrderSummaryRow = React.memo(({
   expanded,
   selected,
   onToggle,
+  onTogglePin,
   onSelectChange,
   updateOrderData,
   handbookStatuses,
@@ -1811,6 +1812,7 @@ const OrderSummaryRow = React.memo(({
   expanded: boolean;
   selected: boolean;
   onToggle: () => void;
+  onTogglePin: () => void;
   onSelectChange: (checked: boolean) => void;
   updateOrderData: (id: string, field: string, value: any) => void;
   handbookStatuses: string[];
@@ -1861,6 +1863,7 @@ const OrderSummaryRow = React.memo(({
   return (
     <tr className={cn(
       "yb-order-row group border-b border-zinc-100 bg-white transition-colors hover:bg-zinc-50/60",
+      order.isPinned && "bg-amber-50/40 hover:bg-amber-50/60",
       expanded && "bg-zinc-50/70",
       selected && "bg-blue-50/30",
       order.isOverdue && !order.isShipped && "bg-red-50/20"
@@ -1988,20 +1991,40 @@ const OrderSummaryRow = React.memo(({
         </p>
       </td>
       <td className="px-5 py-4 align-middle text-right">
-        <button
-          type="button"
-          onClick={onToggle}
-          className={cn(
-            "yb-order-expand inline-flex min-h-9 items-center justify-end gap-1.5 rounded-lg border border-transparent px-2 text-zinc-400 transition-all",
-            expanded
-              ? "bg-zinc-100 text-zinc-950"
-              : "hover:bg-zinc-100 hover:text-zinc-950"
-          )}
-          title={expanded ? "Свернуть заказ" : "Раскрыть заказ"}
-        >
-          <span className="hidden text-[10px] font-medium xl:inline">{expanded ? 'Свернуть' : 'Открыть'}</span>
-          {expanded ? <X className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
-        </button>
+        <div className="inline-flex items-center justify-end gap-1">
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              onTogglePin();
+            }}
+            className={cn(
+              "grid h-9 w-9 place-items-center rounded-lg border border-transparent transition-colors",
+              order.isPinned
+                ? "bg-amber-100 text-amber-600 hover:bg-amber-200"
+                : "text-zinc-300 hover:bg-zinc-100 hover:text-zinc-600"
+            )}
+            title={order.isPinned ? "Открепить важный заказ" : "Закрепить важный заказ"}
+            aria-label={order.isPinned ? `Открепить заказ ${displayOrderId}` : `Закрепить заказ ${displayOrderId}`}
+            aria-pressed={Boolean(order.isPinned)}
+          >
+            <Pin className={cn("h-4 w-4", order.isPinned && "fill-current")} />
+          </button>
+          <button
+            type="button"
+            onClick={onToggle}
+            className={cn(
+              "yb-order-expand inline-flex min-h-9 items-center justify-end gap-1.5 rounded-lg border border-transparent px-2 text-zinc-400 transition-all",
+              expanded
+                ? "bg-zinc-100 text-zinc-950"
+                : "hover:bg-zinc-100 hover:text-zinc-950"
+            )}
+            title={expanded ? "Свернуть заказ" : "Раскрыть заказ"}
+          >
+            <span className="hidden text-[10px] font-medium xl:inline">{expanded ? 'Свернуть' : 'Открыть'}</span>
+            {expanded ? <X className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
+          </button>
+        </div>
       </td>
     </tr>
   );
@@ -2081,6 +2104,37 @@ const OrderDetailView: React.FC<{
     updateOrderData(order.orderId, field, next);
     if (field === 'items') updateOrderData(order.orderId, 'item', joinOrderItems(next.map(String)));
     if (field === 'itemPrices') updateOrderData(order.orderId, 'revenue', getItemPricesTotal(next.map(Number)));
+  };
+
+  const addOrderItem = () => {
+    const currentItems = items.length ? items : [''];
+    const nextItems = [...currentItems, ''];
+    const nextPrices = [...currentItems.map((_, index) => Number(prices[index]) || 0), 0];
+    const nextColors = [...currentItems.map((_, index) => colors[index] || ''), ''];
+    const nextSizes = [...currentItems.map((_, index) => sizes[index] || ''), ''];
+    const nextHeights = [...currentItems.map((_, index) => heights[index] || ''), ''];
+    updateOrderData(order.orderId, 'items', nextItems);
+    updateOrderData(order.orderId, 'itemPrices', nextPrices);
+    updateOrderData(order.orderId, 'itemColors', nextColors);
+    updateOrderData(order.orderId, 'itemSizes', nextSizes);
+    updateOrderData(order.orderId, 'itemHeights', nextHeights);
+    updateOrderData(order.orderId, 'item', joinOrderItems(nextItems));
+  };
+
+  const removeOrderItem = (indexToRemove: number) => {
+    if (items.length <= 1) return;
+    const nextItems = items.filter((_, index) => index !== indexToRemove);
+    const nextPrices = items.map((_, index) => Number(prices[index]) || 0).filter((_, index) => index !== indexToRemove);
+    const nextColors = items.map((_, index) => colors[index] || '').filter((_, index) => index !== indexToRemove);
+    const nextSizes = items.map((_, index) => sizes[index] || '').filter((_, index) => index !== indexToRemove);
+    const nextHeights = items.map((_, index) => heights[index] || '').filter((_, index) => index !== indexToRemove);
+    updateOrderData(order.orderId, 'items', nextItems);
+    updateOrderData(order.orderId, 'itemPrices', nextPrices);
+    updateOrderData(order.orderId, 'itemColors', nextColors);
+    updateOrderData(order.orderId, 'itemSizes', nextSizes);
+    updateOrderData(order.orderId, 'itemHeights', nextHeights);
+    updateOrderData(order.orderId, 'item', joinOrderItems(nextItems));
+    updateOrderData(order.orderId, 'revenue', getItemPricesTotal(nextPrices));
   };
 
   const handleShare = async () => {
@@ -2237,7 +2291,19 @@ const OrderDetailView: React.FC<{
                   </div>
                   <div className="min-w-0 flex-1 pt-1">
                     {editing ? (
-                      <input list="order-product-options" value={item} onChange={event => updateItemValue('items', index, event.target.value)} className={editControlClass} />
+                      <div className="grid grid-cols-[minmax(0,1fr)_40px] gap-2">
+                        <input list="order-product-options" value={item === '—' ? '' : item} onChange={event => updateItemValue('items', index, event.target.value)} placeholder="Наименование товара" className={editControlClass} />
+                        <button
+                          type="button"
+                          onClick={() => removeOrderItem(index)}
+                          disabled={items.length <= 1}
+                          className="grid h-10 w-10 place-items-center rounded-[9px] border border-red-100 bg-red-50 text-red-500 transition-colors hover:bg-red-100 disabled:cursor-not-allowed disabled:border-[#E6E9EF] disabled:bg-[#F8FAFC] disabled:text-[#B6BBC5]"
+                          title={items.length <= 1 ? 'В заказе должен остаться хотя бы один товар' : 'Удалить товар'}
+                          aria-label={`Удалить товар ${index + 1}`}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      </div>
                     ) : <p className="text-[15px] font-semibold leading-5 text-[#111827]">{item}</p>}
                     <dl className="mt-4 grid grid-cols-[70px_minmax(0,1fr)] gap-y-2 text-[13px]">
                       <dt className="text-[#667085]">Цвет</dt><dd className="font-medium text-[#111827]">{editing ? <input value={colors[index] || ''} onChange={event => updateItemValue('itemColors', index, event.target.value)} className={editControlClass} /> : colors[index] || '—'}</dd>
@@ -2249,6 +2315,15 @@ const OrderDetailView: React.FC<{
                 </div>
               );
             })}
+            {editing && (
+              <button
+                type="button"
+                onClick={addOrderItem}
+                className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-[10px] border border-dashed border-[#B9AEFF] bg-[#F8F6FF] px-4 text-[12px] font-semibold text-[#5638F4] transition-colors hover:border-[#7D7DE6] hover:bg-[#F1EEFF]"
+              >
+                <Plus className="h-4 w-4" /> Добавить ещё товар
+              </button>
+            )}
           </div>
           <datalist id="order-product-options">{productCatalog.map(product => <option key={product.id} value={product.name} />)}</datalist>
         </section>
@@ -2938,6 +3013,7 @@ const OrderRow = React.memo(({
 const OrderCard = React.memo(({
   order,
   updateOrderData,
+  onTogglePin,
   onDelete,
   productCatalog,
   handbookStatuses,
@@ -2953,6 +3029,7 @@ const OrderCard = React.memo(({
 }: {
   order: OrderData;
   updateOrderData: (id: string, field: string, value: any) => void;
+  onTogglePin: () => void;
   onDelete: (id: string) => void;
   productCatalog: ProductCatalogItem[];
   handbookStatuses: string[];
@@ -3308,7 +3385,11 @@ const OrderCard = React.memo(({
   return (
     <div className={cn(
       "yb-order-mobile-card m-3 flex flex-col gap-3 rounded-2xl border border-zinc-200/80 p-4 transition-colors",
-      order.isOverdue && !order.isShipped ? "bg-red-50/30" : "bg-white"
+      order.isPinned
+        ? "border-amber-200 bg-amber-50/40"
+        : order.isOverdue && !order.isShipped
+          ? "bg-red-50/30"
+          : "bg-white"
     )}>
       <div
         role="button"
@@ -3325,9 +3406,29 @@ const OrderCard = React.memo(({
         }}
         className="text-left"
       >
-        <div className="mb-2 flex items-center justify-end gap-1 text-zinc-300">
-          <span className="text-[8px] font-light tracking-wide">Развернуть заказ</span>
-          <Plus className="h-3.5 w-3.5 stroke-[1.25]" />
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              onTogglePin();
+            }}
+            className={cn(
+              "inline-flex h-11 items-center gap-1.5 rounded-lg px-2 text-[9px] font-medium transition-colors",
+              order.isPinned
+                ? "bg-amber-100 text-amber-700"
+                : "text-zinc-400 hover:bg-zinc-100 hover:text-zinc-600"
+            )}
+            aria-label={order.isPinned ? "Открепить важный заказ" : "Закрепить важный заказ"}
+            aria-pressed={Boolean(order.isPinned)}
+          >
+            <Pin className={cn("h-3.5 w-3.5", order.isPinned && "fill-current")} />
+            {order.isPinned ? 'Закреплён' : 'Закрепить'}
+          </button>
+          <div className="flex items-center gap-1 text-zinc-300">
+            <span className="text-[8px] font-light tracking-wide">Развернуть заказ</span>
+            <Plus className="h-3.5 w-3.5 stroke-[1.25]" />
+          </div>
         </div>
         <div className="min-w-0 space-y-3">
           <div className="flex items-start justify-between gap-3">
@@ -3913,6 +4014,18 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
     () => pagedOrders.filter((order, index) => selectedOrderKeys.has(getOrderSelectionKey(order, index))),
     [pagedOrders, selectedOrderKeys]
   );
+  const pinnedOrderCount = useMemo(
+    () => new Set(data.filter(order => order.isPinned).map(order => order.orderId)).size,
+    [data]
+  );
+
+  const toggleOrderPin = (order: OrderData) => {
+    if (!order.isPinned && pinnedOrderCount >= 5) {
+      window.alert('Можно закрепить не более 5 важных заказов. Сначала открепите один из них.');
+      return;
+    }
+    updateOrderData(order.orderId, 'isPinned', !order.isPinned);
+  };
 
   useEffect(() => {
     fetch('/api/tochka/status').then(r => r.json()).then(d => setTochkaConfigured(!!d.configured)).catch(() => {});
@@ -6706,6 +6819,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                       expanded={expanded}
                       selected={selectedOrderKeys.has(rowKey)}
                       onToggle={() => setExpandedOrderId(expanded ? null : rowKey)}
+                      onTogglePin={() => toggleOrderPin(order)}
                       onSelectChange={(checked) => toggleOrderSelection(rowKey, checked)}
                       updateOrderData={updateOrderData}
                       handbookStatuses={handbookStatuses}
@@ -6754,6 +6868,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
               key={`${order.orderId}-${i}`}
               order={order}
               updateOrderData={updateOrderData}
+              onTogglePin={() => toggleOrderPin(order)}
               onDelete={deleteOrder}
               productCatalog={productCatalog}
               handbookStatuses={handbookStatuses}

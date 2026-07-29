@@ -48,6 +48,7 @@ export interface OrderData {
   month: number;
   isBlogger: boolean;
   isRecommended: boolean;
+  isPinned?: boolean;
   deadlineDate: Date;
   isShipped: boolean;
   isLate: boolean;
@@ -867,7 +868,10 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
   const filteredOrders = useMemo(() => {
     if (!stats?.uniqueOrders) return [];
     return stats.uniqueOrders
-      .sort((a: OrderData, b: OrderData) => b.date.getTime() - a.date.getTime())
+      .sort((a: OrderData, b: OrderData) => {
+        const pinDifference = Number(Boolean(b.isPinned)) - Number(Boolean(a.isPinned));
+        return pinDifference || b.date.getTime() - a.date.getTime();
+      })
       .filter((o: OrderData) => {
         const matchesMonth = ordersFilterMonth === -1 || o.month === ordersFilterMonth;
         const matchesStatus = !orderStatusFilter
