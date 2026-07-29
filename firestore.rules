@@ -81,6 +81,11 @@ service cloud.firestore {
       allow read, write: if isAuthenticated();
     }
 
+    // Contact history created by managers from the clients page.
+    match /manager_contacts/{document=**} {
+      allow read, write: if isAuthenticated();
+    }
+
     // Broadcast history and broadcast runtime data.
     match /broadcasts/{document=**} {
       allow read, write: if isAuthenticated();

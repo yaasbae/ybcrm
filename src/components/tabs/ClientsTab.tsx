@@ -226,13 +226,17 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
       note,
     };
 
-    await addDoc(collection(db, 'manager_contacts'), entry);
-    await setDoc(doc(db, 'contacts', String(client.firestoreId || phone)), {
+    const contactRef = doc(db, 'contacts', String(client.firestoreId || phone));
+    const historyRef = doc(collection(db, 'manager_contacts'));
+    const batch = writeBatch(db);
+    batch.set(historyRef, entry);
+    batch.set(contactRef, {
       lastContactAt: entry.date,
       lastContactStatus: status,
       lastContactManager: entry.managerName,
       lastContactNote: note,
     }, { merge: true });
+    await batch.commit();
   };
 
   const openInstagram = (client: any) => {
@@ -252,9 +256,12 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
       await saveQuickContact(client, 'написали', 'Сообщение отправлено клиенту');
       setQuickSavedPhone(phone);
       window.setTimeout(() => setQuickSavedPhone(current => current === phone ? null : current), 1800);
-    } catch (error) {
+    } catch (error: any) {
       console.error(error);
-      alert('Не удалось сохранить касание. Проверьте соединение и повторите.');
+      const denied = String(error?.code || error?.message || '').includes('permission-denied');
+      alert(denied
+        ? 'Firebase отклонил запись истории касаний. Права доступа обновляются — повторите через минуту.'
+        : `Не удалось сохранить касание${error?.code ? ` (${error.code})` : ''}. Повторите ещё раз.`);
     } finally {
       setQuickSavingPhone(null);
     }
