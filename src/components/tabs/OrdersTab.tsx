@@ -178,7 +178,7 @@ const mergeOptions = (...lists: (string[] | undefined)[]) =>
   Array.from(new Set(lists.flatMap(list => (list || []).map(item => String(item || '').trim())).filter(Boolean)));
 
 const optionsWithCurrent = (items: string[], current: string, fallback: string[] = []) => {
-  const options = optionList(items, fallback);
+  const options = mergeOptions(items, fallback);
   const value = String(current || '').trim();
   return value && !options.includes(value) ? [value, ...options] : options;
 };
@@ -6700,8 +6700,9 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
           {[
             { label: 'Все', value: '' },
             { label: 'Предоплата', value: PREPAYMENT_FILTER_VALUE },
-            ...optionList(handbookStatuses, STATUS_OPTIONS)
-              .filter(status => status.trim().toLowerCase() !== 'предоплата')
+            { label: 'Упакован', value: 'Упакован' },
+            ...mergeOptions(handbookStatuses, STATUS_OPTIONS)
+              .filter(status => !['предоплата', 'упакован'].includes(status.trim().toLowerCase()))
               .map(status => ({ label: status, value: status })),
           ].map(({ label, value }) => {
             const active = orderStatusFilter === value;
