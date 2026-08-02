@@ -1256,10 +1256,15 @@ const getCdekCrmStatusPatch = (cdekStatus: string, currentStatus?: string) => {
       cdekDeliveredAt: new Date().toISOString(),
     };
   }
-  if (["READY_FOR_PICKUP", "READY_FOR_DELIVERY"].includes(normalized)) {
-    return { status: "Отгружен", isShipped: true };
-  }
-  if (["TAKEN_BY_COURIER", "IN_TRANSIT", "RECEIVED_AT_SHIPMENT_WAREHOUSE", "READY_FOR_SHIPMENT_IN_SENDER_CITY", "RECEIVED_AT_RECIPIENT_CITY_WAREHOUSE"].includes(normalized)) {
+  if (
+    normalized.startsWith("SENT_") ||
+    normalized.startsWith("TAKEN_") ||
+    normalized.startsWith("READY_FOR_") ||
+    normalized.startsWith("ACCEPTED_IN_") ||
+    normalized.startsWith("ACCEPTED_AT_") ||
+    normalized === "IN_TRANSIT" ||
+    normalized.startsWith("RECEIVED_AT_")
+  ) {
     return { status: "Отгружен", isShipped: true };
   }
   return {};
@@ -7461,6 +7466,14 @@ app.post('/api/tochka/reconcile-payments', async (_req, res) => {
       (data?.paymentId && !isTochkaPaidStatus(data?.paymentStatus)) ||
       (data?.finalPaymentId && !isTochkaPaidStatus(data?.finalPaymentStatus))
     )).slice(0, 60);
+    const paymentsResponse = settings.customerCode
+      ? await axios.get(`${TOCHKA_API}/acquiring/v1.0/payments`, {
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          params: { customerCode: settings.customerCode },
+          timeout: 20_000,
+        }).catch(() => null)
+      : null;
+    const bankOperations = paymentsResponse ? normalizeTochkaList(paymentsResponse.data) : [];
     const results: any[] = [];
     for (const { id, data } of candidates) {
       const patch: Record<string, any> = { paymentAccountingVersion: 2 };
@@ -7468,10 +7481,20 @@ app.post('/api/tochka/reconcile-payments', async (_req, res) => {
         const paymentId = String(isFinal ? data.finalPaymentId || '' : data.paymentId || '').trim();
         if (!paymentId) continue;
         const details = await fetchTochkaQrById(token, String(settings.merchantId), String(settings.accountId), paymentId).catch(() => null);
-        if (!details?.data) continue;
-        const status = details.paymentStatus || getTochkaOperationStatus(details.data) || 'found';
-        const amount = normalizeTochkaAmount(getTochkaOperationAmount(details.data)) || Number(isFinal ? data.finalPaymentAmount : data.paymentAmount) || 0;
-        Object.assign(patch, buildTochkaPaymentFields({ isFinal }, paymentId, status, amount, details.data));
+        const expectedAmount = Number(isFinal ? data.finalPaymentAmount : data.paymentAmount) || 0;
+        const orderMarker = `${String(id).toLowerCase()}${isFinal ? '-final' : ''}`;
+        const cleanOrderMarker = orderMarker.replace(/^#/, '');
+        const bankOperation = bankOperations.find((item: any) => {
+          const haystack = JSON.stringify(item || {}).toLowerCase();
+          const amount = normalizeTochkaAmount(getTochkaOperationAmount(item));
+          return (haystack.includes(orderMarker) || haystack.includes(cleanOrderMarker))
+            && (!expectedAmount || Math.abs(amount - expectedAmount) < 1);
+        });
+        const source = bankOperation || details?.data;
+        if (!source) continue;
+        const status = getTochkaOperationStatus(bankOperation) || details?.paymentStatus || getTochkaOperationStatus(source) || 'found';
+        const amount = normalizeTochkaAmount(getTochkaOperationAmount(source)) || expectedAmount;
+        Object.assign(patch, buildTochkaPaymentFields({ isFinal }, paymentId, status, amount, source));
       }
       if (Object.keys(patch).length > 1) {
         await persistOrderPatch(id, patch);
