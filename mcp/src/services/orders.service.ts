@@ -150,7 +150,22 @@ export function normalizeOrder(id: string, data: Record<string, any>): Order {
   const itemsTotal = items.reduce((sum, item) => sum + item.price * item.quantity, 0);
   const deliveryCost = toNumber(data.deliveryCost ?? data.deliveryPrice ?? data.shippingCost);
   const amountTotal = toNumber(data.amountTotal ?? data.revenue ?? data.totalAmount ?? data.total ?? itemsTotal);
-  const paidAmount = toNumber(data.paidAmount ?? data.prepaidAmount ?? data.paymentAmount ?? data.paid);
+  const plannedInvoiceAmount = toNumber(data.paidAmount ?? data.prepaidAmount ?? data.paymentAmount ?? data.paid);
+  const isPaid = (status: unknown) => ['paid', 'approved', 'completed', 'succeeded', 'success', 'done']
+    .some((value) => String(status || '').toLowerCase().includes(value));
+  const hasTracking = Boolean(
+    data.paymentUrl || data.paymentId || data.paymentStatus ||
+    data.finalPaymentUrl || data.finalPaymentId || data.finalPaymentStatus ||
+    toNumber(data.paymentAccountingVersion) >= 2,
+  );
+  const mainPaid = isPaid(data.paymentStatus)
+    ? toNumber(data.paymentAmount ?? data.initialPaymentAmount ?? plannedInvoiceAmount)
+    : 0;
+  const finalPaymentAmount = toNumber(data.finalPaymentAmount ?? data.dopaymentAmount);
+  const finalPaid = isPaid(data.finalPaymentStatus) ? finalPaymentAmount : 0;
+  const paidAmount = hasTracking
+    ? Math.min(amountTotal + deliveryCost, mainPaid + finalPaid)
+    : plannedInvoiceAmount;
   const dueAmount = toNumber(data.dueAmount ?? data.toPay ?? Math.max(0, amountTotal + deliveryCost - paidAmount));
 
   return {
@@ -168,6 +183,10 @@ export function normalizeOrder(id: string, data: Record<string, any>): Order {
     paymentType: data.paymentType || data.invoiceType || data.payment || data.prepaymentType,
     amountTotal,
     paidAmount,
+    plannedInvoiceAmount,
+    initialPaymentStatus: data.paymentStatus,
+    finalPaymentAmount,
+    finalPaymentStatus: data.finalPaymentStatus,
     dueAmount,
     deliveryCost,
     items,

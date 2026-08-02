@@ -34,6 +34,10 @@ export interface Order {
   paymentType?: string;
   amountTotal: number;
   paidAmount: number;
+  plannedInvoiceAmount?: number;
+  initialPaymentStatus?: string;
+  finalPaymentAmount?: number;
+  finalPaymentStatus?: string;
   dueAmount: number;
   deliveryCost: number;
   items: OrderItem[];

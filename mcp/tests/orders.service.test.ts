@@ -48,4 +48,37 @@ describe("OrdersService", () => {
     expect(normalizeOrderNumber("6841C")).toBe("6841C");
     expect(normalizeOrder("doc", { orderId: "1", deliveryMethod: "СДЭК" }).delivery).toBe("СДЭК");
   });
+
+  it("counts only bank-confirmed prepayment and final payment", () => {
+    const pending = normalizeOrder("pending", {
+      revenue: 19_900,
+      deliveryPrice: 650,
+      paidAmount: 10_275,
+      paymentAmount: 10_275,
+      paymentStatus: "Active",
+      paymentId: "qr-main",
+    });
+    expect(pending.paidAmount).toBe(0);
+    expect(pending.dueAmount).toBe(20_550);
+
+    const prepaid = normalizeOrder("prepaid", {
+      revenue: 19_900,
+      deliveryPrice: 650,
+      paymentAmount: 10_275,
+      paymentStatus: "Paid",
+      paymentId: "qr-main",
+      finalPaymentAmount: 10_275,
+      finalPaymentStatus: "Active",
+      finalPaymentId: "qr-final",
+    });
+    expect(prepaid.paidAmount).toBe(10_275);
+    expect(prepaid.dueAmount).toBe(10_275);
+
+    const complete = normalizeOrder("complete", {
+      ...prepaid.raw,
+      finalPaymentStatus: "Paid",
+    });
+    expect(complete.paidAmount).toBe(20_550);
+    expect(complete.dueAmount).toBe(0);
+  });
 });
