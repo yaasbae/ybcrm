@@ -15,6 +15,14 @@ import {
 import { QRCodeSVG } from 'qrcode.react';
 import { formatCurrency, cn } from '../../lib/utils';
 import { PREPAYMENT_FILTER_VALUE } from '../../lib/orderFilters';
+import {
+  getConfirmedPaidAmount,
+  getInitialInvoiceAmount,
+  getOrderTotalAmount,
+  getOutstandingPaymentAmount,
+  getPlannedFinalPaymentAmount,
+  isConfirmedPaymentStatus,
+} from '../../lib/orderPayments';
 import { motion, AnimatePresence } from 'motion/react';
 import { OrderData } from '../AnalyticsDashboard';
 import { db } from '../../firebase';
@@ -159,10 +167,7 @@ const getOrderItemHeights = (order: Partial<Pick<OrderData, 'itemHeights' | 'ite
   return items.map((_, index) => index === 0 ? fallbackHeight : '');
 };
 
-const isPaidTochkaStatus = (status: string) => {
-  const normalized = String(status || '').toLowerCase();
-  return ['paid', 'approved', 'completed', 'succeeded', 'success', 'done'].some(item => normalized.includes(item));
-};
+const isPaidTochkaStatus = isConfirmedPaymentStatus;
 
 const getItemPricesTotal = (prices: number[]) => prices.reduce((sum, price) => sum + (Number(price) || 0), 0);
 
@@ -216,22 +221,28 @@ const getApiErrorMessage = (data: any, fallback: string): string => {
   return fallback;
 };
 
-function getOrderPaymentDue(order: Partial<Pick<OrderData, 'revenue' | 'deliveryPrice' | 'paidAmount' | 'paymentStatus' | 'status'>>): number {
-  const paymentStatus = String(order.paymentStatus || '').toLowerCase();
-  const orderStatus = String(order.status || '').toLowerCase();
-  if (paymentStatus === 'paid' || orderStatus.includes('оплачен')) return 0;
-
-  const fullAmount = Math.max(0, (Number(order.revenue) || 0) + (Number(order.deliveryPrice) || 0));
-  const prepayment = Math.max(0, Number(order.paidAmount) || 0);
-
-  if (prepayment > 0) return prepayment;
-  return fullAmount;
+function getOrderPaymentDue(order: Partial<OrderData>): number {
+  return getInitialInvoiceAmount(order);
 }
 
-function getOrderFinalPaymentAmount(order: Partial<Pick<OrderData, 'revenue' | 'deliveryPrice' | 'paidAmount'>>): number {
-  const fullAmount = Math.max(0, (Number(order.revenue) || 0) + (Number(order.deliveryPrice) || 0));
-  const paidAmount = Math.max(0, Number(order.paidAmount) || 0);
-  return Math.max(0, fullAmount - paidAmount);
+function getOrderFinalPaymentAmount(order: Partial<OrderData>): number {
+  const stored = Number(order.finalPaymentAmount) || 0;
+  return order.finalPaymentUrl && stored > 0 ? stored : getPlannedFinalPaymentAmount(order);
+}
+
+function hasIssuedMainInvoice(order: Partial<OrderData>): boolean {
+  return Boolean(order.paymentUrl || order.paymentId);
+}
+
+function updatePlannedInvoiceAmount(
+  order: Partial<OrderData>,
+  updateOrderData: (id: string, field: string, value: any) => void,
+  amount: number,
+) {
+  if (!order.orderId || hasIssuedMainInvoice(order)) return;
+  updateOrderData(order.orderId, 'paidAmount', amount);
+  updateOrderData(order.orderId, 'initialPaymentAmount', amount);
+  updateOrderData(order.orderId, 'paymentAccountingVersion', 2);
 }
 
 function getInvoiceAmount(order: Partial<Pick<OrderData, 'revenue' | 'deliveryPrice' | 'invoiceType'>>): number {
@@ -762,7 +773,9 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
   const finalPaymentPaid = isPaidTochkaStatus(order.finalPaymentStatus || '');
   const initialAmount = getOrderPaymentDue(order);
   const finalAmount = getOrderFinalPaymentAmount(order);
-  const showFinalPayment = invoiceType !== 'full' && finalAmount > 0;
+  const showFinalPayment = finalAmount > 0 && (
+    invoiceType !== 'full' || Boolean(order.finalPaymentUrl) || getInitialInvoiceAmount(order) < getOrderTotalAmount(order)
+  );
   const mainPaymentLabel = getShortPaymentLabel(invoiceType);
   const mainPaymentStatusText = mainPaymentPaid
     ? `${mainPaymentLabel} оплачена`
@@ -878,6 +891,8 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
         setPaymentUrl(data.paymentUrl);
         updateOrderData(order.orderId, 'paymentUrl', data.paymentUrl);
         updateOrderData(order.orderId, 'paymentAmount', amount);
+        updateOrderData(order.orderId, 'initialPaymentAmount', amount);
+        updateOrderData(order.orderId, 'paymentAccountingVersion', 2);
         if (data.paymentId) updateOrderData(order.orderId, 'paymentId', data.paymentId);
       }
     } catch (e: any) {
@@ -891,6 +906,7 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
     setFinalError('');
     try {
       if (invoiceMissingFields.length) throw new Error(`Заполните: ${invoiceMissingFields.join(', ')}`);
+      if (!mainPaymentPaid) throw new Error('Сначала дождитесь подтверждения предоплаты в Точке');
       if (finalAmount <= 0) throw new Error('Сумма доплаты 0 ₽');
       const res = await fetch('/api/tochka/create-payment', {
         method: 'POST',
@@ -1038,7 +1054,7 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
           ) : (
             <button
               onClick={handleCreateFinal}
-              disabled={finalLoading || invoiceMissingFields.length > 0}
+              disabled={finalLoading || invoiceMissingFields.length > 0 || !mainPaymentPaid}
               className="w-full text-[8px] font-black py-1 rounded-md border border-orange-200 bg-orange-50 text-orange-600 hover:bg-orange-500 hover:text-white hover:border-orange-500 transition-all flex items-center justify-center gap-1 disabled:opacity-50"
             >
               {finalLoading ? <RefreshCcw size={8} className="animate-spin" /> : <QrCodeIcon size={8} />}
@@ -2513,7 +2529,7 @@ const OrderRow = React.memo(({
     updateOrderData(order.orderId, 'itemHeights', cleanedHeights);
     updateOrderData(order.orderId, 'item', itemText);
     updateOrderData(order.orderId, 'revenue', total);
-    updateOrderData(order.orderId, 'paidAmount', invoiceAmount);
+    updatePlannedInvoiceAmount(order, updateOrderData, invoiceAmount);
     updateOrderData(order.orderId, `rawRow[${RAW_COLOR_INDEX}]`, cleanedColors[0] || '');
     updateOrderData(order.orderId, `rawRow[${RAW_SIZE_INDEX}]`, cleanedSizes[0] || '');
     updateOrderData(order.orderId, 'height', cleanedHeights[0] || '');
@@ -2598,7 +2614,7 @@ const OrderRow = React.memo(({
       invoiceType: liveInvoiceType,
     });
     updateOrderData(order.orderId, 'deliveryPrice', value);
-    updateOrderData(order.orderId, 'paidAmount', invoiceAmount);
+    updatePlannedInvoiceAmount(order, updateOrderData, invoiceAmount);
   };
 
   const updateOrderInvoiceType = (value: string) => {
@@ -2609,7 +2625,7 @@ const OrderRow = React.memo(({
       invoiceType,
     });
     updateOrderData(order.orderId, 'invoiceType', invoiceType);
-    updateOrderData(order.orderId, 'paidAmount', invoiceAmount);
+    updatePlannedInvoiceAmount(order, updateOrderData, invoiceAmount);
   };
 
   const dueAmount = getOrderPaymentDue({
@@ -3089,7 +3105,9 @@ const OrderCard = React.memo(({
   });
   const dueAmount = getOrderPaymentDue({ ...order, revenue: liveRevenue, paidAmount: liveInvoiceAmount });
   const finalPaymentAmount = getOrderFinalPaymentAmount({ ...order, revenue: liveRevenue, paidAmount: liveInvoiceAmount });
-  const showFinalPayment = invoiceType !== 'full' && finalPaymentAmount > 0;
+  const showFinalPayment = finalPaymentAmount > 0 && (
+    invoiceType !== 'full' || Boolean(order.finalPaymentUrl) || getInitialInvoiceAmount(order) < getOrderTotalAmount(order)
+  );
   const mainPaymentPaid = isPaidTochkaStatus(order.paymentStatus || '');
   const finalPaymentPaid = isPaidTochkaStatus(order.finalPaymentStatus || '');
   const mainPaymentStatusText = mainPaymentPaid
@@ -3141,7 +3159,7 @@ const OrderCard = React.memo(({
     updateOrderData(order.orderId, 'itemHeights', cleanedHeights);
     updateOrderData(order.orderId, 'item', joinOrderItems(cleaned));
     updateOrderData(order.orderId, 'revenue', revenue);
-    updateOrderData(order.orderId, 'paidAmount', invoiceAmount);
+    updatePlannedInvoiceAmount(order, updateOrderData, invoiceAmount);
     updateOrderData(order.orderId, `rawRow[${RAW_COLOR_INDEX}]`, cleanedColors[0] || '');
     updateOrderData(order.orderId, `rawRow[${RAW_SIZE_INDEX}]`, cleanedSizes[0] || '');
     updateOrderData(order.orderId, 'height', cleanedHeights[0] || '');
@@ -3220,7 +3238,7 @@ const OrderCard = React.memo(({
 
   const updateMobileDeliveryPrice = (value: number) => {
     updateOrderData(order.orderId, 'deliveryPrice', value);
-    updateOrderData(order.orderId, 'paidAmount', getInvoiceAmount({
+    updatePlannedInvoiceAmount(order, updateOrderData, getInvoiceAmount({
       revenue: liveRevenue,
       deliveryPrice: value,
       invoiceType,
@@ -3230,7 +3248,7 @@ const OrderCard = React.memo(({
   const updateMobileInvoiceType = (value: string) => {
     const nextInvoiceType = getInvoiceTypeFromPaymentType(value);
     updateOrderData(order.orderId, 'invoiceType', nextInvoiceType);
-    updateOrderData(order.orderId, 'paidAmount', getInvoiceAmount({
+    updatePlannedInvoiceAmount(order, updateOrderData, getInvoiceAmount({
       revenue: liveRevenue,
       deliveryPrice: order.deliveryPrice || 0,
       invoiceType: nextInvoiceType,
@@ -3284,6 +3302,8 @@ const OrderCard = React.memo(({
       setShowMobileQr(true);
       updateOrderData(order.orderId, 'paymentUrl', data.paymentUrl);
       updateOrderData(order.orderId, 'paymentAmount', amount);
+      updateOrderData(order.orderId, 'initialPaymentAmount', amount);
+      updateOrderData(order.orderId, 'paymentAccountingVersion', 2);
       if (data.paymentId) updateOrderData(order.orderId, 'paymentId', data.paymentId);
     } catch (e: any) {
       setMobilePaymentError(e.message || 'Не удалось создать счёт');
@@ -3296,6 +3316,7 @@ const OrderCard = React.memo(({
     setMobileFinalPaymentLoading(true);
     setMobileFinalPaymentError('');
     try {
+      if (!mainPaymentPaid) throw new Error('Сначала дождитесь подтверждения предоплаты в Точке');
       if (finalPaymentAmount <= 0) throw new Error('Сумма доплаты 0 ₽');
 
       const res = await fetch('/api/tochka/create-payment', {
@@ -3820,7 +3841,7 @@ const OrderCard = React.memo(({
             ) : (
               <button
                 onClick={createMobileFinalPayment}
-                disabled={mobileFinalPaymentLoading}
+                disabled={mobileFinalPaymentLoading || !mainPaymentPaid}
                 className="w-full py-2 rounded-lg border border-orange-200 bg-orange-50 text-orange-600 text-[8px] font-black uppercase tracking-wider flex items-center justify-center gap-1.5 disabled:opacity-60"
               >
                 {mobileFinalPaymentLoading ? <RefreshCcw size={11} className="animate-spin" /> : <QrCodeIcon size={11} />}
@@ -4029,6 +4050,13 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
 
   useEffect(() => {
     fetch('/api/tochka/status').then(r => r.json()).then(d => setTochkaConfigured(!!d.configured)).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    const reconcile = () => fetch('/api/tochka/reconcile-payments', { method: 'POST' }).catch(() => null);
+    reconcile();
+    const interval = window.setInterval(reconcile, 5 * 60 * 1000);
+    return () => window.clearInterval(interval);
   }, []);
 
   useEffect(() => {
@@ -4293,7 +4321,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
     const averageCheck = totalSales > 0 ? totals2026.paid / totalSales : 0;
     const paidOrders = stats?.uniqueOrders?.filter((order: OrderData) => {
       const status = String(order.status || '').toLowerCase();
-      return status.includes('оплачен') || Number(order.paidAmount) > 0;
+      return status.includes('оплачен') || getConfirmedPaidAmount(order) > 0;
     }).length || 0;
     const conversion = totals2026.orders > 0 ? Math.round((paidOrders / totals2026.orders) * 100) : 0;
     return { best, worst, averageCheck, conversion };
@@ -4349,7 +4377,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
     );
     const isPaidSale = (order: OrderData) => {
       const status = String(order.status || '').toLowerCase();
-      return status.includes('оплачен') || Number(order.paidAmount) > 0;
+      return status.includes('оплачен') || getConfirmedPaidAmount(order) > 0;
     };
 
     return {
@@ -4363,13 +4391,13 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
         const todayOrders = managerOrders.filter((order) => isSameDay(order.date));
         const monthSales = monthOrders.filter(isPaidSale);
         const todaySales = todayOrders.filter(isPaidSale);
-        const monthRevenue = monthSales.reduce((sum, order) => sum + (Number(order.paidAmount) || 0), 0);
-        const todayRevenue = todaySales.reduce((sum, order) => sum + (Number(order.paidAmount) || 0), 0);
+        const monthRevenue = monthSales.reduce((sum, order) => sum + getConfirmedPaidAmount(order), 0);
+        const todayRevenue = todaySales.reduce((sum, order) => sum + getConfirmedPaidAmount(order), 0);
         const basePlan = Number(plan.basePlan) || MANAGER_PLAN_DEFAULTS.basePlan;
         const dayPlan = Number(plan.dayPlan) || MANAGER_PLAN_DEFAULTS.dayPlan;
         const monthPlan = Number(plan.monthPlan) || MANAGER_PLAN_DEFAULTS.monthPlan;
         const revenuePlan = Number(plan.revenuePlan) || MANAGER_PLAN_DEFAULTS.revenuePlan;
-        const dueExtra = monthOrders.reduce((sum, order) => sum + Math.max(0, (Number(order.revenue) || 0) + (Number(order.deliveryPrice) || 0) - (Number(order.paidAmount) || 0)), 0);
+        const dueExtra = monthOrders.reduce((sum, order) => sum + getOutstandingPaymentAmount(order), 0);
 
         return {
           name: manager,

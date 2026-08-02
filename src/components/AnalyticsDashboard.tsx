@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { isPrepaymentOrder, PREPAYMENT_FILTER_VALUE } from '../lib/orderFilters';
+import { getConfirmedPaidAmount, getOutstandingPaymentAmount } from '../lib/orderPayments';
 import { db } from '../firebase';
 import { doc, onSnapshot, setDoc, collection, deleteDoc, updateDoc, query } from 'firebase/firestore';
 const AnalyticsTab = lazy(() => import('./tabs/AnalyticsTab').then(m => ({ default: m.AnalyticsTab })));
@@ -76,6 +77,8 @@ export interface OrderData {
   tochkaPaymentFoundAt?: string;
   tochkaPaymentData?: string;
   paymentStatus?: string;
+  initialPaymentAmount?: number;
+  paymentAccountingVersion?: number;
   paymentType?: string;
   invoiceType?: 'prepayment' | 'full' | 'fitting';
   notes?: string;
@@ -355,6 +358,8 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
       revenue: totalRevenue,
       deliveryPrice: orderDraft.deliveryPrice || 0,
       paidAmount: orderDraft.paidAmount || invoiceAmount,
+      initialPaymentAmount: orderDraft.initialPaymentAmount || orderDraft.paidAmount || invoiceAmount,
+      paymentAccountingVersion: 2,
       clientPhone: orderDraft.clientPhone || '',
       clientName: orderDraft.clientName || '',
       clientInsta: orderDraft.clientInsta || '',
@@ -517,8 +522,8 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
       'Доставка': o.deliveryMethod || '',
       'Стоимость 100%': Number(o.revenue) || 0,
       'Стоимость доставки': Number(o.deliveryPrice) || 0,
-      'Оплачено / счет': Number(o.paidAmount) || 0,
-      'К доплате': Math.max(0, (Number(o.revenue) || 0) + (Number(o.deliveryPrice) || 0) - (Number(o.paidAmount) || 0)),
+      'Подтверждено оплачено': getConfirmedPaidAmount(o),
+      'Остаток к оплате': getOutstandingPaymentAmount(o),
       'Изделия': Array.isArray(o.items) && o.items.length ? o.items.join(', ') : o.item || '',
       'Цены изделий': Array.isArray(o.itemPrices) ? o.itemPrices.join(', ') : '',
       'Цвета': Array.isArray(o.itemColors) ? o.itemColors.join(', ') : String(o.rawRow?.[1] || ''),
@@ -680,10 +685,10 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
       if (isReturn) salesByPeriod[key].returns += 1;
       if (isSalesOrder(o)) {
         salesByPeriod[key].revenue += o.revenue;
-        salesByPeriod[key].paidAmount += o.paidAmount;
+        salesByPeriod[key].paidAmount += getConfirmedPaidAmount(o);
         salesByPeriod[key].delivery += o.deliveryPrice;
         salesByPeriod[key].salesCount += 1;
-        salesByPeriod[key].dueExtra += Math.max(0, (o.revenue + o.deliveryPrice) - o.paidAmount);
+        salesByPeriod[key].dueExtra += getOutstandingPaymentAmount(o);
       }
       if (o.blogger) salesByPeriod[key].bloggers.add(o.blogger);
       else if (o.source?.toLowerCase().includes('блогер')) salesByPeriod[key].bloggers.add(o.source);
@@ -763,7 +768,7 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
       const dayRow = dailySalesMap.get(date.getDate());
       if (!dayRow) return;
       const revenue = Number(order.revenue) || 0;
-      const paid = Number(order.paidAmount) || 0;
+      const paid = getConfirmedPaidAmount(order);
       const delivery = Number(order.deliveryPrice) || 0;
       dayRow.orders += 1;
       if (isSalesOrder(order)) {
@@ -771,7 +776,7 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
         dayRow.salesAmount += revenue;
         dayRow.paid += paid;
         dayRow.delivery += delivery;
-        dayRow.dueExtra += Math.max(0, revenue + delivery - paid);
+        dayRow.dueExtra += getOutstandingPaymentAmount(order);
       }
     });
 
@@ -843,8 +848,8 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
       uniqueOrders: Array.from(ordersMap.values()),
       returnsCount: uniqueOrders.filter(o => o.status?.toLowerCase().includes('возврат')).length + manualReturnOperations.length,
       exchangesCount: uniqueOrders.filter(o => o.status?.toLowerCase().includes('обмен')).length,
-      totalActualPayments: salesOrders.reduce((sum, o) => sum + o.paidAmount, 0) - manualReturnAmount,
-      totalDueExtraPayments: salesOrders.reduce((sum, o) => sum + Math.max(0, (o.revenue + o.deliveryPrice) - o.paidAmount), 0),
+      totalActualPayments: salesOrders.reduce((sum, o) => sum + getConfirmedPaidAmount(o), 0) - manualReturnAmount,
+      totalDueExtraPayments: salesOrders.reduce((sum, o) => sum + getOutstandingPaymentAmount(o), 0),
       salesCount: salesOrders.length,
       currentMonthDailyRows,
       uniqueSizes,
@@ -905,7 +910,7 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
     const overdue = filtered.filter((o: OrderData) => o.isOverdue).length;
     const lostRevenue = filtered
       .filter((o: OrderData) => o.isOverdue && !o.isShipped)
-      .reduce((sum: number, o: OrderData) => sum + Math.max(0, (o.revenue + o.deliveryPrice) - o.paidAmount), 0);
+      .reduce((sum: number, o: OrderData) => sum + getOutstandingPaymentAmount(o), 0);
     return {
       totalOrders, shipped, inProgress, onTime, overdue,
       onTimeRate: totalOrders > 0 ? (filtered.filter((o: OrderData) => !o.isOverdue).length / totalOrders) * 100 : 0,

@@ -1256,6 +1256,12 @@ const getCdekCrmStatusPatch = (cdekStatus: string, currentStatus?: string) => {
       cdekDeliveredAt: new Date().toISOString(),
     };
   }
+  if (["READY_FOR_PICKUP", "READY_FOR_DELIVERY"].includes(normalized)) {
+    return { status: "Отгружен", isShipped: true };
+  }
+  if (["TAKEN_BY_COURIER", "IN_TRANSIT", "RECEIVED_AT_SHIPMENT_WAREHOUSE", "READY_FOR_SHIPMENT_IN_SENDER_CITY", "RECEIVED_AT_RECIPIENT_CITY_WAREHOUSE"].includes(normalized)) {
+    return { status: "Отгружен", isShipped: true };
+  }
   return {};
 };
 
@@ -6426,10 +6432,17 @@ function classifyPaymentSource(order: any) {
 }
 
 function getFinanceOrderPaidAmount(order: any) {
-  const paid = Number(order?.paidAmount ?? order?.paymentAmount ?? 0) || 0;
-  const prepayment = Number(order?.prepaymentAmount ?? order?.prepaidAmount ?? 0) || 0;
-  const finalPayment = Number(order?.finalPaymentAmount ?? order?.dopaymentAmount ?? 0) || 0;
-  return paid || (prepayment + finalPayment);
+  const tracked = Boolean(order?.paymentUrl || order?.paymentId || order?.paymentStatus || order?.finalPaymentUrl || order?.finalPaymentId || order?.finalPaymentStatus || Number(order?.paymentAccountingVersion) >= 2);
+  if (tracked) {
+    const main = isTochkaPaidStatus(order?.paymentStatus)
+      ? Number(order?.paymentAmount ?? order?.initialPaymentAmount ?? order?.paidAmount ?? 0) || 0
+      : 0;
+    const finalPayment = isTochkaPaidStatus(order?.finalPaymentStatus)
+      ? Number(order?.finalPaymentAmount ?? order?.dopaymentAmount ?? 0) || 0
+      : 0;
+    return main + finalPayment;
+  }
+  return Number(order?.paidAmount ?? order?.prepaymentAmount ?? order?.prepaidAmount ?? 0) || 0;
 }
 
 function getTochkaText(...values: any[]) {
@@ -7039,7 +7052,8 @@ function buildTochkaPaymentFields(target: { isFinal: boolean }, paymentId: strin
       ...(paymentAmount > 0 ? { finalPaymentAmount: paymentAmount } : {}),
       finalPaymentFoundAt: paidAt,
       ...(operation ? { finalPaymentData: JSON.stringify(operation).slice(0, 2000) } : {}),
-      ...(isPaid ? { finalPaymentPaidAt: paidAt, status: 'Оплачен' } : {}),
+      paymentAccountingVersion: 2,
+      ...(isPaid ? { finalPaymentPaidAt: paidAt } : {}),
     };
   }
   return {
@@ -7048,7 +7062,9 @@ function buildTochkaPaymentFields(target: { isFinal: boolean }, paymentId: strin
     ...(paymentAmount > 0 ? { paymentAmount } : {}),
     tochkaPaymentFoundAt: paidAt,
     ...(operation ? { tochkaPaymentData: JSON.stringify(operation).slice(0, 2000) } : {}),
-    ...(isPaid ? { paymentPaidAt: paidAt, status: 'Оплачен' } : {}),
+    paymentAccountingVersion: 2,
+    ...(paymentAmount > 0 ? { initialPaymentAmount: paymentAmount } : {}),
+    ...(isPaid ? { paymentPaidAt: paidAt } : {}),
   };
 }
 
@@ -7306,6 +7322,7 @@ app.post('/api/tochka/create-payment', async (req, res) => {
             finalPaymentStatus: 'pending',
             finalPaymentCreatedAt: createdAt,
             finalPaymentAmount: paymentAmount,
+            paymentAccountingVersion: 2,
           }
         : {
             paymentUrl,
@@ -7313,6 +7330,8 @@ app.post('/api/tochka/create-payment', async (req, res) => {
             paymentStatus: 'pending',
             paymentCreatedAt: createdAt,
             paymentAmount,
+            initialPaymentAmount: paymentAmount,
+            paymentAccountingVersion: 2,
           };
       await persistOrderPatch(target.cleanOrderId, paymentFields);
     }
@@ -7417,6 +7436,51 @@ app.get('/api/tochka/find-payment', async (req, res) => {
     const errData = e.response?.data;
     console.error('[tochka] find-payment error:', errData || e.message);
     res.status(e.response?.status || 500).json({ error: e.message, details: errData });
+  }
+});
+
+// Фоновая сверка выставленных счетов. Webhook остается основным способом,
+// а этот маршрут закрывает пропущенные уведомления банка.
+app.post('/api/tochka/reconcile-payments', async (_req, res) => {
+  if (!adminDb && !db) return res.status(503).json({ error: 'DB не подключена' });
+  try {
+    const token = await getTochkaToken();
+    const settings = await readTochkaSettingsDoc('tochka_api');
+    if (!token || !settings?.merchantId || !settings?.accountId) {
+      return res.status(400).json({ error: 'Для сверки нужны token, merchantId и accountId Точки' });
+    }
+    const orders: Array<{ id: string; data: any }> = [];
+    if (adminDb) {
+      const snapshot = await adminDb.collection('orders_new').get();
+      snapshot.docs.forEach((item: any) => orders.push({ id: item.id, data: item.data() }));
+    } else if (db) {
+      const snapshot = await getDocs(collection(db, 'orders_new'));
+      snapshot.docs.forEach((item: any) => orders.push({ id: item.id, data: item.data() }));
+    }
+    const candidates = orders.filter(({ data }) => (
+      (data?.paymentId && !isTochkaPaidStatus(data?.paymentStatus)) ||
+      (data?.finalPaymentId && !isTochkaPaidStatus(data?.finalPaymentStatus))
+    )).slice(0, 60);
+    const results: any[] = [];
+    for (const { id, data } of candidates) {
+      const patch: Record<string, any> = { paymentAccountingVersion: 2 };
+      for (const isFinal of [false, true]) {
+        const paymentId = String(isFinal ? data.finalPaymentId || '' : data.paymentId || '').trim();
+        if (!paymentId) continue;
+        const details = await fetchTochkaQrById(token, String(settings.merchantId), String(settings.accountId), paymentId).catch(() => null);
+        if (!details?.data) continue;
+        const status = details.paymentStatus || getTochkaOperationStatus(details.data) || 'found';
+        const amount = normalizeTochkaAmount(getTochkaOperationAmount(details.data)) || Number(isFinal ? data.finalPaymentAmount : data.paymentAmount) || 0;
+        Object.assign(patch, buildTochkaPaymentFields({ isFinal }, paymentId, status, amount, details.data));
+      }
+      if (Object.keys(patch).length > 1) {
+        await persistOrderPatch(id, patch);
+        results.push({ orderId: id, paymentStatus: patch.paymentStatus, finalPaymentStatus: patch.finalPaymentStatus });
+      }
+    }
+    res.json({ success: true, checked: candidates.length, updated: results.length, results });
+  } catch (e: any) {
+    res.status(e.response?.status || 500).json({ error: e.message, details: e.response?.data });
   }
 });
 

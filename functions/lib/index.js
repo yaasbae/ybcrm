@@ -252,7 +252,8 @@ function buildTochkaPaymentFields(target, paymentId, paymentStatus, paymentAmoun
             ...(paymentAmount > 0 ? { finalPaymentAmount: paymentAmount } : {}),
             finalPaymentFoundAt: paidAt,
             ...(operation ? { finalPaymentData: JSON.stringify(operation).slice(0, 2000) } : {}),
-            ...(isPaid ? { finalPaymentPaidAt: paidAt, status: 'Оплачен' } : {}),
+            paymentAccountingVersion: 2,
+            ...(isPaid ? { finalPaymentPaidAt: paidAt } : {}),
         };
     }
     return {
@@ -261,7 +262,9 @@ function buildTochkaPaymentFields(target, paymentId, paymentStatus, paymentAmoun
         ...(paymentAmount > 0 ? { paymentAmount } : {}),
         tochkaPaymentFoundAt: paidAt,
         ...(operation ? { tochkaPaymentData: JSON.stringify(operation).slice(0, 2000) } : {}),
-        ...(isPaid ? { paymentPaidAt: paidAt, status: 'Оплачен' } : {}),
+        paymentAccountingVersion: 2,
+        ...(paymentAmount > 0 ? { initialPaymentAmount: paymentAmount } : {}),
+        ...(isPaid ? { paymentPaidAt: paidAt } : {}),
     };
 }
 async function findTochkaOperation(token, customerCode, orderId, amount) {
