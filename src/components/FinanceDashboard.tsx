@@ -11,6 +11,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { cn, formatCurrency } from '../lib/utils';
 import { auth, db, OperationType, handleFirestoreError } from '../firebase';
 import { collection, onSnapshot, doc, query, orderBy, deleteDoc, addDoc, serverTimestamp } from 'firebase/firestore';
+import { BarChart, Bar, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 
 interface FinanceDashboardProps {
   onBack: () => void;
@@ -20,6 +21,8 @@ interface FinanceDashboardProps {
 interface TochkaFinanceSummary {
   configured?: boolean;
   totalBalance: number;
+  operatingBalance?: number;
+  reservedBalance?: number;
   totalExpected: number;
   actualIncome?: number;
   actualExpenses?: number;
@@ -28,6 +31,8 @@ interface TochkaFinanceSummary {
   accounts: Array<{
     accountId: string;
     maskedAccountId: string;
+    label?: string;
+    role?: 'operating' | 'reserved';
     status: string;
     currency: string;
     balances: {
@@ -37,6 +42,26 @@ interface TochkaFinanceSummary {
     };
   }>;
   incomingSources: Array<{ key: string; label: string; amount: number; count: number }>;
+  paymentBreakdown?: {
+    salesAmount: number;
+    salesCount: number;
+    actualIncome: number;
+    currentMonthOrderReceipts: number;
+    priorMonthDopayments: number;
+    unmatchedIncome: number;
+    remainingForSelectedOrders: number;
+  };
+  monthlyComparison?: Array<{
+    monthKey: string;
+    sales: number;
+    orders: number;
+    income: number;
+    expenses: number;
+    net: number;
+    currentOrderReceipts: number;
+    priorOrderReceipts: number;
+    unmatchedIncome: number;
+  }>;
   cards: Array<{ mask: string; label: string; kind: string; expenses: number; operations: any[] }>;
   accountExpenses: Array<{ maskedAccountId: string; amount: number; operations: any[] }>;
   expenseCategories?: Array<{ category: string; amount: number; count: number }>;
@@ -51,6 +76,7 @@ interface TochkaFinanceSummary {
     category: string;
     description: string;
     counterparty?: string;
+    isInternalTransfer?: boolean;
   }>;
   operationFetches?: Array<{ account: string; ok: boolean; source: string; errors: any[] }>;
   operationsStatus: string;
@@ -389,18 +415,21 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
   }, [financialStats.monthlyRows, currentMonthKey]);
 
   const tochkaOperationsForPeriod = tochkaSummary?.operations || [];
-  const actualIncomeForPeriod = tochkaOperationsForPeriod
-    .filter(operation => operation.direction === 'income')
+  const actualIncomeForPeriod = (tochkaPeriod === 'month' ? Number(tochkaSummary?.paymentBreakdown?.actualIncome) : 0) || tochkaOperationsForPeriod
+    .filter(operation => operation.direction === 'income' && !operation.isInternalTransfer)
     .reduce((sum, operation) => sum + (Number(operation.absAmount) || 0), 0);
   const actualExpensesForPeriod = Number(tochkaSummary?.actualExpenses) || tochkaOperationsForPeriod
-    .filter(operation => operation.direction === 'expense')
+    .filter(operation => operation.direction === 'expense' && !operation.isInternalTransfer)
     .reduce((sum, operation) => sum + (Number(operation.absAmount) || 0), 0);
   const actualNetForPeriod = actualIncomeForPeriod - selectedFinancialStats.returns - actualExpensesForPeriod;
 
-  const moneyFlowBase = Math.max(selectedFinancialStats.planned, actualIncomeForPeriod + selectedFinancialStats.owed, 1);
+  const bankBreakdown = tochkaSummary?.paymentBreakdown;
+  const selectedSalesAmount = Number(bankBreakdown?.salesAmount) || selectedFinancialStats.planned;
+  const selectedOutstanding = Number(bankBreakdown?.remainingForSelectedOrders) || selectedFinancialStats.owed;
+  const moneyFlowBase = Math.max(selectedSalesAmount, actualIncomeForPeriod + selectedOutstanding, 1);
   const moneyFlow = {
     paidPercent: Math.min(100, (actualIncomeForPeriod / moneyFlowBase) * 100),
-    owedPercent: Math.min(100, (selectedFinancialStats.owed / moneyFlowBase) * 100),
+    owedPercent: Math.min(100, (selectedOutstanding / moneyFlowBase) * 100),
     returnsPercent: Math.min(100, (selectedFinancialStats.returns / moneyFlowBase) * 100),
     expensesPercent: Math.min(100, (actualExpensesForPeriod / moneyFlowBase) * 100),
     netAfterReturns: actualIncomeForPeriod - selectedFinancialStats.returns,
@@ -410,7 +439,7 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
   const flowSteps = [
     {
       label: 'Заказы CRM',
-      value: selectedFinancialStats.planned,
+      value: selectedSalesAmount,
       caption: `${selectedFinancialStats.sales} продаж из ${selectedFinancialStats.orders} заказов`,
       tone: 'text-[#1F2937]',
       bg: 'bg-[#F6F7F9]',
@@ -426,7 +455,7 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
     },
     {
       label: 'К доплате',
-      value: selectedFinancialStats.owed,
+      value: selectedOutstanding,
       caption: 'ожидаемые деньги',
       tone: 'text-orange-500',
       bg: 'bg-orange-50',
@@ -458,6 +487,14 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
     },
   ];
 
+  const comparisonRows = useMemo(() => (tochkaSummary?.monthlyComparison || []).map(row => {
+    const [year, month] = row.monthKey.split('-').map(Number);
+    return {
+      ...row,
+      label: `${monthNames[(month || 1) - 1].slice(0, 3)} ${String(year).slice(-2)}`,
+    };
+  }), [tochkaSummary?.monthlyComparison]);
+
   const categories = {
     rent: { label: 'Аренда', icon: Building, color: 'text-orange-500', bg: 'bg-orange-50' },
     payroll: { label: 'ФОТ (Зарплаты)', icon: UserCheck, color: 'text-blue-500', bg: 'bg-blue-50' },
@@ -475,7 +512,7 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
     { key: 'year' as const, label: 'Год' },
   ];
   const expenseOperations = useMemo(() => (
-    (tochkaSummary?.operations || []).filter(operation => operation.direction === 'expense')
+    (tochkaSummary?.operations || []).filter(operation => operation.direction === 'expense' && !operation.isInternalTransfer)
   ), [tochkaSummary?.operations]);
   const getEffectiveExpenseCategory = (operation: NonNullable<TochkaFinanceSummary['operations']>[number]) => (
     expenseCategoryOverrides[operation.id] || operation.category || 'Другое'
@@ -539,7 +576,7 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
     });
   };
   const incomeOperations = useMemo(() => (
-    (tochkaSummary?.operations || []).filter(operation => operation.direction === 'income')
+    (tochkaSummary?.operations || []).filter(operation => operation.direction === 'income' && !operation.isInternalTransfer)
   ), [tochkaSummary?.operations]);
   const incomeOperationsTotal = incomeOperations.reduce((sum, operation) => sum + (Number(operation.absAmount) || 0), 0);
 
@@ -679,6 +716,53 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
           </div>
         </div>
 
+        <div className="grid grid-cols-1 gap-3 xl:grid-cols-[1.35fr_0.65fr]">
+          <div className="rounded-[10px] border border-[#E6E9EF] bg-white p-5 shadow-[0_8px_22px_rgba(31,41,55,0.03)]">
+            <div className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-[#6B7280]">Сравнение трёх месяцев</p>
+                <h3 className="mt-1 text-[20px] font-semibold text-[#1F2937]">Продажи и фактический ДДС</h3>
+              </div>
+              <p className="text-[11px] font-semibold text-[#9CA3AF]">Заказы — по дате создания · деньги — по дате операции банка</p>
+            </div>
+            <div className="mt-5 h-[300px] w-full">
+              {comparisonRows.length ? (
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={comparisonRows} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+                    <CartesianGrid stroke="#EEF0F4" vertical={false} />
+                    <XAxis dataKey="label" tick={{ fill: '#6B7280', fontSize: 11, fontWeight: 700 }} axisLine={false} tickLine={false} />
+                    <YAxis tickFormatter={(value) => `${Math.round(Number(value) / 1000)}к`} tick={{ fill: '#9CA3AF', fontSize: 10 }} axisLine={false} tickLine={false} width={42} />
+                    <Tooltip formatter={(value: any, name: any) => [formatCurrency(Number(value) || 0), name]} />
+                    <Legend wrapperStyle={{ fontSize: 11, fontWeight: 700 }} />
+                    <Bar dataKey="sales" name="Продажи" fill="#1F2937" radius={[5, 5, 0, 0]} />
+                    <Bar dataKey="income" name="Поступило" fill="#10B981" radius={[5, 5, 0, 0]} />
+                    <Bar dataKey="expenses" name="Расходы" fill="#F87171" radius={[5, 5, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              ) : <div className="flex h-full items-center justify-center text-[13px] font-semibold text-[#9CA3AF]">Сравнение загрузится вместе с выпиской Точки</div>}
+            </div>
+          </div>
+
+          <div className="rounded-[10px] border border-[#E6E9EF] bg-white p-5 shadow-[0_8px_22px_rgba(31,41,55,0.03)]">
+            <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-[#6B7280]">Расшифровка поступлений</p>
+            <h3 className="mt-1 text-[20px] font-semibold text-[#1F2937]">Что реально пришло</h3>
+            <div className="mt-5 space-y-3">
+              {[
+                ['Оплаты заказов этого месяца', bankBreakdown?.currentMonthOrderReceipts || 0, 'text-emerald-600'],
+                ['Доплаты за прошлые месяцы', bankBreakdown?.priorMonthDopayments || 0, 'text-indigo-600'],
+                ['Прочие / не сопоставленные поступления', bankBreakdown?.unmatchedIncome || 0, 'text-[#1F2937]'],
+                ['Осталось получить по продажам месяца', selectedOutstanding, 'text-orange-500'],
+              ].map(([label, value, tone]) => (
+                <div key={String(label)} className="flex items-center justify-between gap-4 rounded-[8px] border border-[#E6E9EF] bg-[#F6F7F9] px-3 py-3">
+                  <span className="text-[12px] font-semibold leading-4 text-[#6B7280]">{label}</span>
+                  <span className={cn('shrink-0 text-[14px] font-black', String(tone))}>{formatCurrency(Number(value) || 0)}</span>
+                </div>
+              ))}
+            </div>
+            <p className="mt-4 text-[11px] font-medium leading-4 text-[#9CA3AF]">Доплата считается оплатой, пришедшей в выбранном месяце по заказу, созданному раньше. Неопознанные операции оставлены отдельно, чтобы итог банка всегда сходился.</p>
+          </div>
+        </div>
+
         <div className="grid grid-cols-1 gap-3 xl:grid-cols-[1.1fr_1fr]">
           <div className="rounded-[10px] border border-[#E6E9EF] bg-white p-5 shadow-[0_8px_22px_rgba(31,41,55,0.03)]">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -707,16 +791,16 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
 
             <div className="mt-5 grid grid-cols-1 gap-3 sm:grid-cols-3">
               <div className="rounded-[8px] border border-[#E6E9EF] bg-[#F6F7F9] p-4">
-                <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-[#6B7280]">Баланс счета</p>
-                <p className="mt-2 text-[24px] font-black leading-tight text-[#1F2937]">{formatCurrency(tochkaSummary?.totalBalance || 0)}</p>
+                <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-[#6B7280]">Операционные деньги</p>
+                <p className="mt-2 text-[24px] font-black leading-tight text-[#1F2937]">{formatCurrency(tochkaSummary?.operatingBalance ?? tochkaSummary?.totalBalance ?? 0)}</p>
               </div>
-              <div className="rounded-[8px] border border-orange-100 bg-orange-50/70 p-4">
-                <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-orange-500">Ожидается</p>
-                <p className="mt-2 text-[24px] font-black leading-tight text-orange-500">{formatCurrency(tochkaSummary?.totalExpected || 0)}</p>
+              <div className="rounded-[8px] border border-indigo-100 bg-indigo-50/70 p-4">
+                <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-indigo-500">Отложенные средства</p>
+                <p className="mt-2 text-[24px] font-black leading-tight text-indigo-600">{formatCurrency(tochkaSummary?.reservedBalance || 0)}</p>
               </div>
               <div className="rounded-[8px] border border-emerald-100 bg-emerald-50/70 p-4">
-                <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-emerald-600">Приходы CRM</p>
-                <p className="mt-2 text-[24px] font-black leading-tight text-emerald-600">{formatCurrency(tochkaIncomingTotal)}</p>
+                <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-emerald-600">Всего на счетах</p>
+                <p className="mt-2 text-[24px] font-black leading-tight text-emerald-600">{formatCurrency(tochkaSummary?.totalBalance || 0)}</p>
               </div>
             </div>
 
@@ -728,7 +812,7 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
               </div>
               {(tochkaSummary?.accounts || []).map(account => (
                 <div key={account.accountId} className="grid grid-cols-[1.1fr_0.7fr_0.8fr] border-t border-[#E6E9EF] px-4 py-3 text-[13px] font-bold text-[#1F2937]">
-                  <span>{account.maskedAccountId}</span>
+                  <span><span className="block">{account.label || 'Счёт'}</span><span className="text-[11px] text-[#9CA3AF]">{account.maskedAccountId}</span></span>
                   <span className="text-[#6B7280]">{account.status || 'активен'}</span>
                   <span className="text-right">{formatCurrency(account.balances.closingAvailable)}</span>
                 </div>

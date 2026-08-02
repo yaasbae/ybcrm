@@ -6450,6 +6450,18 @@ function getFinanceOrderPaidAmount(order: any) {
   return Number(order?.paidAmount ?? order?.prepaymentAmount ?? order?.prepaidAmount ?? 0) || 0;
 }
 
+function getFinanceOrderTotal(order: any) {
+  const itemTotal = Array.isArray(order?.itemPrices)
+    ? order.itemPrices.reduce((sum: number, value: any) => sum + (Number(value) || 0), 0)
+    : Number(order?.revenue ?? order?.price ?? 0) || 0;
+  return itemTotal + (Number(order?.deliveryPrice ?? order?.shippingCost ?? 0) || 0);
+}
+
+function isFinanceActiveOrder(order: any) {
+  const status = String(order?.status || '').toLowerCase();
+  return getFinanceOrderTotal(order) > 0 && !status.includes('возврат') && !status.includes('отмена');
+}
+
 function getTochkaText(...values: any[]) {
   return values
     .filter(Boolean)
@@ -7013,7 +7025,7 @@ async function fetchTochkaCardOperations(token: string, customerCode: string, da
   return { ok: operations.length > 0, source: operations.length ? 'card_operations' : '', operations, errors };
 }
 
-async function loadOrdersForFinanceMonth(monthKey: string) {
+async function loadAllOrdersForFinance() {
   const docs: any[] = [];
   if (adminDb) {
     const snap = await adminDb.collection('orders_new').get();
@@ -7023,6 +7035,11 @@ async function loadOrdersForFinanceMonth(monthKey: string) {
     snap.docs.forEach((docSnap: any) => docs.push({ id: docSnap.id, ...docSnap.data() }));
   }
 
+  return docs;
+}
+
+async function loadOrdersForFinanceMonth(monthKey: string) {
+  const docs = await loadAllOrdersForFinance();
   return docs.filter((order: any) => {
     const rawDate = order?.date || order?.orderDate || order?.createdAt;
     const date = rawDate?.toDate ? rawDate.toDate() : new Date(rawDate || Date.now());
@@ -7030,6 +7047,32 @@ async function loadOrdersForFinanceMonth(monthKey: string) {
     const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
     return key === monthKey;
   });
+}
+
+function getFinanceMonthKey(value: any) {
+  const rawDate = value?.toDate ? value.toDate() : new Date(value || 0);
+  if (Number.isNaN(rawDate.getTime())) return '';
+  return `${rawDate.getFullYear()}-${String(rawDate.getMonth() + 1).padStart(2, '0')}`;
+}
+
+function operationIsWithinDates(operation: any, dateFrom: string, dateTo: string) {
+  const key = String(operation?.date || '').slice(0, 10);
+  return Boolean(key && key >= dateFrom && key <= dateTo);
+}
+
+function formatFinanceDate(date: Date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
+function findFinanceOrderForOperation(operation: any, orders: any[]) {
+  const haystack = `${operation?.description || ''} ${operation?.rawDescription || ''}`.toLowerCase();
+  if (!haystack.trim()) return null;
+  return orders.find(order => {
+    const candidates = [order?.id, order?.orderId, order?.orderNumber]
+      .map(value => String(value || '').replace(/^#/, '').trim().toLowerCase())
+      .filter(value => value.length >= 4);
+    return candidates.some(value => haystack.includes(value));
+  }) || null;
 }
 
 function isTochkaPaidStatus(status: any) {
@@ -8029,9 +8072,12 @@ app.get('/api/tochka/finance-summary', async (req, res) => {
     const accounts = accountsRaw.map((account: any) => {
       const accountId = String(account?.accountId || account?.AccountId || account?.id || '');
       const balances = balancesByAccount.get(accountId) || { openingAvailable: 0, closingAvailable: 0, expected: 0 };
+      const isReserved = String(accountId.split('/')[0] || '').replace(/\D/g, '').endsWith('4118');
       return {
         accountId,
         maskedAccountId: maskAccountId(accountId),
+        label: isReserved ? 'Отложенные средства' : 'Операционный счёт',
+        role: isReserved ? 'reserved' : 'operating',
         customerCode: account?.customerCode || account?.CustomerCode || '',
         status: account?.status || account?.Status || '',
         currency: account?.currency || account?.Currency || 'RUB',
@@ -8040,6 +8086,8 @@ app.get('/api/tochka/finance-summary', async (req, res) => {
     });
 
     const totalBalance = accounts.reduce((sum: number, account: any) => sum + (Number(account.balances.closingAvailable) || 0), 0);
+    const operatingBalance = accounts.filter((account: any) => account.role !== 'reserved').reduce((sum: number, account: any) => sum + (Number(account.balances.closingAvailable) || 0), 0);
+    const reservedBalance = accounts.filter((account: any) => account.role === 'reserved').reduce((sum: number, account: any) => sum + (Number(account.balances.closingAvailable) || 0), 0);
     const totalExpected = accounts.reduce((sum: number, account: any) => sum + (Number(account.balances.expected) || 0), 0);
 
     const now = new Date();
@@ -8064,9 +8112,12 @@ app.get('/api/tochka/finance-summary', async (req, res) => {
     }
     const rangeStart = new Date(selectedYear, rangeStartMonth, 1);
     const rangeEnd = new Date(selectedYear, rangeEndMonth + 1, 0);
-    const dateFrom = rangeStart.toISOString().slice(0, 10);
-    const dateTo = rangeEnd.toISOString().slice(0, 10);
-    const monthOrders = await loadOrdersForFinanceMonth(monthKey).catch(() => []);
+    const dateFrom = formatFinanceDate(rangeStart);
+    const dateTo = formatFinanceDate(rangeEnd);
+    const comparisonStart = new Date(selectedYear, selectedMonthIndex - 2, 1);
+    const fetchDateFrom = comparisonStart < rangeStart ? formatFinanceDate(comparisonStart) : dateFrom;
+    const allOrders = await loadAllOrdersForFinance().catch(() => []);
+    const monthOrders = allOrders.filter((order: any) => getFinanceMonthKey(order?.date || order?.orderDate || order?.createdAt) === monthKey);
     const sourceMap: Record<string, { key: string; label: string; amount: number; count: number }> = {
       qr: { key: 'qr', label: 'QR / СБП', amount: 0, count: 0 },
       dolyami: { key: 'dolyami', label: 'Долями', amount: 0, count: 0 },
@@ -8084,11 +8135,11 @@ app.get('/api/tochka/finance-summary', async (req, res) => {
     }
 
     const operationFetches = await Promise.all(accounts.map((account: any) =>
-      fetchTochkaOperations(token, account.customerCode || effectiveCustomerCode, account.accountId, dateFrom, dateTo)
+      fetchTochkaOperations(token, account.customerCode || effectiveCustomerCode, account.accountId, fetchDateFrom, dateTo)
         .then(result => ({ account, result }))
         .catch(error => ({ account, result: { ok: false, source: '', operations: [], errors: [{ message: getTochkaErrorMessage(error) }] } }))
     ));
-    const cardOperationFetch = await fetchTochkaCardOperations(token, effectiveCustomerCode, dateFrom, dateTo)
+    const cardOperationFetch = await fetchTochkaCardOperations(token, effectiveCustomerCode, fetchDateFrom, dateTo)
       .catch(error => ({ ok: false, source: '', operations: [], errors: [{ message: getTochkaErrorMessage(error) }] }));
     const operationMap = new Map<string, any>();
     for (const operation of [
@@ -8097,10 +8148,58 @@ app.get('/api/tochka/finance-summary', async (req, res) => {
     ]) {
       operationMap.set(String(operation.id || `${operation.date}-${operation.accountId}-${operation.amount}-${operation.description}`), operation);
     }
-    const operations = Array.from(operationMap.values())
+    const comparisonOperations = Array.from(operationMap.values())
+      .filter((operation: any) => operationIsWithinDates(operation, fetchDateFrom, dateTo))
       .sort((a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime());
-    const expenses = operations.filter((operation: any) => operation.direction === 'expense');
-    const incomes = operations.filter((operation: any) => operation.direction === 'income');
+    for (let index = 0; index < comparisonOperations.length; index += 1) {
+      const operation = comparisonOperations[index];
+      const pair = comparisonOperations.find((candidate: any, candidateIndex: number) => (
+        candidateIndex !== index
+        && candidate.accountId !== operation.accountId
+        && candidate.direction !== operation.direction
+        && candidate.absAmount === operation.absAmount
+        && String(candidate.date).slice(0, 10) === String(operation.date).slice(0, 10)
+      ));
+      if (pair) operation.isInternalTransfer = true;
+    }
+    const operations = comparisonOperations.filter((operation: any) => operationIsWithinDates(operation, dateFrom, dateTo));
+
+    const monthlyComparisonMap = new Map<string, any>();
+    for (let offset = -2; offset <= 0; offset += 1) {
+      const date = new Date(selectedYear, selectedMonthIndex + offset, 1);
+      const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+      const ordersForMonth = allOrders.filter((order: any) => getFinanceMonthKey(order?.date || order?.orderDate || order?.createdAt) === key && isFinanceActiveOrder(order));
+      monthlyComparisonMap.set(key, {
+        monthKey: key,
+        sales: ordersForMonth.reduce((sum: number, order: any) => sum + getFinanceOrderTotal(order), 0),
+        orders: ordersForMonth.length,
+        income: 0,
+        expenses: 0,
+        net: 0,
+        currentOrderReceipts: 0,
+        priorOrderReceipts: 0,
+        unmatchedIncome: 0,
+      });
+    }
+    for (const operation of comparisonOperations) {
+      const key = getFinanceMonthKey(operation.date);
+      const row = monthlyComparisonMap.get(key);
+      if (!row) continue;
+      if (operation.isInternalTransfer) continue;
+      if (operation.direction === 'expense') row.expenses += operation.absAmount;
+      else {
+        row.income += operation.absAmount;
+        const matchedOrder = findFinanceOrderForOperation(operation, allOrders);
+        if (!matchedOrder) row.unmatchedIncome += operation.absAmount;
+        else if (getFinanceMonthKey(matchedOrder?.date || matchedOrder?.orderDate || matchedOrder?.createdAt) === key) row.currentOrderReceipts += operation.absAmount;
+        else row.priorOrderReceipts += operation.absAmount;
+      }
+      row.net = row.income - row.expenses;
+    }
+    const monthlyComparison = Array.from(monthlyComparisonMap.values());
+    const selectedComparison = monthlyComparisonMap.get(monthKey) || {};
+    const expenses = operations.filter((operation: any) => operation.direction === 'expense' && !operation.isInternalTransfer);
+    const incomes = operations.filter((operation: any) => operation.direction === 'income' && !operation.isInternalTransfer);
     const expenseCategoryMap = new Map<string, { category: string; amount: number; count: number }>();
     for (const operation of expenses) {
       const row = expenseCategoryMap.get(operation.category) || { category: operation.category, amount: 0, count: 0 };
@@ -8150,9 +8249,21 @@ app.get('/api/tochka/finance-summary', async (req, res) => {
       dateTo,
       generatedAt: new Date().toISOString(),
       totalBalance,
+      operatingBalance,
+      reservedBalance,
       totalExpected,
       accounts,
       incomingSources: Object.values(sourceMap),
+      paymentBreakdown: {
+        salesAmount: Number(selectedComparison.sales) || 0,
+        salesCount: Number(selectedComparison.orders) || 0,
+        actualIncome: Number(selectedComparison.income) || 0,
+        currentMonthOrderReceipts: Number(selectedComparison.currentOrderReceipts) || 0,
+        priorMonthDopayments: Number(selectedComparison.priorOrderReceipts) || 0,
+        unmatchedIncome: Number(selectedComparison.unmatchedIncome) || 0,
+        remainingForSelectedOrders: monthOrders.filter(isFinanceActiveOrder).reduce((sum: number, order: any) => sum + Math.max(0, getFinanceOrderTotal(order) - getFinanceOrderPaidAmount(order)), 0),
+      },
+      monthlyComparison,
       actualIncome: incomes.reduce((sum: number, operation: any) => sum + operation.absAmount, 0),
       actualExpenses: expenses.reduce((sum: number, operation: any) => sum + operation.absAmount, 0),
       accountExpenses: Array.from(accountExpenseMap.values()),
