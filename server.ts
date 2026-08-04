@@ -6571,6 +6571,36 @@ function cleanTochkaDescription(rawDescription: string, operation: any, cardMask
   return raw || 'Операция Точки';
 }
 
+function normalizeFinancePartyName(value: any) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/ё/g, 'е')
+    .replace(/[^a-zа-я0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function isKnownOwnAccountTransfer(operation: any, configuredNames: any[] = []) {
+  const text = normalizeFinancePartyName([
+    operation?.counterparty,
+    operation?.description,
+    operation?.rawDescription,
+  ].filter(Boolean).join(' '));
+  if (!text) return false;
+
+  const ownPartyNames = [
+    'индивидуальный предприниматель никифорова анна юрьевна',
+    'ип никифорова анна юрьевна',
+    ...configuredNames,
+  ]
+    .map(normalizeFinancePartyName)
+    .filter(Boolean);
+
+  // Не используем одно только ФИО: клиент с таким же именем не должен
+  // случайно исчезнуть из доходов. Нужен полный признак собственного ИП.
+  return ownPartyNames.some(name => text.includes(name));
+}
+
 function getTochkaStatementId(raw: any) {
   const value = findTochkaValueByKeys(raw, [
     'statementId',
@@ -8151,6 +8181,9 @@ app.get('/api/tochka/finance-summary', async (req, res) => {
     const comparisonOperations = Array.from(operationMap.values())
       .filter((operation: any) => operationIsWithinDates(operation, fetchDateFrom, dateTo))
       .sort((a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime());
+    const ownCounterpartyNames = Array.isArray(settings?.ownCounterpartyNames)
+      ? settings.ownCounterpartyNames
+      : [];
     for (let index = 0; index < comparisonOperations.length; index += 1) {
       const operation = comparisonOperations[index];
       const pair = comparisonOperations.find((candidate: any, candidateIndex: number) => (
@@ -8160,7 +8193,13 @@ app.get('/api/tochka/finance-summary', async (req, res) => {
         && candidate.absAmount === operation.absAmount
         && String(candidate.date).slice(0, 10) === String(operation.date).slice(0, 10)
       ));
-      if (pair) operation.isInternalTransfer = true;
+      if (pair) {
+        operation.isInternalTransfer = true;
+        operation.internalTransferReason = 'matched_account_pair';
+      } else if (isKnownOwnAccountTransfer(operation, ownCounterpartyNames)) {
+        operation.isInternalTransfer = true;
+        operation.internalTransferReason = 'own_legal_entity';
+      }
     }
     const operations = comparisonOperations.filter((operation: any) => operationIsWithinDates(operation, dateFrom, dateTo));
 
