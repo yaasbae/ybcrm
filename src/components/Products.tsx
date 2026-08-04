@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Package, Plus, X, Camera, Save, 
-  ChevronLeft, Trash2, Calendar, 
+  ChevronLeft, ChevronDown, Trash2, Calendar,
   Layers, Ruler, Maximize2, Weight, 
   Type, Hash, Image as ImageIcon, Star,
   Download, Edit2, Palette, Calculator, Info, Link as LinkIcon, Instagram, BookOpen
@@ -132,6 +132,7 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
   const [photoUploadStatus, setPhotoUploadStatus] = useState<Record<number, PhotoUploadStatus>>({});
   const [isAdding, setIsAdding] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [expandedProductId, setExpandedProductId] = useState<string | null>(null);
   const [newProduct, setNewProduct] = useState<Partial<ProductItem>>({
     name: '',
     color: '',
@@ -228,6 +229,7 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
 
       setIsAdding(false);
       setEditingId(null);
+      setExpandedProductId(null);
       setPendingProductId(null);
       setPhotoUploadStatus({});
       setNewProduct({
@@ -296,6 +298,23 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
     setPendingProductId(product.id);
     setPhotoUploadStatus({});
     setIsAdding(true);
+  };
+
+  const handleToggleProduct = (product: ProductItem) => {
+    if (expandedProductId === product.id) {
+      handleCancelForm();
+      return;
+    }
+
+    setNewProduct({
+      ...product,
+      posts: product.posts || []
+    });
+    setEditingId(product.id);
+    setExpandedProductId(product.id);
+    setPendingProductId(product.id);
+    setPhotoUploadStatus({});
+    setIsAdding(false);
   };
 
   const recalcCostPrice = (ue: any): number => {
@@ -477,6 +496,7 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
     }
     setIsAdding(false);
     setEditingId(null);
+    setExpandedProductId(null);
     setPendingProductId(null);
     setPhotoUploadStatus({});
     setNewProduct({
@@ -499,6 +519,159 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
       postUrl: '',
       posts: []
     });
+  };
+
+  const renderInlineEditor = (product: ProductItem) => {
+    if (expandedProductId !== product.id || editingId !== product.id) return null;
+
+    const inputClass = "h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-medium text-slate-800 outline-none transition focus:border-[#7D7DE6] focus:ring-2 focus:ring-[#7D7DE6]/10";
+    const labelClass = "mb-1.5 block text-[10px] font-bold uppercase tracking-[0.12em] text-slate-400";
+    const hasUploadingPhotos = Object.values(photoUploadStatus).some(status => status === 'uploading');
+
+    return (
+      <motion.div
+        initial={{ opacity: 0, height: 0 }}
+        animate={{ opacity: 1, height: 'auto' }}
+        exit={{ opacity: 0, height: 0 }}
+        className="overflow-hidden bg-[#F8F9FC]"
+      >
+        <div className="border-y border-[#E6E9EF] p-4 sm:p-6">
+          <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-[#7D7DE6]">Карточка товара</p>
+              <h4 className="mt-1 text-lg font-bold text-slate-900">Редактирование без перехода</h4>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  const url = `${window.location.origin}/product/${product.id}`;
+                  navigator.clipboard.writeText(url);
+                  alert('Ссылка на товар скопирована!');
+                }}
+                className="inline-flex h-10 items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 text-xs font-bold text-slate-600 transition hover:border-slate-300 hover:text-slate-900"
+              >
+                <LinkIcon size={14} /> Скопировать ссылку
+              </button>
+              <button
+                type="button"
+                onClick={() => handleDeleteProduct(product.id)}
+                className="inline-flex h-10 items-center gap-2 rounded-xl border border-red-100 bg-red-50 px-4 text-xs font-bold text-red-600 transition hover:bg-red-100"
+              >
+                <Trash2 size={14} /> Удалить
+              </button>
+            </div>
+          </div>
+
+          <div className="grid gap-5 xl:grid-cols-[220px_minmax(0,1fr)]">
+            <div className="space-y-3">
+              <div className="grid grid-cols-2 gap-2">
+                {(newProduct.photos || []).slice(0, 4).map((photo, index) => (
+                  <div key={`${photo}-${index}`} className="group relative aspect-square overflow-hidden rounded-xl border border-slate-200 bg-white">
+                    <img src={photo} alt="" className="h-full w-full object-cover" referrerPolicy="no-referrer" />
+                    <button
+                      type="button"
+                      onClick={() => removePhoto(index)}
+                      className="absolute right-1.5 top-1.5 inline-flex h-7 w-7 items-center justify-center rounded-lg bg-white/95 text-red-500 opacity-100 shadow-sm transition sm:opacity-0 sm:group-hover:opacity-100"
+                      aria-label="Удалить фото"
+                    >
+                      <X size={13} />
+                    </button>
+                  </div>
+                ))}
+                {(newProduct.photos || []).length < 5 && (
+                  <label className="flex aspect-square cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-slate-300 bg-white text-slate-400 transition hover:border-[#7D7DE6] hover:text-[#7D7DE6]">
+                    <Camera size={20} />
+                    <span className="text-[10px] font-bold uppercase tracking-wider">Добавить фото</span>
+                    <input type="file" accept="image/*" multiple className="hidden" onChange={handleFileChange} />
+                  </label>
+                )}
+              </div>
+              <p className="text-xs leading-5 text-slate-400">До 5 фотографий. Изменения сохраняются в карточке товара.</p>
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+              <label className="sm:col-span-2 xl:col-span-2">
+                <span className={labelClass}>Наименование</span>
+                <input className={inputClass} value={newProduct.name || ''} onChange={e => setNewProduct({...newProduct, name: e.target.value})} />
+              </label>
+              <label>
+                <span className={labelClass}>Цвет</span>
+                <input className={inputClass} value={newProduct.color || ''} onChange={e => setNewProduct({...newProduct, color: e.target.value})} />
+              </label>
+              <label>
+                <span className={labelClass}>Размеры</span>
+                <input className={inputClass} value={newProduct.sizeGrid || ''} onChange={e => setNewProduct({...newProduct, sizeGrid: e.target.value})} />
+              </label>
+              <label>
+                <span className={labelClass}>Рост</span>
+                <input className={inputClass} value={newProduct.height || ''} onChange={e => setNewProduct({...newProduct, height: e.target.value})} />
+              </label>
+              <label>
+                <span className={labelClass}>Обхваты</span>
+                <input className={inputClass} value={newProduct.girths || ''} onChange={e => setNewProduct({...newProduct, girths: e.target.value})} />
+              </label>
+              <label>
+                <span className={labelClass}>Вес, г</span>
+                <input className={inputClass} value={newProduct.weight || ''} onChange={e => setNewProduct({...newProduct, weight: e.target.value})} />
+              </label>
+              <label>
+                <span className={labelClass}>Нанесение</span>
+                <input className={inputClass} value={newProduct.applicationType || ''} onChange={e => setNewProduct({...newProduct, applicationType: e.target.value})} />
+              </label>
+              <label>
+                <span className={labelClass}>Номер лекала</span>
+                <input className={inputClass} value={newProduct.patternNumber || ''} onChange={e => setNewProduct({...newProduct, patternNumber: e.target.value})} />
+              </label>
+              <label>
+                <span className={labelClass}>Год выпуска</span>
+                <input className={inputClass} value={newProduct.releaseYear || ''} onChange={e => setNewProduct({...newProduct, releaseYear: e.target.value})} />
+              </label>
+              <label>
+                <span className={labelClass}>Себестоимость, ₽</span>
+                <input type="number" className={`${inputClass} font-bold text-red-600`} value={newProduct.costPrice ?? ''} onChange={e => setNewProduct({...newProduct, costPrice: Number(e.target.value)})} />
+              </label>
+              <label>
+                <span className={labelClass}>Цена продажи, ₽</span>
+                <input type="number" className={`${inputClass} font-bold text-emerald-600`} value={newProduct.sellingPrice ?? ''} onChange={e => setNewProduct({...newProduct, sellingPrice: Number(e.target.value)})} />
+              </label>
+              <label>
+                <span className={labelClass}>Страна производства</span>
+                <input className={inputClass} value={newProduct.countryOfOrigin || ''} onChange={e => setNewProduct({...newProduct, countryOfOrigin: e.target.value})} />
+              </label>
+              <label className="sm:col-span-2">
+                <span className={labelClass}>Состав</span>
+                <input className={inputClass} value={newProduct.composition || ''} onChange={e => setNewProduct({...newProduct, composition: e.target.value})} />
+              </label>
+              <label className="sm:col-span-2">
+                <span className={labelClass}>Описание размеров</span>
+                <input className={inputClass} value={newProduct.sizeDetails || ''} onChange={e => setNewProduct({...newProduct, sizeDetails: e.target.value})} />
+              </label>
+              <label className="sm:col-span-2 xl:col-span-4">
+                <span className={labelClass}>Ссылка на публикацию</span>
+                <input type="url" className={inputClass} placeholder="https://instagram.com/..." value={newProduct.postUrl || ''} onChange={e => setNewProduct({...newProduct, postUrl: e.target.value})} />
+              </label>
+              <label className="sm:col-span-2 xl:col-span-4">
+                <span className={labelClass}>Описание товара</span>
+                <textarea className="min-h-24 w-full resize-y rounded-xl border border-slate-200 bg-white px-3 py-3 text-sm font-medium text-slate-800 outline-none transition focus:border-[#7D7DE6] focus:ring-2 focus:ring-[#7D7DE6]/10" value={newProduct.description || ''} onChange={e => setNewProduct({...newProduct, description: e.target.value})} />
+              </label>
+            </div>
+          </div>
+
+          <div className="mt-5 flex flex-col-reverse gap-2 border-t border-slate-200 pt-4 sm:flex-row sm:justify-end">
+            <button type="button" onClick={handleCancelForm} className="h-11 rounded-xl border border-slate-200 bg-white px-5 text-xs font-bold uppercase tracking-wider text-slate-500 transition hover:bg-slate-50">Свернуть</button>
+            <button
+              type="button"
+              onClick={handleAddProduct}
+              disabled={!newProduct.name || hasUploadingPhotos}
+              className="inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-[#7D7DE6] px-6 text-xs font-bold uppercase tracking-wider text-white transition hover:bg-[#7070D8] active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Save size={15} /> {hasUploadingPhotos ? 'Загрузка фото...' : 'Сохранить изменения'}
+            </button>
+          </div>
+        </div>
+      </motion.div>
+    );
   };
 
   return (
@@ -1313,11 +1486,14 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
               <tbody>
                 {products.length > 0 ? (
                   products.map((product) => (
+                    <React.Fragment key={product.id}>
                     <motion.tr
-                      key={product.id}
                       initial={{ opacity: 0 }}
                       animate={{ opacity: 1 }}
-                      className="group h-[56px] border-b border-[#EEF1F5] transition-colors hover:bg-[#F9FAFB]"
+                      className={cn(
+                        "group h-[56px] border-b border-[#EEF1F5] transition-colors hover:bg-[#F9FAFB]",
+                        expandedProductId === product.id && "bg-[#F8F9FC]"
+                      )}
                     >
                       <td className="px-5 py-2">
                         <div className="h-11 w-11 overflow-hidden rounded-[8px] border border-[#E6E9EF] bg-[#F6F7F9]">
@@ -1380,11 +1556,16 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
                             <LinkIcon size={14} />
                           </button>
                           <button 
-                            onClick={() => handleEditProduct(product)}
-                            className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] bg-[#7D7DE6] text-white transition-colors hover:bg-[#7070D8]"
-                            title="Редактировать"
+                            onClick={() => handleToggleProduct(product)}
+                            className={cn(
+                              "inline-flex h-8 items-center justify-center gap-1.5 rounded-[8px] px-2.5 text-white transition-colors",
+                              expandedProductId === product.id ? "bg-slate-900 hover:bg-slate-800" : "bg-[#7D7DE6] hover:bg-[#7070D8]"
+                            )}
+                            title={expandedProductId === product.id ? "Свернуть" : "Развернуть товар"}
+                            aria-expanded={expandedProductId === product.id}
                           >
-                            <Edit2 size={14} />
+                            {expandedProductId === product.id ? <ChevronDown size={14} /> : <Plus size={14} />}
+                            <span className="text-[10px] font-bold uppercase tracking-wider">{expandedProductId === product.id ? 'Свернуть' : 'Открыть'}</span>
                           </button>
                           <button 
                             onClick={() => handleDeleteProduct(product.id)}
@@ -1396,6 +1577,16 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
                         </div>
                       </td>
                     </motion.tr>
+                    <AnimatePresence initial={false}>
+                      {expandedProductId === product.id && (
+                        <tr>
+                          <td colSpan={12} className="p-0">
+                            {renderInlineEditor(product)}
+                          </td>
+                        </tr>
+                      )}
+                    </AnimatePresence>
+                    </React.Fragment>
                   ))
                 ) : (
                   <tr>
@@ -1415,7 +1606,7 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
           <div className="lg:hidden divide-y divide-slate-50">
             {products.length > 0 ? (
               products.map((product) => (
-                <div key={product.id} className="p-4 space-y-4">
+                <div key={product.id} className={cn("p-4 space-y-4", expandedProductId === product.id && "bg-[#F8F9FC]")}>
                   <div className="flex gap-4">
                     <div className="w-20 h-20 rounded-2xl overflow-hidden bg-slate-100 border border-slate-100 shrink-0">
                       <img 
@@ -1440,10 +1631,15 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
                             <LinkIcon size={14} />
                           </button>
                           <button 
-                            onClick={() => handleEditProduct(product)}
-                            className="p-2 text-blue-500 bg-blue-50 rounded-xl"
+                            onClick={() => handleToggleProduct(product)}
+                            className={cn(
+                              "inline-flex h-9 items-center gap-1.5 rounded-xl px-2.5",
+                              expandedProductId === product.id ? "bg-slate-900 text-white" : "bg-[#EEEEFF] text-[#6969D8]"
+                            )}
+                            aria-expanded={expandedProductId === product.id}
                           >
-                            <Edit2 size={14} />
+                            {expandedProductId === product.id ? <ChevronDown size={14} /> : <Plus size={14} />}
+                            <span className="text-[9px] font-bold uppercase tracking-wider">{expandedProductId === product.id ? 'Свернуть' : 'Открыть'}</span>
                           </button>
                           <button 
                             onClick={() => handleDeleteProduct(product.id)}
@@ -1488,6 +1684,9 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
                       <span className="text-xs font-bold text-emerald-600">{product.sellingPrice ? `${product.sellingPrice.toLocaleString()} ₽` : '—'}</span>
                     </div>
                   </div>
+                  <AnimatePresence initial={false}>
+                    {expandedProductId === product.id && renderInlineEditor(product)}
+                  </AnimatePresence>
                 </div>
               ))
             ) : (
