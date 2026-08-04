@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { 
-  ArrowLeft, DollarSign, TrendingUp, TrendingDown, 
+  ArrowLeft, TrendingUp, TrendingDown,
   Plus, Calendar as CalendarIcon, PieChart, 
-  Trash2, AlertCircle,
+  Trash2,
   ChevronRight, ChevronLeft, Briefcase, CreditCard,
   Building, UserCheck, Download, RefreshCcw,
   Wallet, ReceiptText, Lock, ShieldCheck
@@ -26,6 +26,7 @@ interface TochkaFinanceSummary {
   totalExpected: number;
   actualIncome?: number;
   actualExpenses?: number;
+  actualRefunds?: number;
   monthKey: string;
   generatedAt: string;
   accounts: Array<{
@@ -50,6 +51,8 @@ interface TochkaFinanceSummary {
     priorMonthDopayments: number;
     unmatchedIncome: number;
     remainingForSelectedOrders: number;
+    remainingFromSelectedMonth?: number;
+    refunds?: number;
   };
   monthlyComparison?: Array<{
     monthKey: string;
@@ -61,6 +64,7 @@ interface TochkaFinanceSummary {
     currentOrderReceipts: number;
     priorOrderReceipts: number;
     unmatchedIncome: number;
+    refunds?: number;
   }>;
   cards: Array<{ mask: string; label: string; kind: string; expenses: number; operations: any[] }>;
   accountExpenses: Array<{ maskedAccountId: string; amount: number; operations: any[] }>;
@@ -77,6 +81,7 @@ interface TochkaFinanceSummary {
     description: string;
     counterparty?: string;
     isInternalTransfer?: boolean;
+    isRefund?: boolean;
   }>;
   operationFetches?: Array<{ account: string; ok: boolean; source: string; errors: any[] }>;
   operationsStatus: string;
@@ -415,75 +420,63 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
   }, [financialStats.monthlyRows, currentMonthKey]);
 
   const tochkaOperationsForPeriod = tochkaSummary?.operations || [];
-  const actualIncomeForPeriod = (tochkaPeriod === 'month' ? Number(tochkaSummary?.paymentBreakdown?.actualIncome) : 0) || tochkaOperationsForPeriod
+  const actualIncomeForPeriod = (tochkaPeriod === 'month' && Number.isFinite(Number(tochkaSummary?.paymentBreakdown?.actualIncome))
+    ? Number(tochkaSummary?.paymentBreakdown?.actualIncome)
+    : tochkaOperationsForPeriod
     .filter(operation => operation.direction === 'income' && !operation.isInternalTransfer)
-    .reduce((sum, operation) => sum + (Number(operation.absAmount) || 0), 0);
-  const actualExpensesForPeriod = Number(tochkaSummary?.actualExpenses) || tochkaOperationsForPeriod
-    .filter(operation => operation.direction === 'expense' && !operation.isInternalTransfer)
-    .reduce((sum, operation) => sum + (Number(operation.absAmount) || 0), 0);
-  const actualNetForPeriod = actualIncomeForPeriod - selectedFinancialStats.returns - actualExpensesForPeriod;
+    .reduce((sum, operation) => sum + (Number(operation.absAmount) || 0), 0));
+  const actualExpensesForPeriod = Number.isFinite(Number(tochkaSummary?.actualExpenses))
+    ? Number(tochkaSummary?.actualExpenses)
+    : tochkaOperationsForPeriod
+      .filter(operation => operation.direction === 'expense' && !operation.isInternalTransfer && !operation.isRefund)
+      .reduce((sum, operation) => sum + (Number(operation.absAmount) || 0), 0);
+  const actualReturnsForPeriod = (tochkaPeriod === 'month' && Number.isFinite(Number(tochkaSummary?.actualRefunds))
+    ? Number(tochkaSummary?.actualRefunds)
+    : tochkaOperationsForPeriod
+      .filter(operation => operation.direction === 'expense' && !operation.isInternalTransfer && operation.isRefund)
+      .reduce((sum, operation) => sum + (Number(operation.absAmount) || 0), 0));
+  const actualNetForPeriod = actualIncomeForPeriod - actualReturnsForPeriod - actualExpensesForPeriod;
 
   const bankBreakdown = tochkaSummary?.paymentBreakdown;
-  const selectedSalesAmount = Number(bankBreakdown?.salesAmount) || selectedFinancialStats.planned;
-  const selectedOutstanding = Number(bankBreakdown?.remainingForSelectedOrders) || selectedFinancialStats.owed;
-  const moneyFlowBase = Math.max(selectedSalesAmount, actualIncomeForPeriod + selectedOutstanding, 1);
-  const moneyFlow = {
-    paidPercent: Math.min(100, (actualIncomeForPeriod / moneyFlowBase) * 100),
-    owedPercent: Math.min(100, (selectedOutstanding / moneyFlowBase) * 100),
-    returnsPercent: Math.min(100, (selectedFinancialStats.returns / moneyFlowBase) * 100),
-    expensesPercent: Math.min(100, (actualExpensesForPeriod / moneyFlowBase) * 100),
-    netAfterReturns: actualIncomeForPeriod - selectedFinancialStats.returns,
-    completionPercent: Math.round((actualIncomeForPeriod / moneyFlowBase) * 100),
-  };
-
+  const selectedSalesAmount = Number.isFinite(Number(bankBreakdown?.salesAmount))
+    ? Number(bankBreakdown?.salesAmount)
+    : selectedFinancialStats.planned;
+  const selectedOutstanding = Number.isFinite(Number(bankBreakdown?.remainingForSelectedOrders))
+    ? Number(bankBreakdown?.remainingForSelectedOrders)
+    : selectedFinancialStats.owed;
+  const currentBankBalance = Number(tochkaSummary?.operatingBalance ?? tochkaSummary?.totalBalance ?? 0) || 0;
   const flowSteps = [
     {
-      label: 'Заказы CRM',
+      label: 'Продажи',
       value: selectedSalesAmount,
-      caption: `${selectedFinancialStats.sales} продаж из ${selectedFinancialStats.orders} заказов`,
+      caption: `${selectedFinancialStats.sales} заказов создано в этом месяце`,
       tone: 'text-[#1F2937]',
       bg: 'bg-[#F6F7F9]',
       icon: ReceiptText,
     },
     {
-      label: 'Оплачено',
+      label: 'Приход денег',
       value: actualIncomeForPeriod,
-      caption: 'фактический приход',
+      caption: 'все фактические поступления по дате банка',
       tone: 'text-emerald-600',
       bg: 'bg-emerald-50',
       icon: TrendingUp,
     },
     {
-      label: 'К доплате',
-      value: selectedOutstanding,
-      caption: 'ожидаемые деньги',
-      tone: 'text-orange-500',
-      bg: 'bg-orange-50',
-      icon: AlertCircle,
-    },
-    {
-      label: 'Возвраты',
-      value: -selectedFinancialStats.returns,
-      caption: 'вычтено из прихода',
-      tone: 'text-red-500',
-      bg: 'bg-red-50',
-      icon: RefreshCcw,
-    },
-    {
       label: 'Расходы',
-      value: -actualExpensesForPeriod,
-      caption: 'по выписке и расходам',
+      value: actualExpensesForPeriod,
+      caption: 'списания со счёта без возвратов и переводов',
       tone: 'text-red-500',
       bg: 'bg-red-50',
       icon: TrendingDown,
     },
     {
-      label: 'Итог',
-      value: actualNetForPeriod,
-      caption: 'чистый остаток',
-      tone: actualNetForPeriod >= 0 ? 'text-[#1F2937]' : 'text-orange-500',
-      bg: 'bg-[#1F2937] text-white',
-      icon: DollarSign,
+      label: 'Возвраты / отмены',
+      value: actualReturnsForPeriod,
+      caption: 'деньги, фактически возвращённые клиентам',
+      tone: 'text-red-500',
+      bg: 'bg-red-50',
+      icon: RefreshCcw,
     },
   ];
 
@@ -512,7 +505,7 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
     { key: 'year' as const, label: 'Год' },
   ];
   const expenseOperations = useMemo(() => (
-    (tochkaSummary?.operations || []).filter(operation => operation.direction === 'expense' && !operation.isInternalTransfer)
+    (tochkaSummary?.operations || []).filter(operation => operation.direction === 'expense' && !operation.isInternalTransfer && !operation.isRefund)
   ), [tochkaSummary?.operations]);
   const getEffectiveExpenseCategory = (operation: NonNullable<TochkaFinanceSummary['operations']>[number]) => (
     expenseCategoryOverrides[operation.id] || operation.category || 'Другое'
@@ -636,9 +629,9 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
                 <Wallet size={14} />
                 Движение денег
               </div>
-              <h3 className="mt-1 text-[20px] font-semibold leading-tight text-[#1F2937]">Заказы, оплаты, доплаты и чистый итог за месяц</h3>
+              <h3 className="mt-1 text-[20px] font-semibold leading-tight text-[#1F2937]">Продажи и фактическое движение денег за месяц</h3>
               <p className="mt-1 text-[12px] font-medium text-[#6B7280]">
-                {monthNames[currentDate.getMonth()]} {currentDate.getFullYear()} · заказы и долги из CRM, приход и расходы по фактическому ДДС.
+                {monthNames[currentDate.getMonth()]} {currentDate.getFullYear()} · продажи по дате заказа, деньги — только по дате операции банка.
               </p>
             </div>
             <div className="grid grid-cols-2 gap-2 text-right sm:grid-cols-[160px_repeat(4,minmax(96px,1fr))]">
@@ -669,17 +662,17 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
                 <p className="text-[15px] font-black text-[#1F2937]">{selectedFinancialStats.sales}</p>
               </div>
               <div className="rounded-[8px] border border-emerald-100 bg-emerald-50 px-3 py-2">
-                <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-emerald-500">Оплачено</p>
-                <p className="text-[15px] font-black text-emerald-600">{moneyFlow.completionPercent}%</p>
+                <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-emerald-500">Приход</p>
+                <p className="text-[15px] font-black text-emerald-600">{formatCurrency(actualIncomeForPeriod)}</p>
               </div>
               <div className="rounded-[8px] border border-[#E6E9EF] bg-white px-3 py-2">
-                <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-[#9CA3AF]">После возвратов</p>
-                <p className="text-[15px] font-black text-[#1F2937]">{formatCurrency(moneyFlow.netAfterReturns)}</p>
+                <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-[#9CA3AF]">Баланс счёта</p>
+                <p className={cn('text-[15px] font-black', currentBankBalance < 0 ? 'text-red-500' : 'text-[#1F2937]')}>{formatCurrency(currentBankBalance)}</p>
               </div>
             </div>
           </div>
 
-          <div className="grid grid-cols-1 divide-y divide-[#E6E9EF] lg:grid-cols-6 lg:divide-x lg:divide-y-0">
+          <div className="grid grid-cols-1 divide-y divide-[#E6E9EF] sm:grid-cols-2 sm:divide-x lg:grid-cols-4 lg:divide-y-0">
             {flowSteps.map((step) => (
               <div key={step.label} className="p-4">
                 <div className="mb-3 flex items-center justify-between gap-2">
@@ -688,30 +681,27 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
                     <step.icon size={15} />
                   </div>
                 </div>
-                <p className={cn("text-[22px] font-black leading-tight", step.tone)}>
-                  {step.value < 0 ? '-' : ''}{formatCurrency(Math.abs(step.value))}
-                </p>
+                <p className={cn("text-[22px] font-black leading-tight", step.tone)}>{formatCurrency(step.value)}</p>
                 <p className="mt-1 min-h-8 text-[11px] font-bold leading-4 text-[#9CA3AF]">{step.caption}</p>
               </div>
             ))}
           </div>
 
-          <div className="border-t border-[#E6E9EF] px-5 py-4">
-            <div className="mb-2 flex items-center justify-between gap-3">
-              <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-[#6B7280]">Структура суммы заказов</span>
-              <span className="text-[11px] font-bold text-[#9CA3AF]">база: {formatCurrency(moneyFlowBase)}</span>
+          <div className="grid grid-cols-1 gap-3 border-t border-[#E6E9EF] px-5 py-4 sm:grid-cols-3">
+            <div className="rounded-[8px] border border-orange-100 bg-orange-50 px-4 py-3">
+              <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-orange-500">К доплате сейчас</p>
+              <p className="mt-1 text-[18px] font-black text-orange-600">{formatCurrency(selectedOutstanding)}</p>
+              <p className="mt-1 text-[11px] font-semibold text-orange-500">включая недоплаты прошлых месяцев</p>
             </div>
-            <div className="flex h-3 overflow-hidden rounded-full bg-[#E6E9EF]">
-              <div className="bg-emerald-500" style={{ width: `${moneyFlow.paidPercent}%` }} />
-              <div className="bg-orange-400" style={{ width: `${moneyFlow.owedPercent}%` }} />
-              <div className="bg-red-400" style={{ width: `${moneyFlow.returnsPercent}%` }} />
-              <div className="bg-[#1F2937]" style={{ width: `${moneyFlow.expensesPercent}%` }} />
+            <div className="rounded-[8px] border border-[#E6E9EF] bg-[#F6F7F9] px-4 py-3">
+              <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-[#6B7280]">Результат месяца</p>
+              <p className={cn('mt-1 text-[18px] font-black', actualNetForPeriod < 0 ? 'text-red-500' : 'text-emerald-600')}>{formatCurrency(actualNetForPeriod)}</p>
+              <p className="mt-1 text-[11px] font-semibold text-[#9CA3AF]">приход − расходы − возвраты</p>
             </div>
-            <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] font-bold text-[#6B7280] sm:grid-cols-4">
-              <div><span className="mr-2 inline-block h-2 w-2 rounded-full bg-emerald-500" />Приход {formatCurrency(actualIncomeForPeriod)}</div>
-              <div><span className="mr-2 inline-block h-2 w-2 rounded-full bg-orange-400" />К доплате {formatCurrency(selectedFinancialStats.owed)}</div>
-              <div><span className="mr-2 inline-block h-2 w-2 rounded-full bg-red-400" />Возвраты {formatCurrency(selectedFinancialStats.returns)}</div>
-              <div><span className="mr-2 inline-block h-2 w-2 rounded-full bg-[#1F2937]" />Расходы {formatCurrency(actualExpensesForPeriod)}</div>
+            <div className="rounded-[8px] border border-[#E6E9EF] bg-white px-4 py-3">
+              <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-[#6B7280]">Текущий баланс Точки</p>
+              <p className={cn('mt-1 text-[18px] font-black', currentBankBalance < 0 ? 'text-red-500' : 'text-[#1F2937]')}>{formatCurrency(currentBankBalance)}</p>
+              <p className="mt-1 text-[11px] font-semibold text-[#9CA3AF]">не путать с результатом выбранного месяца</p>
             </div>
           </div>
         </div>
@@ -737,6 +727,7 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
                     <Bar dataKey="sales" name="Продажи" fill="#1F2937" radius={[5, 5, 0, 0]} />
                     <Bar dataKey="income" name="Поступило" fill="#10B981" radius={[5, 5, 0, 0]} />
                     <Bar dataKey="expenses" name="Расходы" fill="#F87171" radius={[5, 5, 0, 0]} />
+                    <Bar dataKey="refunds" name="Возвраты" fill="#F59E0B" radius={[5, 5, 0, 0]} />
                   </BarChart>
                 </ResponsiveContainer>
               ) : <div className="flex h-full items-center justify-center text-[13px] font-semibold text-[#9CA3AF]">Сравнение загрузится вместе с выпиской Точки</div>}

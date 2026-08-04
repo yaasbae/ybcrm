@@ -6581,11 +6581,10 @@ function normalizeFinancePartyName(value: any) {
 }
 
 function isKnownOwnAccountTransfer(operation: any, configuredNames: any[] = []) {
-  const text = normalizeFinancePartyName([
-    operation?.counterparty,
-    operation?.description,
-    operation?.rawDescription,
-  ].filter(Boolean).join(' '));
+  const directionalParty = operation?.direction === 'income'
+    ? operation?.debtorName
+    : operation?.creditorName;
+  const text = normalizeFinancePartyName(directionalParty || operation?.counterparty);
   if (!text) return false;
 
   const ownPartyNames = [
@@ -6599,6 +6598,22 @@ function isKnownOwnAccountTransfer(operation: any, configuredNames: any[] = []) 
   // Не используем одно только ФИО: клиент с таким же именем не должен
   // случайно исчезнуть из доходов. Нужен полный признак собственного ИП.
   return ownPartyNames.some(name => text.includes(name));
+}
+
+function isTochkaRefundOperation(operation: any) {
+  if (operation?.direction !== 'expense') return false;
+  const text = normalizeFinancePartyName([
+    operation?.counterparty,
+    operation?.description,
+    operation?.rawDescription,
+  ].filter(Boolean).join(' '));
+  return [
+    'возврат покупателю',
+    'возврат клиенту',
+    'возврат оплаты',
+    'возврат денежных средств',
+    'refund',
+  ].some(marker => text.includes(normalizeFinancePartyName(marker)));
 }
 
 function getTochkaStatementId(raw: any) {
@@ -6734,6 +6749,20 @@ function normalizeTochkaOperation(operation: any, fallbackAccountId = '') {
     category: isExpense ? classifyExpenseCategory(`${rawDescription} ${description}`) : 'Доходы',
     description,
     rawDescription,
+    debtorName: getTochkaText(
+      operation?.DebtorParty?.name,
+      operation?.DebtorParty?.Name,
+      operation?.debtorParty?.name,
+      operation?.debtorName,
+      operation?.DebtorName
+    ),
+    creditorName: getTochkaText(
+      operation?.CreditorParty?.name,
+      operation?.CreditorParty?.Name,
+      operation?.creditorParty?.name,
+      operation?.creditorName,
+      operation?.CreditorName
+    ),
     counterparty: getTochkaText(
       operation?.counterpartyName,
       operation?.CounterpartyName,
@@ -8200,6 +8229,7 @@ app.get('/api/tochka/finance-summary', async (req, res) => {
         operation.isInternalTransfer = true;
         operation.internalTransferReason = 'own_legal_entity';
       }
+      operation.isRefund = !operation.isInternalTransfer && isTochkaRefundOperation(operation);
     }
     const operations = comparisonOperations.filter((operation: any) => operationIsWithinDates(operation, dateFrom, dateTo));
 
@@ -8218,6 +8248,7 @@ app.get('/api/tochka/finance-summary', async (req, res) => {
         currentOrderReceipts: 0,
         priorOrderReceipts: 0,
         unmatchedIncome: 0,
+        refunds: 0,
       });
     }
     for (const operation of comparisonOperations) {
@@ -8225,7 +8256,10 @@ app.get('/api/tochka/finance-summary', async (req, res) => {
       const row = monthlyComparisonMap.get(key);
       if (!row) continue;
       if (operation.isInternalTransfer) continue;
-      if (operation.direction === 'expense') row.expenses += operation.absAmount;
+      if (operation.direction === 'expense') {
+        if (operation.isRefund) row.refunds += operation.absAmount;
+        else row.expenses += operation.absAmount;
+      }
       else {
         row.income += operation.absAmount;
         const matchedOrder = findFinanceOrderForOperation(operation, allOrders);
@@ -8233,11 +8267,28 @@ app.get('/api/tochka/finance-summary', async (req, res) => {
         else if (getFinanceMonthKey(matchedOrder?.date || matchedOrder?.orderDate || matchedOrder?.createdAt) === key) row.currentOrderReceipts += operation.absAmount;
         else row.priorOrderReceipts += operation.absAmount;
       }
-      row.net = row.income - row.expenses;
+      row.net = row.income - row.expenses - row.refunds;
+    }
+
+    // Старые возвраты могли быть записаны в CRM, но отсутствовать в доступной
+    // банковской выписке. Используем их только как резервный источник, чтобы не
+    // задвоить возврат, который уже найден среди операций Точки.
+    const crmRefundsByMonth = new Map<string, number>();
+    for (const order of allOrders) {
+      const refundAmount = Number(order?.refundAmount) || 0;
+      if (refundAmount <= 0) continue;
+      const refundMonthKey = getFinanceMonthKey(order?.refundedAt || order?.refundDate || order?.updatedAt);
+      if (!refundMonthKey) continue;
+      crmRefundsByMonth.set(refundMonthKey, (crmRefundsByMonth.get(refundMonthKey) || 0) + refundAmount);
+    }
+    for (const [key, row] of monthlyComparisonMap.entries()) {
+      if (!row.refunds) row.refunds = crmRefundsByMonth.get(key) || 0;
+      row.net = row.income - row.expenses - row.refunds;
     }
     const monthlyComparison = Array.from(monthlyComparisonMap.values());
     const selectedComparison = monthlyComparisonMap.get(monthKey) || {};
-    const expenses = operations.filter((operation: any) => operation.direction === 'expense' && !operation.isInternalTransfer);
+    const expenses = operations.filter((operation: any) => operation.direction === 'expense' && !operation.isInternalTransfer && !operation.isRefund);
+    const refunds = operations.filter((operation: any) => operation.direction === 'expense' && !operation.isInternalTransfer && operation.isRefund);
     const incomes = operations.filter((operation: any) => operation.direction === 'income' && !operation.isInternalTransfer);
     const expenseCategoryMap = new Map<string, { category: string; amount: number; count: number }>();
     for (const operation of expenses) {
@@ -8300,11 +8351,18 @@ app.get('/api/tochka/finance-summary', async (req, res) => {
         currentMonthOrderReceipts: Number(selectedComparison.currentOrderReceipts) || 0,
         priorMonthDopayments: Number(selectedComparison.priorOrderReceipts) || 0,
         unmatchedIncome: Number(selectedComparison.unmatchedIncome) || 0,
-        remainingForSelectedOrders: monthOrders.filter(isFinanceActiveOrder).reduce((sum: number, order: any) => sum + Math.max(0, getFinanceOrderTotal(order) - getFinanceOrderPaidAmount(order)), 0),
+        refunds: Number(selectedComparison.refunds) || 0,
+        remainingForSelectedOrders: allOrders.filter((order: any) => {
+          if (!isFinanceActiveOrder(order)) return false;
+          const orderMonthKey = getFinanceMonthKey(order?.date || order?.orderDate || order?.createdAt);
+          return Boolean(orderMonthKey && orderMonthKey <= monthKey);
+        }).reduce((sum: number, order: any) => sum + Math.max(0, getFinanceOrderTotal(order) - getFinanceOrderPaidAmount(order)), 0),
+        remainingFromSelectedMonth: monthOrders.filter(isFinanceActiveOrder).reduce((sum: number, order: any) => sum + Math.max(0, getFinanceOrderTotal(order) - getFinanceOrderPaidAmount(order)), 0),
       },
       monthlyComparison,
       actualIncome: incomes.reduce((sum: number, operation: any) => sum + operation.absAmount, 0),
       actualExpenses: expenses.reduce((sum: number, operation: any) => sum + operation.absAmount, 0),
+      actualRefunds: (Number(selectedComparison.refunds) || refunds.reduce((sum: number, operation: any) => sum + operation.absAmount, 0)),
       accountExpenses: Array.from(accountExpenseMap.values()),
       cards: Array.from(cardExpenseMap.values()),
       expenseCategories: Array.from(expenseCategoryMap.values()).sort((a, b) => b.amount - a.amount),
