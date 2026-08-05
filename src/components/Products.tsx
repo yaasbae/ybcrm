@@ -524,7 +524,7 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
   const renderInlineEditor = (product: ProductItem) => {
     if (expandedProductId !== product.id || editingId !== product.id) return null;
 
-    const inputClass = "h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-medium text-slate-800 outline-none transition focus:border-[#7D7DE6] focus:ring-2 focus:ring-[#7D7DE6]/10";
+    const inputClass = "h-11 min-w-0 w-full max-w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-medium text-slate-800 outline-none transition focus:border-[#7D7DE6] focus:ring-2 focus:ring-[#7D7DE6]/10";
     const labelClass = "mb-1.5 block text-[10px] font-bold uppercase tracking-[0.12em] text-slate-400";
     const hasUploadingPhotos = Object.values(photoUploadStatus).some(status => status === 'uploading');
 
@@ -533,15 +533,15 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
         initial={{ opacity: 0, height: 0 }}
         animate={{ opacity: 1, height: 'auto' }}
         exit={{ opacity: 0, height: 0 }}
-        className="overflow-hidden bg-[#F8F9FC]"
+        className="w-full max-w-full overflow-hidden bg-[#F8F9FC]"
       >
         <div className="border-y border-[#E6E9EF] p-4 sm:p-6">
-          <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div>
+          <div className="mb-5 flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0">
               <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-[#7D7DE6]">Карточка товара</p>
               <h4 className="mt-1 text-lg font-bold text-slate-900">Редактирование без перехода</h4>
             </div>
-            <div className="flex flex-wrap gap-2">
+            <div className="flex min-w-0 flex-wrap gap-2 sm:justify-end">
               <button
                 type="button"
                 onClick={() => {
@@ -563,7 +563,7 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
             </div>
           </div>
 
-          <div className="grid gap-5 xl:grid-cols-[220px_minmax(0,1fr)]">
+          <div className="grid min-w-0 gap-5 xl:grid-cols-[220px_minmax(0,1fr)]">
             <div className="space-y-3">
               <div className="grid grid-cols-2 gap-2">
                 {(newProduct.photos || []).slice(0, 4).map((photo, index) => (
@@ -590,68 +590,68 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
               <p className="text-xs leading-5 text-slate-400">До 5 фотографий. Изменения сохраняются в карточке товара.</p>
             </div>
 
-            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-              <label className="sm:col-span-2 xl:col-span-2">
+            <div className="grid min-w-0 gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+              <label className="min-w-0 sm:col-span-2">
                 <span className={labelClass}>Наименование</span>
                 <input className={inputClass} value={newProduct.name || ''} onChange={e => setNewProduct({...newProduct, name: e.target.value})} />
               </label>
-              <label>
+              <label className="min-w-0">
                 <span className={labelClass}>Цвет</span>
                 <input className={inputClass} value={newProduct.color || ''} onChange={e => setNewProduct({...newProduct, color: e.target.value})} />
               </label>
-              <label>
+              <label className="min-w-0">
                 <span className={labelClass}>Размеры</span>
                 <input className={inputClass} value={newProduct.sizeGrid || ''} onChange={e => setNewProduct({...newProduct, sizeGrid: e.target.value})} />
               </label>
-              <label>
+              <label className="min-w-0">
                 <span className={labelClass}>Рост</span>
                 <input className={inputClass} value={newProduct.height || ''} onChange={e => setNewProduct({...newProduct, height: e.target.value})} />
               </label>
-              <label>
+              <label className="min-w-0">
                 <span className={labelClass}>Обхваты</span>
                 <input className={inputClass} value={newProduct.girths || ''} onChange={e => setNewProduct({...newProduct, girths: e.target.value})} />
               </label>
-              <label>
+              <label className="min-w-0">
                 <span className={labelClass}>Вес, г</span>
                 <input className={inputClass} value={newProduct.weight || ''} onChange={e => setNewProduct({...newProduct, weight: e.target.value})} />
               </label>
-              <label>
+              <label className="min-w-0">
                 <span className={labelClass}>Нанесение</span>
                 <input className={inputClass} value={newProduct.applicationType || ''} onChange={e => setNewProduct({...newProduct, applicationType: e.target.value})} />
               </label>
-              <label>
+              <label className="min-w-0">
                 <span className={labelClass}>Номер лекала</span>
                 <input className={inputClass} value={newProduct.patternNumber || ''} onChange={e => setNewProduct({...newProduct, patternNumber: e.target.value})} />
               </label>
-              <label>
+              <label className="min-w-0">
                 <span className={labelClass}>Год выпуска</span>
                 <input className={inputClass} value={newProduct.releaseYear || ''} onChange={e => setNewProduct({...newProduct, releaseYear: e.target.value})} />
               </label>
-              <label>
+              <label className="min-w-0">
                 <span className={labelClass}>Себестоимость, ₽</span>
                 <input type="number" className={`${inputClass} font-bold text-red-600`} value={newProduct.costPrice ?? ''} onChange={e => setNewProduct({...newProduct, costPrice: Number(e.target.value)})} />
               </label>
-              <label>
+              <label className="min-w-0">
                 <span className={labelClass}>Цена продажи, ₽</span>
                 <input type="number" className={`${inputClass} font-bold text-emerald-600`} value={newProduct.sellingPrice ?? ''} onChange={e => setNewProduct({...newProduct, sellingPrice: Number(e.target.value)})} />
               </label>
-              <label>
+              <label className="min-w-0">
                 <span className={labelClass}>Страна производства</span>
                 <input className={inputClass} value={newProduct.countryOfOrigin || ''} onChange={e => setNewProduct({...newProduct, countryOfOrigin: e.target.value})} />
               </label>
-              <label className="sm:col-span-2">
+              <label className="min-w-0 sm:col-span-2">
                 <span className={labelClass}>Состав</span>
                 <input className={inputClass} value={newProduct.composition || ''} onChange={e => setNewProduct({...newProduct, composition: e.target.value})} />
               </label>
-              <label className="sm:col-span-2">
+              <label className="min-w-0 sm:col-span-2">
                 <span className={labelClass}>Описание размеров</span>
                 <input className={inputClass} value={newProduct.sizeDetails || ''} onChange={e => setNewProduct({...newProduct, sizeDetails: e.target.value})} />
               </label>
-              <label className="sm:col-span-2 xl:col-span-4">
+              <label className="min-w-0 sm:col-span-2 xl:col-span-3 2xl:col-span-4">
                 <span className={labelClass}>Ссылка на публикацию</span>
                 <input type="url" className={inputClass} placeholder="https://instagram.com/..." value={newProduct.postUrl || ''} onChange={e => setNewProduct({...newProduct, postUrl: e.target.value})} />
               </label>
-              <label className="sm:col-span-2 xl:col-span-4">
+              <label className="min-w-0 sm:col-span-2 xl:col-span-3 2xl:col-span-4">
                 <span className={labelClass}>Описание товара</span>
                 <textarea className="min-h-24 w-full resize-y rounded-xl border border-slate-200 bg-white px-3 py-3 text-sm font-medium text-slate-800 outline-none transition focus:border-[#7D7DE6] focus:ring-2 focus:ring-[#7D7DE6]/10" value={newProduct.description || ''} onChange={e => setNewProduct({...newProduct, description: e.target.value})} />
               </label>
