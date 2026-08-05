@@ -1953,11 +1953,6 @@ app.get("/api/orders/:orderId/document.pdf", async (req, res) => {
     </svg>`;
     const compactSummaryPng = await sharp(Buffer.from(compactSummarySvg)).png().toBuffer();
 
-    // The printable document is always a complete set: the CRM order sheet first,
-    // followed by the official CDEK waybill when the shipment has been created.
-    const coverPage = pdfDocument.addPage([595.28, 841.89]);
-    coverPage.drawImage(coverImage, { x: 0, y: 0, width: 595.28, height: 841.89 });
-
     const shouldIncludeCdekWaybill = Boolean(
       order.cdekUuid ||
       order.cdekNumber ||
@@ -1994,6 +1989,10 @@ app.get("/api/orders/:orderId/document.pdf", async (req, res) => {
       pdfDocument.addPage(cdekPage);
       const summaryImage = await pdfDocument.embedPng(compactSummaryPng);
       cdekPage.drawImage(summaryImage, { x: 24, y: 24, width: 547.28, height: 247 });
+    } else {
+      // Orders without CDEK keep the standalone CRM order document.
+      const coverPage = pdfDocument.addPage([595.28, 841.89]);
+      coverPage.drawImage(coverImage, { x: 0, y: 0, width: 595.28, height: 841.89 });
     }
 
     const bytes = await pdfDocument.save();
