@@ -1060,7 +1060,7 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
                         <label className="text-[11px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2">
                           <Instagram size={14} className="text-pink-500" /> Ссылки по цветам (Multi-posts)
                         </label>
-                        <button 
+                        <button
                           onClick={() => {
                             setNewProduct(prev => ({
                               ...prev,
@@ -1464,23 +1464,17 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
               onClick={products.length > 0 ? handleExportExcel : undefined}
             />
           </div>
-          {/* Desktop Table View */}
-          <div className="hidden lg:block overflow-x-auto">
-            <table className="w-full min-w-[1320px] table-fixed text-left border-collapse">
+          {/* Desktop / tablet summary rows — grouped like the orders list, without horizontal scrolling. */}
+          <div className="hidden lg:block">
+            <table className="w-full table-fixed border-collapse text-left">
               <thead>
                 <tr className="bg-slate-50/50">
-                  <th className="w-[76px] px-5 py-4 text-[10px] font-bold uppercase tracking-widest text-slate-400">Фото</th>
-                  <th className="w-[238px] px-5 py-4 text-[10px] font-bold uppercase tracking-widest text-slate-400">Наименование</th>
-                  <th className="w-[128px] px-5 py-4 text-[10px] font-bold uppercase tracking-widest text-slate-400">Цвет</th>
-                  <th className="w-[105px] px-5 py-4 text-[10px] font-bold uppercase tracking-widest text-slate-400">Размеры</th>
-                  <th className="w-[92px] px-5 py-4 text-[10px] font-bold uppercase tracking-widest text-slate-400">Рост</th>
-                  <th className="w-[120px] px-5 py-4 text-[10px] font-bold uppercase tracking-widest text-slate-400">Обхваты</th>
-                  <th className="w-[80px] px-5 py-4 text-[10px] font-bold uppercase tracking-widest text-slate-400">Вес</th>
-                  <th className="w-[142px] px-5 py-4 text-[10px] font-bold uppercase tracking-widest text-slate-400">Нанесение</th>
-                  <th className="w-[94px] px-5 py-4 text-[10px] font-bold uppercase tracking-widest text-slate-400">Лекало</th>
-                  <th className="w-[118px] px-5 py-4 text-[10px] font-bold uppercase tracking-widest text-slate-400">Себест.</th>
-                  <th className="w-[110px] px-5 py-4 text-[10px] font-bold uppercase tracking-widest text-slate-400">Цена</th>
-                  <th className="w-[120px] px-5 py-4 text-right text-[10px] font-bold uppercase tracking-widest text-slate-400">Действия</th>
+                  <th className="w-[72px] px-4 py-4 text-[10px] font-bold uppercase tracking-widest text-slate-400">Фото</th>
+                  <th className="w-[26%] px-4 py-4 text-[10px] font-bold uppercase tracking-widest text-slate-400">Товар</th>
+                  <th className="w-[20%] px-4 py-4 text-[10px] font-bold uppercase tracking-widest text-slate-400">Вариант</th>
+                  <th className="w-[25%] px-4 py-4 text-[10px] font-bold uppercase tracking-widest text-slate-400">Производство</th>
+                  <th className="w-[20%] px-4 py-4 text-[10px] font-bold uppercase tracking-widest text-slate-400">Стоимость</th>
+                  <th className="w-[72px] px-4 py-4 text-right text-[10px] font-bold uppercase tracking-widest text-slate-400">Открыть</th>
                 </tr>
               </thead>
               <tbody>
@@ -1495,7 +1489,7 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
                         expandedProductId === product.id && "bg-[#F8F9FC]"
                       )}
                     >
-                      <td className="px-5 py-2">
+                      <td className="px-4 py-3">
                         <div className="h-11 w-11 overflow-hidden rounded-[8px] border border-[#E6E9EF] bg-[#F6F7F9]">
                           <img 
                             src={product.photos[0] || 'https://picsum.photos/seed/product/400/400'} 
@@ -1505,74 +1499,63 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
                           />
                         </div>
                       </td>
-                      <td className="px-5 py-2">
-                        <span className="block truncate text-[14px] font-semibold leading-5 text-[#1F2937]" title={product.name}>{product.name}</span>
-                      </td>
-                      <td className="px-5 py-2">
-                        <span className="block truncate text-[14px] font-medium leading-5 text-[#6B7280]" title={product.color || undefined}>{product.color || '—'}</span>
-                      </td>
-                      <td className="px-5 py-2">
-                        <span className="block truncate text-[14px] font-medium leading-5 text-[#6B7280]">{product.sizeGrid || '—'}</span>
-                      </td>
-                      <td className="px-5 py-2">
-                        <span className="block truncate text-[14px] font-medium leading-5 text-[#6B7280]">{product.height || '—'}</span>
-                      </td>
-                      <td className="px-5 py-2">
-                        <span className="block truncate text-[14px] font-medium leading-5 text-[#6B7280]" title={product.girths || undefined}>{product.girths || '—'}</span>
-                      </td>
-                      <td className="px-5 py-2">
-                        <span className="block truncate text-[14px] font-medium leading-5 text-[#6B7280]">{product.weight || '—'}</span>
-                      </td>
-                      <td className="px-5 py-2">
-                        <span className="block truncate text-[14px] font-medium leading-5 text-[#6B7280]" title={product.applicationType || undefined}>{product.applicationType || '—'}</span>
-                      </td>
-                      <td className="px-5 py-2">
-                        <span className="block truncate text-[13px] font-semibold uppercase tracking-[0.08em] text-[#6B7280]">{product.patternNumber || '—'}</span>
-                      </td>
-                      <td className="px-5 py-2">
-                        <div className="flex flex-col">
-                          <span className="text-[14px] font-semibold leading-5 text-[#F06B6B]">{product.costPrice ? `${product.costPrice.toLocaleString()} ₽` : '—'}</span>
-                          {product.unitEconomics?.scenarioName && (
-                            <span className="block max-w-[88px] truncate text-[10px] font-semibold uppercase tracking-[0.08em] text-[#9CA3AF]" title={product.unitEconomics.scenarioName}>
-                              {product.unitEconomics.scenarioName}
+                      <td className="min-w-0 px-4 py-3">
+                        <div className="flex min-w-0 items-center gap-2">
+                          <div className="min-w-0">
+                            <span className="block truncate text-[14px] font-semibold leading-5 text-[#1F2937]" title={product.name}>{product.name}</span>
+                            <span className="mt-0.5 block truncate text-[10px] font-semibold uppercase tracking-[0.08em] text-[#9CA3AF]">
+                              {product.patternNumber ? `Лекало ${product.patternNumber}` : 'Без лекала'}{product.releaseYear ? ` · ${product.releaseYear}` : ''}
                             </span>
-                          )}
-                        </div>
-                      </td>
-                      <td className="px-5 py-2">
-                        <span className="text-[14px] font-semibold leading-5 text-[#2EBA7F]">{product.sellingPrice ? `${product.sellingPrice.toLocaleString()} ₽` : '—'}</span>
-                      </td>
-                      <td className="px-5 py-2 text-right">
-                        <div className="flex items-center justify-end gap-2">
-                          <button 
+                          </div>
+                          <button
+                            type="button"
                             onClick={() => {
                               const url = `${window.location.origin}/product/${product.id}`;
                               navigator.clipboard.writeText(url);
                               alert("Ссылка на товар скопирована!");
                             }}
-                            className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] text-[#6B7280] transition-colors hover:bg-[#F6F7F9] hover:text-[#1F2937]"
+                            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[8px] text-[#9CA3AF] transition-colors hover:bg-[#F6F7F9] hover:text-[#1F2937]"
                             title="Копировать ссылку"
                           >
                             <LinkIcon size={14} />
                           </button>
+                        </div>
+                      </td>
+                      <td className="min-w-0 px-4 py-3">
+                        <div className="min-w-0 space-y-1">
+                          <p className="truncate text-[13px] font-semibold text-[#4B5563]" title={product.color || undefined}>{product.color || 'Цвет не указан'}</p>
+                          <p className="truncate text-[11px] font-medium text-[#9CA3AF]">
+                            {[product.sizeGrid, product.height].filter(Boolean).join(' / ') || 'Размер и рост не указаны'}
+                          </p>
+                        </div>
+                      </td>
+                      <td className="min-w-0 px-4 py-3">
+                        <div className="min-w-0 space-y-1">
+                          <p className="truncate text-[12px] font-semibold text-[#4B5563]" title={product.applicationType || undefined}>{product.applicationType || 'Нанесение не указано'}</p>
+                          <p className="truncate text-[10px] font-medium text-[#9CA3AF]">
+                            {[product.girths && `обхваты ${product.girths}`, product.weight && `${product.weight} г`].filter(Boolean).join(' · ') || 'Параметры не указаны'}
+                          </p>
+                        </div>
+                      </td>
+                      <td className="min-w-0 px-4 py-3">
+                        <div className="min-w-0">
+                          <p className="truncate text-[13px] font-semibold text-[#2EBA7F]">{product.sellingPrice ? `${product.sellingPrice.toLocaleString()} ₽` : 'Цена не указана'}</p>
+                          <p className="mt-1 truncate text-[10px] font-semibold text-[#F06B6B]">себест. {product.costPrice ? `${product.costPrice.toLocaleString()} ₽` : '—'}</p>
+                        </div>
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <div className="flex justify-end">
                           <button 
                             onClick={() => handleToggleProduct(product)}
                             className={cn(
-                              "inline-flex h-8 items-center justify-center gap-1.5 rounded-[8px] px-2.5 text-white transition-colors",
-                              expandedProductId === product.id ? "bg-slate-900 hover:bg-slate-800" : "bg-[#7D7DE6] hover:bg-[#7070D8]"
+                              "inline-flex h-9 w-9 cursor-pointer items-center justify-center rounded-[8px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7D7DE6]/40",
+                              expandedProductId === product.id ? "bg-slate-900 text-white hover:bg-slate-800" : "border border-[#E6E9EF] bg-white text-[#7D7DE6] hover:bg-[#EEEEFF]"
                             )}
                             title={expandedProductId === product.id ? "Свернуть" : "Развернуть товар"}
                             aria-expanded={expandedProductId === product.id}
+                            aria-label={expandedProductId === product.id ? "Свернуть товар" : "Развернуть товар"}
                           >
                             {expandedProductId === product.id ? <ChevronDown size={14} /> : <Plus size={14} />}
-                            <span className="text-[10px] font-bold uppercase tracking-wider">{expandedProductId === product.id ? 'Свернуть' : 'Открыть'}</span>
-                          </button>
-                          <button 
-                            onClick={() => handleDeleteProduct(product.id)}
-                            className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] bg-[#FFF1F1] text-[#F06B6B] transition-colors hover:bg-[#FFE4E4]"
-                            title="Удалить"
-                          >
-                            <Trash2 size={14} />
                           </button>
                         </div>
                       </td>
@@ -1580,7 +1563,7 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
                     <AnimatePresence initial={false}>
                       {expandedProductId === product.id && (
                         <tr>
-                          <td colSpan={12} className="p-0">
+                          <td colSpan={6} className="p-0">
                             {renderInlineEditor(product)}
                           </td>
                         </tr>
@@ -1590,7 +1573,7 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
                   ))
                 ) : (
                   <tr>
-                    <td colSpan={12} className="px-4 py-20 text-center">
+                    <td colSpan={6} className="px-4 py-20 text-center">
                       <div className="flex flex-col items-center gap-2">
                         <Package className="text-slate-200" size={32} />
                         <p className="text-slate-400 text-sm font-medium">Список товаров пуст</p>
@@ -1606,9 +1589,23 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
           <div className="lg:hidden divide-y divide-slate-50">
             {products.length > 0 ? (
               products.map((product) => (
-                <div key={product.id} className={cn("p-4 space-y-4", expandedProductId === product.id && "bg-[#F8F9FC]")}>
-                  <div className="flex gap-4">
-                    <div className="w-20 h-20 rounded-2xl overflow-hidden bg-slate-100 border border-slate-100 shrink-0">
+                <div key={product.id} className={cn("space-y-4 p-4", expandedProductId === product.id && "bg-[#F8F9FC]")}>
+                  <div className="flex items-start justify-end">
+                    <button
+                      type="button"
+                      onClick={() => handleToggleProduct(product)}
+                      className="inline-flex min-h-11 items-center gap-1.5 rounded-lg px-1 text-[#B2B7C4] transition-colors hover:text-[#6969D8] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7D7DE6]/40"
+                      aria-expanded={expandedProductId === product.id}
+                    >
+                      <span className="text-[9px] font-light tracking-wide">
+                        {expandedProductId === product.id ? 'Свернуть товар' : 'Развернуть товар'}
+                      </span>
+                      {expandedProductId === product.id ? <ChevronDown size={16} /> : <Plus size={16} />}
+                    </button>
+                  </div>
+
+                  <div className="flex min-w-0 gap-3">
+                    <div className="h-16 w-16 shrink-0 overflow-hidden rounded-xl border border-slate-100 bg-slate-100 min-[380px]:h-20 min-[380px]:w-20">
                       <img 
                         src={product.photos[0] || 'https://picsum.photos/seed/product/400/400'} 
                         alt={product.name} 
@@ -1616,46 +1613,34 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
                         referrerPolicy="no-referrer"
                       />
                     </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex justify-between items-start">
-                        <h3 className="text-base font-bold text-slate-900 truncate">{product.name}</h3>
-                        <div className="flex gap-1">
-                          <button 
-                            onClick={() => {
-                              const url = `${window.location.origin}/product/${product.id}`;
-                              navigator.clipboard.writeText(url);
-                              alert("Ссылка на товар скопирована!");
-                            }}
-                            className="p-2 text-slate-400 bg-slate-50 rounded-xl"
-                          >
-                            <LinkIcon size={14} />
-                          </button>
-                          <button 
-                            onClick={() => handleToggleProduct(product)}
-                            className={cn(
-                              "inline-flex h-9 items-center gap-1.5 rounded-xl px-2.5",
-                              expandedProductId === product.id ? "bg-slate-900 text-white" : "bg-[#EEEEFF] text-[#6969D8]"
-                            )}
-                            aria-expanded={expandedProductId === product.id}
-                          >
-                            {expandedProductId === product.id ? <ChevronDown size={14} /> : <Plus size={14} />}
-                            <span className="text-[9px] font-bold uppercase tracking-wider">{expandedProductId === product.id ? 'Свернуть' : 'Открыть'}</span>
-                          </button>
-                          <button 
-                            onClick={() => handleDeleteProduct(product.id)}
-                            className="p-2 text-red-500 bg-red-50 rounded-xl"
-                          >
-                            <Trash2 size={14} />
-                          </button>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex min-w-0 items-start gap-2">
+                        <div className="min-w-0 flex-1">
+                          <h3 className="break-words text-[15px] font-bold leading-5 text-slate-900">{product.name}</h3>
+                          <p className="mt-1 truncate text-[10px] font-bold uppercase tracking-widest text-slate-400">
+                            {product.patternNumber ? `Лекало ${product.patternNumber}` : 'Без лекала'}{product.releaseYear ? ` · ${product.releaseYear}` : ''}
+                          </p>
                         </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const url = `${window.location.origin}/product/${product.id}`;
+                            navigator.clipboard.writeText(url);
+                            alert("Ссылка на товар скопирована!");
+                          }}
+                          className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-slate-50 text-slate-400 transition-colors hover:bg-[#EEEEFF] hover:text-[#6969D8]"
+                          aria-label="Копировать ссылку на товар"
+                        >
+                          <LinkIcon size={15} />
+                        </button>
                       </div>
-                      <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mt-1">
-                        {product.patternNumber || 'Без лекала'} • {product.releaseYear}
+                      <p className="mt-3 line-clamp-2 text-xs font-medium leading-5 text-slate-500">
+                        {[product.color, product.sizeGrid, product.height].filter(Boolean).join(' · ') || 'Характеристики не указаны'}
                       </p>
                     </div>
                   </div>
                   
-                  <div className="grid grid-cols-2 gap-2">
+                  <div className="grid grid-cols-1 gap-2 min-[360px]:grid-cols-2">
                     <div className="bg-slate-50 p-2 rounded-xl">
                       <span className="text-[9px] font-bold text-slate-400 uppercase block mb-0.5">Цвет</span>
                       <span className="text-xs font-medium text-slate-700">{product.color || '—'}</span>
