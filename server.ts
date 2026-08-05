@@ -1958,9 +1958,15 @@ app.get("/api/orders/:orderId/document.pdf", async (req, res) => {
     const coverPage = pdfDocument.addPage([595.28, 841.89]);
     coverPage.drawImage(coverImage, { x: 0, y: 0, width: 595.28, height: 841.89 });
 
-    if (order.cdekUuid) {
+    const shouldIncludeCdekWaybill = Boolean(
+      order.cdekUuid ||
+      order.cdekNumber ||
+      /сдэк|cdek/i.test(String(order.deliveryMethod || order.delivery || "")),
+    );
+
+    if (shouldIncludeCdekWaybill) {
       const cdekResult = await createCdekWaybillPdf(
-        String(order.cdekUuid),
+        String(order.cdekUuid || ""),
         String(order.cdekPrintUuid || ""),
         orderId,
       );
