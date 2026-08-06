@@ -30,6 +30,7 @@ import {
   UserCircle, Star, Calendar as CalendarIcon, BookOpen, Send, Sparkles, Wand2, Truck, ReceiptText, PlugZap, Instagram
 } from "lucide-react";
 import { motion } from "motion/react";
+import { PushNotificationButton } from "./components/PushNotificationButton";
 
 type AppView = 'home' | 'calculator' | 'analytics' | 'orders' | 'clients' | 'marketing' | 'order-form' | 'products' | 'ai-agent' | 'public-product' | 'public-payment' | 'finance' | 'payroll' | 'handbook' | 'broadcast' | 'broadcast-v2' | 'bot' | 'content' | 'studio' | 'cdek' | 'integrations' | 'instagram';
 
@@ -358,6 +359,7 @@ export default function App() {
             </div>
             
             <div className="flex items-center gap-4">
+              <PushNotificationButton />
               {/* Theme Toggle */}
               <div className="flex items-center gap-1 rounded-[8px] border border-[#E6E9EF] bg-[#F6F7F9] p-1">
                 <button 

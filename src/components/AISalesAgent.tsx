@@ -12,6 +12,7 @@ import { motion } from 'motion/react';
 import { cn } from '../lib/utils';
 import { db } from '../firebase';
 import { doc, getDoc, setDoc, collection, query, orderBy, limit, onSnapshot, getDocs, where, addDoc, deleteDoc, updateDoc } from 'firebase/firestore';
+import { emitPushEvent } from '../lib/pushNotifications';
 
 interface AISalesAgentProps {
   onBack?: () => void;
@@ -1208,7 +1209,7 @@ export const AISalesAgent: React.FC<AISalesAgentProps> = ({ onBack }) => {
                   try {
                     const product = products.find(p => p.id === orderForm.productId);
                     const price = Math.round((product?.sellingPrice || 0) * orderForm.quantity * (1 - (selectedContact.currentDiscount || 5) / 100));
-                    await addDoc(collection(db, 'orders_new'), {
+                    const createdOrder = await addDoc(collection(db, 'orders_new'), {
                       isFirebase: true,
                       date: new Date().toISOString(),
                       deadlineDate: new Date().toISOString(),
@@ -1231,6 +1232,10 @@ export const AISalesAgent: React.FC<AISalesAgentProps> = ({ onBack }) => {
                       finalPrice: price,
                       discountApplied: selectedContact.currentDiscount || 5,
                       createdAt: new Date().toISOString(),
+                    });
+                    void emitPushEvent('order_created', `order-created:${createdOrder.id}`, {
+                      orderId: createdOrder.id,
+                      clientName: selectedContact.fullName || '',
                     });
                     setIsOrderModalOpen(false);
                     alert("Заказ успешно создан!");

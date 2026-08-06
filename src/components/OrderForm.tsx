@@ -12,6 +12,7 @@ import { cn, formatCurrency } from '../lib/utils';
 import { db, OperationType, handleFirestoreError, storage } from '../firebase';
 import { collection, onSnapshot, doc, setDoc, query, orderBy, getDoc, updateDoc } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { emitPushEvent } from '../lib/pushNotifications';
 
 interface OrderFormProps {
   onBack: () => void;
@@ -316,6 +317,10 @@ export const OrderForm: React.FC<OrderFormProps> = ({ onBack, initialClient }) =
         shipmentDate,
       };
       await setDoc(doc(db, 'orders_new', id), orderNewData);
+      void emitPushEvent('order_created', `order-created:${id}`, {
+        orderId: id,
+        clientName,
+      });
 
       // Update CRM (contacts)
       if (phone || clientName) {

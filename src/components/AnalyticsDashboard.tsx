@@ -6,6 +6,7 @@ import {
 import { cn } from '../lib/utils';
 import { isPrepaymentOrder, PREPAYMENT_FILTER_VALUE } from '../lib/orderFilters';
 import { getConfirmedPaidAmount, getOutstandingPaymentAmount } from '../lib/orderPayments';
+import { emitPushEvent } from '../lib/pushNotifications';
 import { db } from '../firebase';
 import { doc, onSnapshot, setDoc, collection, deleteDoc, updateDoc, query } from 'firebase/firestore';
 const AnalyticsTab = lazy(() => import('./tabs/AnalyticsTab').then(m => ({ default: m.AnalyticsTab })));
@@ -289,6 +290,13 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
         }
 
         await updateDoc(doc(db, 'orders_new', orderId), ordersNewPatch);
+        if (field === 'manager' && String(finalValue || '').trim() && String(order.manager || '') !== String(finalValue || '')) {
+          void emitPushEvent('manager_assigned', `manager-assigned:${orderId}:${String(finalValue)}`, {
+            orderId,
+            clientName: order.clientName,
+            manager: String(finalValue),
+          });
+        }
       } catch (err) {
         console.error("Firebase update failed", err);
       }
@@ -400,6 +408,14 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
         deadlineDate: orderToCreate.deadlineDate.toISOString()
       });
       const createdId = orderToCreate.orderId;
+      if (orderToCreate.status !== 'Черновик') {
+        void emitPushEvent('order_created', `order-created:${createdId}`, {
+          orderId: createdId,
+          clientName: orderToCreate.clientName,
+          manager: orderToCreate.manager,
+          amount: orderToCreate.revenue + orderToCreate.deliveryPrice,
+        });
+      }
       setNewOrder({
         date: new Date(),
         orderId: '',

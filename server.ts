@@ -24,6 +24,7 @@ import { Telegraf, Markup } from "telegraf";
 import { GoogleGenAI, Modality } from "@google/genai";
 import sharp from "sharp";
 import { PDFDocument } from "pdf-lib";
+import webpush from "web-push";
 
 const _require = createRequire(import.meta.url);
 const Database = _require("better-sqlite3");
@@ -65,6 +66,13 @@ const GEMINI_TEXT_MODEL = process.env.GEMINI_TEXT_MODEL || "gemini-2.5-flash";
 const BROADCAST_MANAGER_BOT_URL = "https://t.me/YAASBAE_CLO_bot";
 const BROADCAST_MANAGER_BUTTON_TEXT = "Узнать подробности в бот";
 const DEFAULT_BROADCAST_DISPLAY_NAME = "YAASBAE Brand";
+let WEB_PUSH_PUBLIC_KEY = String(process.env.WEB_PUSH_PUBLIC_KEY || "").trim();
+let WEB_PUSH_PRIVATE_KEY = String(process.env.WEB_PUSH_PRIVATE_KEY || "").trim();
+const WEB_PUSH_SUBJECT = String(process.env.WEB_PUSH_SUBJECT || "https://ybcrm.ru").trim();
+
+if (WEB_PUSH_PUBLIC_KEY && WEB_PUSH_PRIVATE_KEY) {
+  webpush.setVapidDetails(WEB_PUSH_SUBJECT, WEB_PUSH_PUBLIC_KEY, WEB_PUSH_PRIVATE_KEY);
+}
 
 const pendingTgClients = new Map<string, { client: TelegramClient; phoneCodeHash: string }>();
 
@@ -149,6 +157,218 @@ app.use(express.json({
 }));
 app.use(express.text({ type: ['text/*', 'application/jwt'], limit: '1mb' }));
 app.use(express.urlencoded({ extended: true, limit: '20mb' }));
+
+type PushEventType =
+  | "order_created"
+  | "instagram_message"
+  | "payment_received"
+  | "cdek_status_changed"
+  | "payment_due"
+  | "order_overdue"
+  | "manager_assigned";
+
+type PushEventData = {
+  orderId?: string;
+  clientName?: string;
+  manager?: string;
+  amount?: number;
+  status?: string;
+  cdekNumber?: string;
+  conversationId?: string;
+  username?: string;
+  message?: string;
+  deadline?: string;
+};
+
+const PUSH_EVENT_TYPES = new Set<PushEventType>([
+  "order_created", "instagram_message", "payment_received", "cdek_status_changed",
+  "payment_due", "order_overdue", "manager_assigned",
+]);
+
+let webPushSetupPromise: Promise<boolean> | null = null;
+async function ensureWebPushConfigured() {
+  if (WEB_PUSH_PUBLIC_KEY && WEB_PUSH_PRIVATE_KEY && adminDb) {
+    webpush.setVapidDetails(WEB_PUSH_SUBJECT, WEB_PUSH_PUBLIC_KEY, WEB_PUSH_PRIVATE_KEY);
+    return true;
+  }
+  if (!adminDb) return false;
+  if (!webPushSetupPromise) {
+    webPushSetupPromise = (async () => {
+      const ref = adminDb.collection("settings").doc("web_push");
+      await adminDb.runTransaction(async (transaction: any) => {
+        const snap = await transaction.get(ref);
+        if (snap.exists && snap.data()?.publicKey && snap.data()?.privateKey) return;
+        const keys = webpush.generateVAPIDKeys();
+        transaction.set(ref, {
+          publicKey: keys.publicKey,
+          privateKey: keys.privateKey,
+          subject: WEB_PUSH_SUBJECT,
+          createdAt: FieldValue.serverTimestamp(),
+        }, { merge: true });
+      });
+      const snap = await ref.get();
+      WEB_PUSH_PUBLIC_KEY = String(snap.data()?.publicKey || "").trim();
+      WEB_PUSH_PRIVATE_KEY = String(snap.data()?.privateKey || "").trim();
+      if (!WEB_PUSH_PUBLIC_KEY || !WEB_PUSH_PRIVATE_KEY) return false;
+      webpush.setVapidDetails(WEB_PUSH_SUBJECT, WEB_PUSH_PUBLIC_KEY, WEB_PUSH_PRIVATE_KEY);
+      return true;
+    })().catch(error => {
+      webPushSetupPromise = null;
+      console.warn("[push] VAPID setup:", error?.message || error);
+      return false;
+    });
+  }
+  return webPushSetupPromise;
+}
+const pushOrderUrl = (orderId?: string) => `/orders${orderId ? `?order=${encodeURIComponent(orderId)}` : ""}`;
+
+async function requireCrmUser(req: any, res: any) {
+  const header = String(req.headers?.authorization || "");
+  const token = header.startsWith("Bearer ") ? header.slice(7).trim() : "";
+  if (!token) {
+    res.status(401).json({ error: "Нужен вход в CRM" });
+    return null;
+  }
+  try {
+    return await getAdminAuth().verifyIdToken(token);
+  } catch {
+    res.status(401).json({ error: "Сессия CRM устарела. Войдите заново." });
+    return null;
+  }
+}
+
+function pushContent(type: PushEventType, data: PushEventData) {
+  const order = data.orderId ? `заказ #${data.orderId}` : "заказ";
+  const client = String(data.clientName || data.username || "").trim();
+  const amount = Number(data.amount || 0);
+  switch (type) {
+    case "order_created": return { title: "Новый заказ", body: `${order}${client ? ` · ${client}` : ""}`, url: pushOrderUrl(data.orderId) };
+    case "instagram_message": return { title: "Новое сообщение Instagram", body: `${client || "Клиент"}${data.message ? `: ${String(data.message).slice(0, 110)}` : ""}`, url: `/instagram${data.conversationId ? `?conversation=${encodeURIComponent(data.conversationId)}` : ""}` };
+    case "payment_received": return { title: "Оплата получена", body: `${order}${amount ? ` · ${amount.toLocaleString("ru-RU")} ₽` : ""}`, url: pushOrderUrl(data.orderId) };
+    case "cdek_status_changed": return { title: `СДЭК: ${data.status || "статус изменён"}`, body: `${order}${data.cdekNumber ? ` · накладная ${data.cdekNumber}` : ""}`, url: pushOrderUrl(data.orderId) };
+    case "payment_due": return { title: "Нужна доплата", body: `${order}${amount ? ` · осталось ${amount.toLocaleString("ru-RU")} ₽` : ""}`, url: pushOrderUrl(data.orderId) };
+    case "order_overdue": return { title: "Заказ просрочен", body: `${order}${data.deadline ? ` · срок ${data.deadline}` : ""}`, url: pushOrderUrl(data.orderId) };
+    case "manager_assigned": return { title: "Назначен менеджер", body: `${order}${data.manager ? ` · ${data.manager}` : ""}`, url: pushOrderUrl(data.orderId) };
+  }
+}
+
+async function dispatchPushEvent(type: PushEventType, eventId: string, data: PushEventData = {}) {
+  if (!await ensureWebPushConfigured() || !PUSH_EVENT_TYPES.has(type) || !eventId) return { sent: 0, skipped: true };
+  const eventKey = createHash("sha256").update(eventId).digest("hex");
+  try {
+    await adminDb.collection("push_events").doc(eventKey).create({ type, eventId, data, createdAt: FieldValue.serverTimestamp() });
+  } catch (error: any) {
+    if (String(error?.code || "").includes("already-exists") || Number(error?.code) === 6) return { sent: 0, duplicate: true };
+    throw error;
+  }
+
+  const subscriptions = await adminDb.collection("push_subscriptions").where("enabled", "==", true).get();
+  const payload = JSON.stringify({ ...pushContent(type, data), tag: eventId, type });
+  let sent = 0;
+  await Promise.all(subscriptions.docs.map(async (item: any) => {
+    const subscription = item.data()?.subscription;
+    if (!subscription?.endpoint) return;
+    try {
+      await webpush.sendNotification(subscription, payload, { TTL: 60 * 60 * 24 });
+      sent += 1;
+    } catch (error: any) {
+      if ([404, 410].includes(Number(error?.statusCode))) await item.ref.delete().catch(() => null);
+      else console.warn("[push] delivery:", error?.statusCode || error?.message || error);
+    }
+  }));
+  return { sent };
+}
+
+app.get("/api/push/vapid-public-key", async (req, res) => {
+  if (!await requireCrmUser(req, res)) return;
+  if (!await ensureWebPushConfigured()) return res.status(503).json({ error: "Push-сервис ещё не настроен" });
+  res.json({ publicKey: WEB_PUSH_PUBLIC_KEY });
+});
+
+app.post("/api/push/subscribe", async (req, res) => {
+  const user: any = await requireCrmUser(req, res);
+  if (!user) return;
+  if (!await ensureWebPushConfigured()) return res.status(503).json({ error: "Push-сервис ещё не настроен" });
+  const subscription = req.body?.subscription;
+  if (!subscription?.endpoint || !subscription?.keys?.p256dh || !subscription?.keys?.auth) return res.status(400).json({ error: "Некорректная push-подписка" });
+  const id = createHash("sha256").update(String(subscription.endpoint)).digest("hex");
+  await adminDb.collection("push_subscriptions").doc(id).set({
+    subscription,
+    enabled: true,
+    uid: user.uid,
+    email: user.email || "",
+    name: user.name || "",
+    userAgent: String(req.headers["user-agent"] || "").slice(0, 300),
+    updatedAt: FieldValue.serverTimestamp(),
+  }, { merge: true });
+  res.json({ success: true });
+});
+
+app.delete("/api/push/unsubscribe", async (req, res) => {
+  if (!await requireCrmUser(req, res)) return;
+  const endpoint = String(req.body?.endpoint || "");
+  if (endpoint && adminDb) await adminDb.collection("push_subscriptions").doc(createHash("sha256").update(endpoint).digest("hex")).delete().catch(() => null);
+  res.json({ success: true });
+});
+
+app.post("/api/push/event", async (req, res) => {
+  if (!await requireCrmUser(req, res)) return;
+  const type = String(req.body?.type || "") as PushEventType;
+  const eventId = String(req.body?.eventId || "").slice(0, 240);
+  if (!PUSH_EVENT_TYPES.has(type) || !eventId) return res.status(400).json({ error: "Некорректное событие" });
+  const result = await dispatchPushEvent(type, eventId, req.body?.data || {});
+  res.json({ success: true, ...result });
+});
+
+const orderDateValue = (value: any) => {
+  if (value?.toDate) return value.toDate();
+  const parsed = new Date(value || "");
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
+
+app.post("/api/push/run-reminders", async (req, res) => {
+  if (!adminDb) return res.status(503).json({ error: "DB не подключена" });
+  const today = new Date();
+  const dateKey = today.toLocaleDateString("sv-SE", { timeZone: "Europe/Moscow" });
+  const moscowHour = Number(new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Europe/Moscow",
+    hour: "2-digit",
+    hour12: false,
+  }).format(today));
+  if (moscowHour !== 9) return res.json({ success: true, skipped: true, reason: "outside-reminder-window" });
+  try {
+    await adminDb.collection("push_jobs").doc(`reminders-${dateKey}`).create({
+      type: "daily-reminders",
+      startedAt: FieldValue.serverTimestamp(),
+    });
+  } catch (error: any) {
+    if (String(error?.code || "").includes("already-exists") || Number(error?.code) === 6) {
+      return res.json({ success: true, skipped: true, reason: "already-ran" });
+    }
+    throw error;
+  }
+  const snap = await adminDb.collection("orders_new").get();
+  let due = 0;
+  let overdue = 0;
+  for (const item of snap.docs) {
+    const data: any = item.data();
+    const status = String(data.status || "");
+    if (/доставлен|возврат|отмен/i.test(status)) continue;
+    const total = Number(data.revenue || 0) + Number(data.deliveryPrice || 0);
+    const paid = Number(data.paidAmount || 0) + Number(data.finalPaymentAmount || 0);
+    const balance = Math.max(0, total - paid);
+    if (balance > 0 && /предоплат|prepaid/i.test(`${data.paymentType || ""} ${data.paymentStatus || ""}`)) {
+      const result = await dispatchPushEvent("payment_due", `payment-due:${item.id}:${dateKey}`, { orderId: item.id, clientName: data.clientName, amount: balance });
+      if (!result.duplicate) due += 1;
+    }
+    const deadline = orderDateValue(data.deadlineDate || data.shipmentDate);
+    if (deadline && deadline.getTime() < today.getTime() && !/доставлен|отгружен/i.test(status)) {
+      const result = await dispatchPushEvent("order_overdue", `order-overdue:${item.id}:${dateKey}`, { orderId: item.id, clientName: data.clientName, deadline: deadline.toLocaleDateString("ru-RU") });
+      if (!result.duplicate) overdue += 1;
+    }
+  }
+  res.json({ success: true, due, overdue });
+});
 
 const MCP_PROXY_PATHS = new Set([
   "/.well-known/oauth-authorization-server",
@@ -590,6 +810,7 @@ async function mcpToolResult(name: string, args: any) {
   if (name === "orders.update" && adminDb && args?.id) {
     const snap = await mcpFindOrderDoc(String(args.id));
     if (!snap?.exists) return { ok: false, error: `Заказ ${args.id} не найден` };
+    const previousOrder = snap.data() || {};
     const patch: any = { updatedAt: FieldValue.serverTimestamp() };
     for (const key of ["status", "manager", "blogger", "source", "paymentType", "deliveryMethod", "clientName", "clientPhone", "clientInsta", "clientCity"]) {
       if (args?.[key] !== undefined) patch[key] = args[key];
@@ -608,12 +829,23 @@ async function mcpToolResult(name: string, args: any) {
       patch.revenue = items.reduce((sum: number, item: any) => sum + item.price * item.quantity, 0);
     }
     await adminDb.collection("orders_new").doc(snap.id).set(patch, { merge: true });
+    if (patch.manager && String(patch.manager) !== String(previousOrder.manager || "")) {
+      await dispatchPushEvent("manager_assigned", `manager-assigned:${snap.id}:${patch.manager}`, {
+        orderId: snap.id,
+        clientName: previousOrder.clientName,
+        manager: patch.manager,
+      }).catch(error => console.warn("[push] MCP manager:", error?.message || error));
+    }
     const updated = await adminDb.collection("orders_new").doc(snap.id).get();
     return { ok: true, order: mcpNormalizeOrder(updated.id, updated.data()) };
   }
   if (name === "orders.create" && adminDb) {
     const payload = mcpBuildOrderDoc(args || {});
     await adminDb.collection("orders_new").doc(payload.orderId).set(payload, { merge: true });
+    await dispatchPushEvent("order_created", `order-created:${payload.orderId}`, {
+      orderId: payload.orderId,
+      clientName: payload.clientName,
+    }).catch(error => console.warn("[push] MCP order:", error?.message || error));
     const created = await adminDb.collection("orders_new").doc(payload.orderId).get();
     return { ok: true, order: mcpNormalizeOrder(created.id, created.data()) };
   }
@@ -1256,6 +1488,13 @@ const getCdekCrmStatusPatch = (cdekStatus: string, currentStatus?: string) => {
       cdekDeliveredAt: new Date().toISOString(),
     };
   }
+  if (normalized === "RECEIVED_AT_SHIPMENT_WAREHOUSE") {
+    return {
+      status: "Принят СДЭК",
+      isShipped: true,
+      cdekAcceptedAt: new Date().toISOString(),
+    };
+  }
   if (
     normalized.startsWith("SENT_") ||
     normalized.startsWith("TAKEN_") ||
@@ -1268,6 +1507,26 @@ const getCdekCrmStatusPatch = (cdekStatus: string, currentStatus?: string) => {
     return { status: "Отгружен", isShipped: true };
   }
   return {};
+};
+
+const getCdekStatusLabel = (status: string) => {
+  const normalized = String(status || "").toUpperCase();
+  const labels: Record<string, string> = {
+    CREATED: "Накладная создана",
+    ACCEPTED: "Заказ принят системой СДЭК",
+    RECEIVED_AT_SHIPMENT_WAREHOUSE: "Принят СДЭК",
+    READY_FOR_SHIPMENT_IN_SENDER_CITY: "Готов к отправке",
+    TAKEN_BY_TRANSPORTER_FROM_SENDER_CITY: "В пути из города отправителя",
+    SENT_TO_TRANSIT_CITY: "Отправлен в транзитный город",
+    ACCEPTED_IN_TRANSIT_CITY: "Прибыл в транзитный город",
+    ACCEPTED_AT_TRANSIT_WAREHOUSE: "Принят на транзитном складе",
+    SENT_TO_RECIPIENT_CITY: "Направлен в город получателя",
+    ACCEPTED_AT_RECIPIENT_CITY_WAREHOUSE: "Прибыл на склад города получателя",
+    ACCEPTED_AT_PICK_UP_POINT: "Готов к выдаче в ПВЗ",
+    ACCEPTED_BY_COURIER: "Передан курьеру",
+    DELIVERED: "Доставлен",
+  };
+  return labels[normalized] || normalized.replace(/_/g, " ");
 };
 
 const getCdekRequestError = (data: any) => {
@@ -1542,6 +1801,12 @@ app.post("/api/cdek/create-order", async (req, res) => {
         },
       });
       await persistOrderPatch(orderId, updatedFields);
+      await dispatchPushEvent("cdek_status_changed", `cdek-updated:${orderId}:${Date.now()}`, {
+        orderId,
+        clientName: existingData?.clientName,
+        status: "Накладная обновлена",
+        cdekNumber: String(updatedNumber || ""),
+      }).catch(error => console.warn("[push] cdek update:", error?.message || error));
 
       if (db) {
         await addDoc(collection(db, "cdek_logs"), {
@@ -1621,9 +1886,13 @@ app.post("/api/cdek/create-order", async (req, res) => {
       },
     };
 
-    if (db && orderId) {
-      await updateDoc(doc(db, "orders_new", orderId), cdekFields).catch(() => {});
-    }
+    if (orderId) await persistOrderPatch(orderId, cdekFields);
+    await dispatchPushEvent("cdek_status_changed", `cdek-status:${orderId}:CREATED`, {
+      orderId,
+      clientName: existingData?.clientName,
+      status: "Накладная создана",
+      cdekNumber: String(cdekNumber || ""),
+    }).catch(error => console.warn("[push] cdek create:", error?.message || error));
 
     if (db) {
       try {
@@ -1672,7 +1941,17 @@ app.get("/api/cdek/order/:uuid", async (req, res) => {
       ...getCdekCrmStatusPatch(cdekStatus, existingOrder.status),
     });
 
-    if (orderId) await persistOrderPatch(orderId, patch);
+    if (orderId) {
+      await persistOrderPatch(orderId, patch);
+      if (String(cdekStatus) !== String(existingOrder.cdekStatus || "")) {
+        await dispatchPushEvent("cdek_status_changed", `cdek-status:${orderId}:${cdekStatus}`, {
+          orderId,
+          clientName: existingOrder.clientName,
+          status: getCdekStatusLabel(cdekStatus),
+          cdekNumber: String(cdekNumber || ""),
+        }).catch(error => console.warn("[push] cdek lookup:", error?.message || error));
+      }
+    }
 
     res.json({
       success: true,
@@ -1733,6 +2012,14 @@ app.post("/api/cdek/sync-statuses", async (_req, res) => {
             ...crmPatch,
           });
           await persistOrderPatch(id, patch);
+          if (String(cdekStatus) !== String(data.cdekStatus || "")) {
+            await dispatchPushEvent("cdek_status_changed", `cdek-status:${id}:${cdekStatus}`, {
+              orderId: id,
+              clientName: data.clientName,
+              status: getCdekStatusLabel(cdekStatus),
+              cdekNumber: String(cdekNumber || ""),
+            }).catch(error => console.warn("[push] cdek:", error?.message || error));
+          }
           return { orderId: id, cdekStatus, status: crmPatch.status || data.status, delivered: crmPatch.status === "Доставлен" };
         } catch (error: any) {
           console.warn(`[cdek] status sync failed order=${id}:`, error?.response?.data || error?.message || error);
@@ -5293,6 +5580,13 @@ app.post("/api/instagram/webhook", async (req, res) => {
           source: "instagram_webhook",
           syncedAt: new Date().toISOString(),
         }, { merge: true });
+        if (incoming) {
+          await dispatchPushEvent("instagram_message", `instagram-message:${message.id}`, {
+            conversationId,
+            username: String(customer?.username || customer?.name || customerId),
+            message: message.text || (message.attachments?.length ? "Вложение" : "Новое сообщение"),
+          }).catch(error => console.warn("[push] instagram:", error?.message || error));
+        }
       }
 
       const changes = Array.isArray(entry?.changes) ? entry.changes : [];
@@ -7607,6 +7901,20 @@ app.post('/api/tochka/reconcile-payments', async (_req, res) => {
       }
       if (Object.keys(patch).length > 1) {
         await persistOrderPatch(id, patch);
+        if (isTochkaPaidStatus(patch.paymentStatus) && !isTochkaPaidStatus(data.paymentStatus)) {
+          await dispatchPushEvent('payment_received', `payment-reconcile:${id}:${data.paymentId}`, {
+            orderId: id,
+            clientName: data.clientName,
+            amount: Number(patch.paymentAmount || data.paymentAmount || 0),
+          }).catch(() => null);
+        }
+        if (isTochkaPaidStatus(patch.finalPaymentStatus) && !isTochkaPaidStatus(data.finalPaymentStatus)) {
+          await dispatchPushEvent('payment_received', `payment-reconcile:${id}:${data.finalPaymentId}`, {
+            orderId: id,
+            clientName: data.clientName,
+            amount: Number(patch.finalPaymentAmount || data.finalPaymentAmount || 0),
+          }).catch(() => null);
+        }
         results.push({ orderId: id, paymentStatus: patch.paymentStatus, finalPaymentStatus: patch.finalPaymentStatus });
       }
     }
@@ -7753,6 +8061,12 @@ app.post('/api/tochka/webhook', async (req, res) => {
         const target = getTochkaPaymentTarget(body.paymentLinkId);
         const patch = buildTochkaPaymentFields(target, body.operationId || '', status, normalizeTochkaAmount(body.amount));
         await persistOrderPatch(target.cleanOrderId, patch);
+        if (isTochkaPaidStatus(status)) {
+          await dispatchPushEvent('payment_received', `payment:${body.operationId || body.paymentLinkId}`, {
+            orderId: target.cleanOrderId,
+            amount: normalizeTochkaAmount(body.amount),
+          }).catch(error => console.warn('[push] tochka:', error?.message || error));
+        }
       }
       if (body.operationId) {
         const updateMatches = async (field: 'paymentId' | 'finalPaymentId', isFinal: boolean) => {
@@ -7765,6 +8079,13 @@ app.post('/api/tochka/webhook', async (req, res) => {
           if (adminDb) {
             const snap = await adminDb.collection('orders_new').where(field, '==', body.operationId).get();
             await Promise.all(snap.docs.map((d: any) => d.ref.set(patch, { merge: true })));
+            if (isTochkaPaidStatus(status)) {
+              await Promise.all(snap.docs.map((d: any) => dispatchPushEvent('payment_received', `payment:${body.operationId}:${d.id}`, {
+                orderId: d.id,
+                clientName: d.data()?.clientName,
+                amount: normalizeTochkaAmount(body.amount),
+              }).catch(() => null)));
+            }
             return snap.size;
           }
           if (!db) return 0;

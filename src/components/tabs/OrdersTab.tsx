@@ -28,7 +28,7 @@ import { OrderData } from '../AnalyticsDashboard';
 import { db } from '../../firebase';
 import { collection, doc, getDocs, onSnapshot, orderBy, query, setDoc } from 'firebase/firestore';
 
-const STATUS_OPTIONS = ['Черновик', 'Новый', 'В работе', 'Оплачен', 'Упакован', 'Отгружен', 'Доставлен', 'Возврат', 'Отмена', 'Обмен'];
+const STATUS_OPTIONS = ['Черновик', 'Новый', 'В работе', 'Оплачен', 'Упакован', 'Принят СДЭК', 'Отгружен', 'Доставлен', 'Возврат', 'Отмена', 'Обмен'];
 const DELIVERY_OPTIONS = ['СДЭК', 'Почта РФ', 'Боксберри', 'Самовывоз', 'Курьер', 'DBS'];
 const SOURCE_OPTIONS = ['Instagram', 'WhatsApp', 'ТГ', 'Блогер', 'Контент', 'Сарафан', 'Повторный'];
 const PAYMENT_TYPE_OPTIONS = ['QR код', 'Сплитами', 'Долями', 'Наличкой', 'Наложенный СДЭК'];
