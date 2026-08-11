@@ -1108,6 +1108,11 @@ const CdekOrderBlock: React.FC<{
   const clientCitySyncedRef = useRef(false);
   const syncedPointCodeRef = useRef('');
   const pointLookupAttemptRef = useRef('');
+  const savedPayloadRef = useRef<Record<string, any>>(saved);
+
+  useEffect(() => {
+    savedPayloadRef.current = saved;
+  }, [saved]);
 
   useEffect(() => {
     const nextDeliveryType = String(saved.deliveryType || initialDeliveryType || 'pvz');
@@ -1296,7 +1301,9 @@ const CdekOrderBlock: React.FC<{
   };
 
   const persistPayload = (patch: Record<string, any>) => {
-    updateOrderData(order.orderId, 'cdekPayload', { ...saved, ...patch });
+    const nextPayload = { ...savedPayloadRef.current, ...patch };
+    savedPayloadRef.current = nextPayload;
+    updateOrderData(order.orderId, 'cdekPayload', nextPayload);
   };
 
   useEffect(() => {
@@ -1672,8 +1679,16 @@ const CdekOrderBlock: React.FC<{
           <input
             value={cityQuery}
             onChange={e => {
-              setCityQuery(e.target.value);
+              const nextCity = e.target.value;
+              setCityQuery(nextCity);
               setToCityCode('');
+              setDeliveryPoint('');
+              setDeliveryPointQuery('');
+              setToAddress('');
+              setPoints([]);
+              setPointsRequested(false);
+              syncedPointCodeRef.current = '';
+              pointLookupAttemptRef.current = '';
             }}
             placeholder="Город получателя"
             className={inputClass}

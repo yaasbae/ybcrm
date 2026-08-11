@@ -1660,14 +1660,14 @@ app.post("/api/cdek/create-order", async (req, res) => {
     const settings = await getCdekSettings();
     const body = req.body || {};
     const orderId = String(body.orderId || "").trim();
-    const recipientName = String(body.recipientName || "").trim();
-    const recipientPhone = String(body.recipientPhone || "").trim();
+    const requestedRecipientName = String(body.recipientName || "").trim();
+    const requestedRecipientPhone = String(body.recipientPhone || "").trim();
     const tariffCode = Number(body.tariffCode || 136);
     const deliveryType = String(body.deliveryType || "pvz");
-    const toCityCode = Number(body.toCityCode || 0);
+    let toCityCode = Number(body.toCityCode || 0);
     const deliveryPoint = String(body.deliveryPoint || "").trim();
-    const toAddress = String(body.toAddress || "").trim();
-    const itemName = String(body.itemName || "Заказ YBCRM").trim();
+    let toAddress = String(body.toAddress || "").trim();
+    const requestedItemName = String(body.itemName || "Заказ YBCRM").trim();
     const itemCost = Math.max(0, Math.round(Number(body.itemCost || 0) * 100) / 100);
     // Declared value is used by CDEK only to calculate insurance. It must not
     // inherit the retail price of the CRM order unless explicitly requested.
@@ -1682,6 +1682,24 @@ app.post("/api/cdek/create-order", async (req, res) => {
     const doorOriginTariffs = new Set([138, 139]);
 
     if (!orderId) return res.status(400).json({ error: "Нужен номер заказа CRM для поля Номер ИМ в СДЭК" });
+
+    // The CRM order is the source of truth for the recipient and the goods.
+    // Values from the browser may be stale when several orders are edited in
+    // succession, so they must never silently rename a CDEK waybill.
+    const existingSnapshot: any = await getOrderSnapshot(orderId).catch(() => null);
+    const existingSnapshotFound = existingSnapshot &&
+      (typeof existingSnapshot.exists === "function" ? existingSnapshot.exists() : Boolean(existingSnapshot.exists));
+    const existingData = existingSnapshotFound ? existingSnapshot.data() : null;
+    const savedItems = Array.isArray(existingData?.items)
+      ? existingData.items.map((item: unknown) => String(item || "").trim()).filter(Boolean)
+      : [];
+    const savedItemName = savedItems.length
+      ? savedItems.join(", ")
+      : String(existingData?.item || "").trim();
+    const recipientName = String(existingData?.clientName || requestedRecipientName).trim();
+    const recipientPhone = String(existingData?.clientPhone || requestedRecipientPhone).trim();
+    const itemName = savedItemName || requestedItemName;
+
     if (!recipientName || !recipientPhone) return res.status(400).json({ error: "Нужны ФИО и телефон получателя" });
     if (!toCityCode && !deliveryPoint) return res.status(400).json({ error: "Нужен город получателя или код ПВЗ" });
     if (deliveryType === "pvz" && !deliveryPoint) return res.status(400).json({ error: "Для ПВЗ нужен код пункта СДЭК" });
@@ -1691,6 +1709,40 @@ app.post("/api/cdek/create-order", async (req, res) => {
     }
     if (doorOriginTariffs.has(tariffCode) && !settings.senderAddress) {
       return res.status(400).json({ error: "Для тарифа от двери нужен адрес отправителя в настройках СДЭК" });
+    }
+
+    let deliveryPointAddress = String(body.deliveryPointAddress || "").trim();
+    let canonicalCity = String(body.toCity || "").trim();
+    if (deliveryType === "pvz") {
+      const pointResponse = await axios.get(`${settings.baseUrl}/deliverypoints`, {
+        headers: { Authorization: `Bearer ${token}` },
+        params: { code: deliveryPoint },
+        timeout: 15_000,
+      });
+      const pointCandidates = Array.isArray(pointResponse.data) ? pointResponse.data : [];
+      const exactPoint = pointCandidates.find(point =>
+        String(point?.code || "").toLowerCase() === deliveryPoint.toLowerCase(),
+      ) || null;
+      if (!exactPoint) {
+        return res.status(400).json({ error: "Выбранный ПВЗ СДЭК не найден. Выберите город и ПВЗ заново." });
+      }
+      const pointCityCode = Number(exactPoint?.location?.city_code || 0);
+      if (toCityCode && pointCityCode && toCityCode !== pointCityCode) {
+        return res.status(400).json({
+          error: "ПВЗ относится к другому городу. Выберите город и ПВЗ заново.",
+          details: `Код выбранного города ${toCityCode}, код города ПВЗ ${pointCityCode}`,
+        });
+      }
+      if (pointCityCode) toCityCode = pointCityCode;
+      const pointCity = String(exactPoint?.location?.city || "").trim();
+      const pointRegion = String(exactPoint?.location?.region || "").trim();
+      if (pointCity) canonicalCity = `${pointCity}${pointRegion ? `, ${pointRegion}` : ""}`;
+      const pointName = String(exactPoint?.name || exactPoint?.code || deliveryPoint).trim();
+      const pointAddress = String(exactPoint?.location?.address || exactPoint?.address || "").trim();
+      deliveryPointAddress = `${pointName}${pointAddress ? ` · ${pointAddress}` : ""}`;
+      // A PVZ order is addressed by delivery_point. Keeping an old door
+      // address beside it is misleading and caused mixed CRM addresses.
+      toAddress = "";
     }
 
     const packageNumber = orderId;
@@ -1742,10 +1794,6 @@ app.post("/api/cdek/create-order", async (req, res) => {
     }
 
     const cdekPayload = stripUndefined(payload);
-    const existingSnapshot: any = await getOrderSnapshot(orderId).catch(() => null);
-    const existingSnapshotFound = existingSnapshot &&
-      (typeof existingSnapshot.exists === "function" ? existingSnapshot.exists() : Boolean(existingSnapshot.exists));
-    const existingData = existingSnapshotFound ? existingSnapshot.data() : null;
     const resolvedExisting = await resolveCdekOrder(
       String(existingData?.cdekUuid || ""),
       orderId,
@@ -1787,9 +1835,12 @@ app.post("/api/cdek/create-order", async (req, res) => {
           deliveryType,
           toCityCode,
           deliveryPoint,
-          deliveryPointAddress: String(body.deliveryPointAddress || "").trim(),
-          toCity: String(body.toCity || "").trim(),
+          deliveryPointAddress,
+          toCity: canonicalCity,
           toAddress,
+          recipientName,
+          recipientPhone,
+          itemName,
           weight,
           length,
           width,
@@ -1872,9 +1923,12 @@ app.post("/api/cdek/create-order", async (req, res) => {
         deliveryType,
         toCityCode,
         deliveryPoint,
-        deliveryPointAddress: String(body.deliveryPointAddress || "").trim(),
-        toCity: String(body.toCity || "").trim(),
+        deliveryPointAddress,
+        toCity: canonicalCity,
         toAddress,
+        recipientName,
+        recipientPhone,
+        itemName,
         weight,
         length,
         width,
