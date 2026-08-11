@@ -9402,7 +9402,11 @@ function startTelegramBot() {
     saveSubscriber(ctx).catch(() => {});
     const name = ctx.from?.first_name || "друг";
     const welcome = botCfg.welcomeText.replace("{name}", name);
-    await ctx.reply(welcome, { parse_mode: "Markdown", ...getMainMenu() });
+    await ctx.reply(welcome, { parse_mode: "Markdown", ...getMainMenu() }).catch((error: any) => {
+      // A delayed Telegram update may arrive after the user has blocked the bot.
+      // Treat delivery errors as a failed update, not as a fatal server error.
+      console.warn("Telegram /start reply skipped:", error?.message || error);
+    });
   });
 
   // Callback when user picks a costume
@@ -9682,7 +9686,12 @@ function startTelegramBot() {
       .then(() => bot.telegram.getMe())
       .then(me => console.log(`Telegram бот запущен (webhook): @${me.username}`))
       .catch(e => console.error("Webhook setup error:", e.message));
-    app.post(webhookPath, (req, res) => bot.handleUpdate(req.body, res));
+    app.post(webhookPath, (req, res) => {
+      bot.handleUpdate(req.body, res).catch((error: any) => {
+        console.error("Telegram webhook update error:", error?.message || error);
+        if (!res.headersSent) res.sendStatus(200);
+      });
+    });
   } else if (process.env.K_SERVICE) {
     console.warn("WEBHOOK_URL не задан в Cloud Run — polling основного бота отключён, чтобы не ловить Telegram 409");
     return;
@@ -10062,7 +10071,12 @@ function startContentBot() {
       .then(() => bot.telegram.getMe())
       .then(me => console.log(`[content-bot] запущен (webhook): @${me.username}`))
       .catch(e => console.error("[content-bot] webhook setup error:", e.message));
-    app.post(webhookPath, (req, res) => bot.handleUpdate(req.body, res));
+    app.post(webhookPath, (req, res) => {
+      bot.handleUpdate(req.body, res).catch((error: any) => {
+        console.error("Content Telegram webhook update error:", error?.message || error);
+        if (!res.headersSent) res.sendStatus(200);
+      });
+    });
   } else if (process.env.K_SERVICE) {
     console.warn("[content-bot] WEBHOOK_URL не задан в Cloud Run — polling отключён, чтобы не ловить Telegram 409");
   } else {
