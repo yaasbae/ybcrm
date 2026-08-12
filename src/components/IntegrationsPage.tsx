@@ -5,6 +5,7 @@ import {
   Bot,
   CheckCircle2,
   ChevronRight,
+  Copy,
   Database,
   ExternalLink,
   Instagram,
@@ -60,6 +61,15 @@ type InstagramStatus = {
   tokenExpiresAt?: string;
   connectedAt?: string;
   lastCheckAt?: string;
+};
+
+type YandexPayStatus = {
+  configured?: boolean;
+  merchantId?: string;
+  merchantIdPreview?: string;
+  apiKeySet?: boolean;
+  sandbox?: boolean;
+  callbackUrl?: string;
 };
 
 const inputClass =
@@ -181,6 +191,15 @@ export const IntegrationsPage: React.FC<Props> = ({ onNavigate }) => {
   const [checkingTochkaAccounts, setCheckingTochkaAccounts] = useState(false);
   const [tochkaAccountsDiagnostics, setTochkaAccountsDiagnostics] = useState<any | null>(null);
 
+  const [yandexPayState, setYandexPayState] = useState<ApiState>('checking');
+  const [yandexPayStatus, setYandexPayStatus] = useState<YandexPayStatus>({});
+  const [yandexPayMerchantId, setYandexPayMerchantId] = useState('');
+  const [yandexPayApiKey, setYandexPayApiKey] = useState('');
+  const [yandexPaySandbox, setYandexPaySandbox] = useState(false);
+  const [yandexPayResult, setYandexPayResult] = useState('');
+  const [savingYandexPay, setSavingYandexPay] = useState(false);
+  const [checkingYandexPay, setCheckingYandexPay] = useState(false);
+
   const [cdekState, setCdekState] = useState<ApiState>('checking');
   const [cdek, setCdek] = useState<CdekSettings>({});
   const [cdekClientId, setCdekClientId] = useState('');
@@ -213,6 +232,7 @@ export const IntegrationsPage: React.FC<Props> = ({ onNavigate }) => {
 
   const loadStatuses = async () => {
     setTochkaState('checking');
+    setYandexPayState('checking');
     setCdekState('checking');
     setTgState('checking');
     setInstagramState('checking');
@@ -222,6 +242,16 @@ export const IntegrationsPage: React.FC<Props> = ({ onNavigate }) => {
       .then(r => r.json())
       .then(d => setTochkaState(d.configured ? 'connected' : 'missing'))
       .catch(() => setTochkaState('missing'));
+
+    fetch('/api/yandex-pay/status')
+      .then(readApiJson)
+      .then(d => {
+        setYandexPayStatus(d || {});
+        setYandexPayMerchantId(d.merchantId || '');
+        setYandexPaySandbox(Boolean(d.sandbox));
+        setYandexPayState(d.configured ? 'connected' : d.merchantId ? 'partial' : 'missing');
+      })
+      .catch(() => setYandexPayState('missing'));
 
     fetch('/api/cdek/status')
       .then(r => r.json())
@@ -336,6 +366,66 @@ export const IntegrationsPage: React.FC<Props> = ({ onNavigate }) => {
       setTochkaResult(e.message || 'Ошибка проверки счетов Точки');
     } finally {
       setCheckingTochkaAccounts(false);
+    }
+  };
+
+  const saveYandexPay = async () => {
+    if (!yandexPayMerchantId.trim()) {
+      setYandexPayResult('Укажите Merchant ID Яндекс Пэй.');
+      return;
+    }
+    if (!yandexPayApiKey.trim() && !yandexPayStatus.apiKeySet) {
+      setYandexPayResult('Выпустите и вставьте Merchant API key.');
+      return;
+    }
+    setSavingYandexPay(true);
+    setYandexPayResult('');
+    try {
+      const res = await fetch('/api/yandex-pay/save-settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          merchantId: yandexPayMerchantId.trim(),
+          apiKey: yandexPayApiKey.trim(),
+          sandbox: yandexPaySandbox,
+        }),
+      });
+      const data = await readApiJson(res);
+      if (!res.ok) throw new Error(data.error || 'Не удалось сохранить Яндекс Пэй');
+      setYandexPayStatus(data || {});
+      setYandexPayState('connected');
+      setYandexPayApiKey('');
+      setYandexPayResult('Настройки сохранены. Сплит доступен в типах оплаты заказа.');
+    } catch (e: any) {
+      setYandexPayResult(e.message || 'Ошибка сохранения Яндекс Пэй');
+    } finally {
+      setSavingYandexPay(false);
+    }
+  };
+
+  const checkYandexPay = async () => {
+    setCheckingYandexPay(true);
+    setYandexPayResult('');
+    try {
+      const res = await fetch('/api/yandex-pay/test', { method: 'POST' });
+      const data = await readApiJson(res);
+      if (!res.ok) throw new Error(data.error || 'Не удалось проверить Яндекс Пэй');
+      setYandexPayState('connected');
+      setYandexPayResult(data.message || 'Подключение Яндекс Пэй работает.');
+    } catch (e: any) {
+      setYandexPayResult(e.message || 'Ошибка проверки Яндекс Пэй');
+    } finally {
+      setCheckingYandexPay(false);
+    }
+  };
+
+  const copyYandexCallback = async () => {
+    const callbackUrl = yandexPayStatus.callbackUrl || `${window.location.origin}/api/yandex-pay/v1/webhook`;
+    try {
+      await navigator.clipboard.writeText(callbackUrl);
+      setYandexPayResult('Callback URL скопирован. Вставьте его в кабинете Яндекс Пэй.');
+    } catch {
+      setYandexPayResult(`Скопируйте Callback URL: ${callbackUrl}`);
     }
   };
 
@@ -673,6 +763,92 @@ export const IntegrationsPage: React.FC<Props> = ({ onNavigate }) => {
                 </div>
               )}
             </div>
+          </div>
+        </ApiCard>
+
+        <ApiCard
+          title="Яндекс Пэй / Сплит"
+          subtitle="Оплата заказа частями через Merchant API. После сохранения Сплит появится в типах оплаты заказа."
+          icon={WalletCards}
+          state={yandexPayState}
+          accent="bg-[#FFCC00] text-[#111827]"
+        >
+          <div className="space-y-4">
+            <div className="grid gap-3 md:grid-cols-2">
+              <Field label="Merchant ID">
+                <input
+                  value={yandexPayMerchantId}
+                  onChange={e => setYandexPayMerchantId(e.target.value)}
+                  placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+                  className={inputClass}
+                  autoComplete="off"
+                />
+              </Field>
+              <Field label="Merchant API key">
+                <input
+                  value={yandexPayApiKey}
+                  onChange={e => setYandexPayApiKey(e.target.value)}
+                  placeholder={yandexPayStatus.apiKeySet ? 'Ключ сохранён — оставьте пустым, если не менять' : 'Вставьте выпущенный API key'}
+                  type="password"
+                  className={inputClass}
+                  autoComplete="new-password"
+                />
+              </Field>
+            </div>
+
+            <div className="rounded-[10px] border border-[#E6E9EF] bg-[#F6F7F9] p-4">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="min-w-0">
+                  <p className={labelClass}>Callback URL</p>
+                  <p className="mt-2 break-all font-mono text-[12px] font-semibold leading-5 text-[#1F2937]">
+                    {yandexPayStatus.callbackUrl || `${window.location.origin}/api/yandex-pay/v1/webhook`}
+                  </p>
+                </div>
+                <ActionButton onClick={copyYandexCallback} tone="light">
+                  <Copy className="h-4 w-4" />
+                  Копировать
+                </ActionButton>
+              </div>
+            </div>
+
+            <label className="flex min-h-11 cursor-pointer items-center justify-between gap-4 rounded-[10px] border border-[#E6E9EF] bg-white px-4 py-3">
+              <span>
+                <span className="block text-[13px] font-semibold text-[#1F2937]">Тестовые данные</span>
+                <span className="mt-0.5 block text-[11px] font-medium leading-4 text-[#6B7280]">Включайте только для sandbox-ключа Яндекса.</span>
+              </span>
+              <input
+                type="checkbox"
+                checked={yandexPaySandbox}
+                onChange={e => setYandexPaySandbox(e.target.checked)}
+                className="h-5 w-5 shrink-0 accent-[#7D7DE6]"
+              />
+            </label>
+
+            {yandexPayResult && (
+              <p className={cn(
+                'rounded-[8px] px-3 py-2 text-[12px] font-semibold leading-5',
+                yandexPayResult.toLowerCase().includes('ошиб') || yandexPayResult.toLowerCase().includes('отклонил') || yandexPayResult.includes('Выпустите') || yandexPayResult.includes('Укажите')
+                  ? 'bg-red-50 text-[#F06B6B]'
+                  : 'bg-emerald-50 text-[#2EBA7F]'
+              )}>
+                {yandexPayResult}
+              </p>
+            )}
+
+            <div className="flex flex-wrap gap-2">
+              <ActionButton onClick={saveYandexPay} disabled={savingYandexPay} tone="blue">
+                {savingYandexPay ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                Сохранить Яндекс Пэй
+              </ActionButton>
+              <ActionButton onClick={checkYandexPay} disabled={checkingYandexPay || yandexPayState !== 'connected'} tone="light">
+                {checkingYandexPay ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
+                Проверить ключ
+              </ActionButton>
+            </div>
+
+            <p className="text-[11px] font-medium leading-5 text-[#6B7280]">
+              API key хранится на серверной стороне CRM и обратно в браузер не возвращается. Для боевого приёма платежей оставьте «Тестовые данные» выключенными.
+            </p>
           </div>
         </ApiCard>
 

@@ -7598,15 +7598,36 @@ app.all('/api/tochka/oauth*', (_req, res) => {
   });
 });
 
-const YANDEX_PAY_MERCHANT_ID = String(process.env.YANDEX_PAY_MERCHANT_ID || '').trim();
-const YANDEX_PAY_API_KEY = String(process.env.YANDEX_PAY_API_KEY || '').trim();
-const YANDEX_PAY_SANDBOX = /^(1|true|yes)$/i.test(String(process.env.YANDEX_PAY_SANDBOX || ''));
-const YANDEX_PAY_BASE_URL = YANDEX_PAY_SANDBOX
-  ? 'https://sandbox.pay.yandex.ru/api/merchant'
-  : 'https://pay.yandex.ru/api/merchant';
-const YANDEX_PAY_JWKS = createRemoteJWKSet(new URL(
-  YANDEX_PAY_SANDBOX ? 'https://sandbox.pay.yandex.ru/api/jwks' : 'https://pay.yandex.ru/api/jwks'
-));
+const YANDEX_PAY_DEFAULT_MERCHANT_ID = String(
+  process.env.YANDEX_PAY_MERCHANT_ID || '1488c401-6dde-4296-93d0-282768ab0251'
+).trim();
+const YANDEX_PAY_ENV_API_KEY = String(process.env.YANDEX_PAY_API_KEY || '').trim();
+const YANDEX_PAY_ENV_SANDBOX = /^(1|true|yes)$/i.test(String(process.env.YANDEX_PAY_SANDBOX || ''));
+const YANDEX_PAY_PRODUCTION_JWKS = createRemoteJWKSet(new URL('https://pay.yandex.ru/api/jwks'));
+const YANDEX_PAY_SANDBOX_JWKS = createRemoteJWKSet(new URL('https://sandbox.pay.yandex.ru/api/jwks'));
+
+type YandexPayCredentials = {
+  merchantId: string;
+  apiKey: string;
+  sandbox: boolean;
+};
+
+async function getYandexPayCredentials(): Promise<YandexPayCredentials> {
+  const saved = await readTochkaSettingsDoc('yandex_pay').catch(() => ({}));
+  return {
+    merchantId: String(saved?.merchantId || YANDEX_PAY_DEFAULT_MERCHANT_ID).trim(),
+    apiKey: String(saved?.apiKey || YANDEX_PAY_ENV_API_KEY).trim(),
+    sandbox: typeof saved?.sandbox === 'boolean' ? saved.sandbox : YANDEX_PAY_ENV_SANDBOX,
+  };
+}
+
+function getYandexPayBaseUrl(sandbox: boolean) {
+  return sandbox ? 'https://sandbox.pay.yandex.ru/api/merchant' : 'https://pay.yandex.ru/api/merchant';
+}
+
+function getYandexPayCallbackUrl() {
+  return `${String(process.env.SERVER_URL || 'https://ybcrm.ru').replace(/\/$/, '')}/api/yandex-pay`;
+}
 
 function getYandexPaymentTarget(orderId: string) {
   const raw = String(orderId || '').trim();
@@ -7620,9 +7641,9 @@ function getYandexPayOrderId(orderId: string) {
   return `ybcrm-${digest}${target.isFinal ? '-final' : ''}`;
 }
 
-function yandexPayHeaders(requestId: string) {
+function yandexPayHeaders(requestId: string, apiKey: string) {
   return {
-    Authorization: `Api-Key ${YANDEX_PAY_API_KEY}`,
+    Authorization: `Api-Key ${apiKey}`,
     'Content-Type': 'application/json',
     'X-Request-Id': requestId,
     'X-Request-Timeout': '10000',
@@ -7689,21 +7710,79 @@ function buildYandexPayCart(orderId: string, order: any, amount: number) {
   return { externalId: orderId, items, total: { amount: asMoney(amount) } };
 }
 
-app.get('/api/yandex-pay/status', (_req, res) => {
-  res.json({
-    configured: Boolean(YANDEX_PAY_MERCHANT_ID && YANDEX_PAY_API_KEY),
-    merchantId: YANDEX_PAY_MERCHANT_ID ? `${YANDEX_PAY_MERCHANT_ID.slice(0, 8)}…${YANDEX_PAY_MERCHANT_ID.slice(-4)}` : '',
-    sandbox: YANDEX_PAY_SANDBOX,
-    callbackUrl: `${String(process.env.SERVER_URL || 'https://ybcrm.ru').replace(/\/$/, '')}/api/yandex-pay`,
-  });
+app.get('/api/yandex-pay/status', async (_req, res) => {
+  try {
+    const credentials = await getYandexPayCredentials();
+    res.json({
+      configured: Boolean(credentials.merchantId && credentials.apiKey),
+      merchantId: credentials.merchantId,
+      merchantIdPreview: credentials.merchantId ? `${credentials.merchantId.slice(0, 8)}…${credentials.merchantId.slice(-4)}` : '',
+      apiKeySet: Boolean(credentials.apiKey),
+      sandbox: credentials.sandbox,
+      callbackUrl: getYandexPayCallbackUrl(),
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error?.message || 'Не удалось прочитать настройки Яндекс Пэй' });
+  }
+});
+
+app.post('/api/yandex-pay/save-settings', async (req, res) => {
+  try {
+    const current = await getYandexPayCredentials();
+    const merchantId = String(req.body?.merchantId || current.merchantId).trim();
+    const apiKey = String(req.body?.apiKey || current.apiKey).trim();
+    const sandbox = Boolean(req.body?.sandbox);
+    if (!merchantId) return res.status(400).json({ error: 'Укажите Merchant ID Яндекс Пэй' });
+    if (!apiKey) return res.status(400).json({ error: 'Выпустите и вставьте Merchant API key' });
+    await writeTochkaSettingsDoc('yandex_pay', {
+      merchantId,
+      apiKey,
+      sandbox,
+      updatedAt: new Date().toISOString(),
+    });
+    res.json({
+      success: true,
+      configured: true,
+      merchantId,
+      merchantIdPreview: `${merchantId.slice(0, 8)}…${merchantId.slice(-4)}`,
+      apiKeySet: true,
+      sandbox,
+      callbackUrl: getYandexPayCallbackUrl(),
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error?.message || 'Не удалось сохранить настройки Яндекс Пэй' });
+  }
+});
+
+app.post('/api/yandex-pay/test', async (_req, res) => {
+  try {
+    const credentials = await getYandexPayCredentials();
+    if (!credentials.merchantId || !credentials.apiKey) return res.status(503).json({ error: 'Сначала сохраните Merchant ID и Merchant API key' });
+    try {
+      await axios.get(`${getYandexPayBaseUrl(credentials.sandbox)}/v1/orders/ybcrm-connection-check`, {
+        headers: yandexPayHeaders(randomBytes(16).toString('hex'), credentials.apiKey),
+        timeout: 12000,
+      });
+    } catch (error: any) {
+      const status = Number(error?.response?.status || 0);
+      if (status === 401 || status === 403) {
+        return res.status(status).json({ error: 'Яндекс отклонил Merchant API key. Проверьте ключ и режим тестовых данных.' });
+      }
+      if (!error?.response || ![400, 404, 409, 422].includes(status)) throw error;
+    }
+    res.json({ success: true, message: `Подключение работает (${credentials.sandbox ? 'тестовый' : 'боевой'} режим)` });
+  } catch (error: any) {
+    res.status(error?.response?.status || 500).json({ error: error?.response?.data?.message || error?.message || 'Не удалось проверить Яндекс Пэй' });
+  }
 });
 
 app.post('/api/yandex-pay/create-payment', async (req, res) => {
   const { orderId, amount, description } = req.body || {};
   const paymentAmount = Number(amount);
   if (!orderId || !Number.isFinite(paymentAmount) || paymentAmount <= 0) return res.status(400).json({ error: 'Нужны orderId и сумма больше 0' });
-  if (!YANDEX_PAY_MERCHANT_ID || !YANDEX_PAY_API_KEY) return res.status(503).json({ error: 'Яндекс Сплит ещё не активирован: выпустите Merchant API key и добавьте его в секрет YANDEX_PAY_API_KEY' });
   try {
+    const credentials = await getYandexPayCredentials();
+    if (!credentials.merchantId || !credentials.apiKey) return res.status(503).json({ error: 'Яндекс Сплит ещё не активирован: сохраните Merchant API key на странице API' });
     const target = getYandexPaymentTarget(String(orderId));
     const snapshot = await getOrderSnapshot(target.cleanOrderId);
     if (!orderSnapshotExists(snapshot)) return res.status(404).json({ error: `Заказ ${target.cleanOrderId} не найден` });
@@ -7735,7 +7814,7 @@ app.post('/api/yandex-pay/create-payment', async (req, res) => {
       },
       cart: buildYandexPayCart(target.cleanOrderId, order, paymentAmount),
     };
-    const response = await axios.post(`${YANDEX_PAY_BASE_URL}/v1/orders`, body, { headers: yandexPayHeaders(requestId), timeout: 12000 });
+    const response = await axios.post(`${getYandexPayBaseUrl(credentials.sandbox)}/v1/orders`, body, { headers: yandexPayHeaders(requestId, credentials.apiKey), timeout: 12000 });
     const paymentUrl = String(response.data?.data?.paymentUrl || '');
     if (!paymentUrl) throw new Error('Яндекс Пэй не вернул ссылку на оплату');
     const now = new Date().toISOString();
@@ -7769,14 +7848,15 @@ app.post('/api/yandex-pay/create-payment', async (req, res) => {
 app.get('/api/yandex-pay/find-payment', async (req, res) => {
   const orderId = String(req.query.orderId || '').trim();
   if (!orderId) return res.status(400).json({ error: 'Нужен orderId' });
-  if (!YANDEX_PAY_API_KEY) return res.status(503).json({ error: 'Яндекс Сплит не настроен' });
   try {
+    const credentials = await getYandexPayCredentials();
+    if (!credentials.apiKey) return res.status(503).json({ error: 'Яндекс Сплит не настроен' });
     const target = getYandexPaymentTarget(orderId);
     const snapshot = await getOrderSnapshot(target.cleanOrderId);
     const order = snapshot?.data?.() || {};
     const yandexOrderId = String(target.isFinal ? order.finalPaymentId : order.paymentId) || getYandexPayOrderId(orderId);
-    const response = await axios.get(`${YANDEX_PAY_BASE_URL}/v1/orders/${encodeURIComponent(yandexOrderId)}`, {
-      headers: yandexPayHeaders(randomBytes(16).toString('hex')),
+    const response = await axios.get(`${getYandexPayBaseUrl(credentials.sandbox)}/v1/orders/${encodeURIComponent(yandexOrderId)}`, {
+      headers: yandexPayHeaders(randomBytes(16).toString('hex'), credentials.apiKey),
       timeout: 12000,
     });
     const remoteOrder = response.data?.data?.order || {};
@@ -7800,10 +7880,11 @@ app.get('/api/yandex-pay/find-payment', async (req, res) => {
 
 app.post('/api/yandex-pay/v1/webhook', async (req: any, res) => {
   try {
+    const credentials = await getYandexPayCredentials();
     const token = Buffer.isBuffer(req.body) ? req.body.toString('utf8') : String(req.body || '').trim();
     if (!token) return res.status(400).json({ reasonCode: 'EMPTY_BODY' });
-    const { payload } = await jwtVerify(token, YANDEX_PAY_JWKS, { algorithms: ['ES256'] });
-    if (String(payload.merchantId || '') !== YANDEX_PAY_MERCHANT_ID) return res.status(401).json({ reasonCode: 'MERCHANT_ID_MISMATCH' });
+    const { payload } = await jwtVerify(token, credentials.sandbox ? YANDEX_PAY_SANDBOX_JWKS : YANDEX_PAY_PRODUCTION_JWKS, { algorithms: ['ES256'] });
+    if (String(payload.merchantId || '') !== credentials.merchantId) return res.status(401).json({ reasonCode: 'MERCHANT_ID_MISMATCH' });
     const yandexOrderId = String((payload as any).order?.orderId || '');
     const status = String((payload as any).order?.paymentStatus || '').toUpperCase();
     if (!yandexOrderId || !status || !adminDb) return res.status(200).json({ status: 'success' });
