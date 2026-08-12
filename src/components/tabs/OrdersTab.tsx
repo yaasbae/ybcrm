@@ -254,8 +254,20 @@ function getInvoiceAmount(order: Partial<Pick<OrderData, 'revenue' | 'deliveryPr
 function getInvoiceTypeFromPaymentType(paymentType?: string): 'prepayment' | 'full' | 'fitting' {
   const value = String(paymentType || '').toLowerCase();
   if (value.includes('пример')) return 'fitting';
-  if (value.includes('полн') || value.includes('100')) return 'full';
+  if (value.includes('полн') || value.includes('100') || value.includes('сплит')) return 'full';
   return 'prepayment';
+}
+
+function isYandexSplitPayment(paymentType?: string): boolean {
+  return String(paymentType || '').toLowerCase().includes('сплит');
+}
+
+function getPaymentCreateEndpoint(paymentType?: string): string {
+  return isYandexSplitPayment(paymentType) ? '/api/yandex-pay/create-payment' : '/api/tochka/create-payment';
+}
+
+function getPaymentFindEndpoint(paymentType?: string): string {
+  return isYandexSplitPayment(paymentType) ? '/api/yandex-pay/find-payment' : '/api/tochka/find-payment';
 }
 
 function getInvoicePaymentLabel(invoiceType?: 'prepayment' | 'full' | 'fitting'): string {
@@ -647,7 +659,7 @@ function buildOrderShareText(order: Partial<OrderData>, paymentUrl: string): str
     cdekAddress ? `Адрес СДЭК: ${cdekAddress}` : '',
     '',
     `Сумма: ${formatCurrency(amount)}`,
-    `Ссылка на оплату СБП: ${paymentUrl}`,
+    `Ссылка на оплату ${isYandexSplitPayment(order.paymentType) ? 'Яндекс Сплит' : 'СБП'}: ${paymentUrl}`,
   ];
 
   return lines.filter((line, index, arr) => line || arr[index - 1]).join('\n').trim();
@@ -668,7 +680,7 @@ function buildPaymentShareText(order: Partial<OrderData>, paymentUrl: string, am
     cdekAddress ? `Адрес СДЭК: ${cdekAddress}` : '',
     '',
     `Сумма: ${formatCurrency(amount)}`,
-    `Ссылка на оплату СБП: ${paymentUrl}`,
+    `Ссылка на оплату ${isYandexSplitPayment(order.paymentType) ? 'Яндекс Сплит' : 'СБП'}: ${paymentUrl}`,
   ];
 
   return lines.filter((line, index, arr) => line || arr[index - 1]).join('\n').trim();
@@ -768,6 +780,7 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
 
   const pageUrl = buildPaymentPageUrl(order.orderId);
   const targetPaymentUrl = paymentUrl || pageUrl;
+  const paymentProviderLabel = isYandexSplitPayment(order.paymentType) ? 'Яндекс Сплит' : 'СБП';
   const invoiceType = order.invoiceType || getInvoiceTypeFromPaymentType(order.paymentType);
   const mainPaymentPaid = isPaidTochkaStatus(order.paymentStatus || '');
   const finalPaymentPaid = isPaidTochkaStatus(order.finalPaymentStatus || '');
@@ -846,9 +859,9 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
         kind,
       });
       if (amount > 0) query.set('amount', String(amount));
-      const res = await fetch(`/api/tochka/find-payment?${query.toString()}`);
+      const res = await fetch(`${getPaymentFindEndpoint(order.paymentType)}?${query.toString()}`);
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Оплата в Точке не найдена');
+      if (!res.ok) throw new Error(data.error || `Оплата в ${paymentProviderLabel} не найдена`);
       if (isFinal) {
         updateOrderData(order.orderId, 'finalPaymentStatus', data.paymentStatus || 'found');
         updateOrderData(order.orderId, 'finalPaymentAmount', data.paymentAmount || amount);
@@ -861,8 +874,8 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
         if (data.paymentPaidAt) updateOrderData(order.orderId, 'paymentPaidAt', data.paymentPaidAt);
       }
     } catch (e: any) {
-      if (isFinal) setFinalError(e.message || 'Оплата в Точке не найдена');
-      else setError(e.message || 'Оплата в Точке не найдена');
+      if (isFinal) setFinalError(e.message || `Оплата в ${paymentProviderLabel} не найдена`);
+      else setError(e.message || `Оплата в ${paymentProviderLabel} не найдена`);
     } finally {
       setRefreshingFinal(false);
       setRefreshingMain(false);
@@ -876,7 +889,7 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
       if (invoiceMissingFields.length) throw new Error(`Заполните: ${invoiceMissingFields.join(', ')}`);
       const amount = getOrderPaymentDue(order);
       if (amount <= 0) throw new Error('Остаток к оплате 0 ₽');
-      const res = await fetch('/api/tochka/create-payment', {
+      const res = await fetch(getPaymentCreateEndpoint(order.paymentType), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -894,6 +907,7 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
         updateOrderData(order.orderId, 'initialPaymentAmount', amount);
         updateOrderData(order.orderId, 'paymentAccountingVersion', 2);
         if (data.paymentId) updateOrderData(order.orderId, 'paymentId', data.paymentId);
+        if (data.provider) updateOrderData(order.orderId, 'paymentProvider', data.provider);
       }
     } catch (e: any) {
       setError(e.message || 'Не удалось создать счёт');
@@ -906,9 +920,9 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
     setFinalError('');
     try {
       if (invoiceMissingFields.length) throw new Error(`Заполните: ${invoiceMissingFields.join(', ')}`);
-      if (!mainPaymentPaid) throw new Error('Сначала дождитесь подтверждения предоплаты в Точке');
+      if (!mainPaymentPaid) throw new Error('Сначала дождитесь подтверждения первой оплаты');
       if (finalAmount <= 0) throw new Error('Сумма доплаты 0 ₽');
-      const res = await fetch('/api/tochka/create-payment', {
+      const res = await fetch(getPaymentCreateEndpoint(order.paymentType), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -925,6 +939,7 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
         updateOrderData(order.orderId, 'finalPaymentAmount', finalAmount);
         updateOrderData(order.orderId, 'finalPaymentStatus', 'pending');
         if (data.paymentId) updateOrderData(order.orderId, 'finalPaymentId', data.paymentId);
+        if (data.provider) updateOrderData(order.orderId, 'finalPaymentProvider', data.provider);
       }
     } catch (e: any) {
       setFinalError(e.message || 'Не удалось создать счёт на доплату');
@@ -989,7 +1004,7 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
             onClick={() => shareOrder(shareText, targetPaymentUrl).catch(() => navigator.clipboard.writeText(shareText))}
             className="w-full text-[8px] font-black py-1.5 rounded-md border border-violet-200 bg-violet-50 text-violet-600 hover:bg-violet-500 hover:text-white hover:border-violet-500 transition-all flex items-center justify-center gap-1"
           >
-            <Send size={8} /> Отправить ссылку СБП
+            <Send size={8} /> Отправить ссылку {paymentProviderLabel}
           </button>
           <button
             onClick={() => setShowQr(v => !v)}
@@ -1406,7 +1421,7 @@ const CdekOrderBlock: React.FC<{
         try {
           const amount = getOrderPaymentDue(order);
           if (amount > 0) {
-            const paymentResponse = await fetch('/api/tochka/create-payment', {
+            const paymentResponse = await fetch(getPaymentCreateEndpoint(order.paymentType), {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
@@ -3090,6 +3105,7 @@ const OrderCard = React.memo(({
   const mobileQrRef = useRef<HTMLDivElement>(null);
   const mobileFinalQrRef = useRef<HTMLDivElement>(null);
   const paymentUrl = mobilePaymentUrl;
+  const mobilePaymentProviderLabel = isYandexSplitPayment(order.paymentType) ? 'Яндекс Сплит' : 'СБП';
   const orderItems = getOrderItems(order);
   const orderItemPrices = getOrderItemPrices(order);
   const orderItemColors = getOrderItemColors(order);
@@ -3300,7 +3316,7 @@ const OrderCard = React.memo(({
       const amount = dueAmount;
       if (amount <= 0) throw new Error('Сумма к оплате 0 ₽');
 
-      const res = await fetch('/api/tochka/create-payment', {
+      const res = await fetch(getPaymentCreateEndpoint(order.paymentType), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -3311,7 +3327,7 @@ const OrderCard = React.memo(({
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Не удалось создать счёт');
-      if (!data.paymentUrl) throw new Error('Точка не вернула ссылку оплаты');
+      if (!data.paymentUrl) throw new Error(`${mobilePaymentProviderLabel} не вернул ссылку оплаты`);
 
       setMobilePaymentUrl(data.paymentUrl);
       setShowMobileQr(true);
@@ -3320,6 +3336,7 @@ const OrderCard = React.memo(({
       updateOrderData(order.orderId, 'initialPaymentAmount', amount);
       updateOrderData(order.orderId, 'paymentAccountingVersion', 2);
       if (data.paymentId) updateOrderData(order.orderId, 'paymentId', data.paymentId);
+      if (data.provider) updateOrderData(order.orderId, 'paymentProvider', data.provider);
     } catch (e: any) {
       setMobilePaymentError(e.message || 'Не удалось создать счёт');
     } finally {
@@ -3334,7 +3351,7 @@ const OrderCard = React.memo(({
       if (!mainPaymentPaid) throw new Error('Сначала дождитесь подтверждения предоплаты в Точке');
       if (finalPaymentAmount <= 0) throw new Error('Сумма доплаты 0 ₽');
 
-      const res = await fetch('/api/tochka/create-payment', {
+      const res = await fetch(getPaymentCreateEndpoint(order.paymentType), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -3345,7 +3362,7 @@ const OrderCard = React.memo(({
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Не удалось создать счёт на доплату');
-      if (!data.paymentUrl) throw new Error('Точка не вернула ссылку оплаты');
+      if (!data.paymentUrl) throw new Error(`${mobilePaymentProviderLabel} не вернул ссылку оплаты`);
 
       setMobileFinalPaymentUrl(data.paymentUrl);
       setShowMobileFinalQr(true);
@@ -3353,6 +3370,7 @@ const OrderCard = React.memo(({
       updateOrderData(order.orderId, 'finalPaymentAmount', finalPaymentAmount);
       updateOrderData(order.orderId, 'finalPaymentStatus', 'pending');
       if (data.paymentId) updateOrderData(order.orderId, 'finalPaymentId', data.paymentId);
+      if (data.provider) updateOrderData(order.orderId, 'finalPaymentProvider', data.provider);
     } catch (e: any) {
       setMobileFinalPaymentError(e.message || 'Не удалось создать счёт на доплату');
     } finally {
@@ -3376,7 +3394,7 @@ const OrderCard = React.memo(({
         kind,
       });
       if (amount > 0) query.set('amount', String(amount));
-      const res = await fetch(`/api/tochka/find-payment?${query.toString()}`);
+      const res = await fetch(`${getPaymentFindEndpoint(order.paymentType)}?${query.toString()}`);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Оплата в Точке не найдена');
       if (isFinal) {
@@ -3732,7 +3750,7 @@ const OrderCard = React.memo(({
       <div className="rounded-xl border border-violet-100 bg-violet-50/40 p-2.5 space-y-2">
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-2">
-            <p className="text-[8px] font-black text-violet-500 uppercase tracking-widest">СБП оплата</p>
+            <p className="text-[8px] font-black text-violet-500 uppercase tracking-widest">{mobilePaymentProviderLabel}</p>
             <p className={cn("text-[8px] font-bold", mainPaymentPaid ? "text-emerald-600" : "text-zinc-400")}>{mainPaymentStatusText}</p>
           </div>
           {paymentUrl && (
@@ -4876,7 +4894,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
       }
     }
 
-    if (tochkaConfigured) {
+    if (tochkaConfigured || isYandexSplitPayment(orderSnapshot.paymentType)) {
       setIsCreatingQr(true);
       try {
         const amount = getOrderPaymentDue({
@@ -4885,7 +4903,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
           paidAmount: orderSnapshot.paidAmount || 0,
         });
         if (amount <= 0) throw new Error('Остаток к оплате 0 ₽');
-        const res = await fetch('/api/tochka/create-payment', {
+        const res = await fetch(getPaymentCreateEndpoint(orderSnapshot.paymentType), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -6528,7 +6546,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                 setCreatedShareText(buildOrderShareText({ ...orderSnapshot, orderId }, paymentPageUrl));
                 setCreatedPaymentUrl(null);
                 setCreatedPaymentError('');
-                if (tochkaConfigured) {
+                if (tochkaConfigured || isYandexSplitPayment(orderSnapshot.paymentType)) {
                   setIsCreatingQr(true);
                   try {
                     const amount = getOrderPaymentDue({
@@ -6537,7 +6555,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                       paidAmount: orderSnapshot.paidAmount || 0,
                     });
                     if (amount <= 0) throw new Error('Остаток к оплате 0 ₽');
-                    const res = await fetch('/api/tochka/create-payment', {
+                    const res = await fetch(getPaymentCreateEndpoint(orderSnapshot.paymentType), {
                       method: 'POST',
                       headers: { 'Content-Type': 'application/json' },
                       body: JSON.stringify({
@@ -6597,7 +6615,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                   <p className="mt-1 text-[12px] font-medium text-[#1F2937]">Заказ + адрес + накладная СДЭК</p>
                 </div>
                 <div className="rounded-[9px] border border-[#E6E9EF] bg-[#F8FAFC] px-3 py-2.5">
-                  <p className="text-[9px] font-medium uppercase tracking-[0.14em] text-[#9CA3AF]">Оплата СБП</p>
+                  <p className="text-[9px] font-medium uppercase tracking-[0.14em] text-[#9CA3AF]">Онлайн-оплата</p>
                   <p className="mt-1 flex items-center gap-2 text-[12px] font-medium text-[#1F2937]">
                     {isCreatingQr && <RefreshCcw size={12} className="animate-spin text-[#7D7DE6]" />}
                     {createdPaymentUrl ? 'Ссылка создана' : isCreatingQr ? 'Создаём ссылку…' : 'Ссылка недоступна'}
@@ -6691,7 +6709,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                   disabled={!createdPaymentUrl || isCreatingQr}
                   className="inline-flex h-11 items-center justify-center gap-2 rounded-[8px] bg-[#7D7DE6] px-4 text-[11px] font-medium text-white transition-colors hover:bg-[#6F6FE0] disabled:bg-[#D7D7F5]"
                 >
-                  <Send size={15} /> Отправить ссылку СБП
+                  <Send size={15} /> Отправить ссылку оплаты
                 </button>
               </div>
               {(createdDocumentStatus || (!isCreatingQr && !createdPaymentUrl && createdPaymentError)) && (

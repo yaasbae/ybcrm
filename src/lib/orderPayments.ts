@@ -18,7 +18,7 @@ export type PaymentAccountingOrder = {
 
 export const isConfirmedPaymentStatus = (status?: string) => {
   const normalized = String(status || '').toLowerCase();
-  return ['paid', 'approved', 'completed', 'succeeded', 'success', 'done'].some(value => normalized.includes(value));
+  return ['paid', 'approved', 'completed', 'succeeded', 'success', 'done', 'captured', 'confirmed'].some(value => normalized.includes(value));
 };
 
 export const getOrderTotalAmount = (order: PaymentAccountingOrder) =>
@@ -28,7 +28,7 @@ export const getCalculatedInitialInvoiceAmount = (order: PaymentAccountingOrder)
   const total = getOrderTotalAmount(order);
   const invoiceType = order.invoiceType || (
     /пример/i.test(String(order.paymentType || '')) ? 'fitting'
-      : /полн|100/i.test(String(order.paymentType || '')) ? 'full'
+      : /полн|100|сплит/i.test(String(order.paymentType || '')) ? 'full'
         : 'prepayment'
   );
   if (invoiceType === 'fitting') return Math.min(total, 2000);
@@ -66,4 +66,3 @@ export const getPlannedFinalPaymentAmount = (order: PaymentAccountingOrder) =>
 
 export const getOutstandingPaymentAmount = (order: PaymentAccountingOrder) =>
   Math.max(0, getOrderTotalAmount(order) - getConfirmedPaidAmount(order));
-

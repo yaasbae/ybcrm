@@ -25,6 +25,7 @@ import { GoogleGenAI, Modality } from "@google/genai";
 import sharp from "sharp";
 import { PDFDocument } from "pdf-lib";
 import webpush from "web-push";
+import { createRemoteJWKSet, jwtVerify } from "jose";
 
 const _require = createRequire(import.meta.url);
 const Database = _require("better-sqlite3");
@@ -155,7 +156,7 @@ app.use(express.json({
     req.rawBody = Buffer.from(buffer);
   },
 }));
-app.use(express.text({ type: ['text/*', 'application/jwt'], limit: '1mb' }));
+app.use(express.text({ type: ['text/*', 'application/jwt', 'application/octet-stream'], limit: '1mb' }));
 app.use(express.urlencoded({ extended: true, limit: '20mb' }));
 
 type PushEventType =
@@ -7595,6 +7596,239 @@ app.all('/api/tochka/oauth*', (_req, res) => {
   res.status(410).json({
     error: 'OAuth Точки отключен. Используется только старый JWT / API token.',
   });
+});
+
+const YANDEX_PAY_MERCHANT_ID = String(process.env.YANDEX_PAY_MERCHANT_ID || '').trim();
+const YANDEX_PAY_API_KEY = String(process.env.YANDEX_PAY_API_KEY || '').trim();
+const YANDEX_PAY_SANDBOX = /^(1|true|yes)$/i.test(String(process.env.YANDEX_PAY_SANDBOX || ''));
+const YANDEX_PAY_BASE_URL = YANDEX_PAY_SANDBOX
+  ? 'https://sandbox.pay.yandex.ru/api/merchant'
+  : 'https://pay.yandex.ru/api/merchant';
+const YANDEX_PAY_JWKS = createRemoteJWKSet(new URL(
+  YANDEX_PAY_SANDBOX ? 'https://sandbox.pay.yandex.ru/api/jwks' : 'https://pay.yandex.ru/api/jwks'
+));
+
+function getYandexPaymentTarget(orderId: string) {
+  const raw = String(orderId || '').trim();
+  const isFinal = /-final$/i.test(raw);
+  return { cleanOrderId: raw.replace(/-final$/i, ''), isFinal };
+}
+
+function getYandexPayOrderId(orderId: string) {
+  const target = getYandexPaymentTarget(orderId);
+  const digest = createHash('sha256').update(`${target.cleanOrderId}:${target.isFinal ? 'final' : 'main'}`).digest('hex').slice(0, 24);
+  return `ybcrm-${digest}${target.isFinal ? '-final' : ''}`;
+}
+
+function yandexPayHeaders(requestId: string) {
+  return {
+    Authorization: `Api-Key ${YANDEX_PAY_API_KEY}`,
+    'Content-Type': 'application/json',
+    'X-Request-Id': requestId,
+    'X-Request-Timeout': '10000',
+    'X-Request-Attempt': '0',
+  };
+}
+
+function asMoney(value: unknown) {
+  return Math.max(0, Number(value) || 0).toFixed(2);
+}
+
+function orderSnapshotExists(snapshot: any) {
+  return typeof snapshot?.exists === 'function' ? snapshot.exists() : Boolean(snapshot?.exists);
+}
+
+function allocateMoney(total: number, weights: number[], count: number) {
+  const totalCents = Math.round(Math.max(0, total) * 100);
+  const safeCount = Math.max(1, count);
+  const safeWeights = Array.from({ length: safeCount }, (_, index) => Math.max(0, Number(weights[index]) || 0));
+  const weightTotal = safeWeights.reduce((sum, value) => sum + value, 0);
+  let remaining = totalCents;
+  return safeWeights.map((weight, index) => {
+    const cents = index === safeCount - 1
+      ? remaining
+      : Math.min(remaining, Math.round(weightTotal > 0 ? totalCents * (weight / weightTotal) : totalCents / safeCount));
+    remaining -= cents;
+    return cents / 100;
+  });
+}
+
+function buildYandexPayCart(orderId: string, order: any, amount: number) {
+  const rawItems = Array.isArray(order.items) && order.items.length ? order.items : [order.item || `Заказ #${orderId}`];
+  const prices = Array.isArray(order.itemPrices) ? order.itemPrices.map((value: unknown) => Number(value) || 0) : [];
+  const revenue = Math.max(0, Number(order.revenue) || 0);
+  const positivePrices = rawItems.map((_: unknown, index: number) => Math.max(0, prices[index] || 0));
+  const knownTotal = positivePrices.reduce((sum: number, value: number) => sum + value, 0);
+  const productTotal = revenue || knownTotal;
+  const normalizedPrices = allocateMoney(productTotal, knownTotal > 0 ? positivePrices : rawItems.map(() => 1), rawItems.length);
+  const delivery = Math.max(0, Number(order.deliveryPrice) || 0);
+  const expectedTotal = productTotal + delivery;
+  if (Math.abs(expectedTotal - amount) > 0.02) {
+    throw new Error(`Для Сплита нужна полная сумма заказа ${asMoney(expectedTotal)} ₽, сейчас передано ${asMoney(amount)} ₽`);
+  }
+  const items = rawItems.map((title: unknown, index: number) => ({
+    productId: `${orderId}-item-${index + 1}`,
+    skuId: `${orderId}-${index + 1}`,
+    title: String(title || `Товар ${index + 1}`).slice(0, 2048),
+    quantity: { count: '1' },
+    unitPrice: asMoney(normalizedPrices[index]),
+    subtotal: asMoney(normalizedPrices[index]),
+    total: asMoney(normalizedPrices[index]),
+  }));
+  if (delivery > 0) {
+    items.push({
+      productId: `${orderId}-delivery`,
+      skuId: `${orderId}-delivery`,
+      title: `Доставка ${String(order.deliveryMethod || '').trim() || 'заказа'}`,
+      quantity: { count: '1' },
+      unitPrice: asMoney(delivery),
+      subtotal: asMoney(delivery),
+      total: asMoney(delivery),
+    });
+  }
+  return { externalId: orderId, items, total: { amount: asMoney(amount) } };
+}
+
+app.get('/api/yandex-pay/status', (_req, res) => {
+  res.json({
+    configured: Boolean(YANDEX_PAY_MERCHANT_ID && YANDEX_PAY_API_KEY),
+    merchantId: YANDEX_PAY_MERCHANT_ID ? `${YANDEX_PAY_MERCHANT_ID.slice(0, 8)}…${YANDEX_PAY_MERCHANT_ID.slice(-4)}` : '',
+    sandbox: YANDEX_PAY_SANDBOX,
+    callbackUrl: `${String(process.env.SERVER_URL || 'https://ybcrm.ru').replace(/\/$/, '')}/api/yandex-pay`,
+  });
+});
+
+app.post('/api/yandex-pay/create-payment', async (req, res) => {
+  const { orderId, amount, description } = req.body || {};
+  const paymentAmount = Number(amount);
+  if (!orderId || !Number.isFinite(paymentAmount) || paymentAmount <= 0) return res.status(400).json({ error: 'Нужны orderId и сумма больше 0' });
+  if (!YANDEX_PAY_MERCHANT_ID || !YANDEX_PAY_API_KEY) return res.status(503).json({ error: 'Яндекс Сплит ещё не активирован: выпустите Merchant API key и добавьте его в секрет YANDEX_PAY_API_KEY' });
+  try {
+    const target = getYandexPaymentTarget(String(orderId));
+    const snapshot = await getOrderSnapshot(target.cleanOrderId);
+    if (!orderSnapshotExists(snapshot)) return res.status(404).json({ error: `Заказ ${target.cleanOrderId} не найден` });
+    const order = snapshot.data() || {};
+    const existingProvider = target.isFinal ? order.finalPaymentProvider : order.paymentProvider;
+    const existingUrl = target.isFinal ? order.finalPaymentUrl : order.paymentUrl;
+    const existingAmount = Number(target.isFinal ? order.finalPaymentAmount : order.paymentAmount);
+    if (existingProvider === 'yandex_split' && existingUrl && Math.abs(existingAmount - paymentAmount) < 0.01) {
+      return res.json({ success: true, existing: true, paymentUrl: existingUrl, paymentId: target.isFinal ? order.finalPaymentId : order.paymentId, provider: 'yandex_split' });
+    }
+    const yandexOrderId = getYandexPayOrderId(String(orderId));
+    const requestId = randomBytes(16).toString('hex');
+    const phone = String(order.clientPhone || '').replace(/\D/g, '');
+    const baseUrl = String(process.env.SERVER_URL || 'https://ybcrm.ru').replace(/\/$/, '');
+    const body = {
+      orderId: yandexOrderId,
+      currencyCode: 'RUB',
+      availablePaymentMethods: ['CARD', 'SPLIT'],
+      preferredPaymentMethod: 'SPLIT',
+      orderSource: 'CRM',
+      billingPhone: phone || undefined,
+      purpose: String(description || `Оплата заказа #${target.cleanOrderId}`).slice(0, 1000),
+      metadata: JSON.stringify({ crmOrderId: target.cleanOrderId, kind: target.isFinal ? 'final' : 'main' }),
+      ttl: 604800,
+      redirectUrls: {
+        onSuccess: `${baseUrl}/pay/${encodeURIComponent(target.cleanOrderId)}?yandex=success`,
+        onAbort: `${baseUrl}/pay/${encodeURIComponent(target.cleanOrderId)}?yandex=abort`,
+        onError: `${baseUrl}/pay/${encodeURIComponent(target.cleanOrderId)}?yandex=error`,
+      },
+      cart: buildYandexPayCart(target.cleanOrderId, order, paymentAmount),
+    };
+    const response = await axios.post(`${YANDEX_PAY_BASE_URL}/v1/orders`, body, { headers: yandexPayHeaders(requestId), timeout: 12000 });
+    const paymentUrl = String(response.data?.data?.paymentUrl || '');
+    if (!paymentUrl) throw new Error('Яндекс Пэй не вернул ссылку на оплату');
+    const now = new Date().toISOString();
+    const patch = target.isFinal ? {
+      finalPaymentUrl: paymentUrl,
+      finalPaymentId: yandexOrderId,
+      finalPaymentStatus: 'PENDING',
+      finalPaymentProvider: 'yandex_split',
+      finalPaymentCreatedAt: now,
+      finalPaymentAmount: paymentAmount,
+      paymentAccountingVersion: 2,
+    } : {
+      paymentUrl,
+      paymentId: yandexOrderId,
+      paymentStatus: 'PENDING',
+      paymentProvider: 'yandex_split',
+      paymentCreatedAt: now,
+      paymentAmount,
+      initialPaymentAmount: paymentAmount,
+      paymentAccountingVersion: 2,
+    };
+    await persistOrderPatch(target.cleanOrderId, patch);
+    res.json({ success: true, paymentUrl, paymentId: yandexOrderId, provider: 'yandex_split' });
+  } catch (error: any) {
+    const details = error?.response?.data || error?.message;
+    console.error('[yandex-pay] create-payment:', details);
+    res.status(error?.response?.status || 500).json({ error: error?.response?.data?.message || error?.message || 'Не удалось создать Сплит', details });
+  }
+});
+
+app.get('/api/yandex-pay/find-payment', async (req, res) => {
+  const orderId = String(req.query.orderId || '').trim();
+  if (!orderId) return res.status(400).json({ error: 'Нужен orderId' });
+  if (!YANDEX_PAY_API_KEY) return res.status(503).json({ error: 'Яндекс Сплит не настроен' });
+  try {
+    const target = getYandexPaymentTarget(orderId);
+    const snapshot = await getOrderSnapshot(target.cleanOrderId);
+    const order = snapshot?.data?.() || {};
+    const yandexOrderId = String(target.isFinal ? order.finalPaymentId : order.paymentId) || getYandexPayOrderId(orderId);
+    const response = await axios.get(`${YANDEX_PAY_BASE_URL}/v1/orders/${encodeURIComponent(yandexOrderId)}`, {
+      headers: yandexPayHeaders(randomBytes(16).toString('hex')),
+      timeout: 12000,
+    });
+    const remoteOrder = response.data?.data?.order || {};
+    const status = String(remoteOrder.paymentStatus || 'PENDING').toUpperCase();
+    const paid = ['CAPTURED', 'CONFIRMED'].includes(status);
+    const patch = target.isFinal ? {
+      finalPaymentStatus: status,
+      finalPaymentProvider: 'yandex_split',
+      finalPaymentPaidAt: paid ? String(remoteOrder.updated || new Date().toISOString()) : order.finalPaymentPaidAt || null,
+    } : {
+      paymentStatus: status,
+      paymentProvider: 'yandex_split',
+      paymentPaidAt: paid ? String(remoteOrder.updated || new Date().toISOString()) : order.paymentPaidAt || null,
+    };
+    await persistOrderPatch(target.cleanOrderId, patch);
+    res.json({ success: true, paymentStatus: status, paymentId: yandexOrderId, paymentUrl: remoteOrder.paymentUrl || '', paymentPaidAt: paid ? remoteOrder.updated : null });
+  } catch (error: any) {
+    res.status(error?.response?.status || 500).json({ error: error?.response?.data?.message || error?.message || 'Не удалось проверить Сплит', details: error?.response?.data });
+  }
+});
+
+app.post('/api/yandex-pay/v1/webhook', async (req: any, res) => {
+  try {
+    const token = Buffer.isBuffer(req.body) ? req.body.toString('utf8') : String(req.body || '').trim();
+    if (!token) return res.status(400).json({ reasonCode: 'EMPTY_BODY' });
+    const { payload } = await jwtVerify(token, YANDEX_PAY_JWKS, { algorithms: ['ES256'] });
+    if (String(payload.merchantId || '') !== YANDEX_PAY_MERCHANT_ID) return res.status(401).json({ reasonCode: 'MERCHANT_ID_MISMATCH' });
+    const yandexOrderId = String((payload as any).order?.orderId || '');
+    const status = String((payload as any).order?.paymentStatus || '').toUpperCase();
+    if (!yandexOrderId || !status || !adminDb) return res.status(200).json({ status: 'success' });
+    const main = await adminDb.collection('orders_new').where('paymentId', '==', yandexOrderId).limit(1).get();
+    const final = main.empty ? await adminDb.collection('orders_new').where('finalPaymentId', '==', yandexOrderId).limit(1).get() : null;
+    const document = !main.empty ? main.docs[0] : final && !final.empty ? final.docs[0] : null;
+    if (document) {
+      const paid = ['CAPTURED', 'CONFIRMED'].includes(status);
+      const isFinal = Boolean(final && !final.empty);
+      await document.ref.set(isFinal ? {
+        finalPaymentStatus: status,
+        finalPaymentProvider: 'yandex_split',
+        ...(paid ? { finalPaymentPaidAt: new Date().toISOString() } : {}),
+      } : {
+        paymentStatus: status,
+        paymentProvider: 'yandex_split',
+        ...(paid ? { paymentPaidAt: new Date().toISOString() } : {}),
+      }, { merge: true });
+      if (paid) await dispatchPushEvent('payment_received', `yandex:${yandexOrderId}:${status}`, { orderId: document.id, status }).catch(() => {});
+    }
+    res.json({ status: 'success' });
+  } catch (error: any) {
+    console.warn('[yandex-pay] invalid webhook:', error?.message || error);
+    res.status(401).json({ reasonCode: 'INVALID_TOKEN' });
+  }
 });
 
 // Создать ссылку/QR на оплату

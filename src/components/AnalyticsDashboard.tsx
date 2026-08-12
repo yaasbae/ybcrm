@@ -61,7 +61,9 @@ export interface OrderData {
   manager?: string;
   blogger?: string;
   paymentUrl?: string;
+  paymentProvider?: 'tochka' | 'yandex_split' | string;
   finalPaymentUrl?: string;
+  finalPaymentProvider?: 'tochka' | 'yandex_split' | string;
   finalPaymentId?: string;
   finalPaymentAmount?: number;
   finalPaymentStatus?: string;
