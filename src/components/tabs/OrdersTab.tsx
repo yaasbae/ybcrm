@@ -33,6 +33,12 @@ const DELIVERY_OPTIONS = ['СДЭК', 'Почта РФ', 'Боксберри', '
 const SOURCE_OPTIONS = ['Instagram', 'WhatsApp', 'ТГ', 'Блогер', 'Контент', 'Сарафан', 'Повторный'];
 const PAYMENT_TYPE_OPTIONS = ['QR код', 'Сплитами', 'Долями', 'Наличкой', 'Наложенный СДЭК'];
 const INVOICE_PAYMENT_OPTIONS = ['Предоплата 50%', 'Полная оплата', 'Оплата с примеркой', 'Сплитами'];
+const SplitMark = ({ className = '' }: { className?: string }) => (
+  <span className={cn('relative inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center', className)} aria-hidden="true">
+    <span className="absolute h-2.5 w-2.5 rounded-full bg-[#F43F5E]" />
+    <span className="absolute h-2.5 w-2.5 translate-x-1.5 translate-y-1 rounded-full bg-[#22C55E] mix-blend-multiply" />
+  </span>
+);
 const MANAGER_PLAN_DEFAULTS = {
   dayPlan: 3,
   monthPlan: 60,
@@ -780,7 +786,8 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
 
   const pageUrl = buildPaymentPageUrl(order.orderId);
   const targetPaymentUrl = paymentUrl || pageUrl;
-  const paymentProviderLabel = isYandexSplitPayment(order.paymentType) ? 'Яндекс Сплит' : 'СБП';
+  const isSplitPayment = isYandexSplitPayment(order.paymentType);
+  const paymentProviderLabel = isSplitPayment ? 'Яндекс Сплит' : 'СБП';
   const invoiceType = order.invoiceType || getInvoiceTypeFromPaymentType(order.paymentType);
   const mainPaymentPaid = isPaidTochkaStatus(order.paymentStatus || '');
   const finalPaymentPaid = isPaidTochkaStatus(order.finalPaymentStatus || '');
@@ -1002,15 +1009,20 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
         <>
           <button
             onClick={() => shareOrder(shareText, targetPaymentUrl).catch(() => navigator.clipboard.writeText(shareText))}
-            className="w-full text-[8px] font-black py-1.5 rounded-md border border-violet-200 bg-violet-50 text-violet-600 hover:bg-violet-500 hover:text-white hover:border-violet-500 transition-all flex items-center justify-center gap-1"
+            className={cn(
+              "w-full rounded-md border py-1.5 text-[8px] font-black uppercase tracking-wide transition-all flex items-center justify-center gap-1",
+              isSplitPayment
+                ? "border-zinc-900 bg-zinc-950 text-white hover:bg-black"
+                : "border-violet-200 bg-violet-50 text-violet-600 hover:bg-violet-500 hover:text-white hover:border-violet-500"
+            )}
           >
-            <Send size={8} /> Отправить ссылку {paymentProviderLabel}
+            {isSplitPayment ? <SplitMark /> : <Send size={8} />} {isSplitPayment ? 'Яндекс Сплит' : 'Отправить ссылку СБП'}
           </button>
           <button
             onClick={() => setShowQr(v => !v)}
-            className="w-full text-[8px] font-black py-1 rounded-md border border-violet-200 bg-violet-50 text-violet-600 hover:bg-violet-100 transition-all flex items-center justify-center gap-1"
+            className="w-full text-[8px] font-black py-1 rounded-md border border-[#6B4DFF]/20 bg-[#6B4DFF] text-white hover:bg-[#5738F3] transition-all flex items-center justify-center gap-1"
           >
-            <QrCodeIcon size={8} /> {showQr ? 'Скрыть QR' : 'QR код'}
+            <QrCodeIcon size={8} /> {showQr ? 'Скрыть QR' : 'QR-код Точка'}
           </button>
           {showQr && (
             <div className="space-y-1">
@@ -2257,40 +2269,40 @@ const OrderDetailView: React.FC<{
         </div>
       )}
 
-      <div className={cn(cardClass, mobile ? 'border-[#DCD5FF] bg-gradient-to-br from-[#F8F6FF] to-white p-3' : 'flex items-center justify-between gap-5 px-6 py-5')}>
-        <div className={cn('flex items-center gap-4', mobile && 'px-1 py-1')}>
-          <span className={cn('grid shrink-0 place-items-center rounded-[18px] bg-[#F1EEFF] text-[#5638F4]', mobile ? 'h-[68px] w-[68px]' : 'h-[72px] w-[72px]')}>
-            <ShoppingBag className="h-8 w-8" />
+      <div className={cn(cardClass, mobile ? 'border-[#DCD5FF] bg-gradient-to-br from-[#F8F6FF] to-white p-3' : 'flex items-center justify-between gap-5 px-6 py-4')}>
+        <div className={cn('flex items-center gap-4', mobile && 'gap-3 px-0 py-0')}>
+          <span className={cn('grid shrink-0 place-items-center bg-[#F1EEFF] text-[#5638F4]', mobile ? 'h-12 w-12 rounded-[14px]' : 'h-14 w-14 rounded-[16px]')}>
+            <ShoppingBag className={cn(mobile ? 'h-6 w-6' : 'h-7 w-7')} />
           </span>
           <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-3">
-              <h2 className={cn('font-semibold tracking-tight text-[#0F172A]', mobile ? 'text-[32px]' : 'text-[34px]')}>#{displayOrderId}</h2>
+            <div className="flex flex-wrap items-center gap-2.5">
+              <h2 className={cn('font-semibold tracking-tight text-[#0F172A]', mobile ? 'text-[26px] leading-none' : 'text-[30px] leading-none')}>#{displayOrderId}</h2>
               {editing ? (
                 <select
                   value={statusLabel}
                   onChange={event => updateOrderData(order.orderId, 'status', event.target.value)}
-                  className={cn('h-9 min-w-[155px] rounded-full border px-4 text-[12px] font-semibold outline-none focus:ring-2 focus:ring-[#5638F4]/15', statusBadgeClass)}
+                  className={cn('h-8 min-w-[132px] rounded-full border px-3 text-[11px] font-semibold outline-none focus:ring-2 focus:ring-[#5638F4]/15', statusBadgeClass)}
                   aria-label="Статус заказа"
                 >
                   {optionsWithCurrent(STATUS_OPTIONS, statusLabel).map(status => <option key={status} value={status}>{status}</option>)}
                 </select>
               ) : (
-                <span className={cn('inline-flex h-8 items-center gap-2 rounded-full border px-4 text-[12px] font-medium', statusBadgeClass)}>
-                  <span className="h-2 w-2 rounded-full bg-current" /> {statusLabel}
+                <span className={cn('inline-flex h-7 items-center gap-2 rounded-full border px-3 text-[11px] font-medium', statusBadgeClass)}>
+                  <span className="h-1.5 w-1.5 rounded-full bg-current" /> {statusLabel}
                 </span>
               )}
             </div>
-            <p className="mt-1 text-[13px] text-[#667085]">Дата заказа: {order.date.toLocaleDateString('ru-RU')}</p>
+            <p className={cn('mt-1 text-[#667085]', mobile ? 'text-[12px]' : 'text-[13px]')}>Дата заказа: {order.date.toLocaleDateString('ru-RU')}</p>
           </div>
         </div>
-        <div className={cn('flex items-center gap-3', mobile && 'mt-4 grid grid-cols-2')}>
-          <button type="button" onClick={handlePrint} disabled={documentLoading} className={cn('inline-flex h-11 cursor-pointer items-center justify-center gap-2 rounded-[10px] border border-[#E6E9EF] bg-white px-5 text-[13px] font-medium text-[#111827] transition-colors hover:bg-[#F8FAFC] disabled:opacity-60', mobile && 'order-2 px-3')}>
+        <div className={cn('flex items-center gap-3', mobile && 'mt-3 grid grid-cols-2 gap-2')}>
+          <button type="button" onClick={handlePrint} disabled={documentLoading} className={cn('inline-flex h-10 cursor-pointer items-center justify-center gap-2 rounded-[10px] border border-[#E6E9EF] bg-white px-5 text-[13px] font-medium text-[#111827] transition-colors hover:bg-[#F8FAFC] disabled:opacity-60', mobile && 'order-2 h-10 px-3 text-[12px]')}>
             <Printer className="h-4 w-4" /> Печать
           </button>
-          <button type="button" onClick={handleShare} disabled={documentLoading} className={cn('inline-flex h-11 cursor-pointer items-center justify-center gap-2 rounded-[10px] border border-[#E6E9EF] bg-white px-5 text-[13px] font-medium text-[#111827] transition-colors hover:bg-[#F8FAFC] disabled:opacity-60', mobile && 'order-1 px-3')}>
+          <button type="button" onClick={handleShare} disabled={documentLoading} className={cn('inline-flex h-10 cursor-pointer items-center justify-center gap-2 rounded-[10px] border border-[#E6E9EF] bg-white px-5 text-[13px] font-medium text-[#111827] transition-colors hover:bg-[#F8FAFC] disabled:opacity-60', mobile && 'order-1 h-10 px-3 text-[12px]')}>
             <Share2 className="h-4 w-4" /> Поделиться
           </button>
-          <button type="button" onClick={editing ? onDone : onEdit} className={cn('inline-flex h-11 cursor-pointer items-center justify-center gap-2 rounded-[10px] bg-gradient-to-r from-[#5638F4] to-[#4422DC] px-6 text-[13px] font-semibold text-white shadow-[0_6px_18px_rgba(86,56,244,0.22)] transition-transform hover:-translate-y-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#5638F4]/30', mobile && 'order-first col-span-2 h-12 text-[14px]')}>
+          <button type="button" onClick={editing ? onDone : onEdit} className={cn('inline-flex h-10 cursor-pointer items-center justify-center gap-2 rounded-[10px] bg-gradient-to-r from-[#5638F4] to-[#4422DC] px-6 text-[13px] font-semibold text-white shadow-[0_6px_18px_rgba(86,56,244,0.22)] transition-transform hover:-translate-y-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#5638F4]/30', mobile && 'order-first col-span-2 h-11 text-[13px]')}>
             {editing ? <CheckCircle2 className="h-4 w-4" /> : <Pencil className="h-4 w-4" />} {editing ? 'Готово' : 'Изменить заказ'}
           </button>
           {onDelete && order.isFirebase && (
@@ -2300,8 +2312,8 @@ const OrderDetailView: React.FC<{
                 if (window.confirm(`Удалить заказ ${order.orderId}?`)) onDelete(order.orderId);
               }}
               className={cn(
-                'inline-flex h-11 cursor-pointer items-center justify-center gap-2 rounded-[10px] border border-red-200 bg-white px-4 text-[12px] font-semibold text-red-600 transition-colors hover:bg-red-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-200',
-                mobile && 'order-last col-span-2',
+                'inline-flex h-10 cursor-pointer items-center justify-center gap-2 rounded-[10px] border border-red-200 bg-white px-4 text-[12px] font-semibold text-red-600 transition-colors hover:bg-red-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-200',
+                mobile && 'order-last col-span-2 h-10 bg-red-50/60',
               )}
               title="Удалить заказ"
             >
@@ -3105,7 +3117,8 @@ const OrderCard = React.memo(({
   const mobileQrRef = useRef<HTMLDivElement>(null);
   const mobileFinalQrRef = useRef<HTMLDivElement>(null);
   const paymentUrl = mobilePaymentUrl;
-  const mobilePaymentProviderLabel = isYandexSplitPayment(order.paymentType) ? 'Яндекс Сплит' : 'СБП';
+  const isMobileSplitPayment = isYandexSplitPayment(order.paymentType);
+  const mobilePaymentProviderLabel = isMobileSplitPayment ? 'Яндекс Сплит' : 'СБП';
   const orderItems = getOrderItems(order);
   const orderItemPrices = getOrderItemPrices(order);
   const orderItemColors = getOrderItemColors(order);
@@ -3479,6 +3492,22 @@ const OrderCard = React.memo(({
             <Pin className={cn("h-3.5 w-3.5", order.isPinned && "fill-current")} />
             {order.isPinned ? 'Закреплён' : 'Закрепить'}
           </button>
+          <label
+            className="inline-flex min-w-[108px] max-w-[138px] items-center gap-1 rounded-lg border border-zinc-200 bg-white px-2 py-1.5 text-[9px] font-semibold text-zinc-500 shadow-sm"
+            onClick={event => event.stopPropagation()}
+          >
+            <span className="text-[8px] font-light text-zinc-400">Статус</span>
+            <select
+              value={order.status || 'Новый'}
+              onChange={(event) => updateOrderData(order.orderId, 'status', event.target.value)}
+              className="min-w-0 flex-1 cursor-pointer bg-transparent text-[9px] font-black uppercase tracking-wide text-zinc-700 outline-none"
+              aria-label={`Поменять статус заказа ${order.orderId}`}
+            >
+              {optionsWithCurrent(handbookStatuses, order.status || 'Новый', STATUS_OPTIONS).map(status => (
+                <option key={status} value={status}>{status || '—'}</option>
+              ))}
+            </select>
+          </label>
           <div className="flex items-center gap-1 text-zinc-300">
             <span className="text-[8px] font-light tracking-wide">Развернуть заказ</span>
             <Plus className="h-3.5 w-3.5 stroke-[1.25]" />
@@ -3719,46 +3748,46 @@ const OrderCard = React.memo(({
       </div>
 
       {/* Finance Mobile */}
-      <div className="grid grid-cols-3 gap-2">
-        <div className="min-w-0 rounded-xl bg-zinc-50 border border-zinc-100 p-2">
-          <p className="text-[7px] font-black text-zinc-400 uppercase tracking-tight">Доставка</p>
+      <div className="grid grid-cols-3 gap-1.5">
+        <div className="min-w-0 rounded-lg bg-zinc-50 border border-zinc-100 p-2">
+          <p className="text-[7px] font-bold text-zinc-400 uppercase">Доставка</p>
           <input
             type="number"
             value={order.deliveryPrice || ''}
             onChange={(e) => updateMobileDeliveryPrice(parseFloat(e.target.value) || 0)}
             placeholder="0"
-            className="mt-1 w-full bg-transparent text-[10px] font-black text-zinc-800 outline-none"
+            className="mt-1 w-full bg-transparent text-[11px] font-black text-zinc-800 outline-none"
           />
         </div>
         <div className={cn(
-          "min-w-0 rounded-xl border p-2",
+          "min-w-0 rounded-lg border p-2",
           invoiceType === 'full' ? "bg-emerald-50 border-emerald-100" : "bg-orange-50 border-orange-100"
         )}>
           <p className={cn(
-            "truncate text-[7px] font-black uppercase tracking-tight",
+            "truncate text-[7px] font-bold uppercase",
             invoiceType === 'full' ? "text-emerald-500" : "text-orange-500"
           )}>{invoiceLabel}</p>
-          <p className={cn("truncate text-[10px] font-black", invoiceTone)}>{formatCurrency(liveInvoiceAmount)}</p>
+          <p className={cn("truncate text-[11px] font-black", invoiceTone)}>{formatCurrency(liveInvoiceAmount)}</p>
         </div>
-        <div className="min-w-0 rounded-xl bg-blue-50 border border-blue-100 p-2">
-          <p className="text-[7px] font-black text-blue-500 uppercase tracking-tight">К оплате</p>
-          <p className="truncate text-[10px] font-black text-blue-700">{formatCurrency(dueAmount)}</p>
+        <div className="min-w-0 rounded-lg bg-blue-50 border border-blue-100 p-2">
+          <p className="text-[7px] font-bold text-blue-500 uppercase">К оплате</p>
+          <p className="truncate text-[11px] font-black text-blue-700">{formatCurrency(dueAmount)}</p>
         </div>
       </div>
 
       {/* Payment Mobile */}
-      <div className="rounded-xl border border-violet-100 bg-violet-50/40 p-2.5 space-y-2">
+      <div className="rounded-xl border border-zinc-200 bg-white p-2.5 space-y-2 shadow-sm">
         <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
-            <p className="text-[8px] font-black text-violet-500 uppercase tracking-widest">{mobilePaymentProviderLabel}</p>
-            <p className={cn("text-[8px] font-bold", mainPaymentPaid ? "text-emerald-600" : "text-zinc-400")}>{mainPaymentStatusText}</p>
+          <div className="min-w-0">
+            <p className="text-[9px] font-black text-zinc-800">{mobilePaymentProviderLabel}</p>
+            <p className={cn("mt-0.5 truncate text-[9px] font-bold", mainPaymentPaid ? "text-emerald-600" : "text-zinc-400")}>{mainPaymentStatusText}</p>
           </div>
           {paymentUrl && (
             <a
               href={paymentUrl}
               target="_blank"
               rel="noopener noreferrer"
-              className="px-3 py-1.5 rounded-lg bg-violet-600 text-white text-[8px] font-black uppercase tracking-wider"
+              className="shrink-0 px-3 py-1.5 rounded-lg bg-zinc-900 text-white text-[9px] font-bold"
             >
               Открыть
             </a>
@@ -3770,23 +3799,29 @@ const OrderCard = React.memo(({
               <button
                 onClick={() => refreshMobilePayment('main')}
                 disabled={mobilePaymentRefreshing}
-                className="py-2 rounded-lg bg-white border border-violet-100 text-[8px] font-black text-violet-600 uppercase flex items-center justify-center gap-1.5 disabled:opacity-60"
+                className="py-2 rounded-lg bg-white border border-zinc-200 text-[10px] font-bold text-zinc-600 flex items-center justify-center gap-1.5 disabled:opacity-60"
               >
                 <RefreshCcw size={10} className={mobilePaymentRefreshing ? 'animate-spin' : ''} />
                 Проверить
               </button>
               <button
                 onClick={() => shareOrder(shareText, paymentUrl).catch(() => navigator.clipboard.writeText(shareText))}
-                className="py-2 rounded-lg bg-violet-600 border border-violet-600 text-[8px] font-black text-white uppercase flex items-center justify-center gap-1.5"
+                className={cn(
+                  "py-2 rounded-lg border text-[10px] font-bold flex items-center justify-center gap-1.5",
+                  isMobileSplitPayment
+                    ? "border-zinc-950 bg-zinc-950 text-white active:bg-black"
+                    : "border-violet-600 bg-violet-600 text-white"
+                )}
               >
-                <Send size={10} /> Поделиться
+                {isMobileSplitPayment ? <SplitMark /> : <Send size={10} />}
+                {isMobileSplitPayment ? 'Яндекс Сплит' : 'Поделиться'}
               </button>
             </div>
             <button
               onClick={() => setShowMobileQr(v => !v)}
-              className="w-full py-2 rounded-lg bg-white border border-violet-100 text-[8px] font-black text-violet-600 uppercase"
+              className="w-full py-2 rounded-lg bg-[#6B4DFF] border border-[#6B4DFF] text-[10px] font-bold text-white"
             >
-              {showMobileQr ? 'Скрыть QR' : 'Показать QR'}
+              {showMobileQr ? 'Скрыть QR' : 'QR-код Точка'}
             </button>
             {showMobileQr && (
               <div className="space-y-2">
@@ -3807,7 +3842,7 @@ const OrderCard = React.memo(({
             <button
               onClick={createMobilePayment}
               disabled={mobilePaymentLoading}
-              className="w-full py-2 rounded-lg border border-violet-200 bg-violet-50 text-violet-600 text-[8px] font-black uppercase tracking-wider flex items-center justify-center gap-1.5 disabled:opacity-60"
+              className="w-full py-2 rounded-lg border border-violet-200 bg-violet-50 text-violet-600 text-[10px] font-bold flex items-center justify-center gap-1.5 disabled:opacity-60"
             >
               {mobilePaymentLoading ? <RefreshCcw size={11} className="animate-spin" /> : <QrCodeIcon size={11} />}
               {mobilePaymentLoading ? 'Создаём...' : 'Создать счёт'}
