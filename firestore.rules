@@ -66,6 +66,11 @@ service cloud.firestore {
     }
 
     // Other settings stay admin-only because they may contain integration config.
+    match /settings/storefront {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
     match /settings/{document=**} {
       allow read: if true;
       allow write: if isAdmin();
