@@ -914,6 +914,7 @@ export const OrderForm: React.FC<OrderFormProps> = ({ onBack, initialClient }) =
                 >
                   <option>Предоплата</option>
                   <option>Полная оплата</option>
+                  <option>Сплитами</option>
                   <option>Наложенный платеж</option>
                   <option>При получении</option>
                 </select>
