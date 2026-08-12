@@ -10,7 +10,7 @@ import {
   Tag, Trash2, Phone, UserCircle, ChevronRight, ChevronLeft, QrCode as QrCodeIcon,
   CheckCircle2, Copy, Send, Truck, Wallet, CreditCard, Database, Filter,
   ArrowUpRight, ArrowDownRight, Printer, Upload, Instagram, FileText, Pencil, Download,
-  MoreVertical, Share2, ExternalLink, Pin
+  MoreVertical, Share2, ExternalLink, Pin, Clock
 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { formatCurrency, cn } from '../../lib/utils';
@@ -25,8 +25,8 @@ import {
 } from '../../lib/orderPayments';
 import { motion, AnimatePresence } from 'motion/react';
 import { OrderData } from '../AnalyticsDashboard';
-import { db } from '../../firebase';
-import { collection, doc, getDocs, onSnapshot, orderBy, query, setDoc } from 'firebase/firestore';
+import { auth, db } from '../../firebase';
+import { collection, doc, getDocs, limit, onSnapshot, orderBy, query, setDoc } from 'firebase/firestore';
 
 const STATUS_OPTIONS = ['Черновик', 'Новый', 'В работе', 'Оплачен', 'Упакован', 'Принят СДЭК', 'Отгружен', 'Доставлен', 'Возврат', 'Отмена', 'Обмен'];
 const DELIVERY_OPTIONS = ['СДЭК', 'Почта РФ', 'Боксберри', 'Самовывоз', 'Курьер', 'DBS'];
@@ -45,6 +45,10 @@ const MANAGER_PLAN_DEFAULTS = {
   basePlan: 120,
   revenuePlan: 0,
 };
+const SHIFT_TARGET_CONTACTS = 100;
+const SHIFT_BASE_PAY = 1000;
+const SHIFT_START_TIME = '09:00';
+const SHIFT_END_TIME = '22:00';
 const RAW_COLOR_INDEX = 1;
 const RAW_SIZE_INDEX = 8;
 const RAW_REVENUE_INDEX = 14;
@@ -68,6 +72,29 @@ type ManagerPlanSettings = Record<string, {
   basePlan: number;
   revenuePlan: number;
 }>;
+
+type ManagerContactEntry = {
+  id: string;
+  managerName?: string;
+  managerId?: string;
+  clientPhone?: string;
+  clientName?: string;
+  date?: string;
+  status?: string;
+};
+
+type ManagerShiftRecord = {
+  id: string;
+  managerName?: string;
+  managerId?: string;
+  dateKey?: string;
+  startedAt?: string;
+  plannedStart?: string;
+  plannedEnd?: string;
+  targetContacts?: number;
+  basePay?: number;
+  status?: 'active' | 'closed';
+};
 
 type CdekCityOption = {
   code: number;
@@ -126,6 +153,31 @@ const addBusinessDays = (date: Date, days: number) => {
     if (day !== 0 && day !== 6) added += 1;
   }
   return result;
+};
+
+const getLocalDateKey = (date = new Date()) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+const managerDocKey = (value: string) => String(value || 'manager')
+  .trim()
+  .toLowerCase()
+  .replace(/[^a-zа-яё0-9]+/gi, '_')
+  .replace(/^_+|_+$/g, '') || 'manager';
+
+const parseContactDate = (value: unknown) => {
+  if (!value) return null;
+  if (typeof value === 'string') {
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+  const maybeTimestamp = value as { toDate?: () => Date; seconds?: number };
+  if (typeof maybeTimestamp.toDate === 'function') return maybeTimestamp.toDate();
+  if (typeof maybeTimestamp.seconds === 'number') return new Date(maybeTimestamp.seconds * 1000);
+  return null;
 };
 
 const getOrderItems = (order: Partial<Pick<OrderData, 'item' | 'items'>>): string[] => {
@@ -4087,6 +4139,11 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
   const [expandedOrderId, setExpandedOrderId] = useState<string | null>(null);
   const [analyticsDetailsOpen, setAnalyticsDetailsOpen] = useState(false);
   const [selectedOrderKeys, setSelectedOrderKeys] = useState<Set<string>>(() => new Set());
+  const [managerContacts, setManagerContacts] = useState<ManagerContactEntry[]>([]);
+  const [managerShifts, setManagerShifts] = useState<ManagerShiftRecord[]>([]);
+  const [selectedShiftManager, setSelectedShiftManager] = useState('');
+  const [shiftSaving, setShiftSaving] = useState(false);
+  const [shiftError, setShiftError] = useState('');
   const [managerPlanSettings, setManagerPlanSettings] = useState<ManagerPlanSettings>({
     'Менеджер 1': MANAGER_PLAN_DEFAULTS,
     'Менеджер 2': MANAGER_PLAN_DEFAULTS,
@@ -4145,6 +4202,42 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
       window.clearInterval(interval);
     };
   }, []);
+
+  useEffect(() => {
+    const unsubscribe = onSnapshot(
+      query(collection(db, 'manager_contacts'), orderBy('date', 'desc'), limit(700)),
+      snap => {
+        setManagerContacts(snap.docs.map(d => ({ id: d.id, ...d.data() } as ManagerContactEntry)));
+        setShiftError('');
+      },
+      error => {
+        console.error('Не удалось загрузить касания менеджеров:', error);
+        setManagerContacts([]);
+        setShiftError('Не удалось загрузить касания клиентов. Проверьте доступ Firestore.');
+      }
+    );
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    const unsubscribe = onSnapshot(
+      query(collection(db, 'manager_shifts'), orderBy('startedAt', 'desc'), limit(100)),
+      snap => {
+        setManagerShifts(snap.docs.map(d => ({ id: d.id, ...d.data() } as ManagerShiftRecord)));
+      },
+      error => {
+        console.error('Не удалось загрузить смены менеджеров:', error);
+        setManagerShifts([]);
+      }
+    );
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (selectedShiftManager) return;
+    const firstManager = handbookManagers.find(manager => String(manager || '').trim()) || 'Менеджер 1';
+    setSelectedShiftManager(firstManager);
+  }, [handbookManagers, selectedShiftManager]);
 
   useEffect(() => {
     const unsubscribe = onSnapshot(doc(db, 'settings', 'manager_sales_plan'), (snap) => {
@@ -4486,6 +4579,70 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
       }),
     };
   }, [data, managerPlanSettings, ordersFilterMonth, stats?.uniqueOrders]);
+
+  const shiftManagers = useMemo(() => {
+    const names = handbookManagers.filter(manager => String(manager || '').trim());
+    return names.length ? names : ['Менеджер 1', 'Менеджер 2'];
+  }, [handbookManagers]);
+
+  const managerShiftState = useMemo(() => {
+    const todayKey = getLocalDateKey();
+    const manager = selectedShiftManager || shiftManagers[0] || 'Менеджер 1';
+    const contactsToday = managerContacts.filter(entry => {
+      const contactDate = parseContactDate(entry.date);
+      return getLocalDateKey(contactDate || new Date(0)) === todayKey
+        && String(entry.managerName || '').trim() === manager
+        && String(entry.status || '').trim() !== 'в работе';
+    });
+    const uniqueClients = new Set(contactsToday.map(entry => (
+      String(entry.clientPhone || entry.clientName || entry.id || '').trim()
+    )).filter(Boolean));
+    const progress = Math.min(100, Math.round((uniqueClients.size / SHIFT_TARGET_CONTACTS) * 100));
+    const todayShift = managerShifts.find(shift => (
+      shift.dateKey === todayKey && String(shift.managerName || '').trim() === manager
+    ));
+    const completed = uniqueClients.size >= SHIFT_TARGET_CONTACTS;
+    const earned = todayShift && completed ? SHIFT_BASE_PAY : 0;
+    const active = Boolean(todayShift?.startedAt && todayShift.status !== 'closed');
+    return {
+      todayKey,
+      manager,
+      contactsCount: uniqueClients.size,
+      progress,
+      shift: todayShift,
+      completed,
+      earned,
+      active,
+      remaining: Math.max(0, SHIFT_TARGET_CONTACTS - uniqueClients.size),
+    };
+  }, [managerContacts, managerShifts, selectedShiftManager, shiftManagers]);
+
+  const startManagerShift = async () => {
+    const manager = managerShiftState.manager;
+    if (!manager) return;
+    setShiftSaving(true);
+    setShiftError('');
+    try {
+      const user = auth.currentUser;
+      await setDoc(doc(db, 'manager_shifts', `${managerShiftState.todayKey}_${managerDocKey(manager)}`), {
+        managerName: manager,
+        managerId: user?.uid || null,
+        startedBy: user?.email || user?.displayName || manager,
+        dateKey: managerShiftState.todayKey,
+        startedAt: new Date().toISOString(),
+        plannedStart: SHIFT_START_TIME,
+        plannedEnd: SHIFT_END_TIME,
+        targetContacts: SHIFT_TARGET_CONTACTS,
+        basePay: SHIFT_BASE_PAY,
+        status: 'active',
+      }, { merge: true });
+    } catch (error: any) {
+      console.error('Не удалось начать смену:', error);
+      setShiftError(error?.message || 'Не удалось начать смену. Проверьте соединение и права доступа.');
+    } finally {
+      setShiftSaving(false);
+    }
+  };
 
   const syncNewOrderItems = (
     items: string[],
@@ -5026,43 +5183,124 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
 
   return (
     <div className="yb-orders-space space-y-5 text-[#1F2937]">
-      <div className="yb-orders-hero flex flex-col gap-4 rounded-2xl border border-zinc-200/80 bg-white p-5 lg:flex-row lg:items-center lg:justify-between">
-        <div>
-          <div className="mb-2 inline-flex items-center gap-2 rounded-full border border-violet-100 bg-violet-50 px-2.5 py-1 text-[10px] font-semibold text-violet-700">
-            <ShoppingBag className="h-3.5 w-3.5" />
-            Управление заказами
+      <div className="yb-orders-shift rounded-2xl border border-zinc-200/80 bg-white p-4 shadow-[0_12px_34px_rgba(31,41,55,0.04)] sm:p-5">
+        <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+          <div className="min-w-0">
+            <div className="mb-2 inline-flex items-center gap-2 rounded-full border border-violet-100 bg-violet-50 px-2.5 py-1 text-[10px] font-semibold text-violet-700">
+              <Clock className="h-3.5 w-3.5" />
+              Смена менеджера
+            </div>
+            <h2 className="text-[22px] font-semibold leading-tight tracking-[-0.02em] text-zinc-950 sm:text-[28px]">
+              Работа по базе · {SHIFT_START_TIME}–{SHIFT_END_TIME}
+            </h2>
+            <p className="mt-1 max-w-3xl text-[12px] font-medium leading-5 text-zinc-500">
+              Менеджер отмечается в начале дня, поднимает 100 клиентов из базы. ФОТ за смену {formatCurrency(SHIFT_BASE_PAY)} засчитывается только после выполнения нормы.
+            </p>
           </div>
-          <h2 className="text-[24px] font-semibold leading-tight tracking-[-0.02em] text-zinc-950 sm:text-[30px]">Заказы</h2>
-          <p className="mt-1 text-[12px] font-medium leading-5 text-zinc-500">
-            {managerSalesPlan.monthLabel} 2026 · планы менеджеров и мониторинг заказов
-          </p>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={exportToCsv}
+              className="inline-flex h-10 items-center gap-2 rounded-[6px] border border-[#E6E9EF] bg-white px-4 text-[12px] font-medium text-[#6B7280] transition-colors hover:bg-[#F6F7F9]"
+            >
+              <Copy className="h-4 w-4" />
+              Экспорт
+            </button>
+            <button
+              type="button"
+              onClick={() => alert('Импорт заказов из таблицы отключен. Заказы ведем на сайте, выгрузка доступна через кнопку Экспорт.')}
+              className="inline-flex h-10 items-center gap-2 rounded-[6px] border border-[#E6E9EF] bg-white px-4 text-[12px] font-medium text-[#6B7280] transition-colors hover:bg-[#F6F7F9]"
+            >
+              <Upload className="h-4 w-4" />
+              Импорт
+            </button>
+            <button
+              type="button"
+              onClick={() => document.querySelector('[data-new-order-form]')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+              className="inline-flex h-10 items-center gap-2 rounded-[6px] bg-[#7D7DE6] px-5 text-[12px] font-medium text-white transition-colors hover:bg-[#6F6FE0]"
+            >
+              <Plus className="h-4 w-4" />
+              Новый заказ
+            </button>
+          </div>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={exportToCsv}
-            className="inline-flex h-10 items-center gap-2 rounded-[6px] border border-[#E6E9EF] bg-white px-4 text-[12px] font-medium text-[#6B7280] transition-colors hover:bg-[#F6F7F9]"
-          >
-            <Copy className="h-4 w-4" />
-            Экспорт
-          </button>
-          <button
-            type="button"
-            onClick={() => alert('Импорт заказов из таблицы отключен. Заказы ведем на сайте, выгрузка доступна через кнопку Экспорт.')}
-            className="inline-flex h-10 items-center gap-2 rounded-[6px] border border-[#E6E9EF] bg-white px-4 text-[12px] font-medium text-[#6B7280] transition-colors hover:bg-[#F6F7F9]"
-          >
-            <Upload className="h-4 w-4" />
-            Импорт
-          </button>
-          <button
-            type="button"
-            onClick={() => document.querySelector('[data-new-order-form]')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
-            className="inline-flex h-10 items-center gap-2 rounded-[6px] bg-[#7D7DE6] px-5 text-[12px] font-medium text-white transition-colors hover:bg-[#6F6FE0]"
-          >
-            <Plus className="h-4 w-4" />
-            Новый заказ
-          </button>
+
+        <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(220px,280px)_minmax(0,1fr)_minmax(180px,220px)] lg:items-stretch">
+          <div className="rounded-xl border border-[#E6E9EF] bg-[#F8FAFC] p-3">
+            <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#9CA3AF]">Менеджер в смене</p>
+            <div className="relative mt-2">
+              <select
+                value={managerShiftState.manager}
+                onChange={(e) => setSelectedShiftManager(e.target.value)}
+                className="h-11 w-full appearance-none rounded-[8px] border border-[#E6E9EF] bg-white px-3 pr-9 text-[13px] font-semibold text-[#1F2937] outline-none focus:border-[#7D7DE6] focus:ring-2 focus:ring-[#7D7DE6]/10"
+              >
+                {shiftManagers.map(manager => <option key={manager} value={manager}>{manager}</option>)}
+              </select>
+              <ChevronRight className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 rotate-90 text-[#9CA3AF]" />
+            </div>
+            <button
+              type="button"
+              onClick={startManagerShift}
+              disabled={shiftSaving || managerShiftState.active}
+              className={cn(
+                'mt-2 inline-flex h-10 w-full items-center justify-center gap-2 rounded-[8px] px-3 text-[12px] font-semibold transition-colors',
+                managerShiftState.active
+                  ? 'border border-emerald-100 bg-emerald-50 text-emerald-700'
+                  : 'bg-zinc-950 text-white hover:bg-zinc-800 disabled:opacity-50'
+              )}
+            >
+              {managerShiftState.active ? <CheckCircle2 className="h-4 w-4" /> : <Clock className="h-4 w-4" />}
+              {shiftSaving ? 'Запускаю…' : managerShiftState.active ? 'Смена начата' : 'Начать смену'}
+            </button>
+          </div>
+
+          <div className="rounded-xl border border-[#E6E9EF] bg-white p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#9CA3AF]">Подъём базы сегодня</p>
+                <p className="mt-1 text-[22px] font-semibold tracking-[-0.03em] text-zinc-950">
+                  {managerShiftState.contactsCount}<span className="text-[13px] text-zinc-400">/{SHIFT_TARGET_CONTACTS} клиентов</span>
+                </p>
+              </div>
+              <span className={cn(
+                'rounded-full px-3 py-1 text-[11px] font-semibold',
+                managerShiftState.completed ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'
+              )}>
+                {managerShiftState.completed ? 'Норма выполнена' : `Осталось ${managerShiftState.remaining}`}
+              </span>
+            </div>
+            <div className="mt-3 h-2 overflow-hidden rounded-full bg-[#E6E9EF]">
+              <div
+                className="h-full rounded-full bg-[#7D7DE6] transition-all"
+                style={{ width: `${managerShiftState.progress}%` }}
+              />
+            </div>
+            <div className="mt-2 flex flex-wrap justify-between gap-2 text-[11px] font-medium text-[#9CA3AF]">
+              <span>Считаются кнопки “Написал” и сохранённые касания за сегодня</span>
+              <span>{managerShiftState.progress}%</span>
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-[#E6E9EF] bg-[#F8FAFC] p-3">
+            <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#9CA3AF]">ФОТ смены</p>
+            <p className={cn('mt-2 text-[24px] font-semibold tracking-[-0.03em]', managerShiftState.earned > 0 ? 'text-emerald-600' : 'text-zinc-950')}>
+              {formatCurrency(managerShiftState.earned)}
+            </p>
+            <p className="mt-1 text-[11px] font-medium leading-4 text-[#6B7280]">
+              {managerShiftState.earned > 0
+                ? 'Засчитано: смена начата и 100 клиентов поднято.'
+                : managerShiftState.active
+                  ? 'Пока не засчитано: нужна норма 100 клиентов.'
+                  : 'Начните смену, затем поднимайте клиентов из базы.'}
+            </p>
+          </div>
         </div>
+        {shiftError && (
+          <div className="mt-3 rounded-[8px] border border-red-100 bg-red-50 px-3 py-2 text-[12px] font-medium text-red-700">
+            {shiftError}
+          </div>
+        )}
       </div>
 
       <section className="grid grid-cols-2 gap-3 xl:grid-cols-4">

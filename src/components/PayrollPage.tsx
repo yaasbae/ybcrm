@@ -53,8 +53,29 @@ interface PayrollOrder {
   status: string;
 }
 
+interface PayrollManagerContact {
+  id: string;
+  managerName?: string;
+  clientPhone?: string;
+  clientName?: string;
+  date?: string;
+  status?: string;
+}
+
+interface PayrollManagerShift {
+  id: string;
+  managerName?: string;
+  dateKey?: string;
+  startedAt?: string;
+  targetContacts?: number;
+  basePay?: number;
+  status?: string;
+}
+
 const STORAGE_KEY = 'ybcrm.payroll.people.v1';
 const MANAGER_LINKS = ['Менеджер 1', 'Менеджер 2'];
+const SHIFT_TARGET_CONTACTS = 100;
+const SHIFT_BASE_PAY = 1000;
 
 const payTypeLabels: Record<PayType, string> = {
   salary: 'Оклад',
@@ -182,6 +203,21 @@ const parseOrderDate = (value: unknown): Date | null => {
   return Number.isNaN(date.getTime()) ? null : date;
 };
 
+const parseShiftDate = (value: unknown): Date | null => {
+  if (!value) return null;
+  if (typeof value === 'string') {
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+  if (typeof value === 'object' && value && 'toDate' in value && typeof (value as { toDate?: () => Date }).toDate === 'function') {
+    return (value as { toDate: () => Date }).toDate();
+  }
+  if (typeof value === 'object' && value && typeof (value as { seconds?: number }).seconds === 'number') {
+    return new Date((value as { seconds: number }).seconds * 1000);
+  }
+  return null;
+};
+
 const isPayrollSaleOrder = (order: PayrollOrder) => {
   const status = order.status.toLowerCase();
   return order.revenue > 0 && !status.includes('возврат') && !status.includes('отмена') && !status.includes('обмен');
@@ -247,6 +283,8 @@ export const PayrollPage: React.FC<PayrollPageProps> = ({ onBack }) => {
   const [activeId, setActiveId] = useState(people[0]?.id || '');
   const [monthKey, setMonthKey] = useState(currentMonthKey());
   const [orders, setOrders] = useState<PayrollOrder[]>([]);
+  const [managerContacts, setManagerContacts] = useState<PayrollManagerContact[]>([]);
+  const [managerShifts, setManagerShifts] = useState<PayrollManagerShift[]>([]);
   const [ordersLoading, setOrdersLoading] = useState(true);
 
   useEffect(() => {
@@ -273,6 +311,24 @@ export const PayrollPage: React.FC<PayrollPageProps> = ({ onBack }) => {
   }, []);
 
   useEffect(() => {
+    const unsubscribe = onSnapshot(
+      query(collection(db, 'manager_contacts')),
+      snapshot => setManagerContacts(snapshot.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() } as PayrollManagerContact))),
+      () => setManagerContacts([])
+    );
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    const unsubscribe = onSnapshot(
+      query(collection(db, 'manager_shifts')),
+      snapshot => setManagerShifts(snapshot.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() } as PayrollManagerShift))),
+      () => setManagerShifts([])
+    );
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(people));
   }, [people]);
 
@@ -293,11 +349,48 @@ export const PayrollPage: React.FC<PayrollPageProps> = ({ onBack }) => {
     }, {});
   }, [orders, monthKey]);
 
+  const managerShiftStats = useMemo(() => {
+    const contactsByManagerDay = managerContacts.reduce<Record<string, Set<string>>>((acc, entry) => {
+      const date = parseShiftDate(entry.date);
+      const manager = String(entry.managerName || '').trim();
+      if (!date || !manager || toMonthKey(date) !== monthKey || String(entry.status || '').trim() === 'в работе') return acc;
+      const dayKey = `${manager}__${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+      if (!acc[dayKey]) acc[dayKey] = new Set();
+      acc[dayKey].add(String(entry.clientPhone || entry.clientName || entry.id || '').trim());
+      return acc;
+    }, {});
+
+    return MANAGER_LINKS.reduce<Record<string, { creditedShifts: number; contacts: number; accrued: number }>>((acc, manager) => {
+      const monthShifts = managerShifts.filter(shift => (
+        String(shift.managerName || '').trim() === manager
+        && String(shift.dateKey || '').startsWith(monthKey)
+        && shift.startedAt
+      ));
+      const creditedShifts = monthShifts.filter(shift => {
+        const contacts = contactsByManagerDay[`${manager}__${shift.dateKey}`]?.size || 0;
+        const target = Number(shift.targetContacts) || SHIFT_TARGET_CONTACTS;
+        return contacts >= target;
+      });
+      const contacts = Object.entries(contactsByManagerDay).reduce((sum, [key, set]) => (
+        key.startsWith(`${manager}__`) ? sum + set.size : sum
+      ), 0);
+      acc[manager] = {
+        creditedShifts: creditedShifts.length,
+        contacts,
+        accrued: creditedShifts.reduce((sum, shift) => sum + (Number(shift.basePay) || SHIFT_BASE_PAY), 0),
+      };
+      return acc;
+    }, {});
+  }, [managerContacts, managerShifts, monthKey]);
+
   const applyManagerLink = (person: PayrollPerson): PayrollPerson => {
     if (!person.linkedManager) return person;
+    const shiftStat = managerShiftStats[person.linkedManager];
     return {
       ...person,
       percentBase: managerStats[person.linkedManager]?.revenue || 0,
+      shifts: shiftStat?.creditedShifts ?? person.shifts,
+      shiftRate: shiftStat ? SHIFT_BASE_PAY : person.shiftRate,
     };
   };
 
@@ -311,7 +404,7 @@ export const PayrollPage: React.FC<PayrollPageProps> = ({ onBack }) => {
         debt: Math.max(accrued - effectivePerson.paid, 0),
       };
     });
-  }, [people, managerStats]);
+  }, [people, managerStats, managerShiftStats]);
 
   const totals = useMemo(() => {
     return rows.reduce(
@@ -441,18 +534,20 @@ export const PayrollPage: React.FC<PayrollPageProps> = ({ onBack }) => {
         <div className="mb-6 grid gap-4 md:grid-cols-2">
           {MANAGER_LINKS.map(manager => {
             const stat = managerStats[manager] || { orders: 0, revenue: 0 };
+            const shiftStat = managerShiftStats[manager] || { creditedShifts: 0, contacts: 0, accrued: 0 };
             return (
               <div key={manager} className="rounded-[10px] border border-[#E6E9EF] bg-white p-5 shadow-[0_12px_32px_rgba(31,41,55,0.04)]">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
-                    <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-[#9CA3AF]">Продажи из заказов</p>
+                    <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-[#9CA3AF]">Продажи и смены</p>
                     <h3 className="mt-2 text-[20px] font-semibold text-[#1F2937]">{manager}</h3>
                   </div>
                   <p className="text-right text-[24px] font-semibold text-emerald-600">{formatCurrency(stat.revenue)}</p>
                 </div>
-                <div className="mt-4 flex items-center justify-between border-t border-[#F1F3F6] pt-3 text-[12px] font-medium text-[#6B7280]">
-                  <span>{ordersLoading ? 'Загружаю заказы...' : `${stat.orders} заказов за месяц`}</span>
-                  <span>База для процента</span>
+                <div className="mt-4 grid gap-2 border-t border-[#F1F3F6] pt-3 text-[12px] font-medium text-[#6B7280] sm:grid-cols-3">
+                  <span>{ordersLoading ? 'Загружаю заказы...' : `${stat.orders} заказов`}</span>
+                  <span>{shiftStat.contacts} касаний базы</span>
+                  <span className="text-emerald-600">{shiftStat.creditedShifts} смен · {formatCurrency(shiftStat.accrued)}</span>
                 </div>
               </div>
             );
