@@ -8,7 +8,7 @@ import {
 import { formatCurrency, cn } from '../../lib/utils';
 import { motion, AnimatePresence } from 'motion/react';
 import { db, auth } from '../../firebase';
-import { doc, updateDoc, onSnapshot, setDoc, writeBatch, collection, getDocs, orderBy, query, addDoc, where, serverTimestamp, limit } from 'firebase/firestore';
+import { doc, updateDoc, onSnapshot, setDoc, writeBatch, collection, getDocs, getDoc, orderBy, query, addDoc, where, serverTimestamp, limit } from 'firebase/firestore';
 import { OrderData } from '../AnalyticsDashboard';
 
 interface ClientsTabProps {
@@ -24,6 +24,12 @@ type BroadcastEntry = { sentAt: string; status: 'sent' | 'error' | 'no_tg'; mess
 type ContactStatus = 'в работе' | 'написали' | 'ответил' | 'не ответил' | 'отказ' | 'перезвонить';
 type ClientView = 'queue' | 'in_work' | 'contacted' | 'answered' | 'snoozed' | 'all';
 type ContactAgeFilter = 'all' | '0-5' | '6-15' | '16-30' | '31-60' | '61-90' | '91-120' | '120+';
+type ManagerProfile = {
+  managerName?: string;
+  managerId?: string;
+  managerEmail?: string | null;
+  displayName?: string | null;
+};
 
 const CONTACT_AGE_FILTERS: Array<{ key: ContactAgeFilter; label: string; min: number; max?: number }> = [
   { key: 'all', label: 'Все даты', min: 0 },
@@ -40,6 +46,25 @@ function normalizePhone(value: string): string {
   const digits = String(value || '').replace(/\D/g, '');
   return digits.length === 11 && digits.startsWith('8') ? `7${digits.slice(1)}` : digits;
 }
+
+const getCurrentManagerIdentity = async () => {
+  const manager = auth.currentUser;
+  let profile: ManagerProfile | null = null;
+  if (manager?.uid) {
+    try {
+      const snap = await getDoc(doc(db, 'manager_profiles', manager.uid));
+      profile = snap.exists() ? (snap.data() as ManagerProfile) : null;
+    } catch (error) {
+      console.warn('Не удалось загрузить профиль менеджера:', error);
+    }
+  }
+  return {
+    id: manager?.uid || 'unknown',
+    name: profile?.managerName || manager?.displayName || manager?.email || 'Менеджер',
+    email: manager?.email || profile?.managerEmail || null,
+    photo: manager?.photoURL || null,
+  };
+};
 
 export const ClientsTab: React.FC<ClientsTabProps> = ({
   stats,
@@ -98,15 +123,16 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
     if (!inlineNote.trim()) return;
     const phone = client.phone || client.userId;
     if (!phone) return;
-    const manager = auth.currentUser;
     setInlineSaving(true);
     try {
+      const manager = await getCurrentManagerIdentity();
       const entry = {
         clientPhone: phone,
         clientName: client.fullName || client.name,
-        managerId: manager?.uid || 'unknown',
-        managerName: manager?.displayName || manager?.email || 'Менеджер',
-        managerPhoto: manager?.photoURL || null,
+        managerId: manager.id,
+        managerName: manager.name,
+        managerEmail: manager.email,
+        managerPhoto: manager.photo,
         date: new Date().toISOString(),
         status: inlineStatus,
         tag: inlineTag.trim() || null,
@@ -225,13 +251,14 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
   const saveQuickContact = async (client: any, status: ContactStatus, note: string) => {
     const phone = client.phone || client.userId || client.firestoreId;
     if (!phone) return;
-    const manager = auth.currentUser;
+    const manager = await getCurrentManagerIdentity();
     const entry = {
       clientPhone: phone,
       clientName: client.fullName || client.name || 'Клиент',
-      managerId: manager?.uid || 'unknown',
-      managerName: manager?.displayName || manager?.email || 'Менеджер',
-      managerPhoto: manager?.photoURL || null,
+      managerId: manager.id,
+      managerName: manager.name,
+      managerEmail: manager.email,
+      managerPhoto: manager.photo,
       date: new Date().toISOString(),
       status,
       tag: client.lastContactTag || null,
@@ -385,15 +412,16 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
   const handleAddContact = async () => {
     if (!newContactNote.trim()) return;
     const phone = selectedLoyaltyClient.phone || selectedLoyaltyClient.name;
-    const manager = auth.currentUser;
     setIsSendingContact(true);
     try {
+      const manager = await getCurrentManagerIdentity();
       const entry = {
         clientPhone: phone,
         clientName: selectedLoyaltyClient.name || selectedLoyaltyClient.fullName,
-        managerId: manager?.uid || 'unknown',
-        managerName: manager?.displayName || manager?.email || 'Менеджер',
-        managerPhoto: manager?.photoURL || null,
+        managerId: manager.id,
+        managerName: manager.name,
+        managerEmail: manager.email,
+        managerPhoto: manager.photo,
         date: new Date().toISOString(),
         status: newContactStatus,
         tag: newContactTag.trim() || null,

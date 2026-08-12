@@ -26,7 +26,7 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { OrderData } from '../AnalyticsDashboard';
 import { auth, db } from '../../firebase';
-import { collection, doc, getDocs, limit, onSnapshot, orderBy, query, setDoc } from 'firebase/firestore';
+import { collection, doc, getDoc, getDocs, limit, onSnapshot, orderBy, query, setDoc } from 'firebase/firestore';
 
 const STATUS_OPTIONS = ['Черновик', 'Новый', 'В работе', 'Оплачен', 'Упакован', 'Принят СДЭК', 'Отгружен', 'Доставлен', 'Возврат', 'Отмена', 'Обмен'];
 const DELIVERY_OPTIONS = ['СДЭК', 'Почта РФ', 'Боксберри', 'Самовывоз', 'Курьер', 'DBS'];
@@ -77,6 +77,7 @@ type ManagerContactEntry = {
   id: string;
   managerName?: string;
   managerId?: string;
+  managerEmail?: string;
   clientPhone?: string;
   clientName?: string;
   date?: string;
@@ -87,6 +88,7 @@ type ManagerShiftRecord = {
   id: string;
   managerName?: string;
   managerId?: string;
+  managerEmail?: string;
   dateKey?: string;
   startedAt?: string;
   plannedStart?: string;
@@ -94,6 +96,13 @@ type ManagerShiftRecord = {
   targetContacts?: number;
   basePay?: number;
   status?: 'active' | 'closed';
+};
+
+type ManagerProfile = {
+  managerName?: string;
+  managerId?: string;
+  managerEmail?: string | null;
+  displayName?: string | null;
 };
 
 type CdekCityOption = {
@@ -167,6 +176,8 @@ const managerDocKey = (value: string) => String(value || 'manager')
   .toLowerCase()
   .replace(/[^a-zа-яё0-9]+/gi, '_')
   .replace(/^_+|_+$/g, '') || 'manager';
+
+const normalizeAuthEmail = (value: unknown) => String(value || '').trim().toLowerCase();
 
 const parseContactDate = (value: unknown) => {
   if (!value) return null;
@@ -4142,6 +4153,8 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
   const [managerContacts, setManagerContacts] = useState<ManagerContactEntry[]>([]);
   const [managerShifts, setManagerShifts] = useState<ManagerShiftRecord[]>([]);
   const [selectedShiftManager, setSelectedShiftManager] = useState('');
+  const [currentManagerProfile, setCurrentManagerProfile] = useState<ManagerProfile | null>(null);
+  const [profileSaving, setProfileSaving] = useState(false);
   const [shiftSaving, setShiftSaving] = useState(false);
   const [shiftError, setShiftError] = useState('');
   const [managerPlanSettings, setManagerPlanSettings] = useState<ManagerPlanSettings>({
@@ -4234,10 +4247,34 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
   }, []);
 
   useEffect(() => {
+    const user = auth.currentUser;
+    if (!user?.uid) {
+      setCurrentManagerProfile(null);
+      return;
+    }
+    const unsubscribe = onSnapshot(
+      doc(db, 'manager_profiles', user.uid),
+      snap => {
+        const data = snap.data() as ManagerProfile | undefined;
+        setCurrentManagerProfile(data ? { ...data, managerId: user.uid, managerEmail: user.email || data.managerEmail || null } : null);
+      },
+      error => {
+        console.error('Не удалось загрузить профиль менеджера:', error);
+        setCurrentManagerProfile(null);
+      }
+    );
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (currentManagerProfile?.managerName && selectedShiftManager !== currentManagerProfile.managerName) {
+      setSelectedShiftManager(currentManagerProfile.managerName);
+      return;
+    }
     if (selectedShiftManager) return;
     const firstManager = handbookManagers.find(manager => String(manager || '').trim()) || 'Менеджер 1';
     setSelectedShiftManager(firstManager);
-  }, [handbookManagers, selectedShiftManager]);
+  }, [currentManagerProfile?.managerName, handbookManagers, selectedShiftManager]);
 
   useEffect(() => {
     const unsubscribe = onSnapshot(doc(db, 'settings', 'manager_sales_plan'), (snap) => {
@@ -4587,11 +4624,20 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
 
   const managerShiftState = useMemo(() => {
     const todayKey = getLocalDateKey();
-    const manager = selectedShiftManager || shiftManagers[0] || 'Менеджер 1';
+    const user = auth.currentUser;
+    const manager = currentManagerProfile?.managerName || selectedShiftManager || shiftManagers[0] || 'Менеджер 1';
+    const profileUid = currentManagerProfile?.managerId || user?.uid || '';
+    const profileEmail = normalizeAuthEmail(currentManagerProfile?.managerEmail || user?.email || '');
     const contactsToday = managerContacts.filter(entry => {
       const contactDate = parseContactDate(entry.date);
+      const entryUid = String(entry.managerId || '').trim();
+      const entryEmail = normalizeAuthEmail(entry.managerEmail || '');
+      const entryName = String(entry.managerName || '').trim();
+      const belongsToCurrentProfile = profileUid
+        ? entryUid === profileUid || (!!profileEmail && entryEmail === profileEmail)
+        : entryName === manager;
       return getLocalDateKey(contactDate || new Date(0)) === todayKey
-        && String(entry.managerName || '').trim() === manager
+        && belongsToCurrentProfile
         && String(entry.status || '').trim() !== 'в работе';
     });
     const uniqueClients = new Set(contactsToday.map(entry => (
@@ -4599,7 +4645,11 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
     )).filter(Boolean));
     const progress = Math.min(100, Math.round((uniqueClients.size / SHIFT_TARGET_CONTACTS) * 100));
     const todayShift = managerShifts.find(shift => (
-      shift.dateKey === todayKey && String(shift.managerName || '').trim() === manager
+      shift.dateKey === todayKey && (
+        profileUid
+          ? String(shift.managerId || '').trim() === profileUid
+          : String(shift.managerName || '').trim() === manager
+      )
     ));
     const completed = uniqueClients.size >= SHIFT_TARGET_CONTACTS;
     const earned = todayShift && completed ? SHIFT_BASE_PAY : 0;
@@ -4607,6 +4657,9 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
     return {
       todayKey,
       manager,
+      managerId: profileUid,
+      managerEmail: profileEmail,
+      isProfileBound: Boolean(currentManagerProfile?.managerName && profileUid),
       contactsCount: uniqueClients.size,
       progress,
       shift: todayShift,
@@ -4615,9 +4668,37 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
       active,
       remaining: Math.max(0, SHIFT_TARGET_CONTACTS - uniqueClients.size),
     };
-  }, [managerContacts, managerShifts, selectedShiftManager, shiftManagers]);
+  }, [currentManagerProfile, managerContacts, managerShifts, selectedShiftManager, shiftManagers]);
+
+  const bindCurrentLoginToManager = async () => {
+    const user = auth.currentUser;
+    const manager = selectedShiftManager || shiftManagers[0] || 'Менеджер 1';
+    if (!user?.uid || !manager) return;
+    setProfileSaving(true);
+    setShiftError('');
+    try {
+      await setDoc(doc(db, 'manager_profiles', user.uid), {
+        managerName: manager,
+        managerId: user.uid,
+        managerEmail: user.email || null,
+        displayName: user.displayName || null,
+        photoURL: user.photoURL || null,
+        updatedAt: new Date().toISOString(),
+      }, { merge: true });
+      setSelectedShiftManager(manager);
+    } catch (error: any) {
+      console.error('Не удалось привязать логин менеджера:', error);
+      setShiftError(error?.message || 'Не удалось привязать логин. Проверьте права доступа.');
+    } finally {
+      setProfileSaving(false);
+    }
+  };
 
   const startManagerShift = async () => {
+    if (!managerShiftState.isProfileBound) {
+      setShiftError('Сначала привяжите этот логин к менеджеру. Потом смена будет считаться именно под этим аккаунтом.');
+      return;
+    }
     const manager = managerShiftState.manager;
     if (!manager) return;
     setShiftSaving(true);
@@ -4626,7 +4707,8 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
       const user = auth.currentUser;
       await setDoc(doc(db, 'manager_shifts', `${managerShiftState.todayKey}_${managerDocKey(manager)}`), {
         managerName: manager,
-        managerId: user?.uid || null,
+        managerId: user?.uid || managerShiftState.managerId || null,
+        managerEmail: user?.email || managerShiftState.managerEmail || null,
         startedBy: user?.email || user?.displayName || manager,
         dateKey: managerShiftState.todayKey,
         startedAt: new Date().toISOString(),
@@ -5229,20 +5311,37 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
         <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(220px,280px)_minmax(0,1fr)_minmax(180px,220px)] lg:items-stretch">
           <div className="rounded-xl border border-[#E6E9EF] bg-[#F8FAFC] p-3">
             <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#9CA3AF]">Менеджер в смене</p>
+            <p className="mt-1 truncate text-[11px] font-semibold text-[#6B7280]">
+              Логин: {auth.currentUser?.email || 'не определён'}
+            </p>
             <div className="relative mt-2">
               <select
                 value={managerShiftState.manager}
                 onChange={(e) => setSelectedShiftManager(e.target.value)}
-                className="h-11 w-full appearance-none rounded-[8px] border border-[#E6E9EF] bg-white px-3 pr-9 text-[13px] font-semibold text-[#1F2937] outline-none focus:border-[#7D7DE6] focus:ring-2 focus:ring-[#7D7DE6]/10"
+                disabled={managerShiftState.isProfileBound}
+                className={cn(
+                  'h-11 w-full appearance-none rounded-[8px] border border-[#E6E9EF] bg-white px-3 pr-9 text-[13px] font-semibold text-[#1F2937] outline-none focus:border-[#7D7DE6] focus:ring-2 focus:ring-[#7D7DE6]/10',
+                  managerShiftState.isProfileBound && 'cursor-not-allowed bg-emerald-50 text-emerald-800'
+                )}
               >
                 {shiftManagers.map(manager => <option key={manager} value={manager}>{manager}</option>)}
               </select>
               <ChevronRight className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 rotate-90 text-[#9CA3AF]" />
             </div>
+            {!managerShiftState.isProfileBound && (
+              <button
+                type="button"
+                onClick={bindCurrentLoginToManager}
+                disabled={profileSaving || !auth.currentUser?.uid}
+                className="mt-2 inline-flex h-9 w-full items-center justify-center gap-2 rounded-[8px] border border-[#7D7DE6]/25 bg-white px-3 text-[11px] font-semibold text-[#5B5BE0] transition-colors hover:bg-violet-50 disabled:opacity-50"
+              >
+                {profileSaving ? 'Привязываю…' : 'Привязать этот логин'}
+              </button>
+            )}
             <button
               type="button"
               onClick={startManagerShift}
-              disabled={shiftSaving || managerShiftState.active}
+              disabled={shiftSaving || managerShiftState.active || !managerShiftState.isProfileBound}
               className={cn(
                 'mt-2 inline-flex h-10 w-full items-center justify-center gap-2 rounded-[8px] px-3 text-[12px] font-semibold transition-colors',
                 managerShiftState.active

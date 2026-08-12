@@ -91,6 +91,13 @@ service cloud.firestore {
       allow read, write: if isAuthenticated();
     }
 
+    // Current CRM user -> internal manager name binding.
+    match /manager_profiles/{userId} {
+      allow read: if isAuthenticated();
+      allow create, update: if isAuthenticated() && request.auth.uid == userId;
+      allow delete: if isAdmin();
+    }
+
     // Manager work shifts: check-in, daily base outreach target, and payroll credit.
     match /manager_shifts/{document=**} {
       allow read, write: if isAuthenticated();
