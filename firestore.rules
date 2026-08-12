@@ -91,6 +91,11 @@ service cloud.firestore {
       allow read, write: if isAuthenticated();
     }
 
+    // Manager work shifts: check-in, daily base outreach target, and payroll credit.
+    match /manager_shifts/{document=**} {
+      allow read, write: if isAuthenticated();
+    }
+
     // Broadcast history and broadcast runtime data.
     match /broadcasts/{document=**} {
       allow read, write: if isAuthenticated();
