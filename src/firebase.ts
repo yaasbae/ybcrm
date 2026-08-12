@@ -7,6 +7,7 @@ import {
   GoogleAuthProvider,
   setPersistence,
   signInWithEmailAndPassword,
+  signInWithCustomToken,
   signInWithPopup,
   signInWithRedirect,
   signOut
@@ -63,6 +64,7 @@ export const signInWithGoogle = async () => {
   }
 };
 export const signInWithEmail = (email: string, password: string) => signInWithEmailAndPassword(auth, email, password);
+export const signInWithPasskeyToken = (token: string) => signInWithCustomToken(auth, token);
 export const createUser = (email: string, password: string) => createUserWithEmailAndPassword(auth, email, password);
 export const logOut = () => signOut(auth);
 

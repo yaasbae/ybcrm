@@ -22,11 +22,12 @@ const CdekPage = lazy(() => import("./components/CdekPage").then(m => ({ default
 const IntegrationsPage = lazy(() => import("./components/IntegrationsPage").then(m => ({ default: m.IntegrationsPage })));
 const InstagramHubPage = lazy(() => import("./components/InstagramHubPage").then(m => ({ default: m.InstagramHubPage })));
 const StorefrontPage = lazy(() => import("./components/StorefrontPage").then(m => ({ default: m.StorefrontPage })));
-import { auth, completeGoogleRedirectSignIn, getGoogleAuthErrorMessage, signInWithGoogle, signInWithEmail, logOut } from "./firebase";
+import { auth, completeGoogleRedirectSignIn, getGoogleAuthErrorMessage, signInWithGoogle, signInWithEmail, signInWithPasskeyToken, logOut } from "./firebase";
 import { onAuthStateChanged, User as FirebaseUser } from "firebase/auth";
+import { isPasskeySupported, loginWithPasskey, registerPasskey } from "./lib/passkeys";
 import { cn } from "./lib/utils";
 import {
-  LogIn, LogOut, User as UserIcon, AlertCircle,
+  LogIn, LogOut, User as UserIcon, AlertCircle, Fingerprint,
   DollarSign, Calculator, LayoutDashboard, Package, Bot, ShoppingBag,
   UserCircle, Star, Calendar as CalendarIcon, BookOpen, Send, Sparkles, Wand2, Truck, ReceiptText, PlugZap, Instagram, Store
 } from "lucide-react";
@@ -130,6 +131,8 @@ export default function App() {
   const [emailInput, setEmailInput] = useState('');
   const [passwordInput, setPasswordInput] = useState('');
   const [emailLoading, setEmailLoading] = useState(false);
+  const [passkeyLoading, setPasskeyLoading] = useState(false);
+  const [passkeyNotice, setPasskeyNotice] = useState<string | null>(null);
   const [initialClient, setInitialClient] = useState<any>(null);
   const [theme, setTheme] = useState<'grey' | 'pink'>('grey');
   const [selectedMonth, setSelectedMonth] = useState<string>(new Date().toISOString().slice(0, 7));
@@ -217,6 +220,38 @@ export default function App() {
     setView(newView);
     const route = getRouteForView(newView);
     if (window.location.pathname !== route) window.history.pushState({}, '', route);
+  };
+
+  const handlePasskeyLogin = async () => {
+    setPasskeyLoading(true);
+    setAuthError(null);
+    setPasskeyNotice(null);
+    try {
+      const result = await loginWithPasskey();
+      await signInWithPasskeyToken(result.customToken);
+      setPasskeyNotice('Вход по Face ID выполнен.');
+    } catch (err: any) {
+      setAuthError(err?.message || 'Не удалось войти по Face ID.');
+    } finally {
+      setPasskeyLoading(false);
+    }
+  };
+
+  const handlePasskeyRegister = async () => {
+    if (!auth.currentUser) return;
+    setPasskeyLoading(true);
+    setPasskeyNotice(null);
+    try {
+      const token = await auth.currentUser.getIdToken(true);
+      await registerPasskey(token);
+      setPasskeyNotice('Face ID / passkey привязан к этому логину.');
+      setTimeout(() => setPasskeyNotice(null), 6000);
+    } catch (err: any) {
+      setPasskeyNotice(err?.message || 'Не удалось привязать Face ID.');
+      setTimeout(() => setPasskeyNotice(null), 8000);
+    } finally {
+      setPasskeyLoading(false);
+    }
   };
 
   if (authLoading) {
@@ -319,6 +354,15 @@ export default function App() {
             </div>
 
             <button
+              onClick={handlePasskeyLogin}
+              disabled={passkeyLoading}
+              className="w-full bg-zinc-900 text-white py-2.5 rounded-xl font-semibold text-[11px] uppercase tracking-widest hover:bg-zinc-800 transition-all flex items-center justify-center gap-3 active:scale-[0.98] disabled:opacity-40"
+            >
+              <Fingerprint size={15} />
+              {passkeyLoading ? 'Проверка...' : 'Face ID / Passkey'}
+            </button>
+
+            <button
               onClick={async () => {
                 try {
                   setAuthError(null);
@@ -339,6 +383,9 @@ export default function App() {
                 <AlertCircle size={14} className="text-red-500 mt-0.5 shrink-0" />
                 <p className="text-[10px] text-red-600 font-bold leading-tight uppercase tracking-tight">{authError}</p>
               </div>
+            )}
+            {passkeyNotice && (
+              <p className="text-[10px] font-bold uppercase tracking-tight text-emerald-600">{passkeyNotice}</p>
             )}
           </div>
 
@@ -362,6 +409,15 @@ export default function App() {
             
             <div className="flex items-center gap-4">
               <PushNotificationButton />
+              <button
+                onClick={handlePasskeyRegister}
+                disabled={passkeyLoading || !isPasskeySupported()}
+                className="flex items-center gap-1.5 rounded-[8px] border border-[#E6E9EF] bg-white px-2 py-2 text-[10px] font-bold uppercase tracking-[0.12em] text-[#1F2937] transition-colors hover:bg-[#F6F7F9] disabled:cursor-not-allowed disabled:opacity-40 sm:px-2.5"
+                title={isPasskeySupported() ? 'Привязать Face ID / passkey к этому логину' : 'Passkey доступен только на HTTPS и поддерживаемом устройстве'}
+              >
+                <Fingerprint size={14} />
+                <span className="hidden sm:inline">{passkeyLoading ? '...' : 'Face ID'}</span>
+              </button>
               {/* Theme Toggle */}
               <div className="flex items-center gap-1 rounded-[8px] border border-[#E6E9EF] bg-[#F6F7F9] p-1">
                 <button 
@@ -395,6 +451,11 @@ export default function App() {
               </button>
             </div>
           </div>
+          {passkeyNotice && (
+            <div className="absolute right-4 top-[58px] z-[110] max-w-[340px] rounded-xl border border-[#E6E9EF] bg-white px-4 py-3 text-[11px] font-bold text-[#1F2937] shadow-xl">
+              {passkeyNotice}
+            </div>
+          )}
         </header>
 
         <main className="min-h-[calc(100vh-48px)]">

@@ -19,6 +19,10 @@
       { "source": "/api/tochka/oauth/callback", "function": "tochkaOAuthCallback" },
       { "source": "/api/tochka/create-payment", "function": "tochkaCreatePayment" },
       { "source": "/api/tochka/find-payment",   "function": "tochkaFindPayment" },
+      { "source": "/api/passkeys/register/options", "function": "passkeyRegisterOptions" },
+      { "source": "/api/passkeys/register/verify",  "function": "passkeyRegisterVerify" },
+      { "source": "/api/passkeys/login/options",    "function": "passkeyLoginOptions" },
+      { "source": "/api/passkeys/login/verify",     "function": "passkeyLoginVerify" },
       { "source": "**",                         "destination": "/index.html" }
     ]
   },

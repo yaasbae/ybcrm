@@ -36,13 +36,15 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.tochkaFindPayment = exports.tochkaCreatePayment = exports.tochkaOAuthCallback = exports.tochkaOAuthStart = exports.tochkaOAuthSaveClient = exports.tochkaOAuthStatus = exports.tochkaSaveToken = exports.tochkaStatus = void 0;
+exports.tochkaFindPayment = exports.tochkaCreatePayment = exports.tochkaOAuthCallback = exports.tochkaOAuthStart = exports.tochkaOAuthSaveClient = exports.tochkaOAuthStatus = exports.tochkaSaveToken = exports.tochkaStatus = exports.passkeyLoginVerify = exports.passkeyLoginOptions = exports.passkeyRegisterVerify = exports.passkeyRegisterOptions = void 0;
 const https_1 = require("firebase-functions/v2/https");
 const admin = __importStar(require("firebase-admin"));
 const axios_1 = __importDefault(require("axios"));
 const crypto_1 = require("crypto");
+const server_1 = require("@simplewebauthn/server");
+const firestore_1 = require("firebase-admin/firestore");
 admin.initializeApp();
-const db = admin.firestore();
+const db = (0, firestore_1.getFirestore)('production');
 const TOCHKA_API = 'https://enter.tochka.com/uapi';
 const TOCHKA_OAUTH_AUTHORIZE_URL = process.env.TOCHKA_OAUTH_AUTHORIZE_URL || 'https://enter.tochka.com/connect/authorize';
 const TOCHKA_OAUTH_TOKEN_URL = process.env.TOCHKA_OAUTH_TOKEN_URL || 'https://enter.tochka.com/connect/token';
@@ -292,6 +294,251 @@ function setCors(res) {
     res.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     res.set('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 }
+function getRequestOrigin(req) {
+    return req.get('origin') || `${req.protocol || 'https'}://${req.get('host') || 'ybcrm.ru'}`;
+}
+function getWebAuthnRpId(req) {
+    const host = (req.get('x-forwarded-host') || req.get('host') || 'ybcrm.ru').split(':')[0];
+    if (host === 'localhost' || host === '127.0.0.1')
+        return 'localhost';
+    if (host.endsWith('ybcrm.ru'))
+        return 'ybcrm.ru';
+    return host;
+}
+function getExpectedOrigins(req) {
+    const origin = getRequestOrigin(req);
+    return Array.from(new Set([
+        origin,
+        'https://ybcrm.ru',
+        'https://www.ybcrm.ru',
+        'http://localhost:3000',
+        'http://localhost:5173',
+    ]));
+}
+async function verifyFirebaseBearer(req) {
+    const header = req.get('authorization') || '';
+    const token = header.startsWith('Bearer ') ? header.slice(7) : '';
+    if (!token)
+        throw new Error('Нет Firebase токена авторизации');
+    return admin.auth().verifyIdToken(token);
+}
+function passkeyChallengeRef(id) {
+    return db.collection('passkey_challenges').doc(id);
+}
+function passkeyRef(id) {
+    return db.collection('passkeys').doc(id);
+}
+function uidToBytes(uid) {
+    return new Uint8Array(Buffer.from(uid, 'utf8'));
+}
+function bytesToBase64Url(bytes) {
+    return Buffer.from(bytes).toString('base64url');
+}
+function base64UrlToBytes(value) {
+    return new Uint8Array(Buffer.from(value, 'base64url'));
+}
+async function deleteExpiredPasskeyChallenges() {
+    const expired = await db.collection('passkey_challenges')
+        .where('expiresAt', '<', Date.now())
+        .limit(25)
+        .get();
+    await Promise.all(expired.docs.map(docSnap => docSnap.ref.delete()));
+}
+// ─── Passkeys / Face ID / Touch ID ─────────────────────────────────────────
+exports.passkeyRegisterOptions = (0, https_1.onRequest)({ timeoutSeconds: 30 }, async (req, res) => {
+    setCors(res);
+    if (req.method === 'OPTIONS') {
+        res.status(204).send('');
+        return;
+    }
+    if (req.method !== 'POST') {
+        res.status(405).json({ error: 'Method not allowed' });
+        return;
+    }
+    try {
+        const decoded = await verifyFirebaseBearer(req);
+        const uid = decoded.uid;
+        const email = decoded.email || `${uid}@ybcrm.local`;
+        const existing = await db.collection('passkeys').where('uid', '==', uid).get();
+        const options = await (0, server_1.generateRegistrationOptions)({
+            rpName: 'YBCRM',
+            rpID: getWebAuthnRpId(req),
+            userID: uidToBytes(uid),
+            userName: email,
+            userDisplayName: decoded.name || email,
+            attestationType: 'none',
+            authenticatorSelection: {
+                residentKey: 'preferred',
+                userVerification: 'preferred',
+            },
+            excludeCredentials: existing.docs.map(docSnap => ({
+                id: docSnap.id,
+                transports: (docSnap.data()?.transports || undefined),
+            })),
+        });
+        const requestId = db.collection('passkey_challenges').doc().id;
+        await passkeyChallengeRef(requestId).set({
+            challenge: options.challenge,
+            type: 'register',
+            uid,
+            email,
+            rpID: getWebAuthnRpId(req),
+            origin: getRequestOrigin(req),
+            expiresAt: Date.now() + 5 * 60 * 1000,
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+        void deleteExpiredPasskeyChallenges().catch(() => { });
+        res.json({ requestId, options });
+    }
+    catch (e) {
+        res.status(401).json({ error: e.message || 'Не удалось начать привязку Face ID' });
+    }
+});
+exports.passkeyRegisterVerify = (0, https_1.onRequest)({ timeoutSeconds: 30 }, async (req, res) => {
+    setCors(res);
+    if (req.method === 'OPTIONS') {
+        res.status(204).send('');
+        return;
+    }
+    if (req.method !== 'POST') {
+        res.status(405).json({ error: 'Method not allowed' });
+        return;
+    }
+    try {
+        const decoded = await verifyFirebaseBearer(req);
+        const { requestId, response } = req.body || {};
+        if (!requestId || !response) {
+            res.status(400).json({ error: 'Нет данных passkey' });
+            return;
+        }
+        const challengeDoc = await passkeyChallengeRef(requestId).get();
+        const challenge = challengeDoc.data();
+        if (!challenge || challenge.type !== 'register' || challenge.uid !== decoded.uid || challenge.expiresAt < Date.now()) {
+            res.status(400).json({ error: 'Сессия привязки устарела, попробуйте ещё раз' });
+            return;
+        }
+        const verification = await (0, server_1.verifyRegistrationResponse)({
+            response,
+            expectedChallenge: challenge.challenge,
+            expectedOrigin: getExpectedOrigins(req),
+            expectedRPID: challenge.rpID || getWebAuthnRpId(req),
+            requireUserVerification: false,
+        });
+        if (!verification.verified || !verification.registrationInfo) {
+            res.status(400).json({ error: 'Face ID не подтверждён устройством' });
+            return;
+        }
+        const credential = verification.registrationInfo.credential;
+        await passkeyRef(credential.id).set({
+            uid: decoded.uid,
+            email: decoded.email || challenge.email || '',
+            credentialId: credential.id,
+            credentialPublicKey: bytesToBase64Url(credential.publicKey),
+            counter: credential.counter,
+            transports: response.response?.transports || credential.transports || [],
+            deviceType: verification.registrationInfo.credentialDeviceType,
+            backedUp: verification.registrationInfo.credentialBackedUp,
+            origin: verification.registrationInfo.origin,
+            rpID: verification.registrationInfo.rpID || challenge.rpID || getWebAuthnRpId(req),
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            lastUsedAt: null,
+        }, { merge: true });
+        await challengeDoc.ref.delete();
+        res.json({ success: true, email: decoded.email || challenge.email || '' });
+    }
+    catch (e) {
+        res.status(400).json({ error: e.message || 'Не удалось привязать Face ID' });
+    }
+});
+exports.passkeyLoginOptions = (0, https_1.onRequest)({ timeoutSeconds: 30 }, async (req, res) => {
+    setCors(res);
+    if (req.method === 'OPTIONS') {
+        res.status(204).send('');
+        return;
+    }
+    if (req.method !== 'POST') {
+        res.status(405).json({ error: 'Method not allowed' });
+        return;
+    }
+    try {
+        const options = await (0, server_1.generateAuthenticationOptions)({
+            rpID: getWebAuthnRpId(req),
+            userVerification: 'preferred',
+        });
+        const requestId = db.collection('passkey_challenges').doc().id;
+        await passkeyChallengeRef(requestId).set({
+            challenge: options.challenge,
+            type: 'login',
+            rpID: getWebAuthnRpId(req),
+            origin: getRequestOrigin(req),
+            expiresAt: Date.now() + 5 * 60 * 1000,
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+        void deleteExpiredPasskeyChallenges().catch(() => { });
+        res.json({ requestId, options });
+    }
+    catch (e) {
+        res.status(400).json({ error: e.message || 'Не удалось начать вход по Face ID' });
+    }
+});
+exports.passkeyLoginVerify = (0, https_1.onRequest)({ timeoutSeconds: 30 }, async (req, res) => {
+    setCors(res);
+    if (req.method === 'OPTIONS') {
+        res.status(204).send('');
+        return;
+    }
+    if (req.method !== 'POST') {
+        res.status(405).json({ error: 'Method not allowed' });
+        return;
+    }
+    try {
+        const { requestId, response } = req.body || {};
+        if (!requestId || !response?.id) {
+            res.status(400).json({ error: 'Нет данных passkey' });
+            return;
+        }
+        const challengeDoc = await passkeyChallengeRef(requestId).get();
+        const challenge = challengeDoc.data();
+        if (!challenge || challenge.type !== 'login' || challenge.expiresAt < Date.now()) {
+            res.status(400).json({ error: 'Сессия входа устарела, попробуйте ещё раз' });
+            return;
+        }
+        const passkeyDoc = await passkeyRef(response.id).get();
+        const passkey = passkeyDoc.data();
+        if (!passkey?.uid || !passkey?.credentialPublicKey) {
+            res.status(404).json({ error: 'Этот Face ID ещё не привязан к CRM' });
+            return;
+        }
+        const credential = {
+            id: passkey.credentialId || passkeyDoc.id,
+            publicKey: base64UrlToBytes(passkey.credentialPublicKey),
+            counter: Number(passkey.counter) || 0,
+            transports: passkey.transports || undefined,
+        };
+        const verification = await (0, server_1.verifyAuthenticationResponse)({
+            response,
+            expectedChallenge: challenge.challenge,
+            expectedOrigin: getExpectedOrigins(req),
+            expectedRPID: challenge.rpID || passkey.rpID || getWebAuthnRpId(req),
+            credential,
+            requireUserVerification: false,
+        });
+        if (!verification.verified) {
+            res.status(401).json({ error: 'Face ID не прошёл проверку' });
+            return;
+        }
+        await passkeyDoc.ref.set({
+            counter: verification.authenticationInfo.newCounter,
+            lastUsedAt: admin.firestore.FieldValue.serverTimestamp(),
+        }, { merge: true });
+        await challengeDoc.ref.delete();
+        const customToken = await admin.auth().createCustomToken(passkey.uid);
+        res.json({ success: true, customToken, email: passkey.email || '' });
+    }
+    catch (e) {
+        res.status(400).json({ error: e.message || 'Не удалось войти по Face ID' });
+    }
+});
 // ─── GET /api/tochka/status ──────────────────────────────────────────────────
 exports.tochkaStatus = (0, https_1.onRequest)(async (req, res) => {
     setCors(res);

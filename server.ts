@@ -26,6 +26,17 @@ import sharp from "sharp";
 import { PDFDocument } from "pdf-lib";
 import webpush from "web-push";
 import { createRemoteJWKSet, jwtVerify } from "jose";
+import {
+  generateAuthenticationOptions,
+  generateRegistrationOptions,
+  verifyAuthenticationResponse,
+  verifyRegistrationResponse,
+} from "@simplewebauthn/server";
+import type {
+  AuthenticationResponseJSON,
+  RegistrationResponseJSON,
+  WebAuthnCredential,
+} from "@simplewebauthn/server";
 
 const _require = createRequire(import.meta.url);
 const Database = _require("better-sqlite3");
@@ -158,6 +169,213 @@ app.use(express.json({
 }));
 app.use(express.text({ type: ['text/*', 'application/jwt', 'application/octet-stream'], limit: '1mb' }));
 app.use(express.urlencoded({ extended: true, limit: '20mb' }));
+
+function getRequestOrigin(req: express.Request) {
+  return req.get("origin") || `${req.protocol || "https"}://${req.get("host") || "ybcrm.ru"}`;
+}
+
+function getWebAuthnRpId(req: express.Request) {
+  const host = (req.get("x-forwarded-host") || req.get("host") || "ybcrm.ru").split(":")[0];
+  if (host === "localhost" || host === "127.0.0.1") return "localhost";
+  if (host.endsWith("ybcrm.ru")) return "ybcrm.ru";
+  return host;
+}
+
+function getExpectedOrigins(req: express.Request) {
+  const origin = getRequestOrigin(req);
+  return Array.from(new Set([
+    origin,
+    "https://ybcrm.ru",
+    "https://www.ybcrm.ru",
+    "http://localhost:3000",
+    "http://localhost:5173",
+  ]));
+}
+
+function passkeyChallengeRef(id: string) {
+  if (!adminDb) throw new Error("Firebase Admin не инициализирован");
+  return adminDb.collection("passkey_challenges").doc(id);
+}
+
+function passkeyRef(id: string) {
+  if (!adminDb) throw new Error("Firebase Admin не инициализирован");
+  return adminDb.collection("passkeys").doc(id);
+}
+
+function uidToBytes(uid: string) {
+  return new Uint8Array(Buffer.from(uid, "utf8"));
+}
+
+function bytesToBase64Url(bytes: Uint8Array) {
+  return Buffer.from(bytes).toString("base64url");
+}
+
+function base64UrlToBytes(value: string) {
+  return new Uint8Array(Buffer.from(value, "base64url"));
+}
+
+async function verifyFirebaseBearer(req: express.Request) {
+  const header = req.get("authorization") || "";
+  const token = header.startsWith("Bearer ") ? header.slice(7) : "";
+  if (!token) throw new Error("Нет Firebase токена авторизации");
+  return getAdminAuth().verifyIdToken(token);
+}
+
+async function deleteExpiredPasskeyChallenges() {
+  if (!adminDb) return;
+  const expired = await adminDb.collection("passkey_challenges")
+    .where("expiresAt", "<", Date.now())
+    .limit(25)
+    .get();
+  await Promise.all(expired.docs.map((docSnap: any) => docSnap.ref.delete()));
+}
+
+app.post("/api/passkeys/register/options", async (req, res) => {
+  try {
+    const decoded = await verifyFirebaseBearer(req);
+    const uid = decoded.uid;
+    const email = decoded.email || `${uid}@ybcrm.local`;
+    const existing = await adminDb.collection("passkeys").where("uid", "==", uid).get();
+    const options = await generateRegistrationOptions({
+      rpName: "YBCRM",
+      rpID: getWebAuthnRpId(req),
+      userID: uidToBytes(uid),
+      userName: email,
+      userDisplayName: decoded.name || email,
+      attestationType: "none",
+      authenticatorSelection: {
+        residentKey: "preferred",
+        userVerification: "preferred",
+      },
+      excludeCredentials: existing.docs.map((docSnap: any) => ({
+        id: docSnap.id,
+        transports: docSnap.data()?.transports || undefined,
+      })),
+    });
+    const requestId = adminDb.collection("passkey_challenges").doc().id;
+    await passkeyChallengeRef(requestId).set({
+      challenge: options.challenge,
+      type: "register",
+      uid,
+      email,
+      rpID: getWebAuthnRpId(req),
+      origin: getRequestOrigin(req),
+      expiresAt: Date.now() + 5 * 60 * 1000,
+      createdAt: FieldValue.serverTimestamp(),
+    });
+    void deleteExpiredPasskeyChallenges().catch(() => {});
+    res.json({ requestId, options });
+  } catch (e: any) {
+    res.status(401).json({ error: e.message || "Не удалось начать привязку Face ID" });
+  }
+});
+
+app.post("/api/passkeys/register/verify", async (req, res) => {
+  try {
+    const decoded = await verifyFirebaseBearer(req);
+    const { requestId, response } = req.body || {} as { requestId?: string; response?: RegistrationResponseJSON };
+    if (!requestId || !response) return res.status(400).json({ error: "Нет данных passkey" });
+    const challengeDoc = await passkeyChallengeRef(requestId).get();
+    const challenge = challengeDoc.data();
+    if (!challenge || challenge.type !== "register" || challenge.uid !== decoded.uid || challenge.expiresAt < Date.now()) {
+      return res.status(400).json({ error: "Сессия привязки устарела, попробуйте ещё раз" });
+    }
+    const verification = await verifyRegistrationResponse({
+      response,
+      expectedChallenge: challenge.challenge,
+      expectedOrigin: getExpectedOrigins(req),
+      expectedRPID: challenge.rpID || getWebAuthnRpId(req),
+      requireUserVerification: false,
+    });
+    if (!verification.verified || !verification.registrationInfo) {
+      return res.status(400).json({ error: "Face ID не подтверждён устройством" });
+    }
+    const credential = verification.registrationInfo.credential;
+    await passkeyRef(credential.id).set({
+      uid: decoded.uid,
+      email: decoded.email || challenge.email || "",
+      credentialId: credential.id,
+      credentialPublicKey: bytesToBase64Url(credential.publicKey),
+      counter: credential.counter,
+      transports: response.response?.transports || credential.transports || [],
+      deviceType: verification.registrationInfo.credentialDeviceType,
+      backedUp: verification.registrationInfo.credentialBackedUp,
+      origin: verification.registrationInfo.origin,
+      rpID: verification.registrationInfo.rpID || challenge.rpID || getWebAuthnRpId(req),
+      createdAt: FieldValue.serverTimestamp(),
+      lastUsedAt: null,
+    }, { merge: true });
+    await challengeDoc.ref.delete();
+    res.json({ success: true, email: decoded.email || challenge.email || "" });
+  } catch (e: any) {
+    res.status(400).json({ error: e.message || "Не удалось привязать Face ID" });
+  }
+});
+
+app.post("/api/passkeys/login/options", async (req, res) => {
+  try {
+    const options = await generateAuthenticationOptions({
+      rpID: getWebAuthnRpId(req),
+      userVerification: "preferred",
+    });
+    const requestId = adminDb.collection("passkey_challenges").doc().id;
+    await passkeyChallengeRef(requestId).set({
+      challenge: options.challenge,
+      type: "login",
+      rpID: getWebAuthnRpId(req),
+      origin: getRequestOrigin(req),
+      expiresAt: Date.now() + 5 * 60 * 1000,
+      createdAt: FieldValue.serverTimestamp(),
+    });
+    void deleteExpiredPasskeyChallenges().catch(() => {});
+    res.json({ requestId, options });
+  } catch (e: any) {
+    res.status(400).json({ error: e.message || "Не удалось начать вход по Face ID" });
+  }
+});
+
+app.post("/api/passkeys/login/verify", async (req, res) => {
+  try {
+    const { requestId, response } = req.body || {} as { requestId?: string; response?: AuthenticationResponseJSON };
+    if (!requestId || !response?.id) return res.status(400).json({ error: "Нет данных passkey" });
+    const challengeDoc = await passkeyChallengeRef(requestId).get();
+    const challenge = challengeDoc.data();
+    if (!challenge || challenge.type !== "login" || challenge.expiresAt < Date.now()) {
+      return res.status(400).json({ error: "Сессия входа устарела, попробуйте ещё раз" });
+    }
+    const passkeyDoc = await passkeyRef(response.id).get();
+    const passkey = passkeyDoc.data();
+    if (!passkey?.uid || !passkey?.credentialPublicKey) {
+      return res.status(404).json({ error: "Этот Face ID ещё не привязан к CRM" });
+    }
+    const credential: WebAuthnCredential = {
+      id: passkey.credentialId || passkeyDoc.id,
+      publicKey: base64UrlToBytes(passkey.credentialPublicKey),
+      counter: Number(passkey.counter) || 0,
+      transports: passkey.transports || undefined,
+    };
+    const verification = await verifyAuthenticationResponse({
+      response,
+      expectedChallenge: challenge.challenge,
+      expectedOrigin: getExpectedOrigins(req),
+      expectedRPID: challenge.rpID || passkey.rpID || getWebAuthnRpId(req),
+      credential,
+      requireUserVerification: false,
+    });
+    if (!verification.verified) {
+      return res.status(401).json({ error: "Face ID не прошёл проверку" });
+    }
+    await passkeyDoc.ref.set({
+      counter: verification.authenticationInfo.newCounter,
+      lastUsedAt: FieldValue.serverTimestamp(),
+    }, { merge: true });
+    await challengeDoc.ref.delete();
+    const customToken = await getAdminAuth().createCustomToken(passkey.uid);
+    res.json({ success: true, customToken, email: passkey.email || "" });
+  } catch (e: any) {
+    res.status(400).json({ error: e.message || "Не удалось войти по Face ID" });
+  }
+});
 
 type PushEventType =
   | "order_created"
