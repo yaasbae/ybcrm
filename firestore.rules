@@ -28,6 +28,13 @@ service cloud.firestore {
       allow read, write: if isAuthenticated();
     }
 
+    // CRM action journal: order edits, soft deletes and integration actions.
+    match /audit_logs/{document=**} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+      allow update, delete: if isAdmin();
+    }
+
     // Expenses collection
     match /expenses/{document=**} {
       allow read, write: if isAuthenticated();

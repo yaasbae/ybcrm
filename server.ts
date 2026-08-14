@@ -456,6 +456,78 @@ async function requireCrmUser(req: any, res: any) {
   }
 }
 
+async function writeAuditLog(input: {
+  action: string;
+  entityType: string;
+  entityId: string;
+  before?: unknown;
+  after?: unknown;
+  diff?: unknown;
+  metadata?: Record<string, unknown>;
+  actor?: Record<string, unknown>;
+}) {
+  const payload = stripUndefined({
+    action: input.action,
+    entityType: input.entityType,
+    entityId: input.entityId,
+    before: input.before,
+    after: input.after,
+    diff: input.diff,
+    metadata: input.metadata || {},
+    actor: input.actor || { type: "server" },
+  });
+  payload.createdAt = adminDb ? FieldValue.serverTimestamp() : serverTimestamp();
+
+  try {
+    if (adminDb) {
+      await adminDb.collection("audit_logs").add(payload);
+      return;
+    }
+    if (db) {
+      await addDoc(collection(db, "audit_logs"), payload);
+    }
+  } catch (error: any) {
+    console.warn("[audit] write skipped:", error?.message || error);
+  }
+}
+
+app.post("/api/audit/log", async (req, res) => {
+  try {
+    const decoded = await requireCrmUser(req, res);
+    if (!decoded) return;
+    const body = req.body || {};
+    const action = String(body.action || "").trim();
+    const entityType = String(body.entityType || "").trim();
+    const entityId = String(body.entityId || "").trim();
+    if (!action || !entityType || !entityId) {
+      return res.status(400).json({ error: "Нужны action, entityType и entityId" });
+    }
+
+    await writeAuditLog({
+      action,
+      entityType,
+      entityId,
+      before: body.before ?? null,
+      after: body.after ?? null,
+      diff: body.diff ?? null,
+      metadata: {
+        ...(body.metadata && typeof body.metadata === "object" ? body.metadata : {}),
+        ip: req.ip,
+      },
+      actor: {
+        type: "crm_user",
+        uid: decoded.uid,
+        email: decoded.email || "",
+        name: decoded.name || "",
+      },
+    });
+    res.json({ ok: true });
+  } catch (error: any) {
+    console.error("[audit] log error:", error?.message || error);
+    res.status(500).json({ error: "Не удалось записать журнал действий" });
+  }
+});
+
 function pushContent(type: PushEventType, data: PushEventData) {
   const order = data.orderId ? `заказ #${data.orderId}` : "заказ";
   const client = String(data.clientName || data.username || "").trim();
@@ -1010,7 +1082,9 @@ async function mcpToolResult(name: string, args: any) {
     const page = Math.max(1, Number(args?.page || 1));
     const pageSize = Math.max(1, Math.min(200, Number(args?.pageSize || 50)));
     const snap = await adminDb.collection("orders_new").orderBy("createdAt", "desc").limit(5000).get();
-    let orders = snap.docs.map((doc: any) => mcpNormalizeOrder(doc.id, doc.data()));
+    let orders = snap.docs
+      .map((doc: any) => mcpNormalizeOrder(doc.id, doc.data()))
+      .filter((order: any) => order.deleted !== true);
     const dateFrom = mcpDateString(args?.date_from || args?.dateFrom);
     const dateTo = mcpDateString(args?.date_to || args?.dateTo);
     if (dateFrom) orders = orders.filter((order: any) => !order.date || order.date >= dateFrom);
@@ -1048,6 +1122,15 @@ async function mcpToolResult(name: string, args: any) {
       patch.revenue = items.reduce((sum: number, item: any) => sum + item.price * item.quantity, 0);
     }
     await adminDb.collection("orders_new").doc(snap.id).set(patch, { merge: true });
+    await writeAuditLog({
+      action: "order_updated",
+      entityType: "order",
+      entityId: snap.id,
+      before: previousOrder,
+      after: { ...previousOrder, ...patch },
+      metadata: { source: "mcp", tool: "orders.update" },
+      actor: { type: "mcp" },
+    });
     if (patch.manager && String(patch.manager) !== String(previousOrder.manager || "")) {
       await dispatchPushEvent("manager_assigned", `manager-assigned:${snap.id}:${patch.manager}`, {
         orderId: snap.id,
@@ -1060,7 +1143,18 @@ async function mcpToolResult(name: string, args: any) {
   }
   if (name === "orders.create" && adminDb) {
     const payload = mcpBuildOrderDoc(args || {});
+    const beforeSnap = await adminDb.collection("orders_new").doc(payload.orderId).get();
+    const before = beforeSnap.exists ? beforeSnap.data() : null;
     await adminDb.collection("orders_new").doc(payload.orderId).set(payload, { merge: true });
+    await writeAuditLog({
+      action: before ? "order_upserted" : "order_created",
+      entityType: "order",
+      entityId: payload.orderId,
+      before,
+      after: payload,
+      metadata: { source: "mcp", tool: "orders.create" },
+      actor: { type: "mcp" },
+    });
     await dispatchPushEvent("order_created", `order-created:${payload.orderId}`, {
       orderId: payload.orderId,
       clientName: payload.clientName,
@@ -1070,7 +1164,9 @@ async function mcpToolResult(name: string, args: any) {
   }
   if (name === "analytics.sales" && adminDb) {
     const snap = await adminDb.collection("orders_new").orderBy("createdAt", "desc").limit(5000).get();
-    const orders = snap.docs.map((doc: any) => mcpNormalizeOrder(doc.id, doc.data()));
+    const orders = snap.docs
+      .map((doc: any) => mcpNormalizeOrder(doc.id, doc.data()))
+      .filter((order: any) => order.deleted !== true);
     const now = new Date();
     const today = now.toLocaleDateString("sv-SE", { timeZone: "Europe/Moscow" });
     const yesterdayDate = new Date(now.getTime() - 24 * 60 * 60 * 1000);
@@ -2091,6 +2187,20 @@ app.post("/api/cdek/create-order", async (req, res) => {
           console.warn("[cdek] update log write skipped:", logError?.message || logError);
         });
       }
+      await writeAuditLog({
+        action: "cdek_waybill_updated",
+        entityType: "order",
+        entityId: orderId,
+        before: existingData || null,
+        after: { ...(existingData || {}), ...updatedFields },
+        metadata: {
+          source: "cdek",
+          cdekUuid: updatedUuid,
+          cdekNumber: updatedNumber,
+          recovered: resolvedExisting.recovered,
+        },
+        actor: { type: "server", service: "cdek" },
+      });
 
       return res.json({
         success: true,
@@ -2181,6 +2291,19 @@ app.post("/api/cdek/create-order", async (req, res) => {
         console.warn("[cdek] log write skipped:", logError?.message || logError);
       }
     }
+    await writeAuditLog({
+      action: "cdek_waybill_created",
+      entityType: "order",
+      entityId: orderId,
+      before: existingData || null,
+      after: { ...(existingData || {}), ...cdekFields },
+      metadata: {
+        source: "cdek",
+        cdekUuid,
+        cdekNumber,
+      },
+      actor: { type: "server", service: "cdek" },
+    });
 
     res.json({ success: true, cdekUuid, cdekNumber, data: response.data, details: cdekOrderDetails });
   } catch (error: any) {

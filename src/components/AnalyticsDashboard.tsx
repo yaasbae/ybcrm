@@ -7,8 +7,9 @@ import { cn } from '../lib/utils';
 import { isPrepaymentOrder, PREPAYMENT_FILTER_VALUE } from '../lib/orderFilters';
 import { getConfirmedPaidAmount, getOutstandingPaymentAmount } from '../lib/orderPayments';
 import { emitPushEvent } from '../lib/pushNotifications';
+import { logAuditEvent } from '../lib/auditLog';
 import { db } from '../firebase';
-import { doc, onSnapshot, setDoc, collection, deleteDoc, updateDoc, query } from 'firebase/firestore';
+import { doc, onSnapshot, setDoc, collection, updateDoc, query, getDoc } from 'firebase/firestore';
 const AnalyticsTab = lazy(() => import('./tabs/AnalyticsTab').then(m => ({ default: m.AnalyticsTab })));
 const OrdersTab = lazy(() => import('./tabs/OrdersTab').then(m => ({ default: m.OrdersTab })));
 const ClientsTab = lazy(() => import('./tabs/ClientsTab').then(m => ({ default: m.ClientsTab })));
@@ -291,7 +292,23 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
           }
         }
 
-        await updateDoc(doc(db, 'orders_new', orderId), ordersNewPatch);
+        const before = order;
+        const after = {
+          ...order,
+          ...ordersNewPatch,
+        };
+        await updateDoc(doc(db, 'orders_new', orderId), {
+          ...ordersNewPatch,
+          updatedAt: new Date().toISOString(),
+        });
+        void logAuditEvent({
+          action: 'order_updated',
+          entityType: 'order',
+          entityId: orderId,
+          before,
+          after,
+          metadata: { field },
+        });
         if (field === 'manager' && String(finalValue || '').trim() && String(order.manager || '') !== String(finalValue || '')) {
           void emitPushEvent('manager_assigned', `manager-assigned:${orderId}:${String(finalValue)}`, {
             orderId,
@@ -313,7 +330,24 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
 
   const deleteOrder = async (orderId: string) => {
     try {
-      await deleteDoc(doc(db, 'orders_new', orderId));
+      const orderRef = doc(db, 'orders_new', orderId);
+      const beforeSnap = await getDoc(orderRef).catch(() => null);
+      const before = beforeSnap?.exists() ? beforeSnap.data() : data.find(order => order.orderId === orderId);
+      const deletedAt = new Date().toISOString();
+      const patch = {
+        deleted: true,
+        deletedAt,
+        updatedAt: deletedAt,
+      };
+      await setDoc(orderRef, patch, { merge: true });
+      void logAuditEvent({
+        action: 'order_deleted',
+        entityType: 'order',
+        entityId: orderId,
+        before,
+        after: { ...(before || {}), ...patch },
+        metadata: { softDelete: true },
+      });
     } catch (err) {
       console.error("Delete failed", err);
     }
@@ -404,10 +438,26 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
     };
 
     try {
-      await setDoc(doc(db, 'orders_new', orderToCreate.orderId), {
+      const orderRef = doc(db, 'orders_new', orderToCreate.orderId);
+      const beforeSnap = await getDoc(orderRef).catch(() => null);
+      const before = beforeSnap?.exists() ? beforeSnap.data() : null;
+      const now = new Date().toISOString();
+      const savedOrder = {
         ...orderToCreate,
         date: orderToCreate.date.toISOString(),
-        deadlineDate: orderToCreate.deadlineDate.toISOString()
+        deadlineDate: orderToCreate.deadlineDate.toISOString(),
+        createdAt: before && typeof before === 'object' && 'createdAt' in before ? (before as any).createdAt : now,
+        updatedAt: now,
+        deleted: false,
+      };
+      await setDoc(orderRef, savedOrder, { merge: true });
+      void logAuditEvent({
+        action: before ? 'order_upserted' : 'order_created',
+        entityType: 'order',
+        entityId: orderToCreate.orderId,
+        before,
+        after: savedOrder,
+        metadata: { source: 'crm_order_form' },
       });
       const createdId = orderToCreate.orderId;
       if (orderToCreate.status !== 'Черновик') {
@@ -490,6 +540,7 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
       const fbOrders: OrderData[] = [];
       snapshot.forEach(docSnap => {
         const d = docSnap.data();
+        if (d.deleted === true) return;
         const orderDate = d.date ? new Date(d.date) : new Date();
         const deadlineDate = addBusinessDays(orderDate, 7);
         const normalizedStatus = String(d.status || '').toLowerCase();
