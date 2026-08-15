@@ -5269,6 +5269,34 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
     return { total: source.length, revenue, awaitingPayment, inDelivery, delivered };
   }, [filteredOrders]);
 
+  const orderStatusMonthSummary = useMemo(() => {
+    const today = new Date();
+    const monthNames = ['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'];
+    const monthOrders = (data || []).filter(order => {
+      const orderDate = order.date instanceof Date ? order.date : new Date(order.date);
+      return Number.isFinite(orderDate.getTime())
+        && orderDate.getFullYear() === today.getFullYear()
+        && orderDate.getMonth() === today.getMonth();
+    });
+    const counts = new Map<string, number>();
+    monthOrders.forEach(order => {
+      const status = normalizeStatusOption(order.status || 'Новый') || 'Новый';
+      counts.set(status, (counts.get(status) || 0) + 1);
+    });
+    const priority = ['Новый', 'В работе', 'Накроить', 'Заказ ткань', 'Оплачен', 'Упакован', 'Принят СДЭК', 'Отгружен', 'Доставлен', 'Вручен', 'Возврат', 'Отмена', 'Обмен', 'Черновик'];
+    const priorityIndex = (status: string) => {
+      const index = priority.indexOf(status);
+      return index === -1 ? priority.length : index;
+    };
+    return {
+      monthName: monthNames[today.getMonth()] || 'Месяц',
+      total: monthOrders.length,
+      items: Array.from(counts.entries())
+        .map(([status, count]) => ({ status, count }))
+        .sort((a, b) => priorityIndex(a.status) - priorityIndex(b.status) || b.count - a.count || a.status.localeCompare(b.status)),
+    };
+  }, [data]);
+
   return (
     <div className="yb-orders-space space-y-5 text-[#1F2937]">
       <div className="yb-orders-shift rounded-2xl border border-zinc-200/80 bg-white p-4 shadow-[0_12px_34px_rgba(31,41,55,0.04)] sm:p-5">
@@ -5431,13 +5459,6 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
             icon: CreditCard,
             tone: 'bg-amber-50 text-amber-700',
           },
-          {
-            label: 'Логистика',
-            value: `${orderWorkspaceSummary.inDelivery} / ${orderWorkspaceSummary.delivered}`,
-            hint: 'в пути / доставлено',
-            icon: Truck,
-            tone: 'bg-sky-50 text-sky-700',
-          },
         ].map(metric => (
           <article key={metric.label} className="yb-orders-metric rounded-2xl border border-zinc-200/80 bg-white p-4">
             <div className="flex items-start justify-between gap-3">
@@ -5454,6 +5475,34 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
             <p className="mt-2 text-[10px] font-medium text-zinc-400">{metric.hint}</p>
           </article>
         ))}
+        <article className="yb-orders-metric rounded-2xl border border-zinc-200/80 bg-white p-4">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-[11px] font-medium text-zinc-500">Статусы месяца</p>
+              <p className="mt-2 truncate text-[20px] font-semibold tracking-[-0.03em] text-zinc-950 sm:text-[24px]">
+                {orderStatusMonthSummary.total}
+              </p>
+            </div>
+            <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-sky-50 text-sky-700">
+              <Truck className="h-4 w-4" />
+            </span>
+          </div>
+          <div className="mt-3 flex max-h-[64px] flex-wrap gap-1.5 overflow-hidden">
+            {orderStatusMonthSummary.items.length ? orderStatusMonthSummary.items.slice(0, 7).map(item => (
+              <span
+                key={item.status}
+                className="inline-flex items-center gap-1 rounded-full border border-zinc-200 bg-zinc-50 px-2 py-1 text-[10px] font-semibold text-zinc-700"
+                title={`${item.status}: ${item.count}`}
+              >
+                <span className="max-w-[92px] truncate">{item.status}</span>
+                <span className="text-zinc-950">{item.count}</span>
+              </span>
+            )) : (
+              <span className="text-[10px] font-medium text-zinc-400">нет заказов за месяц</span>
+            )}
+          </div>
+          <p className="mt-2 text-[10px] font-medium text-zinc-400">{orderStatusMonthSummary.monthName} · по статусам заказов</p>
+        </article>
       </section>
 
       <div>

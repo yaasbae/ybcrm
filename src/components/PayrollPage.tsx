@@ -3,6 +3,7 @@ import {
   ArrowLeft,
   Briefcase,
   Calculator,
+  CalendarDays,
   CheckCircle2,
   Download,
   Plus,
@@ -192,6 +193,11 @@ const toMonthKey = (date: Date | null) => {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
 };
 
+const toDayKey = (date: Date | null) => {
+  if (!date) return '';
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+};
+
 const parseOrderDate = (value: unknown): Date | null => {
   if (!value) return null;
   if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
@@ -354,7 +360,7 @@ export const PayrollPage: React.FC<PayrollPageProps> = ({ onBack }) => {
       const date = parseShiftDate(entry.date);
       const manager = String(entry.managerName || '').trim();
       if (!date || !manager || toMonthKey(date) !== monthKey || String(entry.status || '').trim() === 'в работе') return acc;
-      const dayKey = `${manager}__${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+      const dayKey = `${manager}__${toDayKey(date)}`;
       if (!acc[dayKey]) acc[dayKey] = new Set();
       acc[dayKey].add(String(entry.clientPhone || entry.clientName || entry.id || '').trim());
       return acc;
@@ -381,6 +387,64 @@ export const PayrollPage: React.FC<PayrollPageProps> = ({ onBack }) => {
       };
       return acc;
     }, {});
+  }, [managerContacts, managerShifts, monthKey]);
+
+  const shiftCalendar = useMemo(() => {
+    const [yearRaw, monthRaw] = monthKey.split('-').map(value => Number(value));
+    const year = Number.isFinite(yearRaw) ? yearRaw : new Date().getFullYear();
+    const monthIndex = Number.isFinite(monthRaw) ? monthRaw - 1 : new Date().getMonth();
+    const monthStart = new Date(year, monthIndex, 1);
+    const daysInMonth = new Date(year, monthIndex + 1, 0).getDate();
+    const leadingDays = (monthStart.getDay() + 6) % 7;
+    const totalCells = Math.ceil((leadingDays + daysInMonth) / 7) * 7;
+
+    const contactsByManagerDay = managerContacts.reduce<Record<string, Set<string>>>((acc, entry) => {
+      const date = parseShiftDate(entry.date);
+      const manager = String(entry.managerName || '').trim();
+      if (!date || !manager || toMonthKey(date) !== monthKey || String(entry.status || '').trim() === 'в работе') return acc;
+      const key = `${manager}__${toDayKey(date)}`;
+      if (!acc[key]) acc[key] = new Set();
+      acc[key].add(String(entry.clientPhone || entry.clientName || entry.id || '').trim());
+      return acc;
+    }, {});
+
+    const shiftsByDay = managerShifts.reduce<Record<string, PayrollManagerShift[]>>((acc, shift) => {
+      const dateKey = String(shift.dateKey || '').trim();
+      if (!dateKey.startsWith(monthKey) || !shift.startedAt) return acc;
+      if (!acc[dateKey]) acc[dateKey] = [];
+      acc[dateKey].push(shift);
+      return acc;
+    }, {});
+
+    const days = Array.from({ length: totalCells }, (_, index) => {
+      const dayNumber = index - leadingDays + 1;
+      const isCurrentMonth = dayNumber >= 1 && dayNumber <= daysInMonth;
+      const date = new Date(year, monthIndex, isCurrentMonth ? dayNumber : 1);
+      const dateKey = isCurrentMonth ? toDayKey(date) : '';
+      const shifts = (dateKey ? shiftsByDay[dateKey] || [] : []).map(shift => {
+        const manager = String(shift.managerName || 'Менеджер').trim();
+        const target = Number(shift.targetContacts) || SHIFT_TARGET_CONTACTS;
+        const contacts = contactsByManagerDay[`${manager}__${dateKey}`]?.size || 0;
+        const basePay = Number(shift.basePay) || SHIFT_BASE_PAY;
+        const credited = contacts >= target;
+        return { ...shift, manager, contacts, target, basePay, credited };
+      });
+      return {
+        key: isCurrentMonth ? dateKey : `empty-${index}`,
+        dayNumber: isCurrentMonth ? dayNumber : null,
+        isCurrentMonth,
+        shifts,
+        contacts: shifts.reduce((sum, shift) => sum + shift.contacts, 0),
+        accrued: shifts.reduce((sum, shift) => sum + (shift.credited ? shift.basePay : 0), 0),
+      };
+    });
+
+    const creditedShifts = days.reduce((sum, day) => sum + day.shifts.filter(shift => shift.credited).length, 0);
+    const totalShifts = days.reduce((sum, day) => sum + day.shifts.length, 0);
+    const totalContacts = days.reduce((sum, day) => sum + day.contacts, 0);
+    const accrued = days.reduce((sum, day) => sum + day.accrued, 0);
+
+    return { days, creditedShifts, totalShifts, totalContacts, accrued };
   }, [managerContacts, managerShifts, monthKey]);
 
   const applyManagerLink = (person: PayrollPerson): PayrollPerson => {
@@ -553,6 +617,85 @@ export const PayrollPage: React.FC<PayrollPageProps> = ({ onBack }) => {
             );
           })}
         </div>
+
+        <section className="mb-6 rounded-[10px] border border-[#E6E9EF] bg-white p-5 shadow-[0_12px_32px_rgba(31,41,55,0.04)]">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+            <div>
+              <div className="inline-flex items-center gap-2 rounded-full border border-violet-100 bg-violet-50 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-violet-700">
+                <CalendarDays size={14} />
+                Календарь смен
+              </div>
+              <h2 className="mt-3 text-[22px] font-semibold tracking-[-0.03em] text-[#1F2937]">Кто выходил и кому засчиталась смена</h2>
+              <p className="mt-1 max-w-3xl text-[12px] font-medium leading-5 text-[#6B7280]">
+                Смена засчитывается, когда менеджер начал день и поднял минимум {SHIFT_TARGET_CONTACTS} клиентов. Пустые дни скрывают лишний шум, дни со сменами подсвечены.
+              </p>
+            </div>
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:min-w-[520px]">
+              <CalendarStat label="Смен начато" value={String(shiftCalendar.totalShifts)} tone="slate" />
+              <CalendarStat label="Зачтено" value={String(shiftCalendar.creditedShifts)} tone="green" />
+              <CalendarStat label="Касаний" value={String(shiftCalendar.totalContacts)} tone="violet" />
+              <CalendarStat label="ФОТ смен" value={formatCurrency(shiftCalendar.accrued)} tone="orange" />
+            </div>
+          </div>
+
+          <div className="mt-5 overflow-x-auto pb-1">
+            <div className="min-w-[820px]">
+              <div className="grid grid-cols-7 gap-2 px-1 text-[10px] font-bold uppercase tracking-[0.16em] text-[#9CA3AF]">
+                {['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'].map(day => <span key={day}>{day}</span>)}
+              </div>
+              <div className="mt-2 grid grid-cols-7 gap-2">
+                {shiftCalendar.days.map(day => (
+                  <div
+                    key={day.key}
+                    className={cn(
+                      'min-h-[112px] rounded-[12px] border p-2.5',
+                      day.isCurrentMonth ? 'border-[#E6E9EF] bg-[#FBFCFD]' : 'border-transparent bg-transparent',
+                      day.shifts.length > 0 && 'border-violet-100 bg-violet-50/40 shadow-[0_8px_22px_rgba(125,125,230,0.08)]'
+                    )}
+                  >
+                    {day.dayNumber && (
+                      <>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-[12px] font-semibold text-[#1F2937]">{day.dayNumber}</span>
+                          {day.shifts.length > 0 && (
+                            <span className={cn(
+                              'rounded-full px-2 py-0.5 text-[10px] font-semibold',
+                              day.accrued > 0 ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'
+                            )}>
+                              {day.accrued > 0 ? formatCurrency(day.accrued) : 'не зачтено'}
+                            </span>
+                          )}
+                        </div>
+                        <div className="mt-2 space-y-1.5">
+                          {day.shifts.slice(0, 3).map(shift => (
+                            <div
+                              key={shift.id}
+                              className={cn(
+                                'rounded-[9px] border bg-white px-2 py-1.5',
+                                shift.credited ? 'border-emerald-100' : 'border-amber-100'
+                              )}
+                              title={`${shift.manager}: ${shift.contacts}/${shift.target} клиентов`}
+                            >
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="truncate text-[11px] font-semibold text-[#1F2937]">{shift.manager}</span>
+                                <span className={cn('text-[10px] font-semibold', shift.credited ? 'text-emerald-600' : 'text-amber-600')}>
+                                  {shift.contacts}/{shift.target}
+                                </span>
+                              </div>
+                            </div>
+                          ))}
+                          {day.shifts.length > 3 && (
+                            <p className="text-[10px] font-semibold text-[#9CA3AF]">+ ещё {day.shifts.length - 3}</p>
+                          )}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </section>
 
         <div className="grid gap-5 xl:grid-cols-[420px_minmax(0,1fr)]">
           <div className="rounded-[10px] border border-[#E6E9EF] bg-white shadow-[0_12px_32px_rgba(31,41,55,0.04)]">
@@ -744,6 +887,27 @@ const ResultCard: React.FC<{ label: string; value: number; tone: 'green' | 'oran
       tone === 'slate' && 'text-[#1F2937]'
     )}>
       {formatCurrency(value)}
+    </p>
+  </div>
+);
+
+const CalendarStat: React.FC<{ label: string; value: string; tone: 'slate' | 'green' | 'violet' | 'orange' }> = ({ label, value, tone }) => (
+  <div className={cn(
+    'rounded-[10px] border px-3 py-2.5',
+    tone === 'slate' && 'border-[#E6E9EF] bg-[#F8FAFC]',
+    tone === 'green' && 'border-emerald-100 bg-emerald-50/70',
+    tone === 'violet' && 'border-violet-100 bg-violet-50/70',
+    tone === 'orange' && 'border-orange-100 bg-orange-50/70'
+  )}>
+    <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-[#9CA3AF]">{label}</p>
+    <p className={cn(
+      'mt-1 truncate text-[16px] font-semibold tracking-[-0.02em]',
+      tone === 'green' && 'text-emerald-600',
+      tone === 'violet' && 'text-violet-700',
+      tone === 'orange' && 'text-orange-500',
+      tone === 'slate' && 'text-[#1F2937]'
+    )}>
+      {value}
     </p>
   </div>
 );
