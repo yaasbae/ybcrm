@@ -28,7 +28,13 @@ import { OrderData } from '../AnalyticsDashboard';
 import { auth, db } from '../../firebase';
 import { collection, doc, getDoc, getDocs, limit, onSnapshot, orderBy, query, setDoc } from 'firebase/firestore';
 
-const STATUS_OPTIONS = ['Черновик', 'Новый', 'В работе', 'Заказ ткань', 'Оплачен', 'Упакован', 'Принят СДЭК', 'Отгружен', 'Доставлен', 'Возврат', 'Отмена', 'Обмен'];
+const STATUS_RENAMES: Record<string, string> = {
+  'Накроен': 'Накроить',
+};
+
+const normalizeStatusOption = (status: string) => STATUS_RENAMES[String(status || '').trim()] || String(status || '').trim();
+
+const STATUS_OPTIONS = ['Черновик', 'Новый', 'В работе', 'Накроить', 'Заказ ткань', 'Оплачен', 'Упакован', 'Принят СДЭК', 'Отгружен', 'Доставлен', 'Вручен', 'Возврат', 'Отмена', 'Обмен'];
 const DELIVERY_OPTIONS = ['СДЭК', 'Почта РФ', 'Боксберри', 'Самовывоз', 'Курьер', 'DBS'];
 const SOURCE_OPTIONS = ['Instagram', 'WhatsApp', 'ТГ', 'Блогер', 'Контент', 'Сарафан', 'Повторный'];
 const PAYMENT_TYPE_OPTIONS = ['QR код', 'Сплитами', 'Долями', 'Наличкой', 'Наложенный СДЭК'];
@@ -252,8 +258,8 @@ const mergeOptions = (...lists: (string[] | undefined)[]) =>
   Array.from(new Set(lists.flatMap(list => (list || []).map(item => String(item || '').trim())).filter(Boolean)));
 
 const optionsWithCurrent = (items: string[], current: string, fallback: string[] = []) => {
-  const options = mergeOptions(items, fallback);
-  const value = String(current || '').trim();
+  const options = mergeOptions(items.map(normalizeStatusOption), fallback.map(normalizeStatusOption));
+  const value = normalizeStatusOption(current);
   return value && !options.includes(value) ? [value, ...options] : options;
 };
 

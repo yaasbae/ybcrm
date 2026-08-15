@@ -1798,7 +1798,7 @@ const getCdekCrmStatusPatch = (cdekStatus: string, currentStatus?: string) => {
   if (protectedStatus) return {};
   if (normalized === "DELIVERED") {
     return {
-      status: "Доставлен",
+      status: "Вручен",
       isShipped: true,
       cdekDeliveredAt: new Date().toISOString(),
     };
@@ -1839,7 +1839,7 @@ const getCdekStatusLabel = (status: string) => {
     ACCEPTED_AT_RECIPIENT_CITY_WAREHOUSE: "Прибыл на склад города получателя",
     ACCEPTED_AT_PICK_UP_POINT: "Готов к выдаче в ПВЗ",
     ACCEPTED_BY_COURIER: "Передан курьеру",
-    DELIVERED: "Доставлен",
+    DELIVERED: "Вручен",
   };
   return labels[normalized] || normalized.replace(/_/g, " ");
 };
@@ -2382,7 +2382,7 @@ app.post("/api/cdek/sync-statuses", async (_req, res) => {
     const candidates = allOrders
       .filter(({ data }) => {
         if (!String(data?.cdekUuid || "").trim()) return false;
-        if (/доставлен|возврат|отмен/i.test(String(data?.status || ""))) return false;
+        if (/доставлен|вручен|возврат|отмен/i.test(String(data?.status || ""))) return false;
         const lastChecked = Date.parse(String(data?.cdekLastCheckedAt || "")) || 0;
         return lastChecked < staleBefore;
       })
@@ -2416,7 +2416,7 @@ app.post("/api/cdek/sync-statuses", async (_req, res) => {
               cdekNumber: String(cdekNumber || ""),
             }).catch(error => console.warn("[push] cdek:", error?.message || error));
           }
-          return { orderId: id, cdekStatus, status: crmPatch.status || data.status, delivered: crmPatch.status === "Доставлен" };
+          return { orderId: id, cdekStatus, status: crmPatch.status || data.status, delivered: crmPatch.status === "Вручен" };
         } catch (error: any) {
           console.warn(`[cdek] status sync failed order=${id}:`, error?.response?.data || error?.message || error);
           return null;

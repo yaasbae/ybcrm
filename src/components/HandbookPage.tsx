@@ -10,7 +10,7 @@ import { doc, onSnapshot, setDoc } from 'firebase/firestore';
 import { YAASBAE_BLOGGERS } from '../data/bloggersYaasbae';
 
 const DEFAULT_PAYMENT_TYPES = ["QR код", "Сплитами", "Долями", "Наличкой", "Наложенный СДЭК"];
-const DEFAULT_STATUSES = ["Новый", "В работе", "Заказ ткань", "Оплачен", "Упакован", "Отгружен", "Доставлен", "Возврат", "Отмена", "Обмен"];
+const DEFAULT_STATUSES = ["Новый", "В работе", "Накроить", "Заказ ткань", "Оплачен", "Упакован", "Отгружен", "Доставлен", "Вручен", "Возврат", "Отмена", "Обмен"];
 const IMPORTED_BLOGGER_NAMES = Array.from(new Set(
   YAASBAE_BLOGGERS.map((blogger) => blogger.name.trim()).filter(Boolean)
 ));
