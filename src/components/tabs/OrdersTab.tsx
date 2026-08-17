@@ -710,7 +710,7 @@ function getOrderCdekShareAddress(order: Partial<OrderData>): string {
   return `${city}, ${address}`;
 }
 
-function buildOrderShareText(order: Partial<OrderData>, paymentUrl: string): string {
+function buildOrderShareText(order: Partial<OrderData>, paymentUrl: string, paymentProviderLabel?: string): string {
   const amount = getOrderPaymentDue({
     revenue: order.revenue || 0,
     deliveryPrice: order.deliveryPrice || 0,
@@ -735,13 +735,13 @@ function buildOrderShareText(order: Partial<OrderData>, paymentUrl: string): str
     cdekAddress ? `Адрес СДЭК: ${cdekAddress}` : '',
     '',
     `Сумма: ${formatCurrency(amount)}`,
-    `Ссылка на оплату ${isYandexSplitPayment(order.paymentType) ? 'Яндекс Сплит' : 'СБП'}: ${paymentUrl}`,
+    `Ссылка на оплату ${paymentProviderLabel || (isYandexSplitPayment(order.paymentType) ? 'Яндекс Сплит' : 'СБП')}: ${paymentUrl}`,
   ];
 
   return lines.filter((line, index, arr) => line || arr[index - 1]).join('\n').trim();
 }
 
-function buildPaymentShareText(order: Partial<OrderData>, paymentUrl: string, amount: number, label = 'Счет на оплату'): string {
+function buildPaymentShareText(order: Partial<OrderData>, paymentUrl: string, amount: number, label = 'Счет на оплату', paymentProviderLabel?: string): string {
   const itemsText = joinOrderItems(getOrderItems(order));
   const instagramUrl = getOrderInstagramShareUrl(order);
   const cdekAddress = getOrderCdekShareAddress(order);
@@ -756,7 +756,7 @@ function buildPaymentShareText(order: Partial<OrderData>, paymentUrl: string, am
     cdekAddress ? `Адрес СДЭК: ${cdekAddress}` : '',
     '',
     `Сумма: ${formatCurrency(amount)}`,
-    `Ссылка на оплату ${isYandexSplitPayment(order.paymentType) ? 'Яндекс Сплит' : 'СБП'}: ${paymentUrl}`,
+    `Ссылка на оплату ${paymentProviderLabel || (isYandexSplitPayment(order.paymentType) ? 'Яндекс Сплит' : 'СБП')}: ${paymentUrl}`,
   ];
 
   return lines.filter((line, index, arr) => line || arr[index - 1]).join('\n').trim();
@@ -842,6 +842,7 @@ async function shareQrImage(svg: SVGSVGElement | null, orderId: string, text: st
 
 const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string, field: string, value: any) => void }> = ({ order, updateOrderData }) => {
   const [loading, setLoading] = useState(false);
+  const [splitLoading, setSplitLoading] = useState(false);
   const [finalLoading, setFinalLoading] = useState(false);
   const [refreshingMain, setRefreshingMain] = useState(false);
   const [refreshingFinal, setRefreshingFinal] = useState(false);
@@ -857,7 +858,8 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
   const pageUrl = buildPaymentPageUrl(order.orderId);
   const targetPaymentUrl = paymentUrl || pageUrl;
   const isSplitPayment = isYandexSplitPayment(order.paymentType);
-  const paymentProviderLabel = isSplitPayment ? 'Яндекс Сплит' : 'СБП';
+  const isYandexProvider = isSplitPayment || order.paymentProvider === 'yandex_split';
+  const paymentProviderLabel = isYandexProvider ? 'Яндекс Сплит' : 'СБП';
   const invoiceType = order.invoiceType || getInvoiceTypeFromPaymentType(order.paymentType);
   const mainPaymentPaid = isPaidTochkaStatus(order.paymentStatus || '');
   const finalPaymentPaid = isPaidTochkaStatus(order.finalPaymentStatus || '');
@@ -877,7 +879,7 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
     : finalPaymentUrl
       ? 'Доплата ожидает оплаты'
       : 'Доплата не создана';
-  const shareText = buildPaymentShareText(order, targetPaymentUrl, initialAmount, 'Счет на оплату');
+  const shareText = buildPaymentShareText(order, targetPaymentUrl, initialAmount, 'Счет на оплату', paymentProviderLabel);
   const finalShareText = finalPaymentUrl
     ? buildPaymentShareText(order, finalPaymentUrl, finalAmount, 'Счет на доплату')
     : '';
@@ -992,6 +994,46 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
     finally { setLoading(false); }
   };
 
+  const handleCreateYandexSplit = async () => {
+    setSplitLoading(true);
+    setError('');
+    try {
+      if (invoiceMissingFields.length) throw new Error(`Заполните: ${invoiceMissingFields.join(', ')}`);
+      const amount = getOrderTotalAmount(order);
+      if (amount <= 0) throw new Error('Сумма заказа 0 ₽');
+      const res = await fetch('/api/yandex-pay/create-payment', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          orderId: order.orderId,
+          amount,
+          description: `Заказ #${order.orderId} ${order.item || ''}`,
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Не удалось создать Яндекс Сплит');
+      if (!data.paymentUrl) throw new Error('Яндекс Сплит не вернул ссылку оплаты');
+
+      setPaymentUrl(data.paymentUrl);
+      updateOrderData(order.orderId, 'paymentUrl', data.paymentUrl);
+      updateOrderData(order.orderId, 'paymentAmount', amount);
+      updateOrderData(order.orderId, 'initialPaymentAmount', amount);
+      updateOrderData(order.orderId, 'paymentProvider', 'yandex_split');
+      updateOrderData(order.orderId, 'paymentStatus', 'PENDING');
+      updateOrderData(order.orderId, 'paymentType', 'Сплитами');
+      updateOrderData(order.orderId, 'invoiceType', 'full');
+      updateOrderData(order.orderId, 'paymentAccountingVersion', 2);
+      if (data.paymentId) updateOrderData(order.orderId, 'paymentId', data.paymentId);
+
+      const text = buildPaymentShareText({ ...order, paymentType: 'Сплитами' }, data.paymentUrl, amount, 'Счет на оплату', 'Яндекс Сплит');
+      await shareOrder(text, data.paymentUrl).catch(() => navigator.clipboard.writeText(text));
+    } catch (e: any) {
+      setError(e.message || 'Не удалось создать Яндекс Сплит');
+    } finally {
+      setSplitLoading(false);
+    }
+  };
+
   const handleCreateFinal = async () => {
     setFinalLoading(true);
     setFinalError('');
@@ -1045,6 +1087,17 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
           {loading ? <RefreshCcw size={8} className="animate-spin" /> : <QrCodeIcon size={8} />}
           {loading ? 'Создаём...' : 'Создать счёт'}
         </button>
+        {!isYandexProvider && (
+          <button
+            onClick={handleCreateYandexSplit}
+            disabled={splitLoading || invoiceMissingFields.length > 0}
+            title={invoiceMissingFields.length ? `Заполните: ${invoiceMissingFields.join(', ')}` : 'Создать Яндекс Сплит'}
+            className="w-full rounded-md border border-zinc-950 bg-zinc-950 py-1.5 text-[8px] font-black uppercase tracking-wide text-white transition-all hover:bg-black disabled:opacity-50 flex items-center justify-center gap-1"
+          >
+            {splitLoading ? <RefreshCcw size={8} className="animate-spin" /> : <SplitMark />}
+            {splitLoading ? 'Создаём...' : 'Яндекс Сплит'}
+          </button>
+        )}
         {invoiceMissingFields.length > 0 && (
           <p className="text-[8px] font-bold leading-3 text-amber-600">Заполните: {invoiceMissingFields.join(', ')}</p>
         )}
@@ -1088,6 +1141,17 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
           >
             {isSplitPayment ? <SplitMark /> : <Send size={8} />} {isSplitPayment ? 'Яндекс Сплит' : 'Отправить ссылку СБП'}
           </button>
+          {!isYandexProvider && (
+            <button
+              onClick={handleCreateYandexSplit}
+              disabled={splitLoading || invoiceMissingFields.length > 0}
+              title={invoiceMissingFields.length ? `Заполните: ${invoiceMissingFields.join(', ')}` : 'Создать Яндекс Сплит'}
+              className="w-full rounded-md border border-zinc-950 bg-zinc-950 py-1.5 text-[8px] font-black uppercase tracking-wide text-white transition-all hover:bg-black disabled:opacity-50 flex items-center justify-center gap-1"
+            >
+              {splitLoading ? <RefreshCcw size={8} className="animate-spin" /> : <SplitMark />}
+              {splitLoading ? 'Создаём...' : 'Яндекс Сплит'}
+            </button>
+          )}
           <button
             onClick={() => setShowQr(v => !v)}
             className="w-full text-[8px] font-black py-1 rounded-md border border-[#6B4DFF]/20 bg-[#6B4DFF] text-white hover:bg-[#5738F3] transition-all flex items-center justify-center gap-1"
@@ -3176,6 +3240,7 @@ const OrderCard = React.memo(({
   const [mobilePaymentUrl, setMobilePaymentUrl] = useState(order.paymentUrl || '');
   const [mobileFinalPaymentUrl, setMobileFinalPaymentUrl] = useState(order.finalPaymentUrl || '');
   const [mobilePaymentLoading, setMobilePaymentLoading] = useState(false);
+  const [mobileSplitPaymentLoading, setMobileSplitPaymentLoading] = useState(false);
   const [mobileFinalPaymentLoading, setMobileFinalPaymentLoading] = useState(false);
   const [mobilePaymentRefreshing, setMobilePaymentRefreshing] = useState(false);
   const [mobileFinalPaymentRefreshing, setMobileFinalPaymentRefreshing] = useState(false);
@@ -3188,7 +3253,8 @@ const OrderCard = React.memo(({
   const mobileFinalQrRef = useRef<HTMLDivElement>(null);
   const paymentUrl = mobilePaymentUrl;
   const isMobileSplitPayment = isYandexSplitPayment(order.paymentType);
-  const mobilePaymentProviderLabel = isMobileSplitPayment ? 'Яндекс Сплит' : 'СБП';
+  const isMobileYandexProvider = isMobileSplitPayment || order.paymentProvider === 'yandex_split';
+  const mobilePaymentProviderLabel = isMobileYandexProvider ? 'Яндекс Сплит' : 'СБП';
   const orderItems = getOrderItems(order);
   const orderItemPrices = getOrderItemPrices(order);
   const orderItemColors = getOrderItemColors(order);
@@ -3234,7 +3300,7 @@ const OrderCard = React.memo(({
     : mobileFinalPaymentUrl
       ? 'Доплата ожидает оплаты'
       : 'Доплата не создана';
-  const shareText = paymentUrl ? buildPaymentShareText(order, paymentUrl, liveInvoiceAmount, 'Счет на оплату') : '';
+  const shareText = paymentUrl ? buildPaymentShareText(order, paymentUrl, liveInvoiceAmount, 'Счет на оплату', mobilePaymentProviderLabel) : '';
   const finalShareText = mobileFinalPaymentUrl ? buildPaymentShareText(order, mobileFinalPaymentUrl, finalPaymentAmount, 'Счет на доплату') : '';
   const invoiceTone = liveInvoiceAmount <= 0
     ? 'text-zinc-300'
@@ -3424,6 +3490,47 @@ const OrderCard = React.memo(({
       setMobilePaymentError(e.message || 'Не удалось создать счёт');
     } finally {
       setMobilePaymentLoading(false);
+    }
+  };
+
+  const createMobileYandexSplitPayment = async () => {
+    setMobileSplitPaymentLoading(true);
+    setMobilePaymentError('');
+    try {
+      const amount = getOrderTotalAmount({ ...order, revenue: liveRevenue });
+      if (amount <= 0) throw new Error('Сумма заказа 0 ₽');
+
+      const res = await fetch('/api/yandex-pay/create-payment', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          orderId: order.orderId,
+          amount,
+          description: `Заказ #${order.orderId} ${order.item || ''}`,
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Не удалось создать Яндекс Сплит');
+      if (!data.paymentUrl) throw new Error('Яндекс Сплит не вернул ссылку оплаты');
+
+      setMobilePaymentUrl(data.paymentUrl);
+      setShowMobileQr(false);
+      updateOrderData(order.orderId, 'paymentUrl', data.paymentUrl);
+      updateOrderData(order.orderId, 'paymentAmount', amount);
+      updateOrderData(order.orderId, 'initialPaymentAmount', amount);
+      updateOrderData(order.orderId, 'paymentProvider', 'yandex_split');
+      updateOrderData(order.orderId, 'paymentStatus', 'PENDING');
+      updateOrderData(order.orderId, 'paymentType', 'Сплитами');
+      updateOrderData(order.orderId, 'invoiceType', 'full');
+      updateOrderData(order.orderId, 'paymentAccountingVersion', 2);
+      if (data.paymentId) updateOrderData(order.orderId, 'paymentId', data.paymentId);
+
+      const text = buildPaymentShareText({ ...order, paymentType: 'Сплитами' }, data.paymentUrl, amount, 'Счет на оплату', 'Яндекс Сплит');
+      await shareOrder(text, data.paymentUrl).catch(() => navigator.clipboard.writeText(text));
+    } catch (e: any) {
+      setMobilePaymentError(e.message || 'Не удалось создать Яндекс Сплит');
+    } finally {
+      setMobileSplitPaymentLoading(false);
     }
   };
 
@@ -3887,6 +3994,16 @@ const OrderCard = React.memo(({
                 {isMobileSplitPayment ? 'Яндекс Сплит' : 'Поделиться'}
               </button>
             </div>
+            {!isMobileYandexProvider && (
+              <button
+                onClick={createMobileYandexSplitPayment}
+                disabled={mobileSplitPaymentLoading}
+                className="w-full py-2 rounded-lg border border-zinc-950 bg-zinc-950 text-white text-[10px] font-bold flex items-center justify-center gap-1.5 disabled:opacity-60"
+              >
+                {mobileSplitPaymentLoading ? <RefreshCcw size={10} className="animate-spin" /> : <SplitMark />}
+                {mobileSplitPaymentLoading ? 'Создаём...' : 'Яндекс Сплит'}
+              </button>
+            )}
             <button
               onClick={() => setShowMobileQr(v => !v)}
               className="w-full py-2 rounded-lg bg-[#6B4DFF] border border-[#6B4DFF] text-[10px] font-bold text-white"
@@ -3917,6 +4034,16 @@ const OrderCard = React.memo(({
               {mobilePaymentLoading ? <RefreshCcw size={11} className="animate-spin" /> : <QrCodeIcon size={11} />}
               {mobilePaymentLoading ? 'Создаём...' : 'Создать счёт'}
             </button>
+            {!isMobileYandexProvider && (
+              <button
+                onClick={createMobileYandexSplitPayment}
+                disabled={mobileSplitPaymentLoading}
+                className="w-full py-2 rounded-lg border border-zinc-950 bg-zinc-950 text-white text-[10px] font-bold flex items-center justify-center gap-1.5 disabled:opacity-60"
+              >
+                {mobileSplitPaymentLoading ? <RefreshCcw size={11} className="animate-spin" /> : <SplitMark />}
+                {mobileSplitPaymentLoading ? 'Создаём...' : 'Яндекс Сплит'}
+              </button>
+            )}
             {mobilePaymentError && (
               <p className="text-[9px] font-bold text-red-500">{mobilePaymentError}</p>
             )}
