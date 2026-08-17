@@ -19,7 +19,8 @@ RUN npm ci
 COPY . .
 
 # Build frontend
-RUN npm run build
+ARG FRONTEND_BUILD_CACHE_BUST=2026-08-17-yandex-split
+RUN echo "frontend build cache bust: ${FRONTEND_BUILD_CACHE_BUST}" && npm run build
 
 # Expose port (Cloud Run uses PORT env var)
 EXPOSE 8080
