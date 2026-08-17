@@ -4,7 +4,7 @@ import {
   ChevronLeft, ChevronDown, Trash2, Calendar,
   Layers, Ruler, Maximize2, Weight, 
   Type, Hash, Image as ImageIcon, Star,
-  Download, Edit2, Palette, Calculator, Info, Link as LinkIcon, Instagram, BookOpen
+  Download, Edit2, Palette, Calculator, Info, Link as LinkIcon, Instagram, BookOpen, Copy
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn, formatCurrency } from '../lib/utils';
@@ -404,6 +404,33 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
     }
   };
 
+  const handleDuplicateProduct = async (product: ProductItem) => {
+    setLoading(true);
+    try {
+      const id = `${Date.now()}`;
+      const duplicate: ProductItem = {
+        ...product,
+        id,
+        name: `${product.name || 'Товар'} копия`,
+        photos: [...(product.photos || [])],
+        posts: [...(product.posts || [])],
+        unitEconomics: product.unitEconomics ? JSON.parse(JSON.stringify(product.unitEconomics)) : null,
+      };
+
+      await setDoc(doc(db, 'products', id), duplicate);
+      setNewProduct(duplicate);
+      setEditingId(id);
+      setExpandedProductId(id);
+      setPendingProductId(id);
+      setIsAdding(false);
+      setPhotoUploadStatus({});
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, 'products');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || !pendingProductId) return;
@@ -542,6 +569,13 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
               <h4 className="mt-1 text-lg font-bold text-slate-900">Редактирование без перехода</h4>
             </div>
             <div className="flex min-w-0 flex-wrap gap-2 sm:justify-end">
+              <button
+                type="button"
+                onClick={() => handleDuplicateProduct(product)}
+                className="inline-flex h-10 items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 text-xs font-bold text-slate-600 transition hover:border-slate-300 hover:text-slate-900"
+              >
+                <Copy size={14} /> Дублировать
+              </button>
               <button
                 type="button"
                 onClick={() => {
@@ -1474,7 +1508,7 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
                   <th className="w-[20%] px-4 py-4 text-[10px] font-bold uppercase tracking-widest text-slate-400">Вариант</th>
                   <th className="w-[25%] px-4 py-4 text-[10px] font-bold uppercase tracking-widest text-slate-400">Производство</th>
                   <th className="w-[20%] px-4 py-4 text-[10px] font-bold uppercase tracking-widest text-slate-400">Стоимость</th>
-                  <th className="w-[72px] px-4 py-4 text-right text-[10px] font-bold uppercase tracking-widest text-slate-400">Открыть</th>
+                  <th className="w-[120px] px-4 py-4 text-right text-[10px] font-bold uppercase tracking-widest text-slate-400">Действия</th>
                 </tr>
               </thead>
               <tbody>
@@ -1544,7 +1578,16 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
                         </div>
                       </td>
                       <td className="px-4 py-3 text-right">
-                        <div className="flex justify-end">
+                        <div className="flex justify-end gap-2">
+                          <button
+                            type="button"
+                            onClick={() => handleDuplicateProduct(product)}
+                            className="inline-flex h-9 w-9 cursor-pointer items-center justify-center rounded-[8px] border border-[#E6E9EF] bg-white text-[#8B95A5] transition-colors hover:bg-[#F6F7F9] hover:text-[#1F2937] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7D7DE6]/40"
+                            title="Дублировать товар"
+                            aria-label="Дублировать товар"
+                          >
+                            <Copy size={14} />
+                          </button>
                           <button 
                             onClick={() => handleToggleProduct(product)}
                             className={cn(
@@ -1591,6 +1634,15 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
               products.map((product) => (
                 <div key={product.id} className={cn("space-y-4 p-4", expandedProductId === product.id && "bg-[#F8F9FC]")}>
                   <div className="flex items-start justify-end">
+                    <button
+                      type="button"
+                      onClick={() => handleDuplicateProduct(product)}
+                      className="mr-3 inline-flex min-h-11 items-center gap-1.5 rounded-lg px-1 text-[#8B95A5] transition-colors hover:text-[#1F2937] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7D7DE6]/40"
+                      aria-label="Дублировать товар"
+                    >
+                      <Copy size={14} />
+                      <span className="text-[9px] font-light tracking-wide">Дублировать</span>
+                    </button>
                     <button
                       type="button"
                       onClick={() => handleToggleProduct(product)}

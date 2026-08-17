@@ -4580,11 +4580,6 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
       && date.getMonth() === today.getMonth()
       && date.getDate() === today.getDate()
     );
-    const isPaidSale = (order: OrderData) => {
-      const status = String(order.status || '').toLowerCase();
-      return status.includes('оплачен') || getConfirmedPaidAmount(order) > 0;
-    };
-
     return {
       monthLabel,
       managers: managerNames.map((manager) => {
@@ -4594,10 +4589,10 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
           order.date.getFullYear() === targetYear && order.date.getMonth() === targetMonth
         ));
         const todayOrders = managerOrders.filter((order) => isSameDay(order.date));
-        const monthSales = monthOrders.filter(isPaidSale);
-        const todaySales = todayOrders.filter(isPaidSale);
-        const monthRevenue = monthSales.reduce((sum, order) => sum + getConfirmedPaidAmount(order), 0);
-        const todayRevenue = todaySales.reduce((sum, order) => sum + getConfirmedPaidAmount(order), 0);
+        const monthSales = monthOrders;
+        const todaySales = todayOrders;
+        const monthRevenue = monthSales.reduce((sum, order) => sum + getOrderTotalAmount(order), 0);
+        const todayRevenue = todaySales.reduce((sum, order) => sum + getOrderTotalAmount(order), 0);
         const basePlan = Number(plan.basePlan) || MANAGER_PLAN_DEFAULTS.basePlan;
         const dayPlan = Number(plan.dayPlan) || MANAGER_PLAN_DEFAULTS.dayPlan;
         const monthPlan = Number(plan.monthPlan) || MANAGER_PLAN_DEFAULTS.monthPlan;
