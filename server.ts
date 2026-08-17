@@ -7967,7 +7967,7 @@ function getYandexPayBaseUrl(sandbox: boolean) {
 }
 
 function getYandexPayCallbackUrl() {
-  return `${String(process.env.SERVER_URL || 'https://ybcrm.ru').replace(/\/$/, '')}/api/yandex-pay`;
+  return `${String(process.env.SERVER_URL || 'https://ybcrm.ru').replace(/\/$/, '')}/api/yandex-pay/v1/webhook`;
 }
 
 function getYandexPaymentTarget(orderId: string) {
@@ -8219,7 +8219,7 @@ app.get('/api/yandex-pay/find-payment', async (req, res) => {
   }
 });
 
-app.post('/api/yandex-pay/v1/webhook', async (req: any, res) => {
+async function handleYandexPayWebhook(req: any, res: any) {
   try {
     const credentials = await getYandexPayCredentials();
     const token = Buffer.isBuffer(req.body) ? req.body.toString('utf8') : String(req.body || '').trim();
@@ -8251,7 +8251,11 @@ app.post('/api/yandex-pay/v1/webhook', async (req: any, res) => {
     console.warn('[yandex-pay] invalid webhook:', error?.message || error);
     res.status(401).json({ reasonCode: 'INVALID_TOKEN' });
   }
-});
+}
+
+app.post('/api/yandex-pay/v1/webhook', handleYandexPayWebhook);
+// Backward compatibility: older Yandex cabinet setup could point to /api/yandex-pay.
+app.post('/api/yandex-pay', handleYandexPayWebhook);
 
 // Создать ссылку/QR на оплату
 app.post('/api/tochka/create-payment', async (req, res) => {
