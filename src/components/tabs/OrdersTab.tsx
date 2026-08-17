@@ -55,6 +55,7 @@ const SHIFT_TARGET_CONTACTS = 100;
 const SHIFT_BASE_PAY = 1000;
 const SHIFT_START_TIME = '09:00';
 const SHIFT_END_TIME = '22:00';
+const OWNER_INFO_EMAIL = 'ndtiger86@gmail.com';
 const RAW_COLOR_INDEX = 1;
 const RAW_SIZE_INDEX = 8;
 const RAW_REVENUE_INDEX = 14;
@@ -4628,6 +4629,9 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
     return names.length ? names : ['Менеджер 1', 'Менеджер 2'];
   }, [handbookManagers]);
 
+  const currentAuthEmail = normalizeAuthEmail(auth.currentUser?.email || '');
+  const isOwnerInfoAccount = currentAuthEmail === OWNER_INFO_EMAIL;
+
   const managerShiftState = useMemo(() => {
     const todayKey = getLocalDateKey();
     const user = auth.currentUser;
@@ -4677,6 +4681,10 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
   }, [currentManagerProfile, managerContacts, managerShifts, selectedShiftManager, shiftManagers]);
 
   const bindCurrentLoginToManager = async () => {
+    if (isOwnerInfoAccount) {
+      setShiftError('Аккаунт владельца работает в режиме просмотра смен. Смены запускают менеджеры под своими логинами.');
+      return;
+    }
     const user = auth.currentUser;
     const manager = selectedShiftManager || shiftManagers[0] || 'Менеджер 1';
     if (!user?.uid || !manager) return;
@@ -4701,6 +4709,10 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
   };
 
   const startManagerShift = async () => {
+    if (isOwnerInfoAccount) {
+      setShiftError('Для аккаунта владельца смена не запускается: он используется только для контроля и сводки.');
+      return;
+    }
     if (!managerShiftState.isProfileBound) {
       setShiftError('Сначала привяжите этот логин к менеджеру. Потом смена будет считаться именно под этим аккаунтом.');
       return;
@@ -5348,44 +5360,61 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
             <p className="mt-1 truncate text-[11px] font-semibold text-[#6B7280]">
               Логин: {auth.currentUser?.email || 'не определён'}
             </p>
-            <div className="relative mt-2">
-              <select
-                value={managerShiftState.manager}
-                onChange={(e) => setSelectedShiftManager(e.target.value)}
-                disabled={managerShiftState.isProfileBound}
-                className={cn(
-                  'h-11 w-full appearance-none rounded-[8px] border border-[#E6E9EF] bg-white px-3 pr-9 text-[13px] font-semibold text-[#1F2937] outline-none focus:border-[#7D7DE6] focus:ring-2 focus:ring-[#7D7DE6]/10',
-                  managerShiftState.isProfileBound && 'cursor-not-allowed bg-emerald-50 text-emerald-800'
+            {isOwnerInfoAccount ? (
+              <div className="mt-3 rounded-[10px] border border-violet-100 bg-white p-3">
+                <div className="inline-flex items-center gap-2 rounded-full bg-violet-50 px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.12em] text-violet-700">
+                  <CheckCircle2 className="h-3.5 w-3.5" />
+                  Информационный режим
+                </div>
+                <p className="mt-2 text-[12px] font-semibold leading-5 text-[#1F2937]">
+                  Это аккаунт владельца. Смены не запускаются и зарплата не начисляется.
+                </p>
+                <p className="mt-1 text-[11px] font-medium leading-4 text-[#6B7280]">
+                  Менеджеры заходят под своими логинами, начинают смену и поднимают базу. Здесь только контроль сводки.
+                </p>
+              </div>
+            ) : (
+              <>
+                <div className="relative mt-2">
+                  <select
+                    value={managerShiftState.manager}
+                    onChange={(e) => setSelectedShiftManager(e.target.value)}
+                    disabled={managerShiftState.isProfileBound}
+                    className={cn(
+                      'h-11 w-full appearance-none rounded-[8px] border border-[#E6E9EF] bg-white px-3 pr-9 text-[13px] font-semibold text-[#1F2937] outline-none focus:border-[#7D7DE6] focus:ring-2 focus:ring-[#7D7DE6]/10',
+                      managerShiftState.isProfileBound && 'cursor-not-allowed bg-emerald-50 text-emerald-800'
+                    )}
+                  >
+                    {shiftManagers.map(manager => <option key={manager} value={manager}>{manager}</option>)}
+                  </select>
+                  <ChevronRight className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 rotate-90 text-[#9CA3AF]" />
+                </div>
+                {!managerShiftState.isProfileBound && (
+                  <button
+                    type="button"
+                    onClick={bindCurrentLoginToManager}
+                    disabled={profileSaving || !auth.currentUser?.uid}
+                    className="mt-2 inline-flex h-9 w-full items-center justify-center gap-2 rounded-[8px] border border-[#7D7DE6]/25 bg-white px-3 text-[11px] font-semibold text-[#5B5BE0] transition-colors hover:bg-violet-50 disabled:opacity-50"
+                  >
+                    {profileSaving ? 'Привязываю…' : 'Привязать этот логин'}
+                  </button>
                 )}
-              >
-                {shiftManagers.map(manager => <option key={manager} value={manager}>{manager}</option>)}
-              </select>
-              <ChevronRight className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 rotate-90 text-[#9CA3AF]" />
-            </div>
-            {!managerShiftState.isProfileBound && (
-              <button
-                type="button"
-                onClick={bindCurrentLoginToManager}
-                disabled={profileSaving || !auth.currentUser?.uid}
-                className="mt-2 inline-flex h-9 w-full items-center justify-center gap-2 rounded-[8px] border border-[#7D7DE6]/25 bg-white px-3 text-[11px] font-semibold text-[#5B5BE0] transition-colors hover:bg-violet-50 disabled:opacity-50"
-              >
-                {profileSaving ? 'Привязываю…' : 'Привязать этот логин'}
-              </button>
+                <button
+                  type="button"
+                  onClick={startManagerShift}
+                  disabled={shiftSaving || managerShiftState.active || !managerShiftState.isProfileBound}
+                  className={cn(
+                    'mt-2 inline-flex h-10 w-full items-center justify-center gap-2 rounded-[8px] px-3 text-[12px] font-semibold transition-colors',
+                    managerShiftState.active
+                      ? 'border border-emerald-100 bg-emerald-50 text-emerald-700'
+                      : 'bg-zinc-950 text-white hover:bg-zinc-800 disabled:opacity-50'
+                  )}
+                >
+                  {managerShiftState.active ? <CheckCircle2 className="h-4 w-4" /> : <Clock className="h-4 w-4" />}
+                  {shiftSaving ? 'Запускаю…' : managerShiftState.active ? 'Смена начата' : 'Начать смену'}
+                </button>
+              </>
             )}
-            <button
-              type="button"
-              onClick={startManagerShift}
-              disabled={shiftSaving || managerShiftState.active || !managerShiftState.isProfileBound}
-              className={cn(
-                'mt-2 inline-flex h-10 w-full items-center justify-center gap-2 rounded-[8px] px-3 text-[12px] font-semibold transition-colors',
-                managerShiftState.active
-                  ? 'border border-emerald-100 bg-emerald-50 text-emerald-700'
-                  : 'bg-zinc-950 text-white hover:bg-zinc-800 disabled:opacity-50'
-              )}
-            >
-              {managerShiftState.active ? <CheckCircle2 className="h-4 w-4" /> : <Clock className="h-4 w-4" />}
-              {shiftSaving ? 'Запускаю…' : managerShiftState.active ? 'Смена начата' : 'Начать смену'}
-            </button>
           </div>
 
           <div className="rounded-xl border border-[#E6E9EF] bg-white p-3">
