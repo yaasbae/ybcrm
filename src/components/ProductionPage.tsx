@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
+  CalendarClock,
   CalendarDays,
   Check,
   CircleDollarSign,
@@ -33,7 +34,8 @@ type ProductionEntry = {
   productName: string;
   date: string;
   quantity: number;
-  cost: number | null;
+  cuttingCost: number | null;
+  sewingCost: number | null;
   createdAt?: unknown;
   updatedAt?: unknown;
 };
@@ -42,7 +44,8 @@ type EditDraft = {
   productName: string;
   date: string;
   quantity: string;
-  cost: string;
+  cuttingCost: string;
+  sewingCost: string;
 };
 
 type ProductionPageProps = {
@@ -68,6 +71,20 @@ const formatDate = (value: string) => {
   const [year, month, day] = value.split('-');
   return `${day}.${month}.${year}`;
 };
+
+const getPaymentDate = (productionDate: string) => {
+  const [year, month, day] = productionDate.split('-').map(Number);
+  if (!year || !month || !day) return '';
+  if (day <= 15) {
+    const lastDay = new Date(year, month, 0).getDate();
+    return `${year}-${String(month).padStart(2, '0')}-${String(Math.min(30, lastDay)).padStart(2, '0')}`;
+  }
+  const nextMonth = new Date(year, month, 15);
+  return `${nextMonth.getFullYear()}-${String(nextMonth.getMonth() + 1).padStart(2, '0')}-15`;
+};
+
+const getEntryTotal = (entry: Pick<ProductionEntry, 'quantity' | 'cuttingCost' | 'sewingCost'>) =>
+  entry.quantity * ((entry.cuttingCost || 0) + (entry.sewingCost || 0));
 
 const parseOptionalNumber = (value: string) => {
   const normalized = value.trim().replace(',', '.');
@@ -95,7 +112,8 @@ export const ProductionPage: React.FC<ProductionPageProps> = ({
   const [addingProduct, setAddingProduct] = useState(false);
   const [date, setDate] = useState(today);
   const [quantity, setQuantity] = useState('');
-  const [cost, setCost] = useState('');
+  const [cuttingCost, setCuttingCost] = useState('');
+  const [sewingCost, setSewingCost] = useState('');
   const [search, setSearch] = useState('');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState<EditDraft | null>(null);
@@ -141,7 +159,10 @@ export const ProductionPage: React.FC<ProductionPageProps> = ({
             productName: String(data.productName || ''),
             date: String(data.date || ''),
             quantity: Number(data.quantity || 0),
-            cost: typeof data.cost === 'number' ? data.cost : null,
+            cuttingCost: typeof data.cuttingCost === 'number' ? data.cuttingCost : null,
+            sewingCost: typeof data.sewingCost === 'number'
+              ? data.sewingCost
+              : typeof data.cost === 'number' ? data.cost : null,
             createdAt: data.createdAt,
             updatedAt: data.updatedAt,
           } satisfies ProductionEntry;
@@ -177,11 +198,11 @@ export const ProductionPage: React.FC<ProductionPageProps> = ({
 
   const summary = useMemo(() => {
     const totalQuantity = filteredEntries.reduce((sum, entry) => sum + entry.quantity, 0);
-    const pricedEntries = filteredEntries.filter((entry) => entry.cost !== null);
+    const fullyPricedEntries = filteredEntries.filter((entry) => entry.cuttingCost !== null && entry.sewingCost !== null);
     return {
       totalQuantity,
-      totalCost: pricedEntries.reduce((sum, entry) => sum + (entry.cost || 0), 0),
-      missingCost: filteredEntries.length - pricedEntries.length,
+      totalCost: filteredEntries.reduce((sum, entry) => sum + getEntryTotal(entry), 0),
+      missingCost: filteredEntries.length - fullyPricedEntries.length,
     };
   }, [filteredEntries]);
 
@@ -225,20 +246,25 @@ export const ProductionPage: React.FC<ProductionPageProps> = ({
     setProductName('');
     setDate(today());
     setQuantity('');
-    setCost('');
+    setCuttingCost('');
+    setSewingCost('');
   };
 
   const addEntry = async (event: React.FormEvent) => {
     event.preventDefault();
     const normalizedProductName = normalizeProductName(productName);
     const parsedQuantity = Number(quantity);
-    const parsedCost = parseOptionalNumber(cost);
+    const parsedCuttingCost = parseOptionalNumber(cuttingCost);
+    const parsedSewingCost = parseOptionalNumber(sewingCost);
     if (!normalizedProductName || !date || !Number.isInteger(parsedQuantity) || parsedQuantity <= 0) {
       setError('Выберите изделие, дату и укажите количество больше нуля.');
       return;
     }
-    if (cost.trim() && (parsedCost === null || parsedCost < 0)) {
-      setError('Стоимость должна быть положительным числом или оставаться пустой.');
+    if (
+      (cuttingCost.trim() && (parsedCuttingCost === null || parsedCuttingCost < 0))
+      || (sewingCost.trim() && (parsedSewingCost === null || parsedSewingCost < 0))
+    ) {
+      setError('Стоимость кроя и пошива должна быть положительным числом или оставаться пустой.');
       return;
     }
 
@@ -256,7 +282,10 @@ export const ProductionPage: React.FC<ProductionPageProps> = ({
         productName: normalizedProductName,
         date,
         quantity: parsedQuantity,
-        cost: parsedCost,
+        cuttingCost: parsedCuttingCost,
+        sewingCost: parsedSewingCost,
+        cost: parsedSewingCost,
+        paymentDate: getPaymentDate(date),
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
@@ -277,7 +306,8 @@ export const ProductionPage: React.FC<ProductionPageProps> = ({
       productName: entry.productName,
       date: entry.date,
       quantity: String(entry.quantity),
-      cost: entry.cost === null ? '' : String(entry.cost),
+      cuttingCost: entry.cuttingCost === null ? '' : String(entry.cuttingCost),
+      sewingCost: entry.sewingCost === null ? '' : String(entry.sewingCost),
     });
     setError('');
   };
@@ -290,13 +320,17 @@ export const ProductionPage: React.FC<ProductionPageProps> = ({
   const saveEdit = async (entryId: string) => {
     if (!editDraft) return;
     const parsedQuantity = Number(editDraft.quantity);
-    const parsedCost = parseOptionalNumber(editDraft.cost);
+    const parsedCuttingCost = parseOptionalNumber(editDraft.cuttingCost);
+    const parsedSewingCost = parseOptionalNumber(editDraft.sewingCost);
     if (!editDraft.productName || !editDraft.date || !Number.isInteger(parsedQuantity) || parsedQuantity <= 0) {
       setError('Проверьте изделие, дату и количество в редактируемой строке.');
       return;
     }
-    if (editDraft.cost.trim() && (parsedCost === null || parsedCost < 0)) {
-      setError('Стоимость должна быть положительным числом или оставаться пустой.');
+    if (
+      (editDraft.cuttingCost.trim() && (parsedCuttingCost === null || parsedCuttingCost < 0))
+      || (editDraft.sewingCost.trim() && (parsedSewingCost === null || parsedSewingCost < 0))
+    ) {
+      setError('Стоимость кроя и пошива должна быть положительным числом или оставаться пустой.');
       return;
     }
 
@@ -307,7 +341,10 @@ export const ProductionPage: React.FC<ProductionPageProps> = ({
         productName: editDraft.productName,
         date: editDraft.date,
         quantity: parsedQuantity,
-        cost: parsedCost,
+        cuttingCost: parsedCuttingCost,
+        sewingCost: parsedSewingCost,
+        cost: parsedSewingCost,
+        paymentDate: getPaymentDate(editDraft.date),
         updatedAt: serverTimestamp(),
       });
       cancelEdit();
@@ -396,7 +433,7 @@ export const ProductionPage: React.FC<ProductionPageProps> = ({
             <form onSubmit={addEntry} className="rounded-2xl border border-[#E6E9EF] bg-[#F8F9FB] p-4 sm:p-5 lg:sticky lg:top-20">
               <div className="mb-5">
                 <p className="text-sm font-semibold text-[#1F2937]">Добавить выпуск</p>
-                <p className="mt-1 text-[10px] leading-4 text-[#8B95A5]">Стоимость можно не указывать и заполнить позднее.</p>
+                <p className="mt-1 text-[10px] leading-4 text-[#8B95A5]">Крой и пошив указываются за одну штуку. Цены можно заполнить позднее.</p>
               </div>
               <div className="space-y-4">
                 <div className="block" ref={productPickerRef}>
@@ -485,15 +522,38 @@ export const ProductionPage: React.FC<ProductionPageProps> = ({
                   <span className="mb-1.5 block text-[10px] font-semibold uppercase tracking-[0.1em] text-[#6B7280]">Количество, шт.</span>
                   <input type="number" min="1" step="1" value={quantity} onChange={(event) => setQuantity(event.target.value)} placeholder="Например, 120" className={inputClass} required />
                 </label>
-                <label className="block">
-                  <span className="mb-1.5 flex items-center justify-between text-[10px] font-semibold uppercase tracking-[0.1em] text-[#6B7280]">
-                    Стоимость пошива <span className="normal-case tracking-normal text-[#A0A7B2]">необязательно</span>
-                  </span>
-                  <div className="relative">
-                    <input type="number" min="0" step="0.01" value={cost} onChange={(event) => setCost(event.target.value)} placeholder="0" className={cn(inputClass, 'pr-10')} />
-                    <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[12px] font-medium text-[#9CA3AF]">₽</span>
+                <div className="grid grid-cols-2 gap-2.5">
+                  <label className="block min-w-0">
+                    <span className="mb-1.5 block text-[10px] font-semibold uppercase tracking-[0.08em] text-[#6B7280]">Крой за 1 шт.</span>
+                    <div className="relative">
+                      <input type="number" min="0" step="0.01" value={cuttingCost} onChange={(event) => setCuttingCost(event.target.value)} placeholder="0" className={cn(inputClass, 'pr-8')} />
+                      <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[12px] font-medium text-[#9CA3AF]">₽</span>
+                    </div>
+                  </label>
+                  <label className="block min-w-0">
+                    <span className="mb-1.5 block text-[10px] font-semibold uppercase tracking-[0.08em] text-[#6B7280]">Пошив за 1 шт.</span>
+                    <div className="relative">
+                      <input type="number" min="0" step="0.01" value={sewingCost} onChange={(event) => setSewingCost(event.target.value)} placeholder="0" className={cn(inputClass, 'pr-8')} />
+                      <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[12px] font-medium text-[#9CA3AF]">₽</span>
+                    </div>
+                  </label>
+                </div>
+                {(quantity || cuttingCost || sewingCost) && (
+                  <div className="rounded-xl border border-[#E6E9EF] bg-white px-3.5 py-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-[9px] font-semibold uppercase tracking-[0.1em] text-[#8B95A5]">Итого за выпуск</span>
+                      <span className="text-[13px] font-semibold tabular-nums text-[#1F2937]">
+                        {formatMoney((Number(quantity) || 0) * ((parseOptionalNumber(cuttingCost) || 0) + (parseOptionalNumber(sewingCost) || 0)))}
+                      </span>
+                    </div>
+                    {date && (
+                      <div className="mt-2 flex items-center justify-between gap-3 border-t border-[#EEF0F3] pt-2">
+                        <span className="flex items-center gap-1.5 text-[9px] font-medium text-[#8B95A5]"><CalendarClock size={12} /> Дата оплаты</span>
+                        <span className="text-[10px] font-semibold text-[#6262C7]">{formatDate(getPaymentDate(date))}</span>
+                      </div>
+                    )}
                   </div>
-                </label>
+                )}
                 <button
                   type="submit"
                   disabled={saving || !productName || !date || !quantity}
@@ -545,14 +605,17 @@ export const ProductionPage: React.FC<ProductionPageProps> = ({
               ) : (
                 <>
                   <div className="hidden overflow-x-auto md:block">
-                    <table className="w-full min-w-[720px] table-fixed text-left">
+                    <table className="w-full min-w-[1040px] table-fixed text-left">
                       <thead className="bg-[#F8F9FB] text-[9px] font-semibold uppercase tracking-[0.12em] text-[#8B95A5]">
                         <tr>
-                          <th className="w-[33%] px-4 py-3">Изделие</th>
-                          <th className="w-[18%] px-4 py-3">Дата</th>
-                          <th className="w-[15%] px-4 py-3">Количество</th>
-                          <th className="w-[20%] px-4 py-3">Стоимость</th>
-                          <th className="w-[14%] px-4 py-3 text-right">Действия</th>
+                          <th className="w-[21%] px-3 py-3">Изделие</th>
+                          <th className="w-[11%] px-3 py-3">Выпуск</th>
+                          <th className="w-[10%] px-3 py-3">Количество</th>
+                          <th className="w-[11%] px-3 py-3">Крой / шт.</th>
+                          <th className="w-[11%] px-3 py-3">Пошив / шт.</th>
+                          <th className="w-[14%] px-3 py-3">Крой + пошив</th>
+                          <th className="w-[12%] px-3 py-3">Оплата</th>
+                          <th className="w-[10%] px-3 py-3 text-right">Действия</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-[#EEF0F3]">
@@ -560,23 +623,33 @@ export const ProductionPage: React.FC<ProductionPageProps> = ({
                           const isEditing = editingId === entry.id && editDraft;
                           return (
                             <tr key={entry.id} className="group bg-white hover:bg-[#FBFBFC]">
-                              <td className="px-4 py-3">
+                              <td className="px-3 py-3">
                                 {isEditing ? (
                                   <select value={editDraft.productName} onChange={(event) => setEditDraft({ ...editDraft, productName: event.target.value })} className={compactInputClass}>
                                     {productNames.map((name) => <option key={name} value={name}>{name}</option>)}
                                   </select>
                                 ) : <span className="block truncate text-[12px] font-semibold text-[#1F2937]">{entry.productName}</span>}
                               </td>
-                              <td className="px-4 py-3">
+                              <td className="px-3 py-3">
                                 {isEditing ? <input type="date" value={editDraft.date} onChange={(event) => setEditDraft({ ...editDraft, date: event.target.value })} className={compactInputClass} /> : <span className="text-[11px] font-medium text-[#6B7280]">{formatDate(entry.date)}</span>}
                               </td>
-                              <td className="px-4 py-3">
+                              <td className="px-3 py-3">
                                 {isEditing ? <input type="number" min="1" step="1" value={editDraft.quantity} onChange={(event) => setEditDraft({ ...editDraft, quantity: event.target.value })} className={compactInputClass} /> : <span className="text-[12px] font-semibold tabular-nums text-[#1F2937]">{entry.quantity.toLocaleString('ru-RU')} шт.</span>}
                               </td>
-                              <td className="px-4 py-3">
-                                {isEditing ? <input type="number" min="0" step="0.01" placeholder="Не указана" value={editDraft.cost} onChange={(event) => setEditDraft({ ...editDraft, cost: event.target.value })} className={compactInputClass} /> : entry.cost === null ? <span className="inline-flex rounded-full bg-amber-50 px-2.5 py-1 text-[9px] font-semibold uppercase tracking-[0.06em] text-amber-700">Не указана</span> : <span className="text-[12px] font-semibold tabular-nums text-[#1F2937]">{formatMoney(entry.cost)}</span>}
+                              <td className="px-3 py-3">
+                                {isEditing ? <input type="number" min="0" step="0.01" placeholder="—" value={editDraft.cuttingCost} onChange={(event) => setEditDraft({ ...editDraft, cuttingCost: event.target.value })} className={compactInputClass} /> : entry.cuttingCost === null ? <span className="text-[10px] font-medium text-amber-700">Не указано</span> : <span className="text-[11px] font-semibold tabular-nums text-[#1F2937]">{formatMoney(entry.cuttingCost)}</span>}
                               </td>
-                              <td className="px-4 py-3">
+                              <td className="px-3 py-3">
+                                {isEditing ? <input type="number" min="0" step="0.01" placeholder="—" value={editDraft.sewingCost} onChange={(event) => setEditDraft({ ...editDraft, sewingCost: event.target.value })} className={compactInputClass} /> : entry.sewingCost === null ? <span className="text-[10px] font-medium text-amber-700">Не указано</span> : <span className="text-[11px] font-semibold tabular-nums text-[#1F2937]">{formatMoney(entry.sewingCost)}</span>}
+                              </td>
+                              <td className="px-3 py-3">
+                                <span className="text-[12px] font-semibold tabular-nums text-[#1F2937]">{formatMoney(getEntryTotal(entry))}</span>
+                                {(entry.cuttingCost === null || entry.sewingCost === null) && <span className="mt-0.5 block text-[8px] font-medium uppercase tracking-[0.06em] text-amber-700">Частичная сумма</span>}
+                              </td>
+                              <td className="px-3 py-3">
+                                <span className="inline-flex items-center gap-1.5 whitespace-nowrap text-[11px] font-semibold text-[#6262C7]"><CalendarClock size={13} /> {formatDate(getPaymentDate(entry.date))}</span>
+                              </td>
+                              <td className="px-3 py-3">
                                 <div className="flex justify-end gap-1">
                                   {isEditing ? (
                                     <>
@@ -610,7 +683,16 @@ export const ProductionPage: React.FC<ProductionPageProps> = ({
                                 <input type="date" value={editDraft.date} onChange={(event) => setEditDraft({ ...editDraft, date: event.target.value })} className={compactInputClass} />
                                 <input type="number" min="1" step="1" value={editDraft.quantity} onChange={(event) => setEditDraft({ ...editDraft, quantity: event.target.value })} className={compactInputClass} />
                               </div>
-                              <input type="number" min="0" step="0.01" placeholder="Стоимость не указана" value={editDraft.cost} onChange={(event) => setEditDraft({ ...editDraft, cost: event.target.value })} className={compactInputClass} />
+                              <div className="grid grid-cols-2 gap-2">
+                                <label className="min-w-0">
+                                  <span className="mb-1 block text-[9px] font-semibold uppercase tracking-[0.08em] text-[#8B95A5]">Крой / шт.</span>
+                                  <input type="number" min="0" step="0.01" placeholder="Не указано" value={editDraft.cuttingCost} onChange={(event) => setEditDraft({ ...editDraft, cuttingCost: event.target.value })} className={compactInputClass} />
+                                </label>
+                                <label className="min-w-0">
+                                  <span className="mb-1 block text-[9px] font-semibold uppercase tracking-[0.08em] text-[#8B95A5]">Пошив / шт.</span>
+                                  <input type="number" min="0" step="0.01" placeholder="Не указано" value={editDraft.sewingCost} onChange={(event) => setEditDraft({ ...editDraft, sewingCost: event.target.value })} className={compactInputClass} />
+                                </label>
+                              </div>
                               <div className="flex gap-2">
                                 <button onClick={() => saveEdit(entry.id)} disabled={saving} className="flex h-9 flex-1 items-center justify-center gap-1.5 rounded-lg bg-[#1F2937] text-[10px] font-semibold uppercase tracking-[0.06em] text-white"><Check size={14} /> Сохранить</button>
                                 <button onClick={cancelEdit} className="flex h-9 items-center justify-center rounded-lg border border-[#E6E9EF] px-3 text-[#6B7280]"><X size={14} /></button>
@@ -628,9 +710,12 @@ export const ProductionPage: React.FC<ProductionPageProps> = ({
                                   <button onClick={() => removeEntry(entry)} className="flex h-8 w-8 items-center justify-center rounded-lg text-[#A0A7B2] hover:bg-red-50 hover:text-red-500" aria-label="Удалить"><Trash2 size={14} /></button>
                                 </div>
                               </div>
-                              <div className="mt-3 grid grid-cols-2 gap-2 rounded-xl bg-[#F8F9FB] p-3">
+                              <div className="mt-3 grid grid-cols-2 gap-x-3 gap-y-3 rounded-xl bg-[#F8F9FB] p-3">
                                 <div><p className="text-[8px] font-semibold uppercase tracking-[0.1em] text-[#9CA3AF]">Количество</p><p className="mt-1 text-[12px] font-semibold text-[#1F2937]">{entry.quantity.toLocaleString('ru-RU')} шт.</p></div>
-                                <div><p className="text-[8px] font-semibold uppercase tracking-[0.1em] text-[#9CA3AF]">Стоимость</p><p className={cn('mt-1 text-[12px] font-semibold', entry.cost === null ? 'text-amber-700' : 'text-[#1F2937]')}>{entry.cost === null ? 'Не указана' : formatMoney(entry.cost)}</p></div>
+                                <div><p className="text-[8px] font-semibold uppercase tracking-[0.1em] text-[#9CA3AF]">Крой / шт.</p><p className={cn('mt-1 text-[12px] font-semibold', entry.cuttingCost === null ? 'text-amber-700' : 'text-[#1F2937]')}>{entry.cuttingCost === null ? 'Не указан' : formatMoney(entry.cuttingCost)}</p></div>
+                                <div><p className="text-[8px] font-semibold uppercase tracking-[0.1em] text-[#9CA3AF]">Пошив / шт.</p><p className={cn('mt-1 text-[12px] font-semibold', entry.sewingCost === null ? 'text-amber-700' : 'text-[#1F2937]')}>{entry.sewingCost === null ? 'Не указан' : formatMoney(entry.sewingCost)}</p></div>
+                                <div><p className="text-[8px] font-semibold uppercase tracking-[0.1em] text-[#9CA3AF]">Крой + пошив</p><p className="mt-1 text-[12px] font-semibold text-[#1F2937]">{formatMoney(getEntryTotal(entry))}</p></div>
+                                <div className="col-span-2 border-t border-[#E6E9EF] pt-2.5"><p className="flex items-center gap-1.5 text-[8px] font-semibold uppercase tracking-[0.1em] text-[#9CA3AF]"><CalendarClock size={11} /> Дата оплаты</p><p className="mt-1 text-[12px] font-semibold text-[#6262C7]">{formatDate(getPaymentDate(entry.date))}</p></div>
                               </div>
                             </>
                           )}
