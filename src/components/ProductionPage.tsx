@@ -21,10 +21,14 @@ import {
   collection,
   deleteDoc,
   doc,
+  getDocs,
   onSnapshot,
+  query,
   serverTimestamp,
   setDoc,
   updateDoc,
+  where,
+  writeBatch,
 } from 'firebase/firestore';
 import { db } from '../firebase';
 import { cn } from '../lib/utils';
@@ -86,6 +90,30 @@ const getPaymentDate = (productionDate: string) => {
 const getEntryTotal = (entry: Pick<ProductionEntry, 'quantity' | 'cuttingCost' | 'sewingCost'>) =>
   entry.quantity * ((entry.cuttingCost || 0) + (entry.sewingCost || 0));
 
+const monthNamesGenitive = [
+  'января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
+  'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря',
+];
+
+const monthNamesTitle = [
+  'Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь',
+  'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь',
+];
+
+const getMonthDetails = (monthKey: string) => {
+  const [year, month] = monthKey.split('-').map(Number);
+  const safeYear = year || new Date().getFullYear();
+  const safeMonth = month || new Date().getMonth() + 1;
+  const lastDay = new Date(safeYear, safeMonth, 0).getDate();
+  return {
+    year: safeYear,
+    month: safeMonth,
+    lastDay,
+    genitiveName: monthNamesGenitive[safeMonth - 1],
+    titleName: monthNamesTitle[safeMonth - 1],
+  };
+};
+
 const parseOptionalNumber = (value: string) => {
   const normalized = value.trim().replace(',', '.');
   if (!normalized) return null;
@@ -122,6 +150,7 @@ export const ProductionPage: React.FC<ProductionPageProps> = ({
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const productPickerRef = useRef<HTMLDivElement>(null);
+  const expenseSyncHashRef = useRef('');
 
   useEffect(() => {
     const unsubscribe = onSnapshot(
@@ -187,24 +216,99 @@ export const ProductionPage: React.FC<ProductionPageProps> = ({
     return () => window.clearTimeout(timeoutId);
   }, [notice]);
 
+  useEffect(() => {
+    if (loading) return;
+    const syncHash = JSON.stringify(entries.map((entry) => [
+      entry.id,
+      entry.date,
+      entry.quantity,
+      entry.cuttingCost,
+      entry.sewingCost,
+    ]));
+    if (expenseSyncHashRef.current === syncHash) return;
+    expenseSyncHashRef.current = syncHash;
+
+    const syncProductionExpenses = async () => {
+      const periodTotals = new Map<string, { amount: number; quantity: number; monthKey: string; half: 1 | 2 }>();
+      entries.forEach((entry) => {
+        const monthKey = entry.date.slice(0, 7);
+        const day = Number(entry.date.slice(8, 10));
+        if (!monthKey || !day) return;
+        const half = day <= 15 ? 1 : 2;
+        const documentId = `production-${monthKey}-h${half}`;
+        const current = periodTotals.get(documentId) || { amount: 0, quantity: 0, monthKey, half };
+        current.amount += getEntryTotal(entry);
+        current.quantity += entry.quantity;
+        periodTotals.set(documentId, current);
+      });
+
+      const existingSnapshot = await getDocs(query(collection(db, 'expenses'), where('source', '==', 'production')));
+      const batch = writeBatch(db);
+      const desiredIds = new Set<string>();
+
+      periodTotals.forEach((period, documentId) => {
+        if (period.amount <= 0) return;
+        desiredIds.add(documentId);
+        const details = getMonthDetails(period.monthKey);
+        const periodStartDay = period.half === 1 ? 1 : 16;
+        const periodEndDay = period.half === 1 ? 15 : details.lastDay;
+        const productionDate = `${period.monthKey}-${String(periodStartDay).padStart(2, '0')}`;
+        const paymentDate = getPaymentDate(productionDate);
+        batch.set(doc(db, 'expenses', documentId), {
+          category: 'production',
+          amount: period.amount,
+          description: `Производство: ${periodStartDay}–${periodEndDay} ${details.genitiveName} ${details.year}`,
+          date: new Date(`${paymentDate}T12:00:00`),
+          paymentDate,
+          productionMonth: period.monthKey,
+          productionHalf: period.half,
+          quantity: period.quantity,
+          source: 'production',
+          updatedAt: serverTimestamp(),
+        }, { merge: true });
+      });
+
+      existingSnapshot.docs.forEach((expenseDoc) => {
+        if (!desiredIds.has(expenseDoc.id)) batch.delete(expenseDoc.ref);
+      });
+      await batch.commit();
+    };
+
+    syncProductionExpenses().catch((syncError) => {
+      console.error('Production expenses sync failed', syncError);
+      expenseSyncHashRef.current = '';
+      setError('Производство сохранено, но не удалось обновить расходы в финансах.');
+    });
+  }, [entries, loading]);
+
+  const monthEntries = useMemo(() => (
+    entries.filter((entry) => !selectedMonth || entry.date.startsWith(selectedMonth))
+  ), [entries, selectedMonth]);
+
   const filteredEntries = useMemo(() => {
     const normalizedSearch = search.trim().toLocaleLowerCase('ru-RU');
-    return entries.filter((entry) => {
-      const inMonth = !selectedMonth || entry.date.startsWith(selectedMonth);
-      const matchesSearch = !normalizedSearch || entry.productName.toLocaleLowerCase('ru-RU').includes(normalizedSearch);
-      return inMonth && matchesSearch;
-    });
-  }, [entries, search, selectedMonth]);
+    return monthEntries.filter((entry) => (
+      !normalizedSearch || entry.productName.toLocaleLowerCase('ru-RU').includes(normalizedSearch)
+    ));
+  }, [monthEntries, search]);
 
   const summary = useMemo(() => {
-    const totalQuantity = filteredEntries.reduce((sum, entry) => sum + entry.quantity, 0);
-    const fullyPricedEntries = filteredEntries.filter((entry) => entry.cuttingCost !== null && entry.sewingCost !== null);
+    const monthDetails = getMonthDetails(selectedMonth);
+    const calculate = (periodEntries: ProductionEntry[]) => ({
+      quantity: periodEntries.reduce((sum, entry) => sum + entry.quantity, 0),
+      cost: periodEntries.reduce((sum, entry) => sum + getEntryTotal(entry), 0),
+    });
+    const firstHalfEntries = monthEntries.filter((entry) => Number(entry.date.slice(8, 10)) <= 15);
+    const secondHalfEntries = monthEntries.filter((entry) => Number(entry.date.slice(8, 10)) > 15);
     return {
-      totalQuantity,
-      totalCost: filteredEntries.reduce((sum, entry) => sum + getEntryTotal(entry), 0),
-      missingCost: filteredEntries.length - fullyPricedEntries.length,
+      monthDetails,
+      firstHalf: calculate(firstHalfEntries),
+      secondHalf: calculate(secondHalfEntries),
+      month: calculate(monthEntries),
+      firstPaymentDate: getPaymentDate(`${selectedMonth}-01`),
+      secondPaymentDate: getPaymentDate(`${selectedMonth}-16`),
     };
-  }, [filteredEntries]);
+  }, [monthEntries, selectedMonth]);
 
   const matchingProducts = useMemo(() => {
     const normalizedSearch = normalizeProductName(productName);
@@ -403,29 +507,61 @@ export const ProductionPage: React.FC<ProductionPageProps> = ({
           </div>
         </div>
 
-        <div className="grid gap-px bg-[#E6E9EF] sm:grid-cols-3">
-          <div className="bg-white px-5 py-4 sm:px-6">
-            <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-[#8B95A5]">
-              <PackageCheck size={14} className="text-[#7D7DE6]" /> Общее количество
+        <div className="grid gap-px bg-[#E6E9EF] lg:grid-cols-3">
+          {[
+            {
+              key: 'first',
+              title: `1–15 ${summary.monthDetails.genitiveName}`,
+              quantity: summary.firstHalf.quantity,
+              cost: summary.firstHalf.cost,
+              paymentDate: summary.firstPaymentDate,
+              icon: PackageCheck,
+              iconColor: 'text-[#7D7DE6]',
+            },
+            {
+              key: 'second',
+              title: `16–${summary.monthDetails.lastDay} ${summary.monthDetails.genitiveName}`,
+              quantity: summary.secondHalf.quantity,
+              cost: summary.secondHalf.cost,
+              paymentDate: summary.secondPaymentDate,
+              icon: CalendarClock,
+              iconColor: 'text-[#D97706]',
+            },
+            {
+              key: 'month',
+              title: `${summary.monthDetails.titleName} ${summary.monthDetails.year}`,
+              quantity: summary.month.quantity,
+              cost: summary.month.cost,
+              paymentDate: '',
+              icon: CircleDollarSign,
+              iconColor: 'text-[#2EBA7F]',
+            },
+          ].map((period) => (
+            <div key={period.key} className={cn('bg-white px-5 py-4 sm:px-6', period.key === 'month' && 'bg-[#FAFFFC]')}>
+              <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-[#8B95A5]">
+                <period.icon size={14} className={period.iconColor} />
+                {period.key === 'month' ? 'Итого за месяц' : 'Период выпуска'}
+              </div>
+              <p className="mt-2 text-[13px] font-semibold text-[#1F2937]">{period.title}</p>
+              <div className="mt-3 flex flex-wrap items-end gap-x-5 gap-y-2">
+                <div>
+                  <p className="text-[8px] font-semibold uppercase tracking-[0.1em] text-[#9CA3AF]">Количество</p>
+                  <p className="mt-0.5 text-xl font-semibold tracking-[-0.03em] text-[#1F2937]">{period.quantity.toLocaleString('ru-RU')} <span className="text-[11px] font-medium text-[#9CA3AF]">шт.</span></p>
+                </div>
+                <div>
+                  <p className="text-[8px] font-semibold uppercase tracking-[0.1em] text-[#9CA3AF]">Стоимость</p>
+                  <p className="mt-0.5 text-xl font-semibold tracking-[-0.03em] text-[#1F2937]">{formatMoney(period.cost)}</p>
+                </div>
+              </div>
+              {period.paymentDate ? (
+                <p className="mt-3 flex items-center gap-1.5 border-t border-[#EEF0F3] pt-2.5 text-[10px] font-medium text-[#6262C7]">
+                  <CalendarClock size={12} /> Оплата {formatDate(period.paymentDate)}
+                </p>
+              ) : (
+                <p className="mt-3 border-t border-[#DDEFE5] pt-2.5 text-[10px] font-medium text-[#23825D]">Автоматически передаётся в расходы «Производство»</p>
+              )}
             </div>
-            <p className="mt-2 text-2xl font-semibold tracking-[-0.04em] text-[#1F2937]">
-              {summary.totalQuantity.toLocaleString('ru-RU')} <span className="text-sm font-medium text-[#9CA3AF]">шт.</span>
-            </p>
-          </div>
-          <div className="bg-white px-5 py-4 sm:px-6">
-            <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-[#8B95A5]">
-              <CircleDollarSign size={14} className="text-[#2EBA7F]" /> Общая стоимость
-            </div>
-            <p className="mt-2 text-2xl font-semibold tracking-[-0.04em] text-[#1F2937]">{formatMoney(summary.totalCost)}</p>
-          </div>
-          <div className="bg-white px-5 py-4 sm:px-6">
-            <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-[#8B95A5]">
-              <AlertCircle size={14} className={summary.missingCost ? 'text-[#F5A623]' : 'text-[#2EBA7F]'} /> Без стоимости
-            </div>
-            <p className="mt-2 text-2xl font-semibold tracking-[-0.04em] text-[#1F2937]">
-              {summary.missingCost} <span className="text-sm font-medium text-[#9CA3AF]">зап.</span>
-            </p>
-          </div>
+          ))}
         </div>
 
         <div className="grid gap-6 p-5 sm:p-6 lg:grid-cols-[340px_minmax(0,1fr)]">
