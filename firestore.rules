@@ -40,6 +40,11 @@ service cloud.firestore {
       allow read, write: if isAuthenticated();
     }
 
+    // Outsourced production journal. Signed-in production staff can add and edit entries.
+    match /production_entries/{document=**} {
+      allow read, write: if isAuthenticated();
+    }
+
     // Marketing stats collection
     match /marketing_stats/{document=**} {
       allow read, write: if isAuthenticated();

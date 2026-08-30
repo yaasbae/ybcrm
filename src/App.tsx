@@ -22,6 +22,7 @@ const CdekPage = lazy(() => import("./components/CdekPage").then(m => ({ default
 const IntegrationsPage = lazy(() => import("./components/IntegrationsPage").then(m => ({ default: m.IntegrationsPage })));
 const InstagramHubPage = lazy(() => import("./components/InstagramHubPage").then(m => ({ default: m.InstagramHubPage })));
 const StorefrontPage = lazy(() => import("./components/StorefrontPage").then(m => ({ default: m.StorefrontPage })));
+const ProductionPage = lazy(() => import("./components/ProductionPage").then(m => ({ default: m.ProductionPage })));
 import { auth, completeGoogleRedirectSignIn, getGoogleAuthErrorMessage, signInWithGoogle, signInWithEmail, signInWithPasskeyToken, logOut } from "./firebase";
 import { onAuthStateChanged, User as FirebaseUser } from "firebase/auth";
 import { isPasskeySupported, loginWithPasskey, registerPasskey } from "./lib/passkeys";
@@ -29,12 +30,12 @@ import { cn } from "./lib/utils";
 import {
   LogIn, LogOut, User as UserIcon, AlertCircle, Fingerprint,
   DollarSign, Calculator, LayoutDashboard, Package, Bot, ShoppingBag,
-  UserCircle, Star, Calendar as CalendarIcon, BookOpen, Send, Sparkles, Wand2, Truck, ReceiptText, PlugZap, Instagram, Store
+  UserCircle, Star, Calendar as CalendarIcon, BookOpen, Send, Sparkles, Wand2, Truck, ReceiptText, PlugZap, Instagram, Store, Factory
 } from "lucide-react";
 import { motion } from "motion/react";
 import { PushNotificationButton } from "./components/PushNotificationButton";
 
-type AppView = 'home' | 'calculator' | 'analytics' | 'orders' | 'clients' | 'marketing' | 'order-form' | 'products' | 'storefront' | 'ai-agent' | 'public-product' | 'public-payment' | 'finance' | 'payroll' | 'handbook' | 'broadcast' | 'broadcast-v2' | 'bot' | 'content' | 'studio' | 'cdek' | 'integrations' | 'instagram';
+type AppView = 'home' | 'calculator' | 'analytics' | 'orders' | 'clients' | 'marketing' | 'order-form' | 'products' | 'production' | 'storefront' | 'ai-agent' | 'public-product' | 'public-payment' | 'finance' | 'payroll' | 'handbook' | 'broadcast' | 'broadcast-v2' | 'bot' | 'content' | 'studio' | 'cdek' | 'integrations' | 'instagram';
 
 const viewRoutes: Record<Exclude<AppView, 'public-product' | 'public-payment'>, string> = {
   home: '/',
@@ -45,6 +46,7 @@ const viewRoutes: Record<Exclude<AppView, 'public-product' | 'public-payment'>, 
   marketing: '/marketing',
   'order-form': '/orders/new',
   products: '/products',
+  production: '/production',
   storefront: '/storefront',
   'ai-agent': '/ai-agent',
   finance: '/finance',
@@ -492,6 +494,7 @@ export default function App() {
                 { id: 'clients',   label: 'Клиент.',  icon: UserCircle },
                 { id: 'marketing', label: 'Маркет.',  icon: Star },
                 { id: 'products',  label: 'Склад',    icon: Package },
+                { id: 'production', label: 'Произв.', icon: Factory },
                 { id: 'storefront',label: 'Магазин',  icon: Store },
                 { id: 'handbook',  label: 'Справ.',   icon: BookOpen },
                 { id: 'cdek',      label: 'СДЭК',     icon: Truck },
@@ -597,6 +600,10 @@ export default function App() {
             <Products 
               onBack={() => handleNavigate('home')}
             />
+          )}
+
+          {view === 'production' && (
+            <ProductionPage selectedMonth={selectedMonth} setSelectedMonth={setSelectedMonth} />
           )}
 
           {view === 'storefront' && (
