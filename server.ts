@@ -37,6 +37,7 @@ import type {
   RegistrationResponseJSON,
   WebAuthnCredential,
 } from "@simplewebauthn/server";
+import { normalizeTelegramPhone, telegramDelivery, telegramAuthError } from "./src/lib/telegramAuth.ts";
 
 const _require = createRequire(import.meta.url);
 const Database = _require("better-sqlite3");
@@ -86,7 +87,10 @@ if (WEB_PUSH_PUBLIC_KEY && WEB_PUSH_PRIVATE_KEY) {
   webpush.setVapidDetails(WEB_PUSH_SUBJECT, WEB_PUSH_PUBLIC_KEY, WEB_PUSH_PRIVATE_KEY);
 }
 
-const pendingTgClients = new Map<string, { client: TelegramClient; phoneCodeHash: string }>();
+type PendingTgLogin = { client: TelegramClient; phoneCodeHash: string; purpose: "manager" | "broadcast"; delivery: ReturnType<typeof telegramDelivery>; expiresAt: number };
+const pendingTgClients = new Map<string, PendingTgLogin>();
+const pendingTgRequests = new Set<string>();
+const tgLoginCooldowns = new Map<string, number>();
 
 function buildBroadcastMessageText(message: string, contactButton: boolean, fallbackUrl = false) {
   const cleanMessage = String(message || "").trim();
@@ -384,7 +388,11 @@ type PushEventType =
   | "cdek_status_changed"
   | "payment_due"
   | "order_overdue"
-  | "manager_assigned";
+  | "manager_assigned"
+  | "order_status_changed"
+  | "manager_shift_started"
+  | "production_changed"
+  | "stock_changed";
 
 type PushEventData = {
   orderId?: string;
@@ -392,16 +400,24 @@ type PushEventData = {
   manager?: string;
   amount?: number;
   status?: string;
+  previousStatus?: string;
+  managerEmail?: string;
+  startedAt?: string;
+  dateKey?: string;
   cdekNumber?: string;
   conversationId?: string;
   username?: string;
   message?: string;
   deadline?: string;
+  action?: string;
+  productName?: string;
+  quantity?: number;
 };
 
 const PUSH_EVENT_TYPES = new Set<PushEventType>([
   "order_created", "instagram_message", "payment_received", "cdek_status_changed",
   "payment_due", "order_overdue", "manager_assigned",
+  "order_status_changed", "manager_shift_started", "production_changed", "stock_changed",
 ]);
 
 let webPushSetupPromise: Promise<boolean> | null = null;
@@ -491,6 +507,164 @@ async function writeAuditLog(input: {
   }
 }
 
+const CRM_ACCESS_VIEWS = [
+  "home", "calculator", "finance", "payroll", "analytics", "orders", "clients", "marketing",
+  "products", "production", "storefront", "handbook", "cdek", "integrations", "social",
+  "instagram", "bot", "content", "broadcast", "broadcast-v2", "studio", "ai-agent",
+];
+const CRM_NOTIFICATION_TOPICS = ["all", "orders", "payments", "cdek", "shifts", "social", "stock", "production"];
+
+function normalizedAllowedValues(value: unknown, allowed: string[]) {
+  const allowedSet = new Set(allowed);
+  return Array.from(new Set((Array.isArray(value) ? value : [])
+    .map(item => String(item || "").trim())
+    .filter(item => allowedSet.has(item))));
+}
+
+app.get("/api/access/me", async (req, res) => {
+  const decoded: any = await requireCrmUser(req, res);
+  if (!decoded) return;
+  const email = String(decoded.email || "").trim().toLowerCase();
+  if (email === "ndtiger86@gmail.com") {
+    return res.json({ configured: true, role: "owner", allowedViews: CRM_ACCESS_VIEWS, notificationTopics: ["all"] });
+  }
+  try {
+    const snap = await adminDb.collection("crm_access_profiles").doc(decoded.uid).get();
+    if (!snap.exists) return res.json({ configured: false, role: "legacy", allowedViews: null, notificationTopics: null });
+    const data = snap.data() || {};
+    res.json({
+      configured: true,
+      role: String(data.role || "employee"),
+      active: data.active !== false,
+      allowedViews: normalizedAllowedValues(data.allowedViews, CRM_ACCESS_VIEWS),
+      notificationTopics: normalizedAllowedValues(data.notificationTopics, CRM_NOTIFICATION_TOPICS),
+    });
+  } catch (error: any) {
+    console.error("[access] current profile:", error?.message || error);
+    res.status(500).json({ error: "Не удалось загрузить права доступа" });
+  }
+});
+
+app.get("/api/admin/accounts", async (req, res) => {
+  const owner: any = await requireFinanceOwner(req, res);
+  if (!owner) return;
+  try {
+    const [usersResult, profilesSnapshot] = await Promise.all([
+      getAdminAuth().listUsers(1000),
+      adminDb.collection("crm_access_profiles").get(),
+    ]);
+    const profiles = new Map(profilesSnapshot.docs.map((item: any) => [item.id, item.data() || {}]));
+    const accounts = usersResult.users.map((account: any) => {
+      const profile: any = profiles.get(account.uid) || null;
+      const isOwner = String(account.email || "").trim().toLowerCase() === "ndtiger86@gmail.com";
+      return {
+        uid: account.uid,
+        email: account.email || "",
+        displayName: account.displayName || "",
+        disabled: Boolean(account.disabled),
+        createdAt: account.metadata?.creationTime || null,
+        lastLoginAt: account.metadata?.lastSignInTime || null,
+        configured: isOwner || Boolean(profile),
+        role: isOwner ? "owner" : String(profile?.role || "legacy"),
+        allowedViews: isOwner ? CRM_ACCESS_VIEWS : (profile ? normalizedAllowedValues(profile.allowedViews, CRM_ACCESS_VIEWS) : CRM_ACCESS_VIEWS),
+        notificationTopics: isOwner ? ["all"] : (profile ? normalizedAllowedValues(profile.notificationTopics, CRM_NOTIFICATION_TOPICS) : ["all"]),
+        active: isOwner ? true : profile?.active !== false,
+      };
+    });
+    res.json({ accounts, views: CRM_ACCESS_VIEWS, notificationTopics: CRM_NOTIFICATION_TOPICS });
+  } catch (error: any) {
+    console.error("[admin] accounts list:", error?.message || error);
+    res.status(500).json({ error: "Не удалось загрузить аккаунты CRM" });
+  }
+});
+
+app.post("/api/admin/accounts", async (req, res) => {
+  const owner: any = await requireFinanceOwner(req, res);
+  if (!owner) return;
+  const email = String(req.body?.email || "").trim().toLowerCase();
+  const password = String(req.body?.password || "");
+  const displayName = String(req.body?.displayName || "").trim().slice(0, 120);
+  const role = String(req.body?.role || "employee").trim().slice(0, 60) || "employee";
+  const allowedViews = normalizedAllowedValues(req.body?.allowedViews, CRM_ACCESS_VIEWS);
+  const notificationTopics = normalizedAllowedValues(req.body?.notificationTopics, CRM_NOTIFICATION_TOPICS);
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: "Укажите корректную почту" });
+  if (password.length < 8) return res.status(400).json({ error: "Пароль должен быть не короче 8 символов" });
+  if (!allowedViews.length) return res.status(400).json({ error: "Выберите хотя бы один раздел CRM" });
+  try {
+    const account = await getAdminAuth().createUser({ email, password, displayName: displayName || undefined });
+    await adminDb.collection("crm_access_profiles").doc(account.uid).set({
+      email,
+      displayName,
+      role,
+      allowedViews,
+      notificationTopics,
+      active: true,
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+      updatedBy: owner.email || owner.uid,
+    }, { merge: true });
+    await writeAuditLog({
+      action: "account_created",
+      entityType: "account",
+      entityId: account.uid,
+      after: { email, displayName, role, allowedViews, notificationTopics, active: true },
+      metadata: { label: `Создан аккаунт ${email}` },
+      actor: { type: "crm_user", uid: owner.uid, email: owner.email || "", name: owner.name || "" },
+    });
+    res.status(201).json({ success: true, uid: account.uid, email });
+  } catch (error: any) {
+    console.error("[admin] account create:", error?.message || error);
+    const message = String(error?.code || "").includes("email-already-exists")
+      ? "Аккаунт с такой почтой уже существует"
+      : (error?.message || "Не удалось создать аккаунт");
+    res.status(400).json({ error: message });
+  }
+});
+
+app.patch("/api/admin/accounts/:uid", async (req, res) => {
+  const owner: any = await requireFinanceOwner(req, res);
+  if (!owner) return;
+  const uid = String(req.params.uid || "").trim();
+  if (!uid) return res.status(400).json({ error: "Не указан аккаунт" });
+  const role = String(req.body?.role || "employee").trim().slice(0, 60) || "employee";
+  const displayName = String(req.body?.displayName || "").trim().slice(0, 120);
+  const allowedViews = normalizedAllowedValues(req.body?.allowedViews, CRM_ACCESS_VIEWS);
+  const notificationTopics = normalizedAllowedValues(req.body?.notificationTopics, CRM_NOTIFICATION_TOPICS);
+  const active = req.body?.active !== false;
+  if (!allowedViews.length) return res.status(400).json({ error: "Выберите хотя бы один раздел CRM" });
+  try {
+    const account = await getAdminAuth().getUser(uid);
+    if (String(account.email || "").trim().toLowerCase() === "ndtiger86@gmail.com") {
+      return res.status(400).json({ error: "Права владельца CRM не ограничиваются" });
+    }
+    await Promise.all([
+      getAdminAuth().updateUser(uid, { displayName: displayName || undefined, disabled: !active }),
+      adminDb.collection("crm_access_profiles").doc(uid).set({
+        email: account.email || "",
+        displayName,
+        role,
+        allowedViews,
+        notificationTopics,
+        active,
+        updatedAt: FieldValue.serverTimestamp(),
+        updatedBy: owner.email || owner.uid,
+      }, { merge: true }),
+    ]);
+    await writeAuditLog({
+      action: "account_access_updated",
+      entityType: "account",
+      entityId: uid,
+      after: { email: account.email || "", displayName, role, allowedViews, notificationTopics, active },
+      metadata: { label: `Обновлены права ${account.email || uid}` },
+      actor: { type: "crm_user", uid: owner.uid, email: owner.email || "", name: owner.name || "" },
+    });
+    res.json({ success: true });
+  } catch (error: any) {
+    console.error("[admin] account update:", error?.message || error);
+    res.status(400).json({ error: error?.message || "Не удалось обновить права аккаунта" });
+  }
+});
+
 app.post("/api/audit/log", async (req, res) => {
   try {
     const decoded = await requireCrmUser(req, res);
@@ -503,6 +677,12 @@ app.post("/api/audit/log", async (req, res) => {
       return res.status(400).json({ error: "Нужны action, entityType и entityId" });
     }
 
+    const actorEmail = String(decoded.email || "").trim().toLowerCase();
+    const actorManagerName = actorEmail === "yb1@ybcrm.ru"
+      ? "Менеджер 1"
+      : actorEmail === "yb2@ybcrm.ru"
+        ? "Менеджер 2"
+        : "";
     await writeAuditLog({
       action,
       entityType,
@@ -518,7 +698,8 @@ app.post("/api/audit/log", async (req, res) => {
         type: "crm_user",
         uid: decoded.uid,
         email: decoded.email || "",
-        name: decoded.name || "",
+        name: actorManagerName || decoded.name || "",
+        managerName: actorManagerName,
       },
     });
     res.json({ ok: true });
@@ -540,6 +721,20 @@ function pushContent(type: PushEventType, data: PushEventData) {
     case "payment_due": return { title: "Нужна доплата", body: `${order}${amount ? ` · осталось ${amount.toLocaleString("ru-RU")} ₽` : ""}`, url: pushOrderUrl(data.orderId) };
     case "order_overdue": return { title: "Заказ просрочен", body: `${order}${data.deadline ? ` · срок ${data.deadline}` : ""}`, url: pushOrderUrl(data.orderId) };
     case "manager_assigned": return { title: "Назначен менеджер", body: `${order}${data.manager ? ` · ${data.manager}` : ""}`, url: pushOrderUrl(data.orderId) };
+    case "order_status_changed": {
+      const transition = data.previousStatus
+        ? `${data.previousStatus} → ${data.status || "Без статуса"}`
+        : (data.status || "Без статуса");
+      return { title: `Статус заказа: ${data.status || "изменён"}`, body: `${order}${client ? ` · ${client}` : ""} · ${transition}`, url: pushOrderUrl(data.orderId) };
+    }
+    case "manager_shift_started": {
+      const startTime = data.startedAt
+        ? new Date(data.startedAt).toLocaleTimeString("ru-RU", { timeZone: "Europe/Moscow", hour: "2-digit", minute: "2-digit" })
+        : "";
+      return { title: "Менеджер начал смену", body: `${data.manager || data.managerEmail || "Менеджер"}${startTime ? ` · ${startTime}` : ""}`, url: "/orders" };
+    }
+    case "production_changed": return { title: "Изменение в производстве", body: `${data.action || "Обновлено"}${data.productName ? ` · ${data.productName}` : ""}${data.quantity ? ` · ${data.quantity} шт.` : ""}`, url: "/production" };
+    case "stock_changed": return { title: "Изменение на складе", body: `${data.action || "Обновлено"}${data.productName ? ` · ${data.productName}` : ""}`, url: "/products" };
   }
 }
 
@@ -554,11 +749,40 @@ async function dispatchPushEvent(type: PushEventType, eventId: string, data: Pus
   }
 
   const subscriptions = await adminDb.collection("push_subscriptions").where("enabled", "==", true).get();
+  const eventTopic = type === "instagram_message"
+    ? "social"
+    : type === "production_changed"
+      ? "production"
+      : type === "stock_changed"
+        ? "stock"
+    : type === "payment_received" || type === "payment_due"
+      ? "payments"
+      : type === "cdek_status_changed"
+        ? "cdek"
+        : type === "manager_shift_started"
+          ? "shifts"
+          : "orders";
+  const subscriptionUids = Array.from(new Set(subscriptions.docs
+    .map((item: any) => String(item.data()?.uid || "").trim())
+    .filter(Boolean)));
+  const accessSnapshots = subscriptionUids.length
+    ? await adminDb.getAll(...subscriptionUids.map(uid => adminDb.collection("crm_access_profiles").doc(uid)))
+    : [];
+  const accessByUid = new Map(accessSnapshots.map((snap: any) => [snap.id, snap.exists ? snap.data() : null]));
   const payload = JSON.stringify({ ...pushContent(type, data), tag: eventId, type });
   let sent = 0;
   await Promise.all(subscriptions.docs.map(async (item: any) => {
-    const subscription = item.data()?.subscription;
+    const subscriptionData = item.data() || {};
+    const subscription = subscriptionData.subscription;
     if (!subscription?.endpoint) return;
+    const subscriberEmail = String(subscriptionData.email || "").trim().toLowerCase();
+    const access: any = accessByUid.get(String(subscriptionData.uid || "").trim());
+    const topics = Array.isArray(access?.notificationTopics) ? access.notificationTopics.map((topic: unknown) => String(topic)) : null;
+    const receivesEvent = subscriberEmail === "ndtiger86@gmail.com"
+      || access === null
+      || (!access && !topics)
+      || (access?.active !== false && (topics?.includes("all") || topics?.includes(eventTopic)));
+    if (!receivesEvent) return;
     try {
       await webpush.sendNotification(subscription, payload, { TTL: 60 * 60 * 24 });
       sent += 1;
@@ -611,6 +835,60 @@ app.post("/api/push/event", async (req, res) => {
   res.json({ success: true, ...result });
 });
 
+// Calendar fallback: a saved shift-start notification event is durable evidence
+// that the manager pressed "Start shift", even if an older client failed to surface the
+// corresponding manager_shifts document in the payroll view.
+app.get("/api/manager-shifts/start-events", async (req, res) => {
+  const user = await requireFinanceOwner(req, res);
+  if (!user) return;
+  if (!adminDb) return res.status(503).json({ error: "DB не подключена" });
+  const month = String(req.query.month || "").trim();
+  if (!/^\d{4}-\d{2}$/.test(month)) return res.status(400).json({ error: "Нужен месяц YYYY-MM" });
+  try {
+    const [eventsSnapshot, profilesSnapshot] = await Promise.all([
+      adminDb.collection("push_events").where("type", "==", "manager_shift_started").get(),
+      adminDb.collection("manager_profiles").get(),
+    ]);
+    const aliases: Record<string, string> = {};
+    aliases["yb1@ybcrm.ru"] = "Менеджер 1";
+    aliases["yb2@ybcrm.ru"] = "Менеджер 2";
+    profilesSnapshot.docs.forEach((item: any) => {
+      const data = item.data() || {};
+      const managerName = String(data.managerName || "").trim();
+      if (!managerName) return;
+      [item.id, data.managerId, data.managerEmail].forEach(value => {
+        const key = String(value || "").trim().toLowerCase();
+        if (key) aliases[key] = managerName;
+      });
+      aliases[managerName.toLowerCase()] = managerName;
+    });
+    const events = eventsSnapshot.docs.flatMap((item: any) => {
+      const stored = item.data() || {};
+      const data = stored.data || {};
+      const dateKey = String(data.dateKey || data.startedAt || "").slice(0, 10);
+      if (!dateKey.startsWith(month)) return [];
+      const email = String(data.managerEmail || "").trim();
+      const rawManager = String(data.manager || email || "Менеджер").trim();
+      const managerName = aliases[email.toLowerCase()] || aliases[rawManager.toLowerCase()] || rawManager;
+      return [{
+        id: `push-${item.id}`,
+        managerName,
+        managerEmail: email || null,
+        dateKey,
+        startedAt: String(data.startedAt || ""),
+        targetContacts: 100,
+        basePay: 1000,
+        status: "active",
+        source: "push_event",
+      }];
+    });
+    res.json({ events, aliases });
+  } catch (error: any) {
+    console.error("[manager-shifts] start events:", error?.message || error);
+    res.status(500).json({ error: "Не удалось загрузить подтверждения начала смен" });
+  }
+});
+
 const orderDateValue = (value: any) => {
   if (value?.toDate) return value.toDate();
   const parsed = new Date(value || "");
@@ -644,7 +922,7 @@ app.post("/api/push/run-reminders", async (req, res) => {
   for (const item of snap.docs) {
     const data: any = item.data();
     const status = String(data.status || "");
-    if (/доставлен|возврат|отмен/i.test(status)) continue;
+    if (/доставлен|получен|вручен|возврат|отмен/i.test(status)) continue;
     const total = Number(data.revenue || 0) + Number(data.deliveryPrice || 0);
     const paid = Number(data.paidAmount || 0) + Number(data.finalPaymentAmount || 0);
     const balance = Math.max(0, total - paid);
@@ -653,7 +931,7 @@ app.post("/api/push/run-reminders", async (req, res) => {
       if (!result.duplicate) due += 1;
     }
     const deadline = orderDateValue(data.deadlineDate || data.shipmentDate);
-    if (deadline && deadline.getTime() < today.getTime() && !/доставлен|отгружен/i.test(status)) {
+    if (deadline && deadline.getTime() < today.getTime() && !/доставлен|получен|вручен|отгружен/i.test(status)) {
       const result = await dispatchPushEvent("order_overdue", `order-overdue:${item.id}:${dateKey}`, { orderId: item.id, clientName: data.clientName, deadline: deadline.toLocaleDateString("ru-RU") });
       if (!result.duplicate) overdue += 1;
     }
@@ -1052,7 +1330,7 @@ function mcpBuildOrderDoc(args: any) {
     id: orderId,
     date,
     clientName: args?.clientName || args?.customerName || args?.name || "",
-    clientPhone: args?.phone || args?.clientPhone || args?.customerPhone || "",
+    clientPhone: normalizeCrmPhone(args?.phone || args?.clientPhone || args?.customerPhone || ""),
     clientInsta: args?.instagram || args?.clientInstagram || args?.clientInsta || "",
     clientCity: args?.city || args?.clientCity || "",
     item: names.join(", "),
@@ -1108,6 +1386,7 @@ async function mcpToolResult(name: string, args: any) {
     for (const key of ["status", "manager", "blogger", "source", "paymentType", "deliveryMethod", "clientName", "clientPhone", "clientInsta", "clientCity"]) {
       if (args?.[key] !== undefined) patch[key] = args[key];
     }
+    if (patch.clientPhone !== undefined) patch.clientPhone = normalizeCrmPhone(patch.clientPhone);
     if (args?.delivery !== undefined) patch.deliveryMethod = args.delivery;
     if (args?.deliveryPrice !== undefined || args?.deliveryCost !== undefined) patch.deliveryPrice = mcpToNumber(args.deliveryPrice ?? args.deliveryCost);
     if (args?.paidAmount !== undefined) patch.paidAmount = mcpToNumber(args.paidAmount);
@@ -1137,6 +1416,14 @@ async function mcpToolResult(name: string, args: any) {
         clientName: previousOrder.clientName,
         manager: patch.manager,
       }).catch(error => console.warn("[push] MCP manager:", error?.message || error));
+    }
+    if (patch.status !== undefined && String(patch.status || "") !== String(previousOrder.status || "")) {
+      await dispatchPushEvent("order_status_changed", `order-status:${snap.id}:${String(patch.status)}:${Date.now()}`, {
+        orderId: snap.id,
+        clientName: previousOrder.clientName,
+        previousStatus: String(previousOrder.status || ""),
+        status: String(patch.status || ""),
+      }).catch(error => console.warn("[push] MCP order status:", error?.message || error));
     }
     const updated = await adminDb.collection("orders_new").doc(snap.id).get();
     return { ok: true, order: mcpNormalizeOrder(updated.id, updated.data()) };
@@ -1312,7 +1599,7 @@ async function saveTgAccounts(accounts: any[]): Promise<void> {
 async function upsertTgAccount(entry: any): Promise<void> {
   const accounts = await readTgAccounts();
   const idx = accounts.findIndex((a: any) => a.phone === entry.phone);
-  if (idx >= 0) accounts[idx] = entry;
+  if (idx >= 0) accounts[idx] = { ...accounts[idx], ...entry };
   else accounts.push(entry);
   await saveTgAccounts(accounts);
 }
@@ -1798,7 +2085,7 @@ const getCdekCrmStatusPatch = (cdekStatus: string, currentStatus?: string) => {
   if (protectedStatus) return {};
   if (normalized === "DELIVERED") {
     return {
-      status: "Вручен",
+      status: "Получен",
       isShipped: true,
       cdekDeliveredAt: new Date().toISOString(),
     };
@@ -1810,16 +2097,21 @@ const getCdekCrmStatusPatch = (cdekStatus: string, currentStatus?: string) => {
       cdekAcceptedAt: new Date().toISOString(),
     };
   }
+  if (normalized === "READY_FOR_SHIPMENT_IN_SENDER_CITY") {
+    return { status: "Отгружен", isShipped: true };
+  }
+  if (normalized === "ACCEPTED_AT_PICK_UP_POINT") {
+    return { status: "Доставлен", isShipped: true };
+  }
   if (
     normalized.startsWith("SENT_") ||
     normalized.startsWith("TAKEN_") ||
-    normalized.startsWith("READY_FOR_") ||
     normalized.startsWith("ACCEPTED_IN_") ||
     normalized.startsWith("ACCEPTED_AT_") ||
     normalized === "IN_TRANSIT" ||
     normalized.startsWith("RECEIVED_AT_")
   ) {
-    return { status: "Отгружен", isShipped: true };
+    return { status: "В пути", isShipped: true };
   }
   return {};
 };
@@ -1839,7 +2131,7 @@ const getCdekStatusLabel = (status: string) => {
     ACCEPTED_AT_RECIPIENT_CITY_WAREHOUSE: "Прибыл на склад города получателя",
     ACCEPTED_AT_PICK_UP_POINT: "Готов к выдаче в ПВЗ",
     ACCEPTED_BY_COURIER: "Передан курьеру",
-    DELIVERED: "Вручен",
+    DELIVERED: "Получен",
   };
   return labels[normalized] || normalized.replace(/_/g, " ");
 };
@@ -1975,6 +2267,10 @@ app.post("/api/cdek/create-order", async (req, res) => {
     const settings = await getCdekSettings();
     const body = req.body || {};
     const orderId = String(body.orderId || "").trim();
+    const recreate = Boolean(body.recreate);
+    const requestedShipmentDate = /^\d{4}-\d{2}-\d{2}$/.test(String(body.shipmentDate || ""))
+      ? String(body.shipmentDate)
+      : "";
     const requestedRecipientName = String(body.recipientName || "").trim();
     const requestedRecipientPhone = String(body.recipientPhone || "").trim();
     const tariffCode = Number(body.tariffCode || 136);
@@ -2005,6 +2301,11 @@ app.post("/api/cdek/create-order", async (req, res) => {
     const existingSnapshotFound = existingSnapshot &&
       (typeof existingSnapshot.exists === "function" ? existingSnapshot.exists() : Boolean(existingSnapshot.exists));
     const existingData = existingSnapshotFound ? existingSnapshot.data() : null;
+    const currentAttempt = Math.max(1, Number(existingData?.cdekShipmentAttempt || 1));
+    const shipmentAttempt = recreate ? currentAttempt + 1 : currentAttempt;
+    // An exchange already receives a new CRM suffix (…E), so that number is
+    // unique in CDEK and should stay readable without an additional -R2.
+    const externalOrderNumber = recreate && !body.exchange ? `${orderId}-R${shipmentAttempt}` : orderId;
     const savedItems = Array.isArray(existingData?.items)
       ? existingData.items.map((item: unknown) => String(item || "").trim()).filter(Boolean)
       : [];
@@ -2060,10 +2361,11 @@ app.post("/api/cdek/create-order", async (req, res) => {
       toAddress = "";
     }
 
-    const packageNumber = orderId;
+    const packageNumber = externalOrderNumber;
     const payload: any = {
       type: 1,
       number: packageNumber,
+      shipment_date: requestedShipmentDate || undefined,
       tariff_code: tariffCode,
       comment: String(body.comment || "").trim() || undefined,
       recipient: {
@@ -2083,7 +2385,7 @@ app.post("/api/cdek/create-order", async (req, res) => {
         comment: String(body.packageComment || "").trim() || undefined,
         items: [{
           name: itemName,
-          ware_key: String(body.wareKey || orderId),
+          ware_key: String(body.wareKey || externalOrderNumber),
           payment: { value: codAmount },
           cost: declaredCost,
           amount: 1,
@@ -2109,9 +2411,9 @@ app.post("/api/cdek/create-order", async (req, res) => {
     }
 
     const cdekPayload = stripUndefined(payload);
-    const resolvedExisting = await resolveCdekOrder(
+    const resolvedExisting = recreate ? null : await resolveCdekOrder(
       String(existingData?.cdekUuid || ""),
-      orderId,
+      externalOrderNumber,
       token,
       settings.baseUrl,
     ).catch(() => null);
@@ -2223,7 +2525,7 @@ app.post("/api/cdek/create-order", async (req, res) => {
     let cdekOrderDetails: any = null;
     const createError = getCdekRequestError(response.data);
     if (createError || getCdekEntityStatus(entity, "") === "INVALID") {
-      const recovered = await findCdekOrderByNumber(orderId, token, settings.baseUrl).catch(() => null);
+      const recovered = await findCdekOrderByNumber(externalOrderNumber, token, settings.baseUrl).catch(() => null);
       if (!recovered) throw new Error(`СДЭК отклонил создание заказа: ${createError || "некорректный заказ"}`);
       entity = recovered.data?.entity || entity;
       cdekUuid = recovered.uuid;
@@ -2242,11 +2544,26 @@ app.post("/api/cdek/create-order", async (req, res) => {
         console.warn("[cdek] number lookup skipped:", detailsError?.response?.data || detailsError?.message || detailsError);
       }
     }
+    const previousWaybills = Array.isArray(existingData?.cdekWaybillHistory)
+      ? existingData.cdekWaybillHistory.slice(-19)
+      : [];
     const cdekFields = {
       cdekUuid,
       cdekNumber,
       cdekStatus: "created",
       cdekCreatedAt: new Date().toISOString(),
+      cdekShipmentAttempt: shipmentAttempt,
+      cdekExternalNumber: externalOrderNumber,
+      ...(recreate && existingData?.cdekUuid ? {
+        cdekRepeatedAt: new Date().toISOString(),
+        cdekWaybillHistory: [...previousWaybills, stripUndefined({
+          uuid: existingData.cdekUuid,
+          number: existingData.cdekNumber || null,
+          externalNumber: existingData.cdekExternalNumber || orderId,
+          status: existingData.cdekStatus || null,
+          replacedAt: new Date().toISOString(),
+        })],
+      } : {}),
       cdekPayload: {
         tariffCode,
         deliveryType,
@@ -2266,6 +2583,8 @@ app.post("/api/cdek/create-order", async (req, res) => {
         declaredCost,
         codAmount,
         deliveryCost,
+        shipmentDate: requestedShipmentDate || null,
+        externalOrderNumber,
       },
     };
 
@@ -2273,7 +2592,7 @@ app.post("/api/cdek/create-order", async (req, res) => {
     await dispatchPushEvent("cdek_status_changed", `cdek-status:${orderId}:CREATED`, {
       orderId,
       clientName: existingData?.clientName,
-      status: "Накладная создана",
+      status: recreate ? "Повторная накладная создана" : "Накладная создана",
       cdekNumber: String(cdekNumber || ""),
     }).catch(error => console.warn("[push] cdek create:", error?.message || error));
 
@@ -2292,7 +2611,7 @@ app.post("/api/cdek/create-order", async (req, res) => {
       }
     }
     await writeAuditLog({
-      action: "cdek_waybill_created",
+      action: recreate ? "cdek_waybill_recreated" : "cdek_waybill_created",
       entityType: "order",
       entityId: orderId,
       before: existingData || null,
@@ -2305,7 +2624,7 @@ app.post("/api/cdek/create-order", async (req, res) => {
       actor: { type: "server", service: "cdek" },
     });
 
-    res.json({ success: true, cdekUuid, cdekNumber, data: response.data, details: cdekOrderDetails });
+    res.json({ success: true, recreated: recreate, cdekUuid, cdekNumber, data: response.data, details: cdekOrderDetails });
   } catch (error: any) {
     const details = error.response?.data || error.message;
     console.error("[cdek] create-order error:", JSON.stringify(details, null, 2));
@@ -2382,7 +2701,7 @@ app.post("/api/cdek/sync-statuses", async (_req, res) => {
     const candidates = allOrders
       .filter(({ data }) => {
         if (!String(data?.cdekUuid || "").trim()) return false;
-        if (/доставлен|вручен|возврат|отмен/i.test(String(data?.status || ""))) return false;
+        if (/доставлен|получен|вручен|возврат|отмен/i.test(String(data?.status || ""))) return false;
         const lastChecked = Date.parse(String(data?.cdekLastCheckedAt || "")) || 0;
         return lastChecked < staleBefore;
       })
@@ -2416,7 +2735,7 @@ app.post("/api/cdek/sync-statuses", async (_req, res) => {
               cdekNumber: String(cdekNumber || ""),
             }).catch(error => console.warn("[push] cdek:", error?.message || error));
           }
-          return { orderId: id, cdekStatus, status: crmPatch.status || data.status, delivered: crmPatch.status === "Вручен" };
+          return { orderId: id, cdekStatus, status: crmPatch.status || data.status, delivered: crmPatch.status === "Получен" };
         } catch (error: any) {
           console.warn(`[cdek] status sync failed order=${id}:`, error?.response?.data || error?.message || error);
           return null;
@@ -2441,20 +2760,31 @@ app.post("/api/cdek/sync-statuses", async (_req, res) => {
 async function getOrderSnapshot(orderId: string): Promise<any> {
   if (adminDb) {
     try {
-      return await adminDb.collection("orders_new").doc(orderId).get();
+      const direct = await adminDb.collection("orders_new").doc(orderId).get();
+      if (direct.exists) return direct;
+      const matched = await adminDb.collection("orders_new").where("orderId", "==", orderId).limit(1).get();
+      if (!matched.empty) return matched.docs[0];
+      return direct;
     } catch (error: any) {
       console.warn("[orders] Admin Firestore unavailable, using client connection:", error?.message || error);
     }
   }
   if (!db) throw new Error("Firestore не настроен");
-  return getDoc(doc(db, "orders_new", orderId));
+  const direct = await getDoc(doc(db, "orders_new", orderId));
+  if (direct.exists()) return direct;
+  const matched = await getDocs(query(collection(db, "orders_new"), where("orderId", "==", orderId)));
+  return matched.docs[0] || direct;
 }
 
 async function persistOrderPatch(orderId: string, patch: Record<string, unknown>): Promise<void> {
   let adminError: unknown = null;
   if (adminDb) {
     try {
-      await adminDb.collection("orders_new").doc(orderId).set(patch, { merge: true });
+      const snapshot = await getOrderSnapshot(orderId);
+      const targetId = snapshot && (typeof snapshot.exists === "function" ? snapshot.exists() : snapshot.exists)
+        ? snapshot.id
+        : orderId;
+      await adminDb.collection("orders_new").doc(targetId).set(patch, { merge: true });
       return;
     } catch (error: any) {
       adminError = error;
@@ -2463,7 +2793,9 @@ async function persistOrderPatch(orderId: string, patch: Record<string, unknown>
   }
   if (db) {
     try {
-      await updateDoc(doc(db, "orders_new", orderId), patch);
+      const snapshot = await getOrderSnapshot(orderId);
+      const targetId = snapshot?.exists?.() ? snapshot.id : orderId;
+      await updateDoc(doc(db, "orders_new", targetId), patch);
       return;
     } catch (error: any) {
       throw new Error(`Не удалось сохранить заказ ${orderId}: ${error?.message || error}`);
@@ -2571,7 +2903,9 @@ app.get("/api/orders/:orderId/document.pdf", async (req, res) => {
     const paymentUrl = order.paymentUrl || `${String(process.env.SERVER_URL || "https://ybcrm.ru").replace(/\/$/, "")}/pay/${encodeURIComponent(orderId)}`;
     const rub = (value: number) => `${Math.round(value).toLocaleString("ru-RU")} ₽`;
 
-    const clientLines = [order.clientName || "—", order.clientPhone ? `+${order.clientPhone}` : "—", instagram ? `@${instagram}` : ""]
+    const normalizedClientPhone = normalizeCrmPhone(order.clientPhone || "");
+    const formattedClientPhone = normalizedClientPhone ? `+${normalizedClientPhone}` : "";
+    const clientLines = [order.clientName || "—", formattedClientPhone || "—", instagram ? `@${instagram}` : ""]
       .filter(Boolean)
       .map((line, index) => `<text x="84" y="${420 + index * 34}" class="value">${escapeDocumentXml(line)}</text>`)
       .join("");
@@ -2620,7 +2954,7 @@ app.get("/api/orders/:orderId/document.pdf", async (req, res) => {
       <style>.brand{font:900 28px Arial,sans-serif;letter-spacing:7px;fill:#4F36E8}.order{font:800 27px Arial,sans-serif;fill:#111827}.label{font:700 13px Arial,sans-serif;letter-spacing:1.5px;fill:#8B93A5}.value{font:650 20px Arial,sans-serif;fill:#1F2937}.small{font:500 17px Arial,sans-serif;fill:#667085}.total{font:800 28px Arial,sans-serif;fill:#4F36E8}</style>
       <text x="38" y="58" class="brand">YAASBAE</text><text x="1200" y="56" text-anchor="end" class="order">ЗАКАЗ № ${escapeDocumentXml(orderId)}</text>
       <line x1="38" x2="1200" y1="82" y2="82" stroke="#D9D3FF" stroke-width="2"/>
-      <text x="38" y="126" class="label">КЛИЕНТ</text><text x="38" y="162" class="value">${escapeDocumentXml(order.clientName || "—")}</text><text x="38" y="194" class="small">${escapeDocumentXml(instagram ? `@${instagram}` : order.clientPhone ? `+${order.clientPhone}` : "—")}</text>
+      <text x="38" y="126" class="label">КЛИЕНТ</text><text x="38" y="162" class="value">${escapeDocumentXml(order.clientName || "—")}</text><text x="38" y="194" class="small">${escapeDocumentXml(instagram ? `@${instagram}` : formattedClientPhone || "—")}</text>
       <text x="410" y="126" class="label">ТОВАР</text><text x="410" y="162" class="value">${escapeDocumentXml(itemSummary)}</text><text x="410" y="194" class="small">${escapeDocumentXml(itemMeta)}</text>
       <rect x="850" y="104" width="350" height="132" rx="18" fill="#FFFFFF" stroke="#DED9FF"/>
       <text x="878" y="140" class="small">Товар</text><text x="1170" y="140" text-anchor="end" class="value">${escapeDocumentXml(rub(revenue))}</text>
@@ -2634,7 +2968,12 @@ app.get("/api/orders/:orderId/document.pdf", async (req, res) => {
       <text x="62" y="438" class="label">СЧЁТ И ДОКУМЕНТЫ ЗАКАЗА</text><text x="62" y="477" class="small">${escapeDocumentXml(paymentUrl)}</text>
       <text x="1170" y="466" text-anchor="end" class="small">Объявленная стоимость: ${escapeDocumentXml(rub(revenue))}</text>
     </svg>`;
-    const compactSummaryPng = await sharp(Buffer.from(compactSummarySvg)).png().toBuffer();
+    // Opaque JPEG avoids soft-mask/transparency layers that some office printer
+    // drivers show in PDF preview but omit on paper.
+    const compactSummaryJpg = await sharp(Buffer.from(compactSummarySvg))
+      .flatten({ background: '#FFFFFF' })
+      .jpeg({ quality: 96, chromaSubsampling: '4:4:4' })
+      .toBuffer();
 
     const shouldIncludeCdekWaybill = Boolean(
       order.cdekUuid ||
@@ -2667,11 +3006,27 @@ app.get("/api/orders/:orderId/document.pdf", async (req, res) => {
         });
       }
       const cdekPdf = cdekResult.pdf;
-      const sourcePdf = await PDFDocument.load(cdekPdf);
-      const [cdekPage] = await pdfDocument.copyPages(sourcePdf, [0]);
-      pdfDocument.addPage(cdekPage);
-      const summaryImage = await pdfDocument.embedPng(compactSummaryPng);
-      cdekPage.drawImage(summaryImage, { x: 24, y: 24, width: 547.28, height: 247 });
+      const [embeddedCdekPage] = await pdfDocument.embedPdf(cdekPdf, [0]);
+      const sourceSize = { width: embeddedCdekPage.width, height: embeddedCdekPage.height };
+      const cdekPage = pdfDocument.addPage([sourceSize.width, sourceSize.height]);
+      const summaryImage = await pdfDocument.embedJpg(compactSummaryJpg);
+      // Render the original CDEK form and CRM order block into one new page.
+      // This prevents printer drivers from dropping an appended PDF content layer.
+      cdekPage.drawPage(embeddedCdekPage, {
+        x: 0,
+        y: 0,
+        width: sourceSize.width,
+        height: sourceSize.height,
+      });
+      const printMargin = 28.35; // 10 mm safe area for non-borderless A4 printers.
+      const summaryWidth = sourceSize.width - printMargin * 2;
+      const summaryHeight = summaryWidth * (560 / 1240);
+      cdekPage.drawImage(summaryImage, {
+        x: printMargin,
+        y: printMargin,
+        width: summaryWidth,
+        height: summaryHeight,
+      });
     } else {
       // Orders without CDEK keep the standalone CRM order document.
       const coverPage = pdfDocument.addPage([595.28, 841.89]);
@@ -2744,6 +3099,12 @@ function checkRateLimit(uid: string): boolean {
 function normalizeBroadcastPhone(value: string): string {
   const digits = String(value || "").replace(/\D/g, "");
   return digits.length === 11 && digits.startsWith("8") ? `7${digits.slice(1)}` : digits;
+}
+
+function normalizeCrmPhone(value: string): string {
+  const digits = String(value || "").replace(/\D/g, "");
+  if (digits.length === 10) return `7${digits}`;
+  return digits.startsWith("8") ? `7${digits.slice(1)}` : digits;
 }
 
 function toTelegramPhone(value: string): string {
@@ -2830,40 +3191,115 @@ function buildProxyOpts(acc: any) {
   return { proxy: { ip: acc.proxy.ip, port: Number(acc.proxy.port), username: acc.proxy.username || undefined, password: acc.proxy.password || undefined, socksType: 5 as const } };
 }
 
+function keepPendingTgLogin(phone: string, pending: PendingTgLogin) {
+  pendingTgClients.set(phone, pending);
+  setTimeout(() => {
+    // An older attempt's timer must not erase a newer login attempt.
+    if (pendingTgClients.get(phone) !== pending) return;
+    pendingTgClients.delete(phone);
+    pending.client.disconnect().catch(() => {});
+  }, Math.max(0, pending.expiresAt - Date.now()));
+}
+
+function respondTgLoginError(res: express.Response, phone: string, error: any) {
+  const result = telegramAuthError(error);
+  if (result.restartRequired) {
+    const pending = pendingTgClients.get(phone);
+    pendingTgClients.delete(phone);
+    pending?.client.disconnect().catch(() => {});
+  }
+  if (result.retryAfterSeconds) {
+    tgLoginCooldowns.set(phone, Date.now() + result.retryAfterSeconds * 1000);
+    res.setHeader('Retry-After', String(result.retryAfterSeconds));
+  }
+  // Do not log the RPC object: it may contain the code, password or auth key.
+  const rpcCode = String(error?.errorMessage || '');
+  console.warn('[telegram-auth] request failed', { code: /^[A-Z_]+(?:_\d+)?$/.test(rpcCode) ? rpcCode : 'TRANSPORT_ERROR', status: result.status, retryAfterSeconds: result.retryAfterSeconds || 0 });
+  return res.status(result.status).json(result);
+}
+
 app.post("/api/tg/auth/send-code", async (req, res) => {
-  const { phone } = req.body;
-  if (!phone) return res.status(400).json({ error: "Нужен номер телефона" });
+  const phone = normalizeTelegramPhone(req.body?.phone);
+  const purpose = req.body?.purpose === "manager" ? "manager" : "broadcast";
+  if (!phone) return res.status(400).json({ error: "Укажите корректный номер телефона с кодом страны" });
+  const cooldown = Math.ceil(((tgLoginCooldowns.get(phone) || 0) - Date.now()) / 1000);
+  if (cooldown > 0) return res.status(429).json({ error: 'Telegram ограничил повторные запросы.', retryAfterSeconds: cooldown });
+  if (pendingTgRequests.has(phone)) return res.status(409).json({ error: 'Запрос для этого номера уже выполняется. Дождитесь ответа.' });
+  const existing = pendingTgClients.get(phone);
+  if (existing && existing.expiresAt > Date.now()) {
+    if (!existing.delivery.supported) return res.status(409).json({ error: existing.delivery.deliveryMessage });
+    existing.purpose = purpose;
+    return res.json({ success: true, phone, ...existing.delivery, reused: true });
+  }
+  pendingTgRequests.add(phone);
+  let client: TelegramClient | undefined;
+  let retained = false;
   try {
-    const client = new TelegramClient(new StringSession(""), TG_API_ID, TG_API_HASH, {
-      connectionRetries: 3,
-    });
+    client = new TelegramClient(new StringSession(""), TG_API_ID, TG_API_HASH, { connectionRetries: 3, floodSleepThreshold: 0 });
     await client.connect();
-    const result = await client.sendCode({ apiId: TG_API_ID, apiHash: TG_API_HASH }, phone);
-    pendingTgClients.set(phone, { client, phoneCodeHash: result.phoneCodeHash });
-    // Авто-отключение через 5 минут если авторизация не завершена
-    setTimeout(() => {
-      const p = pendingTgClients.get(phone);
-      if (p) { p.client.disconnect().catch(() => {}); pendingTgClients.delete(phone); }
-    }, 5 * 60 * 1000);
-    res.json({ success: true });
+    // The convenience sendCode() drops type, nextType and timeout. Read the
+    // actual Telegram response so CRM never guesses SMS/app/email delivery.
+    const result = await client.invoke(new Api.auth.SendCode({ phoneNumber: phone, apiId: TG_API_ID, apiHash: TG_API_HASH, settings: new Api.CodeSettings({}) }));
+    if (!(result instanceof Api.auth.SentCode)) return res.status(409).json({ error: 'Telegram вернул другой сценарий входа. Подключение по коду не подтверждено.' });
+    const delivery = telegramDelivery(result);
+    console.info('[telegram-auth] code request result', { deliveryType: delivery.deliveryType, canResend: delivery.canResend });
+    if (!delivery.supported) return res.status(409).json({ error: delivery.deliveryMessage });
+    keepPendingTgLogin(phone, { client, phoneCodeHash: result.phoneCodeHash, purpose, delivery, expiresAt: Date.now() + 5 * 60_000 });
+    retained = true;
+    return res.json({ success: true, phone, ...delivery });
   } catch (e: any) {
-    console.error("TG send-code error:", e);
-    res.status(500).json({ error: e.message });
+    return respondTgLoginError(res, phone, e);
+  } finally {
+    pendingTgRequests.delete(phone);
+    if (client && !retained) await client.disconnect().catch(() => {});
+  }
+});
+
+app.post("/api/tg/auth/resend-code", async (req, res) => {
+  const phone = normalizeTelegramPhone(req.body?.phone);
+  const pending = pendingTgClients.get(phone);
+  if (!pending || pending.expiresAt <= Date.now()) return res.status(400).json({ error: 'Сессия подключения истекла или сервер перезапустился. Начните заново.', restartRequired: true });
+  if (pendingTgRequests.has(phone)) return res.status(409).json({ error: 'Запрос уже выполняется. Дождитесь ответа.' });
+  const retryAfterSeconds = Math.ceil((Math.max(pending.delivery.resendAt, tgLoginCooldowns.get(phone) || 0) - Date.now()) / 1000);
+  if (retryAfterSeconds > 0) return res.status(429).json({ error: 'Telegram ещё не разрешил повторный запрос.', retryAfterSeconds });
+  if (!pending.delivery.canResend) return res.status(409).json({ error: 'Telegram не предложил другой способ доставки. Принудительная отправка SMS недоступна.' });
+  pendingTgRequests.add(phone);
+  try {
+    const result = await pending.client.invoke(new Api.auth.ResendCode({ phoneNumber: phone, phoneCodeHash: pending.phoneCodeHash }));
+    if (!(result instanceof Api.auth.SentCode)) return res.status(409).json({ error: 'Telegram не подтвердил повторную отправку кода.' });
+    const delivery = telegramDelivery(result);
+    // Save the replacement hash even when Telegram chooses an unsupported flow.
+    keepPendingTgLogin(phone, { ...pending, phoneCodeHash: result.phoneCodeHash, delivery, expiresAt: Date.now() + 5 * 60_000 });
+    console.info('[telegram-auth] resend result', { deliveryType: delivery.deliveryType, canResend: delivery.canResend });
+    if (!delivery.supported) {
+      pendingTgClients.delete(phone);
+      await pending.client.disconnect().catch(() => {});
+      return res.status(409).json({ error: delivery.deliveryMessage, restartRequired: true });
+    }
+    return res.json({ success: true, phone, ...delivery });
+  } catch (e: any) {
+    return respondTgLoginError(res, phone, e);
+  } finally {
+    pendingTgRequests.delete(phone);
   }
 });
 
 app.post("/api/tg/auth/sign-in", async (req, res) => {
-  const { phone, code, twoFaPassword } = req.body;
+  const phone = normalizeTelegramPhone(req.body?.phone);
+  const { code, twoFaPassword } = req.body;
+  const cooldown = Math.ceil(((tgLoginCooldowns.get(phone) || 0) - Date.now()) / 1000);
+  if (cooldown > 0) return res.status(429).json({ error: 'Telegram ограничил повторные попытки входа.', retryAfterSeconds: cooldown });
   const pending = pendingTgClients.get(phone);
-  if (!pending) return res.status(400).json({ error: "Сессия не найдена, начните заново" });
-  const { client, phoneCodeHash } = pending;
+  if (!pending || pending.expiresAt <= Date.now()) return res.status(400).json({ error: "Сессия подключения истекла или сервер перезапустился. Начните заново.", restartRequired: true });
+  if (pendingTgRequests.has(phone)) return res.status(409).json({ error: 'Запрос уже выполняется. Дождитесь ответа.' });
+  pendingTgRequests.add(phone);
+  const { client, phoneCodeHash, purpose } = pending as any;
   try {
     try {
       await client.invoke(new Api.auth.SignIn({ phoneNumber: phone, phoneCodeHash, phoneCode: code }));
     } catch (e: any) {
       const needs2FA = e.errorMessage === "SESSION_PASSWORD_NEEDED" ||
-        e.message?.includes("SESSION_PASSWORD_NEEDED") ||
-        e.code === 401;
+        e.message?.includes("SESSION_PASSWORD_NEEDED");
       if (needs2FA) {
         if (!twoFaPassword) return res.json({ requires2FA: true });
         const { computeCheck } = await import("telegram/Password");
@@ -2875,12 +3311,24 @@ app.post("/api/tg/auth/sign-in", async (req, res) => {
       }
     }
     const sessionString = client.session.save() as unknown as string;
-    await upsertTgAccount({ phone, sessionString, addedAt: new Date().toISOString(), active: true });
+    await upsertTgAccount({
+      phone,
+      sessionString,
+      addedAt: new Date().toISOString(),
+      active: true,
+      ...(purpose === "manager" ? { inboxEnabled: true, purpose: "manager" } : {}),
+    });
     pendingTgClients.delete(phone);
+    await client.disconnect().catch(() => {});
     res.json({ success: true, phone });
   } catch (e: any) {
-    console.error("TG sign-in error:", e);
-    res.status(400).json({ error: e.message });
+    if (String(e.errorMessage || e.message).includes('PHONE_CODE_EXPIRED')) {
+      pendingTgClients.delete(phone);
+      await client.disconnect().catch(() => {});
+    }
+    return respondTgLoginError(res, phone, e);
+  } finally {
+    pendingTgRequests.delete(phone);
   }
 });
 
@@ -2894,7 +3342,7 @@ app.get("/api/tg/auth/status", async (req, res) => {
         accounts.push({ phone: old.data().phone, addedAt: old.data().savedAt, active: true });
       }
     }
-    const pub = accounts.map((a: any) => ({ phone: a.phone, addedAt: a.addedAt, active: a.active !== false, proxy: a.proxy || null }));
+    const pub = accounts.map((a: any) => ({ phone: a.phone, addedAt: a.addedAt, active: a.active !== false, proxy: a.proxy || null, inboxEnabled: a.inboxEnabled === true, purpose: a.purpose || "broadcast" }));
     res.json({ authorized: accounts.length > 0, accounts: pub });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -3123,6 +3571,138 @@ app.post("/api/tg/accounts/set-photo", async (req, res) => {
     res.json({ success: true, ok, failed });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+const tgInboxClients = new Map<string, TelegramClient>();
+
+async function getTelegramInboxAccount(phone: string) {
+  const accounts = (await readTgAccounts()).filter((account: any) => account.sessionString && account.active !== false && account.inboxEnabled === true);
+  const account = accounts.find((item: any) => String(item.phone) === String(phone));
+  if (!account) throw new Error(`Telegram-аккаунт ${phone} не найден или выключен`);
+  return account;
+}
+
+async function getTelegramInboxClient(account: any) {
+  const key = String(account.phone || "");
+  const cached = tgInboxClients.get(key);
+  if (cached) {
+    try {
+      if (!(cached as any).connected) await cached.connect();
+      return cached;
+    } catch {
+      await cached.disconnect().catch(() => {});
+      tgInboxClients.delete(key);
+    }
+  }
+  const client = new TelegramClient(new StringSession(account.sessionString), TG_API_ID, TG_API_HASH, {
+    connectionRetries: 3,
+    autoReconnect: true,
+    ...buildProxyOpts(account),
+  });
+  await client.connect();
+  tgInboxClients.set(key, client);
+  return client;
+}
+
+function telegramInboxDate(value: any) {
+  if (!value) return new Date().toISOString();
+  if (value instanceof Date) return value.toISOString();
+  const numeric = Number(value);
+  const parsed = numeric > 0 ? new Date(numeric * 1000) : new Date(String(value));
+  return Number.isNaN(parsed.getTime()) ? new Date().toISOString() : parsed.toISOString();
+}
+
+function telegramInboxPeer(dialog: any) {
+  const entity: any = dialog?.entity || {};
+  const peerId = String(entity?.id ?? dialog?.id ?? "");
+  const name = [entity?.firstName, entity?.lastName].filter(Boolean).join(" ") || entity?.username || dialog?.title || `Telegram ${peerId}`;
+  return { entity, peerId, name, username: entity?.username || "" };
+}
+
+app.get("/api/tg-inbox/conversations", async (req, res) => {
+  if (!await requireCrmUser(req, res)) return;
+  const accounts = (await readTgAccounts()).filter((account: any) => account.sessionString && account.active !== false && account.inboxEnabled === true);
+  const groups = await Promise.all(accounts.map(async (account: any) => {
+    try {
+      const client = await getTelegramInboxClient(account);
+      const dialogs: any[] = await client.getDialogs({ limit: Math.min(100, Math.max(10, Number(req.query.limit || 60))) }) as any;
+      return dialogs.flatMap((dialog: any) => {
+        const { entity, peerId, name, username } = telegramInboxPeer(dialog);
+        const className = String(entity?.className || "");
+        const isPerson = className === "User" || Boolean(entity?.firstName || entity?.lastName || entity?.phone);
+        if (!peerId || !isPerson || entity?.self) return [];
+        const message: any = dialog?.message || {};
+        return [{
+          id: `${encodeURIComponent(String(account.phone))}:${peerId}`,
+          channel: "telegram_account",
+          accountPhone: String(account.phone || ""),
+          peerId,
+          name,
+          username,
+          updatedAt: telegramInboxDate(message?.date || dialog?.date),
+          unreadCount: Number(dialog?.unreadCount || 0),
+          lastMessage: {
+            id: String(message?.id || ""),
+            text: String(message?.message || ""),
+            createdAt: telegramInboxDate(message?.date || dialog?.date),
+            direction: message?.out ? "outgoing" : "incoming",
+          },
+        }];
+      });
+    } catch (error: any) {
+      console.warn(`[tg-inbox] ${account.phone}:`, error?.message || error);
+      return [];
+    }
+  }));
+  const conversations = groups.flat().sort((a: any, b: any) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+  res.json({ conversations, accounts: accounts.map((account: any) => ({ phone: account.phone })) });
+});
+
+async function telegramInboxEntity(client: TelegramClient, peerId: string) {
+  const dialogs: any[] = await client.getDialogs({ limit: 150 }) as any;
+  const dialog = dialogs.find((item: any) => String(item?.entity?.id ?? item?.id ?? "") === String(peerId));
+  if (!dialog?.entity) throw new Error("Диалог Telegram не найден");
+  return dialog.entity;
+}
+
+app.get("/api/tg-inbox/messages", async (req, res) => {
+  if (!await requireCrmUser(req, res)) return;
+  try {
+    const accountPhone = String(req.query.accountPhone || "");
+    const peerId = String(req.query.peerId || "");
+    if (!accountPhone || !peerId) return res.status(400).json({ error: "Нужны accountPhone и peerId" });
+    const account = await getTelegramInboxAccount(accountPhone);
+    const client = await getTelegramInboxClient(account);
+    const entity = await telegramInboxEntity(client, peerId);
+    const rows: any[] = await client.getMessages(entity, { limit: 100 }) as any;
+    const messages = rows.map((message: any) => ({
+      id: String(message?.id || ""),
+      text: String(message?.message || ""),
+      createdAt: telegramInboxDate(message?.date),
+      direction: message?.out ? "outgoing" : "incoming",
+      attachments: message?.media ? [{ type: String(message.media?.className || "media") }] : [],
+    })).reverse();
+    res.json({ messages });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || "Не удалось загрузить Telegram" });
+  }
+});
+
+app.post("/api/tg-inbox/messages", async (req, res) => {
+  if (!await requireCrmUser(req, res)) return;
+  try {
+    const accountPhone = String(req.body?.accountPhone || "");
+    const peerId = String(req.body?.peerId || "");
+    const text = String(req.body?.text || "").trim();
+    if (!accountPhone || !peerId || !text) return res.status(400).json({ error: "Нужны аккаунт, диалог и текст" });
+    const account = await getTelegramInboxAccount(accountPhone);
+    const client = await getTelegramInboxClient(account);
+    const entity = await telegramInboxEntity(client, peerId);
+    const sent: any = await client.sendMessage(entity, { message: text });
+    res.json({ message: { id: String(sent?.id || `local-${Date.now()}`), text, createdAt: telegramInboxDate(sent?.date), direction: "outgoing" } });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || "Не удалось отправить Telegram" });
   }
 });
 
@@ -4831,6 +5411,15 @@ app.post("/api/bot/reply", async (req, res) => {
   if (!botInstance) return res.status(503).json({ error: "Бот не запущен" });
   try {
     await botInstance.telegram.sendMessage(userId, message);
+    if (adminDb) {
+      await adminDb.collection("bot_messages").add({
+        userId: String(userId),
+        text: String(message),
+        direction: "outgoing",
+        receivedAt: new Date().toISOString(),
+        replied: true,
+      });
+    }
     res.json({ success: true });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -4915,7 +5504,7 @@ app.post("/api/content/process", async (req, res) => {
 // Save to content queue
 app.post("/api/content/queue", async (req, res) => {
   const { generatedBase64, caption, modelUrl, lookUrl } = req.body;
-  if (!db || !fbStorage) return res.status(503).json({ error: "Firebase не инициализирован" });
+  if ((!adminDb && !db) || !fbStorage) return res.status(503).json({ error: "Firebase не инициализирован" });
   try {
     // Upload generated image to Firebase Storage
     const imgBuf = Buffer.from(generatedBase64, "base64");
@@ -4923,14 +5512,17 @@ app.post("/api/content/queue", async (req, res) => {
     await fbUploadBytes(sRef, imgBuf, { contentType: "image/jpeg" });
     const generatedUrl = await fbGetDownloadURL(sRef);
 
-    const docRef = await addDoc(collection(db, "content_queue"), {
+    const payload = {
       status: "queue",
       generatedUrl,
       modelUrl: modelUrl || "",
       lookUrl: lookUrl || "",
       caption,
       createdAt: new Date().toISOString(),
-    });
+    };
+    const docRef = adminDb
+      ? await adminDb.collection("content_queue").add(payload)
+      : await addDoc(collection(db, "content_queue"), payload);
     res.json({ id: docRef.id });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -4939,41 +5531,49 @@ app.post("/api/content/queue", async (req, res) => {
 
 // Get queue
 app.get("/api/content/queue", async (_req, res) => {
-  if (!db) return res.json([]);
+  if (!adminDb && !db) return res.json([]);
   try {
-    const snap = await getDocs(query(collection(db, "content_queue"), orderBy("createdAt", "desc")));
+    const snap = adminDb
+      ? await adminDb.collection("content_queue").orderBy("createdAt", "desc").get()
+      : await getDocs(query(collection(db, "content_queue"), orderBy("createdAt", "desc")));
     res.json(snap.docs.map(d => ({ id: d.id, ...d.data() })));
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
 // Update caption
 app.patch("/api/content/queue/:id", async (req, res) => {
-  if (!db) return res.status(503).json({ error: "Firebase не инициализирован" });
+  if (!adminDb && !db) return res.status(503).json({ error: "Firebase не инициализирован" });
   try {
-    await updateDoc(doc(db, "content_queue", req.params.id), { caption: req.body.caption });
+    if (adminDb) await adminDb.collection("content_queue").doc(req.params.id).set({ caption: req.body.caption }, { merge: true });
+    else await updateDoc(doc(db, "content_queue", req.params.id), { caption: req.body.caption });
     res.json({ success: true });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
 // Delete from queue
 app.delete("/api/content/queue/:id", async (req, res) => {
-  if (!db) return res.status(503).json({ error: "Firebase не инициализирован" });
+  if (!adminDb && !db) return res.status(503).json({ error: "Firebase не инициализирован" });
   try {
-    await deleteDoc(doc(db, "content_queue", req.params.id));
+    if (adminDb) await adminDb.collection("content_queue").doc(req.params.id).delete();
+    else await deleteDoc(doc(db, "content_queue", req.params.id));
     res.json({ success: true });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
 // Publish to Instagram
 app.post("/api/content/publish/:id", async (req, res) => {
-  if (!db) return res.status(503).json({ error: "Firebase не инициализирован" });
+  if (!adminDb && !db) return res.status(503).json({ error: "Firebase не инициализирован" });
   try {
-    const snap = await getDoc(doc(db, "content_queue", req.params.id));
+    const snap = adminDb
+      ? await adminDb.collection("content_queue").doc(req.params.id).get()
+      : await getDoc(doc(db, "content_queue", req.params.id));
     if (!snap.exists()) return res.status(404).json({ error: "Не найдено" });
     const item = snap.data() as any;
 
     // Get Instagram settings
-    const cfgSnap = await getDoc(doc(db, "settings", "instagram"));
+    const cfgSnap = adminDb
+      ? await adminDb.collection("settings").doc("instagram").get()
+      : await getDoc(doc(db, "settings", "instagram"));
     const cfg = cfgSnap.exists() ? cfgSnap.data() : {};
     const accessToken = cfg.accessToken || process.env.INSTAGRAM_ACCESS_TOKEN;
     const igUserId = cfg.userId || process.env.INSTAGRAM_USER_ID;
@@ -4981,23 +5581,25 @@ app.post("/api/content/publish/:id", async (req, res) => {
 
     // Step 1: Create media container
     const createResp = await axios.post(
-      `https://graph.instagram.com/v21.0/${igUserId}/media`,
+      `https://graph.instagram.com/${META_GRAPH_VERSION}/${igUserId}/media`,
       { image_url: item.generatedUrl, caption: item.caption, access_token: accessToken }
     );
     const creationId = createResp.data.id;
 
     // Step 2: Publish
     const publishResp = await axios.post(
-      `https://graph.instagram.com/v21.0/${igUserId}/media_publish`,
+      `https://graph.instagram.com/${META_GRAPH_VERSION}/${igUserId}/media_publish`,
       { creation_id: creationId, access_token: accessToken }
     );
     const instagramPostId = publishResp.data.id;
 
-    await updateDoc(doc(db, "content_queue", req.params.id), {
+    const publishedPatch = {
       status: "published",
       instagramPostId,
       publishedAt: new Date().toISOString(),
-    });
+    };
+    if (adminDb) await adminDb.collection("content_queue").doc(req.params.id).set(publishedPatch, { merge: true });
+    else await updateDoc(doc(db, "content_queue", req.params.id), publishedPatch);
     res.json({ success: true, instagramPostId });
   } catch (e: any) {
     const msg = e.response?.data?.error?.message || e.message;
@@ -5606,6 +6208,234 @@ async function instagramGraphGet<T = any>(
   });
 }
 
+async function socialHubSettings() {
+  if (!adminDb) return {} as Record<string, any>;
+  const snapshot = await adminDb.collection("settings").doc("social_hub").get();
+  return snapshot.exists ? snapshot.data() || {} : {};
+}
+
+app.get("/api/social/channels", async (_req, res) => {
+  try {
+    const instagram = safeInstagramSettings(await getInstagramGraphSettings());
+    const settings = await socialHubSettings();
+    const telegramAccounts = (await readTgAccounts()).filter((account: any) => account.sessionString && account.active !== false && account.inboxEnabled === true);
+    res.json({
+      channels: [
+        {
+          id: "instagram",
+          name: "Instagram",
+          connected: Boolean(instagram.connected),
+          username: instagram.instagramUsername || "",
+          canPublish: Boolean(instagram.connected),
+          canMessage: Boolean(instagram.connected),
+        },
+        {
+          id: "telegram",
+          name: "Telegram",
+          connected: Boolean(process.env.TG_BOT_TOKEN),
+          username: settings.telegramChannelName || "",
+          destination: settings.telegramChatId || "",
+          canPublish: Boolean(process.env.TG_BOT_TOKEN && settings.telegramChatId),
+          canMessage: Boolean(process.env.TG_BOT_TOKEN),
+        },
+        {
+          id: "telegram_account",
+          name: "Telegram менеджера",
+          connected: telegramAccounts.length > 0,
+          username: telegramAccounts.map((account: any) => account.phone).join(", "),
+          canPublish: false,
+          canMessage: telegramAccounts.length > 0,
+        },
+        { id: "whatsapp", name: "WhatsApp", connected: false, canPublish: false, canMessage: false },
+        { id: "vk", name: "VK", connected: false, canPublish: false, canMessage: false },
+        { id: "max", name: "MAX", connected: false, canPublish: false, canMessage: false },
+      ],
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || "Не удалось проверить соцсети" });
+  }
+});
+
+app.post("/api/social/settings", async (req, res) => {
+  if (!await requireCrmUser(req, res)) return;
+  if (!adminDb) return res.status(503).json({ error: "Серверная база не подключена" });
+  const telegramChatId = String(req.body?.telegramChatId || "").trim();
+  const telegramChannelName = String(req.body?.telegramChannelName || "").trim();
+  await adminDb.collection("settings").doc("social_hub").set({
+    telegramChatId,
+    telegramChannelName,
+    updatedAt: FieldValue.serverTimestamp(),
+  }, { merge: true });
+  res.json({ success: true });
+});
+
+app.post("/api/social/publish", async (req, res) => {
+  const user: any = await requireCrmUser(req, res);
+  if (!user) return;
+  const text = String(req.body?.text || "").trim();
+  const imageUrl = String(req.body?.imageUrl || "").trim();
+  const channels = Array.isArray(req.body?.channels) ? req.body.channels.map(String) : [];
+  if (!text && !imageUrl) return res.status(400).json({ error: "Добавь текст или изображение" });
+  if (!channels.length) return res.status(400).json({ error: "Выбери хотя бы одну соцсеть" });
+
+  const results: Array<{ channel: string; success: boolean; id?: string; error?: string }> = [];
+  if (channels.includes("instagram")) {
+    if (!imageUrl) {
+      results.push({ channel: "instagram", success: false, error: "Для публикации в Instagram нужно изображение" });
+    } else {
+      try {
+        const context = await instagramGraphContext();
+        const response = await withInstagramTokenFallback(context.accessTokens, async (accessToken) => {
+          const create = await axios.post(
+            `${context.baseUrl}/${META_GRAPH_VERSION}/${context.instagramUserId}/media`,
+            { image_url: imageUrl, caption: text },
+            { params: { access_token: accessToken }, timeout: 30_000 },
+          );
+          return axios.post(
+            `${context.baseUrl}/${META_GRAPH_VERSION}/${context.instagramUserId}/media_publish`,
+            { creation_id: create.data.id },
+            { params: { access_token: accessToken }, timeout: 30_000 },
+          );
+        });
+        results.push({ channel: "instagram", success: true, id: String(response.data?.id || "") });
+      } catch (error: any) {
+        results.push({ channel: "instagram", success: false, error: graphErrorMessage(error) });
+      }
+    }
+  }
+
+  if (channels.includes("telegram")) {
+    try {
+      const settings = await socialHubSettings();
+      const chatId = String(settings.telegramChatId || "").trim();
+      const token = String(process.env.TG_BOT_TOKEN || "").trim();
+      if (!token || !chatId) throw new Error("Укажи Telegram-канал в разделе «Подключения»");
+      const method = imageUrl ? "sendPhoto" : "sendMessage";
+      const payload = imageUrl
+        ? { chat_id: chatId, photo: imageUrl, caption: text }
+        : { chat_id: chatId, text };
+      const response = await axios.post(`https://api.telegram.org/bot${token}/${method}`, payload, { timeout: 30_000 });
+      results.push({ channel: "telegram", success: true, id: String(response.data?.result?.message_id || "") });
+    } catch (error: any) {
+      results.push({ channel: "telegram", success: false, error: error?.response?.data?.description || error.message });
+    }
+  }
+
+  if (adminDb) {
+    await adminDb.collection("social_publications").add({
+      text,
+      imageUrl,
+      channels,
+      results,
+      createdAt: FieldValue.serverTimestamp(),
+      createdBy: { uid: user.uid, email: user.email || "" },
+    });
+  }
+  const success = results.some(item => item.success);
+  res.status(success ? 200 : 502).json({ success, results });
+});
+
+function validSiteChatId(value: string) {
+  return /^[a-zA-Z0-9_-]{8,100}$/.test(value);
+}
+
+function siteChatTokenHash(token: string) {
+  return createHash("sha256").update(token).digest("hex");
+}
+
+app.post("/api/site-chat/conversations/:id/messages", async (req, res) => {
+  if (!adminDb) return res.status(503).json({ error: "Чат временно недоступен" });
+  const conversationId = String(req.params.id || "");
+  const token = String(req.body?.token || "");
+  const text = String(req.body?.text || "").trim().slice(0, 4000);
+  if (!validSiteChatId(conversationId) || token.length < 16 || !text) return res.status(400).json({ error: "Некорректное сообщение" });
+  try {
+    const conversationRef = adminDb.collection("site_chat_conversations").doc(conversationId);
+    const hash = siteChatTokenHash(token);
+    await adminDb.runTransaction(async (transaction: any) => {
+      const snapshot = await transaction.get(conversationRef);
+      if (snapshot.exists && snapshot.data()?.tokenHash !== hash) throw new Error("CHAT_TOKEN_INVALID");
+      const now = new Date().toISOString();
+      transaction.set(conversationRef, {
+        tokenHash: hash,
+        channel: "website",
+        visitorName: String(req.body?.visitorName || "").trim().slice(0, 120),
+        visitorPhone: String(req.body?.visitorPhone || "").trim().slice(0, 40),
+        pageUrl: String(req.body?.pageUrl || "").slice(0, 500),
+        utm: req.body?.utm && typeof req.body.utm === "object" ? req.body.utm : {},
+        lastMessage: { text, createdAt: now, direction: "incoming" },
+        createdAt: snapshot.exists ? snapshot.data()?.createdAt || now : now,
+        updatedAt: now,
+        unreadCount: FieldValue.increment(1),
+      }, { merge: true });
+    });
+    const messageRef = await conversationRef.collection("messages").add({
+      text,
+      direction: "incoming",
+      createdAt: new Date().toISOString(),
+    });
+    res.json({ message: { id: messageRef.id, text, direction: "incoming", createdAt: new Date().toISOString() } });
+  } catch (error: any) {
+    if (error.message === "CHAT_TOKEN_INVALID") return res.status(403).json({ error: "Сессия чата недействительна" });
+    res.status(500).json({ error: "Не удалось отправить сообщение" });
+  }
+});
+
+app.get("/api/site-chat/conversations/:id/messages", async (req, res) => {
+  if (!adminDb) return res.status(503).json({ error: "Чат временно недоступен" });
+  const conversationId = String(req.params.id || "");
+  const token = String(req.query.token || "");
+  if (!validSiteChatId(conversationId) || token.length < 16) return res.status(400).json({ error: "Некорректная сессия" });
+  try {
+    const conversationRef = adminDb.collection("site_chat_conversations").doc(conversationId);
+    const snapshot = await conversationRef.get();
+    if (!snapshot.exists) return res.json({ messages: [] });
+    if (snapshot.data()?.tokenHash !== siteChatTokenHash(token)) return res.status(403).json({ error: "Сессия чата недействительна" });
+    const messages = await conversationRef.collection("messages").orderBy("createdAt", "asc").limit(300).get();
+    res.json({ messages: messages.docs.map((item: any) => ({ id: item.id, ...item.data() })) });
+  } catch {
+    res.status(500).json({ error: "Не удалось загрузить сообщения" });
+  }
+});
+
+app.get("/api/site-chat/conversations", async (req, res) => {
+  if (!await requireCrmUser(req, res)) return;
+  if (!adminDb) return res.status(503).json({ error: "Серверная база не подключена" });
+  const snapshot = await adminDb.collection("site_chat_conversations").orderBy("updatedAt", "desc").limit(300).get();
+  res.json({ conversations: snapshot.docs.map((item: any) => {
+    const data = item.data();
+    const { tokenHash: _tokenHash, ...safe } = data;
+    return { id: item.id, ...safe };
+  }) });
+});
+
+app.get("/api/site-chat/inbox/:id/messages", async (req, res) => {
+  if (!await requireCrmUser(req, res)) return;
+  if (!adminDb) return res.status(503).json({ error: "Серверная база не подключена" });
+  const conversationRef = adminDb.collection("site_chat_conversations").doc(String(req.params.id));
+  const messages = await conversationRef.collection("messages").orderBy("createdAt", "asc").limit(300).get();
+  await conversationRef.set({ unreadCount: 0 }, { merge: true });
+  res.json({ messages: messages.docs.map((item: any) => ({ id: item.id, ...item.data() })) });
+});
+
+app.post("/api/site-chat/inbox/:id/messages", async (req, res) => {
+  const user: any = await requireCrmUser(req, res);
+  if (!user) return;
+  if (!adminDb) return res.status(503).json({ error: "Серверная база не подключена" });
+  const text = String(req.body?.text || "").trim().slice(0, 4000);
+  if (!text) return res.status(400).json({ error: "Напиши сообщение" });
+  const conversationRef = adminDb.collection("site_chat_conversations").doc(String(req.params.id));
+  const createdAt = new Date().toISOString();
+  const messageRef = await conversationRef.collection("messages").add({
+    text,
+    direction: "outgoing",
+    createdAt,
+    manager: user.email || user.name || user.uid,
+  });
+  await conversationRef.set({ lastMessage: { text, createdAt, direction: "outgoing" }, updatedAt: createdAt }, { merge: true });
+  res.json({ message: { id: messageRef.id, text, direction: "outgoing", createdAt } });
+});
+
 async function instagramProfile(context: InstagramGraphContext) {
   const richFields = "id,user_id,username,name,biography,website,profile_picture_url,followers_count,follows_count,media_count,account_type";
   try {
@@ -5935,26 +6765,42 @@ app.post("/api/instagram/webhook", async (req, res) => {
     if (body.object !== "instagram" || !adminDb) return;
     const context = await instagramGraphContext().catch(() => null);
     const entries = Array.isArray(body.entry) ? body.entry : [];
+    console.info("[instagram] webhook received", JSON.stringify({
+      object: String(body.object || ""),
+      entries: entries.length,
+      messaging: entries.reduce((sum: number, entry: any) => sum + (Array.isArray(entry?.messaging) ? entry.messaging.length : 0), 0),
+      standby: entries.reduce((sum: number, entry: any) => sum + (Array.isArray(entry?.standby) ? entry.standby.length : 0), 0),
+      changeFields: entries.flatMap((entry: any) => Array.isArray(entry?.changes) ? entry.changes.map((change: any) => String(change?.field || "")) : []),
+    }));
+    // Full payload, so an event Meta delivers but CRM ignores can be identified
+    // from the logs instead of guessing at its shape.
+    console.info("[instagram] webhook payload", JSON.stringify(body).slice(0, 4000));
     for (const entry of entries) {
       const ownerId = String(entry?.id || "");
-      const messaging = Array.isArray(entry?.messaging) ? entry.messaging : [];
+      // Meta moves events into `standby` when another app (ManyChat and the like)
+      // is the primary receiver of the thread under the handover protocol.
+      const messaging = [
+        ...(Array.isArray(entry?.messaging) ? entry.messaging : []),
+        ...(Array.isArray(entry?.standby) ? entry.standby : []),
+      ];
       for (const event of messaging) {
         const senderId = String(event?.sender?.id || "");
         const recipientId = String(event?.recipient?.id || "");
-        const incoming = recipientId === ownerId || senderId !== ownerId;
+        const ownIds = new Set([ownerId, String(context?.instagramUserId || "")].filter(Boolean));
+        const incoming = Boolean(senderId) && !ownIds.has(senderId);
         const customerId = incoming ? senderId : recipientId;
         if (!customerId) continue;
-        let customer: any = { id: customerId };
-        if (context) {
-          try {
-            customer = await instagramGraphGet<any>(context, customerId, {
-              fields: "id,name,username,profile_pic,follower_count,is_user_follow_business,is_business_follow_user,is_verified_user",
-            });
-          } catch (profileError) {
-            console.warn("[instagram] webhook profile:", graphErrorMessage(profileError));
-          }
-        }
         const rawMessage = event?.message || event?.message_edit || {};
+        // Seen receipts, reactions and postbacks arrive in the same `messaging`
+        // array. They must not create blank chat messages.
+        if (!rawMessage?.mid && !rawMessage?.text && !rawMessage?.attachments) {
+          console.info("[instagram] webhook event skipped", JSON.stringify({
+            keys: Object.keys(event || {}),
+            senderId,
+            recipientId,
+          }));
+          continue;
+        }
         const message = {
           id: String(rawMessage?.mid || `webhook-${customerId}-${event?.timestamp || Date.now()}`),
           text: String(rawMessage?.text || ""),
@@ -5966,6 +6812,9 @@ app.post("/api/instagram/webhook", async (req, res) => {
           source: "instagram_webhook",
         };
         const conversationId = `webhook-${customerId}`;
+        const customer: any = { id: customerId };
+        // Persist the message before the optional profile request. If Meta's
+        // profile edge is slow or unavailable, the dialogue still appears in CRM.
         await saveInstagramMessages(conversationId, [message], { customerId });
         await adminDb.collection("instagram_conversations").doc(conversationId).set({
           id: conversationId,
@@ -5976,6 +6825,21 @@ app.post("/api/instagram/webhook", async (req, res) => {
           source: "instagram_webhook",
           syncedAt: new Date().toISOString(),
         }, { merge: true });
+        if (context) {
+          try {
+            const enrichedCustomer = await instagramGraphGet<any>(context, customerId, {
+              fields: "id,name,username,profile_pic,follower_count,is_user_follow_business,is_business_follow_user,is_verified_user",
+            });
+            await adminDb.collection("instagram_conversations").doc(conversationId).set({
+              participants: [enrichedCustomer],
+              customer: enrichedCustomer,
+            }, { merge: true });
+            Object.assign(customer, enrichedCustomer);
+          } catch (profileError) {
+            console.warn("[instagram] webhook profile:", graphErrorMessage(profileError));
+          }
+        }
+        console.info("[instagram] message saved", JSON.stringify({ conversationId, messageId: message.id, direction: message.direction, hasText: Boolean(message.text), attachments: message.attachments.length }));
         if (incoming) {
           await dispatchPushEvent("instagram_message", `instagram-message:${message.id}`, {
             conversationId,
@@ -6581,6 +7445,22 @@ app.post("/api/instagram/conversations/:id/link-client", async (req, res) => {
 // ─── Точка Банк API ─────────────────────────────────────────────────────────
 
 const TOCHKA_API = 'https://enter.tochka.com/uapi';
+const TOCHKA_HOST = 'enter.tochka.com';
+const TOCHKA_CA_PATH = path.join(process.cwd(), 'certs', 'russian-trusted-root-ca.pem');
+const TOCHKA_HTTPS_AGENT = new https.Agent({
+  ca: fs.readFileSync(TOCHKA_CA_PATH, 'utf8'),
+  rejectUnauthorized: true,
+});
+axios.interceptors.request.use(config => {
+  try {
+    if (config.url && new URL(config.url).hostname === TOCHKA_HOST) {
+      config.httpsAgent = TOCHKA_HTTPS_AGENT;
+    }
+  } catch {
+    // Relative URLs are not used for Tochka requests.
+  }
+  return config;
+});
 const FINANCE_OWNER_EMAIL = 'ndtiger86@gmail.com';
 const TOCHKA_KNOWN_CARDS = [
   { mask: '5316', label: 'Пластиковая карта', kind: 'card' },
@@ -10893,8 +11773,19 @@ async function startServer() {
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(process.cwd(), "dist");
-    app.use(express.static(distPath));
+    app.use(express.static(distPath, {
+      setHeaders: (res, filePath) => {
+        if (filePath.endsWith("index.html") || filePath.endsWith("push-sw.js")) {
+          res.setHeader("Cache-Control", "no-store, max-age=0");
+          return;
+        }
+        if (filePath.includes(`${path.sep}assets${path.sep}`)) {
+          res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+        }
+      },
+    }));
     app.get("*", (req, res) => {
+      res.setHeader("Cache-Control", "no-store, max-age=0");
       res.sendFile(path.join(distPath, "index.html"));
     });
   }

@@ -21,7 +21,9 @@ const PaymentPage = lazy(() => import("./components/PaymentPage").then(m => ({ d
 const CdekPage = lazy(() => import("./components/CdekPage").then(m => ({ default: m.CdekPage })));
 const IntegrationsPage = lazy(() => import("./components/IntegrationsPage").then(m => ({ default: m.IntegrationsPage })));
 const InstagramHubPage = lazy(() => import("./components/InstagramHubPage").then(m => ({ default: m.InstagramHubPage })));
+const SocialHubPage = lazy(() => import("./components/SocialHubPage").then(m => ({ default: m.SocialHubPage })));
 const StorefrontPage = lazy(() => import("./components/StorefrontPage").then(m => ({ default: m.StorefrontPage })));
+const OrderAuditPage = lazy(() => import("./components/OrderAuditPage").then(m => ({ default: m.OrderAuditPage })));
 const ProductionPage = lazy(() => import("./components/ProductionPage").then(m => ({ default: m.ProductionPage })));
 import { auth, completeGoogleRedirectSignIn, getGoogleAuthErrorMessage, signInWithGoogle, signInWithEmail, signInWithPasskeyToken, logOut } from "./firebase";
 import { onAuthStateChanged, User as FirebaseUser } from "firebase/auth";
@@ -30,12 +32,14 @@ import { cn } from "./lib/utils";
 import {
   LogIn, LogOut, User as UserIcon, AlertCircle, Fingerprint,
   DollarSign, Calculator, LayoutDashboard, Package, Bot, ShoppingBag,
-  UserCircle, Star, Calendar as CalendarIcon, BookOpen, Send, Sparkles, Wand2, Truck, ReceiptText, PlugZap, Instagram, Store, Factory
+  UserCircle, Star, Calendar as CalendarIcon, BookOpen, Send, Sparkles, Wand2, Truck, ReceiptText, PlugZap, Instagram, Store, MessagesSquare, FileClock, Factory
 } from "lucide-react";
 import { motion } from "motion/react";
 import { PushNotificationButton } from "./components/PushNotificationButton";
+import { SiteChatWidget } from "./components/SiteChatWidget";
+import { logAuditEvent } from "./lib/auditLog";
 
-type AppView = 'home' | 'calculator' | 'analytics' | 'orders' | 'clients' | 'marketing' | 'order-form' | 'products' | 'production' | 'storefront' | 'ai-agent' | 'public-product' | 'public-payment' | 'finance' | 'payroll' | 'handbook' | 'broadcast' | 'broadcast-v2' | 'bot' | 'content' | 'studio' | 'cdek' | 'integrations' | 'instagram';
+type AppView = 'home' | 'calculator' | 'analytics' | 'orders' | 'clients' | 'marketing' | 'order-form' | 'products' | 'production' | 'storefront' | 'ai-agent' | 'public-product' | 'public-payment' | 'finance' | 'payroll' | 'handbook' | 'broadcast' | 'broadcast-v2' | 'bot' | 'content' | 'studio' | 'cdek' | 'integrations' | 'instagram' | 'social' | 'audit';
 
 const viewRoutes: Record<Exclude<AppView, 'public-product' | 'public-payment'>, string> = {
   home: '/',
@@ -60,11 +64,39 @@ const viewRoutes: Record<Exclude<AppView, 'public-product' | 'public-payment'>, 
   cdek: '/cdek',
   integrations: '/integrations',
   instagram: '/instagram',
+  social: '/social',
+  audit: '/audit',
 };
 
 const routeViews = Object.fromEntries(
   Object.entries(viewRoutes).map(([view, route]) => [route, view])
 ) as Record<string, AppView>;
+
+const VIEW_LABELS: Partial<Record<AppView, string>> = {
+  home: 'Главная',
+  calculator: 'Юнит-экономика',
+  finance: 'Финансы',
+  payroll: 'ФОТ',
+  analytics: 'Аналитика',
+  orders: 'Заказы',
+  clients: 'Клиенты',
+  marketing: 'Маркетинг',
+  products: 'Склад',
+  production: 'Производство',
+  storefront: 'Магазин',
+  handbook: 'Справочник',
+  cdek: 'СДЭК',
+  integrations: 'API',
+  social: 'Соцсети',
+  instagram: 'Instagram',
+  bot: 'Бот',
+  content: 'Контент',
+  broadcast: 'Рассылки',
+  'broadcast-v2': 'Рассылки 2',
+  studio: 'Студия',
+  'ai-agent': 'ИИ',
+  audit: 'Логи',
+};
 
 function getViewFromPath(path: string): AppView {
   if (path.startsWith('/broadcast-v2')) return 'broadcast-v2';
@@ -138,39 +170,12 @@ export default function App() {
   const [initialClient, setInitialClient] = useState<any>(null);
   const [theme, setTheme] = useState<'grey' | 'pink'>('grey');
   const [selectedMonth, setSelectedMonth] = useState<string>(new Date().toISOString().slice(0, 7));
+  const [allowedViews, setAllowedViews] = useState<string[] | null>(null);
+  const isOwner = String(user?.email || '').trim().toLowerCase() === 'ndtiger86@gmail.com';
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
   }, [theme]);
-
-  // Chatwoot live-чат: грузим виджет только на публичных страницах (витрина / оплата)
-  useEffect(() => {
-    const token = import.meta.env.VITE_CHATWOOT_WEBSITE_TOKEN as string | undefined;
-    const baseUrl = (import.meta.env.VITE_CHATWOOT_BASE_URL as string | undefined)?.replace(/\/$/, '');
-    if (!token || !baseUrl) return;
-    const isPublic = view === 'public-product' || view === 'public-payment';
-
-    if (!isPublic) {
-      (window as any).$chatwoot?.toggleBubbleVisibility?.('hide');
-      return;
-    }
-
-    if ((window as any).$chatwoot) {
-      (window as any).$chatwoot.toggleBubbleVisibility('show');
-      return;
-    }
-    if (document.getElementById('chatwoot-sdk')) return;
-
-    const script = document.createElement('script');
-    script.id = 'chatwoot-sdk';
-    script.src = `${baseUrl}/packs/js/sdk.js`;
-    script.async = true;
-    script.defer = true;
-    script.onload = () => {
-      (window as any).chatwootSDK?.run({ websiteToken: token, baseUrl });
-    };
-    document.body.appendChild(script);
-  }, [view]);
 
   useEffect(() => {
     completeGoogleRedirectSignIn().catch((err) => {
@@ -216,12 +221,173 @@ export default function App() {
     };
   }, []);
 
-  const handleNavigate = (newView: 'calculator' | 'analytics' | 'orders' | 'clients' | 'marketing' | 'order-form' | 'products' | 'storefront' | 'ai-agent' | 'finance' | 'payroll' | 'handbook' | 'broadcast' | 'broadcast-v2' | 'bot' | 'content' | 'studio' | 'cdek' | 'integrations' | 'instagram' | 'home', clientData?: any) => {
+  useEffect(() => {
+    if (!user?.uid) return;
+    void logAuditEvent({
+      action: 'session_started',
+      entityType: 'session',
+      entityId: user.uid,
+      metadata: {
+        label: 'Вход в CRM',
+        provider: user.providerData[0]?.providerId || 'unknown',
+      },
+    });
+  }, [user?.uid]);
+
+  useEffect(() => {
+    if (!user?.uid) {
+      setAllowedViews(null);
+      return;
+    }
+    let active = true;
+    const loadAccess = async () => {
+      try {
+        const token = await user.getIdToken();
+        const response = await fetch('/api/access/me', { headers: { Authorization: `Bearer ${token}` } });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || 'Не удалось загрузить права');
+        if (!active) return;
+        if (payload.active === false) {
+          await logOut();
+          return;
+        }
+        setAllowedViews(Array.isArray(payload.allowedViews) ? payload.allowedViews.map(String) : null);
+      } catch (accessError) {
+        console.warn('Не удалось обновить права CRM:', accessError);
+        if (active) setAllowedViews(null);
+      }
+    };
+    void loadAccess();
+    const refreshTimer = window.setInterval(loadAccess, 60_000);
+    window.addEventListener('focus', loadAccess);
+    return () => {
+      active = false;
+      window.clearInterval(refreshTimer);
+      window.removeEventListener('focus', loadAccess);
+    };
+  }, [user?.uid]);
+
+  const permissionForView = (candidate: AppView) => candidate === 'order-form' ? 'orders' : candidate;
+  const canAccessView = (candidate: AppView) => (
+    candidate === 'public-product'
+    || candidate === 'public-payment'
+    || isOwner
+    || allowedViews === null
+    || allowedViews.includes(permissionForView(candidate))
+  );
+
+  useEffect(() => {
+    if (!user?.uid || allowedViews === null || canAccessView(view)) return;
+    const fallback = (allowedViews[0] || 'home') as AppView;
+    setView(fallback);
+    setInitialClient(null);
+    window.history.replaceState({}, '', getRouteForView(fallback));
+  }, [allowedViews, isOwner, user?.uid, view]);
+
+  useEffect(() => {
+    if (!user?.uid || view === 'public-product' || view === 'public-payment') return;
+    void logAuditEvent({
+      action: 'page_viewed',
+      entityType: 'page',
+      entityId: view,
+      metadata: {
+        label: `Открыл раздел «${VIEW_LABELS[view] || view}»`,
+        page: view,
+        pageLabel: VIEW_LABELS[view] || view,
+      },
+    });
+  }, [user?.uid, view]);
+
+  useEffect(() => {
+    if (!user?.uid) return;
+
+    const getControl = (target: EventTarget | null) => (
+      target instanceof Element
+        ? target.closest<HTMLElement>('button, a, [role="button"], input, select, textarea, summary')
+        : null
+    );
+    const controlLabel = (control: HTMLElement) => {
+      const input = control as HTMLInputElement;
+      const label = control.dataset.auditLabel
+        || control.getAttribute('aria-label')
+        || control.getAttribute('title')
+        || input.placeholder
+        || control.textContent
+        || control.getAttribute('name')
+        || control.tagName.toLowerCase();
+      return String(label).replace(/\s+/g, ' ').trim().slice(0, 180);
+    };
+    const shouldSkip = (control: HTMLElement) => (
+      control.closest('[data-audit-ignore="true"]')
+      || (control instanceof HTMLInputElement && control.type === 'password')
+    );
+    const handleClick = (event: MouseEvent) => {
+      const control = getControl(event.target);
+      if (!control || shouldSkip(control)) return;
+      const label = controlLabel(control);
+      void logAuditEvent({
+        action: 'ui_clicked',
+        entityType: 'interface',
+        entityId: view,
+        metadata: {
+          label: label || 'Нажатие',
+          page: view,
+          pageLabel: VIEW_LABELS[view] || view,
+          control: control.tagName.toLowerCase(),
+        },
+      });
+    };
+    const handleChange = (event: Event) => {
+      const control = getControl(event.target);
+      if (!control || shouldSkip(control)) return;
+      const input = control as HTMLInputElement;
+      const select = control instanceof HTMLSelectElement ? control : null;
+      const safeValue = select
+        ? select.selectedOptions[0]?.textContent?.trim().slice(0, 120)
+        : input.type === 'checkbox' || input.type === 'radio'
+          ? String(input.checked)
+          : undefined;
+      void logAuditEvent({
+        action: 'field_changed',
+        entityType: 'interface',
+        entityId: view,
+        metadata: {
+          label: controlLabel(control) || 'Изменено поле',
+          page: view,
+          pageLabel: VIEW_LABELS[view] || view,
+          control: control.tagName.toLowerCase(),
+          ...(safeValue !== undefined ? { value: safeValue } : {}),
+        },
+      });
+    };
+
+    document.addEventListener('click', handleClick, true);
+    document.addEventListener('change', handleChange, true);
+    return () => {
+      document.removeEventListener('click', handleClick, true);
+      document.removeEventListener('change', handleChange, true);
+    };
+  }, [user?.uid, view]);
+
+  const handleNavigate = (newView: AppView, clientData?: any) => {
+    if (!canAccessView(newView)) return;
     if (clientData) setInitialClient(clientData);
     else setInitialClient(null);
     setView(newView);
     const route = getRouteForView(newView);
     if (window.location.pathname !== route) window.history.pushState({}, '', route);
+  };
+
+  const handleLogout = async () => {
+    if (user?.uid) {
+      await logAuditEvent({
+        action: 'session_ended',
+        entityType: 'session',
+        entityId: user.uid,
+        metadata: { label: 'Выход из CRM' },
+      });
+    }
+    await logOut();
   };
 
   const handlePasskeyLogin = async () => {
@@ -271,6 +437,7 @@ export default function App() {
         <main className="min-h-screen">
           <PublicProductView productId={publicProductId} />
         </main>
+        <SiteChatWidget />
       </ErrorBoundary>
     );
   }
@@ -281,6 +448,7 @@ export default function App() {
       <ErrorBoundary>
         <Suspense fallback={<div className="min-h-screen flex items-center justify-center"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-slate-900" /></div>}>
           <PaymentPage orderId={publicPaymentOrderId} />
+          <SiteChatWidget />
         </Suspense>
       </ErrorBoundary>
     );
@@ -445,7 +613,7 @@ export default function App() {
                 <span className="max-w-[180px] truncate text-[11px] font-medium text-[#6B7280]">{user.displayName || user.email}</span>
               </div>
               <button 
-                onClick={logOut}
+                onClick={() => void handleLogout()}
                 className="rounded-[8px] p-2 text-[#9CA3AF] transition-colors hover:bg-red-50 hover:text-red-500"
                 title="Выйти"
               >
@@ -492,6 +660,7 @@ export default function App() {
                 { id: 'analytics', label: 'Аналит.',  icon: LayoutDashboard },
                 { id: 'orders',    label: 'Заказы',   icon: ShoppingBag },
                 { id: 'clients',   label: 'Клиент.',  icon: UserCircle },
+                ...(isOwner ? [{ id: 'audit', label: 'Админка', icon: FileClock }] : []),
                 { id: 'marketing', label: 'Маркет.',  icon: Star },
                 { id: 'products',  label: 'Склад',    icon: Package },
                 { id: 'production', label: 'Произв.', icon: Factory },
@@ -499,13 +668,12 @@ export default function App() {
                 { id: 'handbook',  label: 'Справ.',   icon: BookOpen },
                 { id: 'cdek',      label: 'СДЭК',     icon: Truck },
                 { id: 'integrations', label: 'API',    icon: PlugZap },
-                { id: 'instagram', label: 'Инста',    icon: Instagram },
-                { id: 'broadcast', label: 'Рассыл.',  icon: Send },
+                { id: 'social',    label: 'Соцсети',   icon: MessagesSquare },
+                { id: 'instagram', label: 'Instagram', icon: Instagram },
                 { id: 'bot',       label: 'Бот',       icon: Bot },
-                { id: 'content',   label: 'Контент',   icon: Sparkles },
                 { id: 'studio',    label: 'Студия',    icon: Wand2 },
                 { id: 'ai-agent',  label: 'ИИ',       icon: Bot, special: true },
-              ].map((item, idx) => {
+              ].filter(item => canAccessView(item.id as AppView)).map((item, idx) => {
                 const isActive = item.id === view;
                 return (
                   <button
@@ -578,6 +746,10 @@ export default function App() {
             />
           )}
 
+          {view === 'audit' && (
+            <OrderAuditPage userEmail={user.email || ''} />
+          )}
+
           {view === 'marketing' && (
             <MarketingPage
               sheetId={activeSheetId}
@@ -636,6 +808,10 @@ export default function App() {
 
           {view === 'instagram' && (
             <InstagramHubPage />
+          )}
+
+          {view === 'social' && (
+            <SocialHubPage />
           )}
 
           {view === 'broadcast' && (

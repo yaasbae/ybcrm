@@ -30,7 +30,7 @@ service cloud.firestore {
 
     // CRM action journal: order edits, soft deletes and integration actions.
     match /audit_logs/{document=**} {
-      allow read: if isAuthenticated();
+      allow read: if isAdmin();
       allow create: if isAuthenticated();
       allow update, delete: if isAdmin();
     }

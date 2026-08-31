@@ -13,6 +13,7 @@ import { db, OperationType, handleFirestoreError, storage } from '../firebase';
 import { collection, onSnapshot, doc, setDoc, query, orderBy, getDoc, updateDoc } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { emitPushEvent } from '../lib/pushNotifications';
+import { formatClientPhone, normalizeClientPhone, normalizeClientPhoneInput } from '../lib/clientMerge';
 
 interface OrderFormProps {
   onBack: () => void;
@@ -76,7 +77,7 @@ export const OrderForm: React.FC<OrderFormProps> = ({ onBack, initialClient }) =
   useEffect(() => {
     if (initialClient) {
       if (initialClient.fullName || initialClient.name) setClientName(initialClient.fullName || initialClient.name);
-      if (initialClient.phone) setPhone(initialClient.phone);
+      if (initialClient.phone) setPhone(normalizeClientPhone(initialClient.phone));
       if (initialClient.email) setEmail(initialClient.email);
       if (initialClient.address) setAddress(initialClient.address);
       if (initialClient.city) setCity(initialClient.city);
@@ -284,6 +285,7 @@ export const OrderForm: React.FC<OrderFormProps> = ({ onBack, initialClient }) =
       };
 
       // Write new orders only to the CRM source of truth.
+      const normalizedPhone = normalizeClientPhone(phone);
       const orderNewData = {
         orderId: id,
         isFirebase: true,
@@ -293,7 +295,7 @@ export const OrderForm: React.FC<OrderFormProps> = ({ onBack, initialClient }) =
         deliveryPrice: currentShippingCost,
         paidAmount: currentPrepayment,
         clientName,
-        clientPhone: phone,
+        clientPhone: normalizedPhone,
         clientInsta: socialLink,
         clientCity: city,
         status: 'Новый',
@@ -323,15 +325,15 @@ export const OrderForm: React.FC<OrderFormProps> = ({ onBack, initialClient }) =
       });
 
       // Update CRM (contacts)
-      if (phone || clientName) {
-        const contactId = phone || clientName;
+      if (normalizedPhone || clientName) {
+        const contactId = normalizedPhone || clientName;
         const contactRef = doc(db, 'contacts', contactId);
         const contactSnap = await getDoc(contactRef);
         
         const contactData = {
           userId: contactId,
           fullName: clientName,
-          phone: phone,
+          phone: normalizedPhone,
           email: email,
           city: city,
           address: address,
@@ -676,7 +678,7 @@ export const OrderForm: React.FC<OrderFormProps> = ({ onBack, initialClient }) =
                           type="button"
                           onMouseDown={() => {
                             setClientName(c.fullName || c.name || '');
-                            if (c.phone) setPhone(c.phone);
+                            if (c.phone) setPhone(normalizeClientPhone(c.phone));
                             if (c.email) setEmail(c.email);
                             if (c.address) setAddress(c.address);
                             if (c.city) setCity(c.city);
@@ -687,7 +689,7 @@ export const OrderForm: React.FC<OrderFormProps> = ({ onBack, initialClient }) =
                           className="w-full flex items-center justify-between px-3 py-2 hover:bg-emerald-50 text-left border-b border-zinc-50 last:border-0 transition-colors"
                         >
                           <span className="text-sm font-medium text-zinc-900">{c.fullName || c.name}</span>
-                          <span className="text-[10px] text-zinc-400 font-mono">{c.phone ? `+${c.phone}` : ''}</span>
+                          <span className="text-[10px] text-zinc-400 font-mono">{formatClientPhone(c.phone)}</span>
                         </button>
                       ))}
                     </div>
@@ -712,8 +714,8 @@ export const OrderForm: React.FC<OrderFormProps> = ({ onBack, initialClient }) =
                 <div className="relative">
                   <input
                     type="tel"
-                    value={phone}
-                    onChange={e => { setPhone(e.target.value); setShowPhoneDropdown(true); }}
+                    value={formatClientPhone(phone)}
+                    onChange={e => { setPhone(normalizeClientPhoneInput(e.target.value)); setShowPhoneDropdown(true); }}
                     onFocus={() => setShowPhoneDropdown(true)}
                     onBlur={() => setTimeout(() => setShowPhoneDropdown(false), 150)}
                     className="w-full bg-zinc-50 border-none rounded-xl px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 transition-all outline-none"
@@ -730,7 +732,7 @@ export const OrderForm: React.FC<OrderFormProps> = ({ onBack, initialClient }) =
                             key={i}
                             type="button"
                             onMouseDown={() => {
-                              setPhone(c.phone || '');
+                              setPhone(normalizeClientPhone(c.phone));
                               setClientName(c.fullName || c.name || '');
                               if (c.email) setEmail(c.email);
                               if (c.address) setAddress(c.address);
@@ -740,7 +742,7 @@ export const OrderForm: React.FC<OrderFormProps> = ({ onBack, initialClient }) =
                             }}
                             className="w-full flex items-center justify-between px-3 py-2 hover:bg-emerald-50 text-left border-b border-zinc-50 last:border-0 transition-colors"
                           >
-                            <span className="text-[10px] text-zinc-400 font-mono">+{c.phone}</span>
+                            <span className="text-[10px] text-zinc-400 font-mono">{formatClientPhone(c.phone)}</span>
                             <span className="text-sm font-medium text-zinc-900">{c.fullName || c.name}</span>
                           </button>
                         ))}

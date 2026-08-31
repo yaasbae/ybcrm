@@ -4,10 +4,21 @@ import {
   RefreshCcw, AlertCircle, Download,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
-import { isPrepaymentOrder, PREPAYMENT_FILTER_VALUE } from '../lib/orderFilters';
+import {
+  isOverdueOrder,
+  isPrepaymentOrder,
+  isRefundOrCancelledOrder,
+  OVERDUE_FILTER_VALUE,
+  PREPAYMENT_FILTER_VALUE,
+  REFUND_OR_CANCELLED_FILTER_VALUE,
+} from '../lib/orderFilters';
+import { matchesOrderSearch } from '../lib/orderSearch';
+import { normalizeOrderStatus } from '../lib/orderStatuses';
 import { getConfirmedPaidAmount, getOutstandingPaymentAmount } from '../lib/orderPayments';
 import { emitPushEvent } from '../lib/pushNotifications';
 import { logAuditEvent } from '../lib/auditLog';
+import { isClientPurchaseOrder, normalizeClientPhone } from '../lib/clientMerge';
+import { getExchangeOrderId } from '../lib/orderExchange';
 import { db } from '../firebase';
 import { doc, onSnapshot, setDoc, collection, updateDoc, query, getDoc } from 'firebase/firestore';
 const AnalyticsTab = lazy(() => import('./tabs/AnalyticsTab').then(m => ({ default: m.AnalyticsTab })));
@@ -28,12 +39,19 @@ interface AnalyticsDashboardProps {
 
 export interface OrderData {
   orderId: string;
+  firestoreId?: string;
   isFirebase?: boolean;
   date: Date;
+  activityAt?: Date;
+  exchangeAt?: string;
+  exchangeOriginalOrderId?: string;
+  exchangeCdekStatus?: 'pending' | 'created' | 'error';
+  exchangeCdekError?: string;
   revenue: number;
   deliveryPrice: number;
   paidAmount: number;
   clientPhone: string;
+  rawClientPhone?: string;
   clientName: string;
   clientInsta: string;
   clientCity: string;
@@ -43,9 +61,15 @@ export interface OrderData {
   item: string;
   items?: string[];
   itemPrices?: number[];
+  itemCosts?: number[];
+  retailItemPrices?: number[];
+  bloggerProductCost?: number;
+  bloggerDeliveryCost?: number;
+  bloggerTotalCost?: number;
   itemColors?: string[];
   itemSizes?: string[];
   itemHeights?: string[];
+  itemSewn?: boolean[];
   deliveryMethod: string;
   year: number;
   month: number;
@@ -101,6 +125,12 @@ export interface OrderData {
     width?: string | number;
     height?: string | number;
     tariffCode?: string | number;
+    shipmentDate?: string;
+    externalOrderNumber?: string;
+    itemCost?: number;
+    declaredCost?: number;
+    codAmount?: number;
+    deliveryCost?: number;
   };
 }
 
@@ -145,6 +175,9 @@ const addBusinessDays = (date: Date, days: number) => {
   }
   return result;
 };
+
+const getLocalDateKey = (date = new Date()) =>
+  `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 
 const manualReturnOperations = [
   { date: new Date(2026, 0, 26), amount: 17900, description: 'Екатерина Сергеевна А.' },
@@ -249,7 +282,7 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
         if (d.labels) setHandbookLabels(d.labels);
         if (d.deliveries) setHandbookDeliveries(d.deliveries);
         if (d.paymentTypes) setHandbookPaymentTypes(d.paymentTypes);
-        if (d.managers) setHandbookManagers(d.managers);
+        setHandbookManagers(Array.from(new Set([...(Array.isArray(d.managers) ? d.managers : []), 'Менеджер 1', 'Менеджер 2', 'Собственник'])));
         if (d.bloggers) setHandbookBloggers(d.bloggers);
       } else {
         console.warn('[handbook] Документ settings/handbook не найден — выпадающие списки будут пустыми');
@@ -275,8 +308,96 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
       try {
         let finalValue = value;
         if (field === 'isRecommended') finalValue = !order.isRecommended;
+        if (field === 'clientPhone') finalValue = normalizeClientPhone(value);
 
         const ordersNewPatch: Record<string, any> = {};
+        const firestoreId = order.firestoreId || orderId;
+        const isNewExchange = field === 'status'
+          && normalizeOrderStatus(String(finalValue || '')).toLowerCase() === 'обмен'
+          && normalizeOrderStatus(String(order.status || '')).toLowerCase() !== 'обмен';
+
+        if (isNewExchange) {
+          const now = new Date();
+          const exchangedOrderId = getExchangeOrderId(order.orderId);
+          const exchangePatch = {
+            status: 'Обмен',
+            orderId: exchangedOrderId,
+            exchangeOriginalOrderId: order.exchangeOriginalOrderId || order.orderId,
+            exchangeAt: now.toISOString(),
+            activityAt: now.toISOString(),
+            exchangeCdekStatus: 'pending',
+            exchangeCdekError: '',
+            updatedAt: now.toISOString(),
+          };
+          await updateDoc(doc(db, 'orders_new', firestoreId), exchangePatch);
+          void logAuditEvent({
+            action: 'order_exchange_started',
+            entityType: 'order',
+            entityId: exchangedOrderId,
+            before: order,
+            after: { ...order, ...exchangePatch },
+            metadata: { previousOrderId: order.orderId, shipmentDate: getLocalDateKey(now) },
+          });
+          void emitPushEvent('order_status_changed', `order-exchange:${exchangedOrderId}:${now.getTime()}`, {
+            orderId: exchangedOrderId,
+            clientName: order.clientName,
+            previousStatus: String(order.status || ''),
+            status: 'Обмен',
+          });
+
+          const saved = order.cdekPayload || {};
+          const deliveryType = String(saved.deliveryType || '').trim()
+            || (/курьер|до двери/i.test(String(order.deliveryMethod || '')) ? 'door' : 'pvz');
+          const deliveryPoint = String(saved.deliveryPoint || order.clientAddress?.match(/^([A-ZА-Я]{2,8}\d{1,5})(?:\s|,|·)/i)?.[1] || '').trim();
+          const toAddress = String(saved.toAddress || order.clientAddress || '').trim();
+          try {
+            const response = await fetch('/api/cdek/create-order', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                orderId: exchangedOrderId,
+                recipientName: order.clientName,
+                recipientPhone: order.clientPhone,
+                itemName: (order.items?.length ? order.items.join(', ') : order.item) || `Заказ ${exchangedOrderId}`,
+                itemCost: Number(saved.itemCost ?? order.revenue) || 0,
+                declaredCost: Number(saved.declaredCost) || 0,
+                codAmount: Number(saved.codAmount) || 0,
+                deliveryCost: Number(saved.deliveryCost ?? order.deliveryPrice) || 0,
+                tariffCode: Number(saved.tariffCode || (deliveryType === 'door' ? 139 : 138)),
+                deliveryType,
+                toCityCode: Number(saved.toCityCode || 0),
+                toCity: String(saved.toCity || order.clientCity || ''),
+                deliveryPoint,
+                deliveryPointAddress: String(saved.deliveryPointAddress || (deliveryType === 'pvz' ? order.clientAddress || '' : '')),
+                toAddress,
+                weight: Number(saved.weight || 700),
+                length: Number(saved.length || 30),
+                width: Number(saved.width || 20),
+                height: Number(saved.height || 10),
+                comment: `Обмен по заказу ${order.orderId}. Адрес доставки без изменений.`,
+                recreate: true,
+                exchange: true,
+                shipmentDate: getLocalDateKey(now),
+              }),
+            });
+            const result = await response.json();
+            if (!response.ok) throw new Error(result?.error || result?.message || 'СДЭК не принял новую накладную');
+            await updateDoc(doc(db, 'orders_new', firestoreId), {
+              exchangeCdekStatus: 'created',
+              exchangeCdekError: '',
+              updatedAt: new Date().toISOString(),
+            });
+          } catch (exchangeError: any) {
+            const message = exchangeError?.message || 'Не удалось пересоздать накладную СДЭК';
+            await updateDoc(doc(db, 'orders_new', firestoreId), {
+              exchangeCdekStatus: 'error',
+              exchangeCdekError: message,
+              updatedAt: new Date().toISOString(),
+            }).catch(() => undefined);
+            window.alert(`Заказ ${exchangedOrderId} поднят как обмен, но накладная СДЭК не создана: ${message}`);
+          }
+          return;
+        }
 
         if (typeof field === 'string' && field.startsWith('rawRow[')) {
           const index = parseInt(field.match(/\[(\d+)\]/)![1], 10);
@@ -297,7 +418,7 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
           ...order,
           ...ordersNewPatch,
         };
-        await updateDoc(doc(db, 'orders_new', orderId), {
+        await updateDoc(doc(db, 'orders_new', firestoreId), {
           ...ordersNewPatch,
           updatedAt: new Date().toISOString(),
         });
@@ -316,6 +437,14 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
             manager: String(finalValue),
           });
         }
+        if (field === 'status' && String(order.status || '') !== String(finalValue || '')) {
+          void emitPushEvent('order_status_changed', `order-status:${orderId}:${String(finalValue)}:${Date.now()}`, {
+            orderId,
+            clientName: order.clientName,
+            previousStatus: String(order.status || ''),
+            status: String(finalValue || ''),
+          });
+        }
       } catch (err) {
         console.error("Firebase update failed", err);
       }
@@ -328,9 +457,10 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
     }
   };
 
-  const deleteOrder = async (orderId: string) => {
+  const deleteOrder = async (orderId: string): Promise<boolean> => {
     try {
-      const orderRef = doc(db, 'orders_new', orderId);
+      const existingOrder = data.find(order => order.orderId === orderId);
+      const orderRef = doc(db, 'orders_new', existingOrder?.firestoreId || orderId);
       const beforeSnap = await getDoc(orderRef).catch(() => null);
       const before = beforeSnap?.exists() ? beforeSnap.data() : data.find(order => order.orderId === orderId);
       const deletedAt = new Date().toISOString();
@@ -348,8 +478,10 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
         after: { ...(before || {}), ...patch },
         metadata: { softDelete: true },
       });
+      return true;
     } catch (err) {
       console.error("Delete failed", err);
+      return false;
     }
   };
 
@@ -404,7 +536,7 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
       paidAmount: orderDraft.paidAmount || invoiceAmount,
       initialPaymentAmount: orderDraft.initialPaymentAmount || orderDraft.paidAmount || invoiceAmount,
       paymentAccountingVersion: 2,
-      clientPhone: orderDraft.clientPhone || '',
+      clientPhone: normalizeClientPhone(orderDraft.clientPhone),
       clientName: orderDraft.clientName || '',
       clientInsta: orderDraft.clientInsta || '',
       clientCity: orderDraft.clientCity || '',
@@ -417,6 +549,7 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
       itemColors: newOrderItemColors,
       itemSizes: newOrderItemSizes,
       itemHeights: newOrderItemHeights,
+      itemSewn: newOrderItems.map(() => false),
       deliveryMethod: orderDraft.deliveryMethod || '',
       paymentType: orderDraft.paymentType || '',
       invoiceType,
@@ -451,6 +584,23 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
         deleted: false,
       };
       await setDoc(orderRef, savedOrder, { merge: true });
+      const normalizedPhone = normalizeClientPhone(orderToCreate.clientPhone);
+      const contactId = normalizedPhone || `order-${orderToCreate.orderId}`;
+      const contactRef = doc(db, 'contacts', contactId);
+      const existingContact = await getDoc(contactRef).catch(() => null);
+      await setDoc(contactRef, {
+        userId: contactId,
+        fullName: orderToCreate.clientName,
+        phone: normalizedPhone,
+        insta: String(orderToCreate.clientInsta || '').replace(/^@/, '').trim(),
+        city: orderToCreate.clientCity || '',
+        address: orderToCreate.clientAddress || '',
+        source: orderToCreate.source || 'Заказ CRM',
+        createdAt: existingContact?.exists() ? existingContact.data()?.createdAt || now : now,
+        updatedAt: now,
+        lastOrderId: orderToCreate.orderId,
+        lastOrderAt: orderToCreate.date.toISOString(),
+      }, { merge: true });
       void logAuditEvent({
         action: before ? 'order_upserted' : 'order_created',
         entityType: 'order',
@@ -542,15 +692,31 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
         const d = docSnap.data();
         if (d.deleted === true) return;
         const orderDate = d.date ? new Date(d.date) : new Date();
-        const deadlineDate = addBusinessDays(orderDate, 7);
-        const normalizedStatus = String(d.status || '').toLowerCase();
+        const storedDeadlineDate = d.deadlineDate || d.shipmentDate
+          ? new Date(d.deadlineDate || d.shipmentDate)
+          : null;
+        const deadlineDate = storedDeadlineDate && Number.isFinite(storedDeadlineDate.getTime())
+          ? storedDeadlineDate
+          : addBusinessDays(orderDate, 7);
+        const status = normalizeOrderStatus(d.status || 'Новый');
+        const normalizedStatus = status.toLowerCase();
         const hasBlogger = Boolean(String(d.blogger || '').trim()) || String(d.source || '').toLowerCase().includes('блогер');
-        const isShipped = Boolean(d.isShipped) || normalizedStatus === 'отправлен' || normalizedStatus === 'готов' || normalizedStatus.includes('отгруж') || normalizedStatus.includes('достав');
-        const isOverdue = !isShipped && new Date() > deadlineDate;
+        const isShipped = Boolean(d.isShipped)
+          || normalizedStatus === 'отправлен'
+          || normalizedStatus === 'готов'
+          || normalizedStatus.includes('отгруж')
+          || normalizedStatus.includes('достав')
+          || normalizedStatus.includes('получ');
+        const isOverdue = !isShipped && !isRefundOrCancelledOrder({ status }) && new Date() > deadlineDate;
         fbOrders.push({
           ...d,
+          firestoreId: docSnap.id,
+          rawClientPhone: String(d.clientPhone || ''),
+          clientPhone: normalizeClientPhone(d.clientPhone),
+          status,
           isFirebase: true,
           date: orderDate,
+          activityAt: d.activityAt ? new Date(d.activityAt) : undefined,
           deadlineDate,
           isBlogger: Boolean(d.isBlogger) || hasBlogger,
           isShipped,
@@ -640,6 +806,7 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
         totalDueExtraPayments: 0,
         salesCount: 0,
         currentMonthDailyRows: [],
+        dailyRowsByMonth: {},
         uniqueSizes: [],
         uniqueDeliveries: ['СДЭК', 'Почта РФ', 'Боксберри', 'Самовывоз', 'Курьер', 'DBS'],
         uniquePromotions: [],
@@ -691,16 +858,19 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
 
     const clientMap = new Map<string, { name: string, phone: string, insta: string, city: string, total: number, count: number }>();
     uniqueOrders.forEach(o => {
-      const clientKey = o.clientPhone || o.clientName || "Unknown";
+      const normalizedPhone = normalizeClientPhone(o.clientPhone);
+      const normalizedName = String(o.clientName || '').trim().toLowerCase().replace(/ё/g, 'е').replace(/\s+/g, ' ');
+      const clientKey = normalizedPhone ? `phone:${normalizedPhone}` : normalizedName ? `name:${normalizedName}` : "Unknown";
       if (clientKey === "Unknown") return;
-      const current = clientMap.get(clientKey) || { name: o.clientName, phone: o.clientPhone, insta: o.clientInsta, city: o.clientCity, total: 0, count: 0 };
+      const current = clientMap.get(clientKey) || { name: o.clientName, phone: normalizedPhone, insta: o.clientInsta, city: o.clientCity, total: 0, count: 0 };
+      const isPurchase = isClientPurchaseOrder(o);
       clientMap.set(clientKey, {
         name: o.clientName || current.name,
-        phone: o.clientPhone || current.phone,
+        phone: normalizedPhone || current.phone,
         insta: o.clientInsta || current.insta,
         city: o.clientCity || current.city,
-        total: current.total + o.revenue,
-        count: current.count + 1
+        total: current.total + (isPurchase ? Number(o.revenue) || 0 : 0),
+        count: current.count + (isPurchase ? 1 : 0)
       });
     });
 
@@ -718,6 +888,7 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
     const bloggersList = Array.from(bloggerMap.values());
     const uniqueClients = clientMap.size;
     const isSalesOrder = (o: OrderData) => {
+      if (o.isBlogger) return false;
       const status = String(o.status || '').toLowerCase();
       return (Number(o.revenue) || 0) > 0 && !status.includes('возврат') && !status.includes('отмена');
     };
@@ -751,7 +922,11 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
       salesByPeriod[key].count += 1;
       const isReturn = o.status?.toLowerCase().includes('возврат');
       const isCancelled = o.status?.toLowerCase().includes('отмена');
-      if (isReturn) salesByPeriod[key].returns += 1;
+      if (isReturn || isCancelled) salesByPeriod[key].returns += 1;
+      if (isReturn || isCancelled) {
+        salesByPeriod[key].orderReturnsAmount = (salesByPeriod[key].orderReturnsAmount || 0)
+          + (Number(o.refundAmount) || getConfirmedPaidAmount(o) || Number(o.revenue) || 0);
+      }
       if (isSalesOrder(o)) {
         salesByPeriod[key].revenue += o.revenue;
         salesByPeriod[key].paidAmount += getConfirmedPaidAmount(o);
@@ -781,18 +956,21 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
       const monthIndex = parseInt(month, 10) - 1;
       const monthName = monthNames[monthIndex] || '???';
       const manualReturnsAmount = Number(val.manualReturnsAmount) || 0;
+      const orderReturnsAmount = Number(val.orderReturnsAmount) || 0;
+      const returnsAmount = manualReturnsAmount + orderReturnsAmount;
       return {
         period: `${monthName} ${year}`,
         shortPeriod: `${monthName.substring(0, 3)} ${year.substring(2)}`,
         monthName,
-        revenue: val.revenue - manualReturnsAmount,
+        revenue: val.revenue - returnsAmount,
         orders: val.count,
         totalOrders: val.count,
         sales: val.salesCount,
         paid: val.paidAmount,
         dueExtra: val.dueExtra,
         returns: val.returns,
-        returnsAmount: manualReturnsAmount,
+        returnsAmount,
+        orderReturnsAmount,
         manualReturnsCount: Number(val.manualReturnsCount) || 0,
         bloggers: val.bloggers.size,
         year: parseInt(year, 10),
@@ -803,8 +981,7 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
     const today = new Date();
     const currentYear = today.getFullYear();
     const currentMonth = today.getMonth();
-    const daysInCurrentMonth = new Date(currentYear, currentMonth + 1, 0).getDate();
-    const dailySalesMap = new Map<number, {
+    type DailySalesRow = {
       day: number;
       dateLabel: string;
       orders: number;
@@ -814,32 +991,42 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
       dueExtra: number;
       returnsAmount: number;
       delivery: number;
-    }>();
-
-    for (let day = 1; day <= daysInCurrentMonth; day += 1) {
-      const date = new Date(currentYear, currentMonth, day);
-      dailySalesMap.set(day, {
-        day,
-        dateLabel: date.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' }),
-        orders: 0,
-        sales: 0,
-        salesAmount: 0,
-        paid: 0,
-        dueExtra: 0,
-        returnsAmount: 0,
-        delivery: 0,
-      });
+    };
+    const dailyMaps = new Map<number, Map<number, DailySalesRow>>();
+    for (let month = 0; month < 12; month += 1) {
+      const monthMap = new Map<number, DailySalesRow>();
+      const daysInMonth = new Date(currentYear, month + 1, 0).getDate();
+      for (let day = 1; day <= daysInMonth; day += 1) {
+        const date = new Date(currentYear, month, day);
+        monthMap.set(day, {
+          day,
+          dateLabel: date.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' }),
+          orders: 0,
+          sales: 0,
+          salesAmount: 0,
+          paid: 0,
+          dueExtra: 0,
+          returnsAmount: 0,
+          delivery: 0,
+        });
+      }
+      dailyMaps.set(month, monthMap);
     }
 
     uniqueOrders.forEach((order) => {
       const date = order.date instanceof Date ? order.date : new Date(order.date);
-      if (!date || Number.isNaN(date.getTime()) || date.getFullYear() !== currentYear || date.getMonth() !== currentMonth) return;
-      const dayRow = dailySalesMap.get(date.getDate());
+      if (!date || Number.isNaN(date.getTime()) || date.getFullYear() !== currentYear) return;
+      const dayRow = dailyMaps.get(date.getMonth())?.get(date.getDate());
       if (!dayRow) return;
       const revenue = Number(order.revenue) || 0;
       const paid = getConfirmedPaidAmount(order);
       const delivery = Number(order.deliveryPrice) || 0;
       dayRow.orders += 1;
+      const status = String(order.status || '').toLowerCase();
+      if (status.includes('возврат') || status.includes('отмена')) {
+        dayRow.returnsAmount += Number(order.refundAmount) || paid || revenue;
+        return;
+      }
       if (isSalesOrder(order)) {
         dayRow.sales += 1;
         dayRow.salesAmount += revenue;
@@ -850,21 +1037,25 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
     });
 
     manualReturnOperations.forEach((operation) => {
-      if (operation.date.getFullYear() !== currentYear || operation.date.getMonth() !== currentMonth) return;
-      const dayRow = dailySalesMap.get(operation.date.getDate());
+      if (operation.date.getFullYear() !== currentYear) return;
+      const dayRow = dailyMaps.get(operation.date.getMonth())?.get(operation.date.getDate());
       if (!dayRow) return;
       dayRow.returnsAmount += operation.amount;
     });
 
-    const currentMonthDailyRows = Array.from(dailySalesMap.values())
-      .map(row => ({
-        ...row,
-        net: Math.max(0, row.paid - row.returnsAmount),
-        isToday: row.day === today.getDate(),
-        hasActivity: row.orders > 0 || row.salesAmount > 0 || row.paid > 0 || row.dueExtra > 0 || row.returnsAmount > 0,
-      }))
-      .filter(row => row.hasActivity)
-      .sort((a, b) => a.day - b.day);
+    const dailyRowsByMonth = Object.fromEntries(Array.from(dailyMaps.entries()).map(([month, monthMap]) => [
+      month,
+      Array.from(monthMap.values())
+        .map(row => ({
+          ...row,
+          net: row.paid - row.returnsAmount,
+          isToday: month === currentMonth && row.day === today.getDate(),
+          hasActivity: row.orders > 0 || row.salesAmount > 0 || row.paid > 0 || row.dueExtra > 0 || row.returnsAmount > 0,
+        }))
+        .filter(row => row.hasActivity)
+        .sort((a, b) => a.day - b.day),
+    ]));
+    const currentMonthDailyRows = dailyRowsByMonth[currentMonth] || [];
 
     const bestMonths = [...chartData].sort((a, b) => b.revenue - a.revenue).slice(0, 5);
     const bloggersByMonth = chartData.map(d => ({ name: d.period, count: d.bloggers }));
@@ -915,12 +1106,13 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
       bloggerOrdersCount,
       bloggerRevenue,
       uniqueOrders: Array.from(ordersMap.values()),
-      returnsCount: uniqueOrders.filter(o => o.status?.toLowerCase().includes('возврат')).length + manualReturnOperations.length,
+      returnsCount: uniqueOrders.filter(isRefundOrCancelledOrder).length + manualReturnOperations.length,
       exchangesCount: uniqueOrders.filter(o => o.status?.toLowerCase().includes('обмен')).length,
       totalActualPayments: salesOrders.reduce((sum, o) => sum + getConfirmedPaidAmount(o), 0) - manualReturnAmount,
       totalDueExtraPayments: salesOrders.reduce((sum, o) => sum + getOutstandingPaymentAmount(o), 0),
       salesCount: salesOrders.length,
       currentMonthDailyRows,
+      dailyRowsByMonth,
       uniqueSizes,
       uniqueDeliveries,
       uniquePromotions,
@@ -928,39 +1120,45 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
       uniqueColors,
       uniqueSources,
       uniqueCategories,
-      slaStats: {
-        totalOrders: uniqueOrders.length,
-        shipped: uniqueOrders.filter(o => o.isShipped).length,
-        inProgress: uniqueOrders.filter(o => !o.isShipped).length,
-        onTime: uniqueOrders.filter(o => !o.isShipped && !o.isOverdue).length,
-        overdue: uniqueOrders.filter(o => o.isOverdue).length,
-        onTimeRate: uniqueOrders.length > 0 ? (uniqueOrders.filter(o => !o.isOverdue).length / uniqueOrders.length) * 100 : 0
-      }
+      slaStats: (() => {
+        const activeOrders = uniqueOrders.filter(o => !isRefundOrCancelledOrder(o));
+        return {
+          totalOrders: activeOrders.length,
+          shipped: activeOrders.filter(o => o.isShipped).length,
+          inProgress: activeOrders.filter(o => !o.isShipped).length,
+          onTime: activeOrders.filter(o => !o.isShipped && !isOverdueOrder(o)).length,
+          overdue: activeOrders.filter(isOverdueOrder).length,
+          onTimeRate: activeOrders.length > 0
+            ? (activeOrders.filter(o => !isOverdueOrder(o)).length / activeOrders.length) * 100
+            : 0
+        };
+      })()
     };
   }, [data]);
 
   const filteredOrders = useMemo(() => {
     if (!stats?.uniqueOrders) return [];
+    const hasSearch = Boolean(searchTerm.trim());
     return stats.uniqueOrders
+      .slice()
       .sort((a: OrderData, b: OrderData) => {
+        const activityDifference = (b.activityAt?.getTime() || 0) - (a.activityAt?.getTime() || 0);
+        if (activityDifference) return activityDifference;
         const pinDifference = Number(Boolean(b.isPinned)) - Number(Boolean(a.isPinned));
         return pinDifference || b.date.getTime() - a.date.getTime();
       })
       .filter((o: OrderData) => {
-        const matchesMonth = ordersFilterMonth === -1 || o.month === ordersFilterMonth;
-        const matchesStatus = !orderStatusFilter
+        const matchesMonth = hasSearch || ordersFilterMonth === -1 || o.month === ordersFilterMonth;
+        const matchesStatus = hasSearch || !orderStatusFilter
           || (orderStatusFilter === PREPAYMENT_FILTER_VALUE
             ? isPrepaymentOrder(o)
-            : String(o.status || '').toLowerCase() === orderStatusFilter.toLowerCase());
-        const matchesBlogger = !orderBloggerFilter || String(o.blogger || '').trim() === orderBloggerFilter;
-        const search = searchTerm.toLowerCase();
-        const matchesSearch = !searchTerm ||
-          o.orderId.toLowerCase().includes(search) ||
-          o.clientName.toLowerCase().includes(search) ||
-          String(o.item || '').toLowerCase().includes(search) ||
-          String(o.blogger || '').toLowerCase().includes(search) ||
-          (Array.isArray(o.items) && o.items.some(item => String(item || '').toLowerCase().includes(search))) ||
-          (o.clientPhone && o.clientPhone.includes(search));
+            : orderStatusFilter === OVERDUE_FILTER_VALUE
+              ? isOverdueOrder(o)
+              : orderStatusFilter === REFUND_OR_CANCELLED_FILTER_VALUE
+                ? isRefundOrCancelledOrder(o)
+              : normalizeOrderStatus(o.status).toLowerCase() === normalizeOrderStatus(orderStatusFilter).toLowerCase());
+        const matchesBlogger = hasSearch || !orderBloggerFilter || String(o.blogger || '').trim() === orderBloggerFilter;
+        const matchesSearch = matchesOrderSearch(o, searchTerm);
         return matchesMonth && matchesStatus && matchesBlogger && matchesSearch;
       });
   }, [stats?.uniqueOrders, searchTerm, ordersFilterMonth, orderStatusFilter, orderBloggerFilter]);
@@ -971,18 +1169,19 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
 
   const filteredSlaStats = useMemo(() => {
     if (!stats) return null;
-    const filtered = slaFilterMonth === -1 ? stats.uniqueOrders : stats.uniqueOrders.filter((o: OrderData) => o.month === slaFilterMonth);
+    const periodOrders = slaFilterMonth === -1 ? stats.uniqueOrders : stats.uniqueOrders.filter((o: OrderData) => o.month === slaFilterMonth);
+    const filtered = periodOrders.filter((o: OrderData) => !isRefundOrCancelledOrder(o));
     const totalOrders = filtered.length;
     const shipped = filtered.filter((o: OrderData) => o.isShipped).length;
     const inProgress = filtered.filter((o: OrderData) => !o.isShipped).length;
-    const onTime = filtered.filter((o: OrderData) => !o.isShipped && !o.isOverdue).length;
-    const overdue = filtered.filter((o: OrderData) => o.isOverdue).length;
+    const onTime = filtered.filter((o: OrderData) => !o.isShipped && !isOverdueOrder(o)).length;
+    const overdue = filtered.filter(isOverdueOrder).length;
     const lostRevenue = filtered
-      .filter((o: OrderData) => o.isOverdue && !o.isShipped)
+      .filter(isOverdueOrder)
       .reduce((sum: number, o: OrderData) => sum + getOutstandingPaymentAmount(o), 0);
     return {
       totalOrders, shipped, inProgress, onTime, overdue,
-      onTimeRate: totalOrders > 0 ? (filtered.filter((o: OrderData) => !o.isOverdue).length / totalOrders) * 100 : 0,
+      onTimeRate: totalOrders > 0 ? (filtered.filter((o: OrderData) => !isOverdueOrder(o)).length / totalOrders) * 100 : 0,
       lostRevenue
     };
   }, [stats, slaFilterMonth]);

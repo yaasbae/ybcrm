@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Bell, BellOff, Loader2 } from 'lucide-react';
-import { disablePushNotifications, enablePushNotifications, getPushState } from '../lib/pushNotifications';
+import { disablePushNotifications, enablePushNotifications, repairPushNotifications } from '../lib/pushNotifications';
 
 export function PushNotificationButton() {
   const [enabled, setEnabled] = useState(false);
@@ -8,10 +8,16 @@ export function PushNotificationButton() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    getPushState()
+    const refresh = () => repairPushNotifications()
       .then(state => { setSupported(state.supported); setEnabled(state.enabled); })
       .catch(() => { setSupported(false); setEnabled(false); })
       .finally(() => setLoading(false));
+    void refresh();
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') void refresh();
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => document.removeEventListener('visibilitychange', onVisibility);
   }, []);
 
   useEffect(() => {
@@ -32,9 +38,13 @@ export function PushNotificationButton() {
     }
     setLoading(true);
     try {
-      if (enabled) await disablePushNotifications();
-      else await enablePushNotifications();
-      setEnabled(!enabled);
+      if (enabled) {
+        await disablePushNotifications();
+        setEnabled(false);
+      } else {
+        await enablePushNotifications();
+        setEnabled(true);
+      }
     } catch (error: any) {
       window.alert(error?.message || 'Не удалось изменить настройки уведомлений');
     } finally {

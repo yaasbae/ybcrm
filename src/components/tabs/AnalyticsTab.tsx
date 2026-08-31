@@ -95,8 +95,10 @@ export const AnalyticsTab: React.FC<AnalyticsTabProps> = ({ stats, onGoToOrders 
     }), { orders: 0, sales: 0, paid: 0, dueExtra: 0, returnsAmount: 0 });
   }, [analyticsMonths]);
 
-  const currentMonthDailyRows = useMemo(() => {
-    return (stats?.currentMonthDailyRows || []).map((row: any) => ({
+  const dailyMonth = selectedMonth === -1 ? new Date().getMonth() : selectedMonth;
+  const selectedDailyRows = useMemo(() => {
+    const rows = stats?.dailyRowsByMonth?.[dailyMonth] || [];
+    return rows.map((row: any) => ({
       ...row,
       paid: Number(row.paid) || 0,
       dueExtra: Number(row.dueExtra) || 0,
@@ -107,10 +109,10 @@ export const AnalyticsTab: React.FC<AnalyticsTabProps> = ({ stats, onGoToOrders 
       salesAmount: Number(row.salesAmount) || 0,
       delivery: Number(row.delivery) || 0,
     }));
-  }, [stats?.currentMonthDailyRows]);
+  }, [dailyMonth, stats?.dailyRowsByMonth]);
 
-  const currentMonthDailyTotals = useMemo(() => {
-    return currentMonthDailyRows.reduce((acc: any, row: any) => ({
+  const selectedDailyTotals = useMemo(() => {
+    return selectedDailyRows.reduce((acc: any, row: any) => ({
       orders: acc.orders + row.orders,
       sales: acc.sales + row.sales,
       salesAmount: acc.salesAmount + row.salesAmount,
@@ -120,7 +122,7 @@ export const AnalyticsTab: React.FC<AnalyticsTabProps> = ({ stats, onGoToOrders 
       delivery: acc.delivery + row.delivery,
       net: acc.net + row.net,
     }), { orders: 0, sales: 0, salesAmount: 0, paid: 0, dueExtra: 0, returnsAmount: 0, delivery: 0, net: 0 });
-  }, [currentMonthDailyRows]);
+  }, [selectedDailyRows]);
 
   const insights = useMemo(() => {
     const source = selectedMonth === -1 ? allMonths2026 : analyticsMonths;
@@ -233,19 +235,19 @@ export const AnalyticsTab: React.FC<AnalyticsTabProps> = ({ stats, onGoToOrders 
           <div className="flex flex-col gap-1 border-b border-[#E6E9EF] px-4 py-4 sm:flex-row sm:items-end sm:justify-between sm:px-5">
             <div>
               <h4 className="text-[20px] font-medium leading-[26px] text-[#1F2937]">Сводка по дням</h4>
-              <p className="mt-1 text-[12px] font-medium text-[#6B7280]">Текущий месяц: продажи, оплаты, доплаты и возвраты по датам</p>
+              <p className="mt-1 text-[12px] font-medium text-[#6B7280]">{MONTHS[dailyMonth]} 2026: продажи, оплаты, доплаты и возвраты по датам</p>
             </div>
             <div className="grid grid-cols-2 gap-2 text-[11px] font-semibold sm:flex">
-              <span className="rounded-[8px] bg-emerald-50 px-3 py-2 text-emerald-700">{currentMonthDailyTotals.sales} продаж</span>
-              <span className="rounded-[8px] bg-[#F6F7F9] px-3 py-2 text-[#1F2937]">{formatCurrency(currentMonthDailyTotals.salesAmount)} сумма продаж</span>
-              <span className="rounded-[8px] bg-[#F6F7F9] px-3 py-2 text-[#1F2937]">{formatCurrency(currentMonthDailyTotals.net)} итог</span>
+              <span className="rounded-[8px] bg-emerald-50 px-3 py-2 text-emerald-700">{selectedDailyTotals.sales} продаж</span>
+              <span className="rounded-[8px] bg-[#F6F7F9] px-3 py-2 text-[#1F2937]">{formatCurrency(selectedDailyTotals.salesAmount)} сумма продаж</span>
+              <span className="rounded-[8px] bg-[#F6F7F9] px-3 py-2 text-[#1F2937]">{formatCurrency(selectedDailyTotals.net)} итог</span>
             </div>
           </div>
 
-          {currentMonthDailyRows.length ? (
+          {selectedDailyRows.length ? (
             <>
               <div className="space-y-2 p-3 md:hidden">
-                {currentMonthDailyRows.map((row: any) => (
+                {selectedDailyRows.map((row: any) => (
                   <div key={`day-${row.day}`} className={cn("rounded-[10px] border border-[#E6E9EF] bg-white p-4", row.isToday && "border-[#7D7DE6] bg-[#F7F7FF]")}>
                     <div className="mb-3 flex items-start justify-between gap-3">
                       <div>
@@ -281,7 +283,7 @@ export const AnalyticsTab: React.FC<AnalyticsTabProps> = ({ stats, onGoToOrders 
                     </tr>
                   </thead>
                   <tbody>
-                    {currentMonthDailyRows.map((row: any) => (
+                    {selectedDailyRows.map((row: any) => (
                       <tr key={`daily-${row.day}`} className={cn("border-b border-[#F1F3F6] text-[13px] font-semibold last:border-b-0", row.isToday && "bg-[#F7F7FF]")}>
                         <td className="px-5 py-3 text-[#1F2937]">
                           {row.dateLabel}
@@ -299,14 +301,14 @@ export const AnalyticsTab: React.FC<AnalyticsTabProps> = ({ stats, onGoToOrders 
                     ))}
                     <tr className="bg-[#F6F7F9] text-[13px] font-bold">
                       <td className="px-5 py-4 text-[#1F2937]">Итого</td>
-                      <td className="px-5 py-4 text-right text-[#6B7280]">{currentMonthDailyTotals.orders}</td>
-                      <td className="px-5 py-4 text-right text-[#6B7280]">{currentMonthDailyTotals.sales}</td>
-                      <td className="px-5 py-4 text-right text-[#1F2937]">{formatCurrency(currentMonthDailyTotals.salesAmount)}</td>
-                      <td className="px-5 py-4 text-right text-emerald-600">{formatCurrency(currentMonthDailyTotals.paid)}</td>
-                      <td className="px-5 py-4 text-right text-[#9CA3AF]">{formatCurrency(currentMonthDailyTotals.delivery)}</td>
-                      <td className="px-5 py-4 text-right text-orange-500">{formatCurrency(currentMonthDailyTotals.dueExtra)}</td>
-                      <td className="px-5 py-4 text-right text-red-500">−{formatCurrency(currentMonthDailyTotals.returnsAmount)}</td>
-                      <td className="px-5 py-4 text-right text-[#1F2937]">{formatCurrency(currentMonthDailyTotals.net)}</td>
+                      <td className="px-5 py-4 text-right text-[#6B7280]">{selectedDailyTotals.orders}</td>
+                      <td className="px-5 py-4 text-right text-[#6B7280]">{selectedDailyTotals.sales}</td>
+                      <td className="px-5 py-4 text-right text-[#1F2937]">{formatCurrency(selectedDailyTotals.salesAmount)}</td>
+                      <td className="px-5 py-4 text-right text-emerald-600">{formatCurrency(selectedDailyTotals.paid)}</td>
+                      <td className="px-5 py-4 text-right text-[#9CA3AF]">{formatCurrency(selectedDailyTotals.delivery)}</td>
+                      <td className="px-5 py-4 text-right text-orange-500">{formatCurrency(selectedDailyTotals.dueExtra)}</td>
+                      <td className="px-5 py-4 text-right text-red-500">−{formatCurrency(selectedDailyTotals.returnsAmount)}</td>
+                      <td className="px-5 py-4 text-right text-[#1F2937]">{formatCurrency(selectedDailyTotals.net)}</td>
                     </tr>
                   </tbody>
                 </table>
@@ -315,7 +317,7 @@ export const AnalyticsTab: React.FC<AnalyticsTabProps> = ({ stats, onGoToOrders 
           ) : (
             <div className="flex min-h-[140px] flex-col items-center justify-center gap-2 px-4 py-8 text-center text-[#9CA3AF]">
               <Calendar className="h-7 w-7 opacity-40" />
-              <p className="text-[12px] font-semibold uppercase tracking-[0.16em]">В текущем месяце пока нет продаж</p>
+              <p className="text-[12px] font-semibold uppercase tracking-[0.16em]">За {MONTHS[dailyMonth].toLowerCase()} пока нет операций</p>
             </div>
           )}
         </div>

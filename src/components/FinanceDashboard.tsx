@@ -140,6 +140,7 @@ const getOrderRevenue = (order: any): number => {
 };
 
 const isActiveSale = (order: any): boolean => {
+  if (order.isBlogger) return false;
   const status = String(order.status || '').toLowerCase();
   return getOrderRevenue(order) > 0 && !status.includes('возврат') && !status.includes('отмена');
 };
@@ -338,7 +339,14 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
       const status = String(order.status || '').toLowerCase();
 
       month.orders += 1;
-      if (status.includes('возврат')) {
+      if (order.isBlogger) {
+        const bloggerCost = Number(order.bloggerTotalCost)
+          || (Array.isArray(order.itemCosts) ? order.itemCosts.reduce((sum: number, value: any) => sum + (Number(value) || 0), 0) : 0) + delivery;
+        month.expense += bloggerCost;
+        month.delivery += Number(order.bloggerDeliveryCost) || delivery;
+        return;
+      }
+      if (status.includes('возврат') || status.includes('отмена')) {
         month.returns += Number(order.refundAmount) || paid || revenue;
         return;
       }
@@ -473,7 +481,7 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
     {
       label: 'Возвраты / отмены',
       value: actualReturnsForPeriod,
-      caption: 'деньги, фактически возвращённые клиентам',
+      caption: 'возвращённые деньги и отменённые заказы без выручки',
       tone: 'text-red-500',
       bg: 'bg-red-50',
       icon: RefreshCcw,
