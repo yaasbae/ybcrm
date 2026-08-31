@@ -871,6 +871,22 @@ async function dispatchPushEvent(type: PushEventType, eventId: string, data: Pus
   const accessByUid = new Map(accessSnapshots.map((snap: any) => [snap.id, snap.exists ? snap.data() : null]));
   const payload = JSON.stringify({ ...pushContent(type, data), tag: eventId, type });
   let sent = 0;
+  let failed = 0;
+  const deliver = async (subscription: any) => {
+    let lastError: any = null;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        return await webpush.sendNotification(subscription, payload, { TTL: 60 * 60 * 24 });
+      } catch (error: any) {
+        lastError = error;
+        const status = Number(error?.statusCode || 0);
+        const retryable = status === 0 || status === 429 || status >= 500;
+        if (attempt === 2 || !retryable) throw error;
+        await new Promise(resolve => setTimeout(resolve, 250 * (attempt + 1)));
+      }
+    }
+    throw lastError;
+  };
   await Promise.all(subscriptions.docs.map(async (item: any) => {
     const subscriptionData = item.data() || {};
     const subscription = subscriptionData.subscription;
@@ -884,14 +900,26 @@ async function dispatchPushEvent(type: PushEventType, eventId: string, data: Pus
       || (access?.active !== false && (topics?.includes("all") || topics?.includes(eventTopic)));
     if (!receivesEvent) return;
     try {
-      await webpush.sendNotification(subscription, payload, { TTL: 60 * 60 * 24 });
+      await deliver(subscription);
       sent += 1;
+      await item.ref.set({
+        lastDeliveryAt: FieldValue.serverTimestamp(),
+        lastDeliveryError: FieldValue.delete(),
+      }, { merge: true }).catch(() => null);
     } catch (error: any) {
+      failed += 1;
       if ([404, 410].includes(Number(error?.statusCode))) await item.ref.delete().catch(() => null);
-      else console.warn("[push] delivery:", error?.statusCode || error?.message || error);
+      else {
+        const errorMessage = String(error?.body || error?.message || error).slice(0, 500);
+        await item.ref.set({
+          lastDeliveryErrorAt: FieldValue.serverTimestamp(),
+          lastDeliveryError: `${error?.statusCode || "error"}: ${errorMessage}`,
+        }, { merge: true }).catch(() => null);
+        console.warn("[push] delivery:", error?.statusCode || "error", errorMessage);
+      }
     }
   }));
-  return { sent };
+  return { sent, failed };
 }
 
 app.get("/api/push/vapid-public-key", async (req, res) => {
@@ -914,6 +942,7 @@ app.post("/api/push/subscribe", async (req, res) => {
     email: user.email || "",
     name: user.name || "",
     userAgent: String(req.headers["user-agent"] || "").slice(0, 300),
+    vapidPublicKey: WEB_PUSH_PUBLIC_KEY,
     updatedAt: FieldValue.serverTimestamp(),
   }, { merge: true });
   res.json({ success: true });

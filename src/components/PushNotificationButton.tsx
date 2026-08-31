@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Bell, BellOff, Loader2 } from 'lucide-react';
-import { disablePushNotifications, enablePushNotifications, repairPushNotifications } from '../lib/pushNotifications';
+import { disablePushNotifications, enablePushNotifications, getPushSupport, repairPushNotifications } from '../lib/pushNotifications';
 
 export function PushNotificationButton() {
   const [enabled, setEnabled] = useState(false);
@@ -10,7 +10,7 @@ export function PushNotificationButton() {
   useEffect(() => {
     const refresh = () => repairPushNotifications()
       .then(state => { setSupported(state.supported); setEnabled(state.enabled); })
-      .catch(() => { setSupported(false); setEnabled(false); })
+      .catch(() => { setSupported(getPushSupport()); setEnabled(false); })
       .finally(() => setLoading(false));
     void refresh();
     const onVisibility = () => {

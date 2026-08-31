@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import {
   PieChart, Pie, Cell, ResponsiveContainer, Tooltip,
@@ -315,27 +315,35 @@ const OrderStatusMenu: React.FC<{
   className?: string;
 }> = ({ orderId, value, options, onChange, className }) => {
   const [open, setOpen] = useState(false);
-  const [position, setPosition] = useState({ top: 0, left: 0, width: 220 });
+  const [position, setPosition] = useState({ top: 0, left: 0, width: 220, maxHeight: 360 });
   const buttonRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const menuOptions = optionsWithCurrent(options, value, STATUS_OPTIONS);
 
-  const toggleMenu = (event: React.MouseEvent<HTMLButtonElement>) => {
-    event.stopPropagation();
-    if (!open && buttonRef.current) {
+  const updatePosition = useCallback(() => {
+    if (buttonRef.current) {
       const rect = buttonRef.current.getBoundingClientRect();
       const width = Math.max(220, rect.width);
       const estimatedHeight = Math.min(360, menuOptions.length * 40 + 16);
-      const spaceBelow = window.innerHeight - rect.bottom;
-      const top = spaceBelow >= Math.min(estimatedHeight, 240)
+      const spaceBelow = Math.max(0, window.innerHeight - rect.bottom - 8);
+      const spaceAbove = Math.max(0, rect.top - 8);
+      const openBelow = spaceBelow >= Math.min(estimatedHeight, 240) || spaceBelow >= spaceAbove;
+      const maxHeight = Math.max(80, Math.min(360, openBelow ? spaceBelow - 6 : spaceAbove - 6));
+      const top = openBelow
         ? rect.bottom + 6
-        : Math.max(8, rect.top - estimatedHeight - 6);
+        : Math.max(8, rect.top - Math.min(estimatedHeight, maxHeight) - 6);
       setPosition({
         top,
         left: Math.max(8, Math.min(rect.left, window.innerWidth - width - 8)),
         width,
+        maxHeight,
       });
     }
+  }, [menuOptions.length]);
+
+  const toggleMenu = (event: React.MouseEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+    if (!open) updatePosition();
     setOpen(current => !current);
   };
 
@@ -346,26 +354,21 @@ const OrderStatusMenu: React.FC<{
       if (buttonRef.current?.contains(target) || menuRef.current?.contains(target)) return;
       setOpen(false);
     };
-    const closeMenu = () => setOpen(false);
-    const closeOnOutsideScroll = (event: Event) => {
-      const target = event.target as Node | null;
-      if (target && menuRef.current?.contains(target)) return;
-      setOpen(false);
-    };
+    const repositionMenu = () => updatePosition();
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === 'Escape') setOpen(false);
     };
     document.addEventListener('pointerdown', closeOutside);
     document.addEventListener('keydown', closeOnEscape);
-    window.addEventListener('resize', closeMenu);
-    window.addEventListener('scroll', closeOnOutsideScroll, true);
+    window.addEventListener('resize', repositionMenu);
+    window.addEventListener('scroll', repositionMenu, true);
     return () => {
       document.removeEventListener('pointerdown', closeOutside);
       document.removeEventListener('keydown', closeOnEscape);
-      window.removeEventListener('resize', closeMenu);
-      window.removeEventListener('scroll', closeOnOutsideScroll, true);
+      window.removeEventListener('resize', repositionMenu);
+      window.removeEventListener('scroll', repositionMenu, true);
     };
-  }, [open]);
+  }, [open, updatePosition]);
 
   return (
     <>
@@ -393,8 +396,10 @@ const OrderStatusMenu: React.FC<{
           ref={menuRef}
           role="listbox"
           aria-label={`Выбор статуса заказа ${orderId}`}
-          style={{ position: 'fixed', top: position.top, left: position.left, width: position.width }}
-          className="z-[9999] max-h-[360px] overscroll-contain overflow-y-auto rounded-[12px] border border-[#E6E9EF] bg-white p-1.5 shadow-[0_18px_50px_rgba(31,41,55,0.18)]"
+          style={{ position: 'fixed', top: position.top, left: position.left, width: position.width, maxHeight: position.maxHeight }}
+          onWheel={event => event.stopPropagation()}
+          onTouchMove={event => event.stopPropagation()}
+          className="z-[9999] touch-pan-y overscroll-contain overflow-y-auto rounded-[12px] border border-[#E6E9EF] bg-white p-1.5 shadow-[0_18px_50px_rgba(31,41,55,0.18)] [-webkit-overflow-scrolling:touch]"
         >
           {menuOptions.map(option => {
             const selected = option === value;
