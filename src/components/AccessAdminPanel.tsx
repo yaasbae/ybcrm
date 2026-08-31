@@ -99,7 +99,7 @@ export const AccessAdminPanel: React.FC = () => {
       const payload = await ownerRequest('/api/admin/accounts');
       const next = Array.isArray(payload.accounts) ? payload.accounts as AccountAccess[] : [];
       setAccounts(next);
-      setNotice(payload.degraded ? 'Аккаунты восстановлены из профилей CRM; серверные права Firebase Auth ограничены.' : '');
+      setNotice(payload.degraded ? 'Аккаунты загружены. Управление логинами временно восстанавливается — повторите сохранение через минуту.' : '');
       const uid = preferredUid || selectedUid || next[0]?.uid || '';
       const selected = next.find(account => account.uid === uid) || next[0] || null;
       setSelectedUid(selected?.uid || '');

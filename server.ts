@@ -577,6 +577,15 @@ function accessAccount(uid: string, data: any, ownerEmail: string) {
   };
 }
 
+function firebaseAuthErrorMessage(error: any, fallback: string) {
+  const code = String(error?.code || "").toLowerCase();
+  if (code.includes("email-already-exists")) return "Аккаунт с такой почтой уже существует";
+  if (code.includes("invalid-password") || code.includes("password-too-short")) return "Пароль должен быть не короче 8 символов";
+  if (code.includes("invalid-email")) return "Укажите корректную почту";
+  if (code.includes("user-not-found")) return "Аккаунт не найден в Firebase Auth";
+  return fallback;
+}
+
 app.get("/api/access/me", async (req, res) => {
   const decoded: any = await requireCrmUser(req, res);
   if (!decoded) return;
@@ -611,8 +620,8 @@ app.get("/api/admin/accounts", async (req, res) => {
     try {
       authUsers = (await getAdminAuth().listUsers(1000)).users;
     } catch (error: any) {
-      authListError = String(error?.code || error?.message || "Firebase Auth недоступен");
-      console.warn("[admin] Firebase Auth account list fallback:", authListError);
+      authListError = String(error?.code || "firebase-auth-unavailable");
+      console.warn("[admin] Firebase Auth account list fallback:", authListError, String(error?.message || "").slice(0, 500));
     }
 
     const profiles = new Map<string, any>();
@@ -714,10 +723,7 @@ app.post("/api/admin/accounts", async (req, res) => {
     res.status(201).json({ success: true, uid: account.uid, email });
   } catch (error: any) {
     console.error("[admin] account create:", error?.message || error);
-    const message = String(error?.code || "").includes("email-already-exists")
-      ? "Аккаунт с такой почтой уже существует"
-      : (error?.message || "Не удалось создать аккаунт");
-    res.status(400).json({ error: message });
+    res.status(400).json({ error: firebaseAuthErrorMessage(error, "Не удалось создать аккаунт. Повторите попытку через минуту.") });
   }
 });
 
@@ -761,7 +767,7 @@ app.patch("/api/admin/accounts/:uid", async (req, res) => {
     res.json({ success: true });
   } catch (error: any) {
     console.error("[admin] account update:", error?.message || error);
-    res.status(400).json({ error: error?.message || "Не удалось обновить права аккаунта" });
+    res.status(400).json({ error: firebaseAuthErrorMessage(error, "Не удалось обновить права аккаунта. Повторите попытку через минуту.") });
   }
 });
 
