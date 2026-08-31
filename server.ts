@@ -521,6 +521,62 @@ function normalizedAllowedValues(value: unknown, allowed: string[]) {
     .filter(item => allowedSet.has(item))));
 }
 
+function decodeFirestoreRestValue(value: any): any {
+  if (!value || typeof value !== "object") return null;
+  if ("stringValue" in value) return value.stringValue;
+  if ("booleanValue" in value) return Boolean(value.booleanValue);
+  if ("integerValue" in value) return Number(value.integerValue);
+  if ("doubleValue" in value) return Number(value.doubleValue);
+  if ("timestampValue" in value) return value.timestampValue;
+  if ("nullValue" in value) return null;
+  if (value.arrayValue) return (value.arrayValue.values || []).map(decodeFirestoreRestValue);
+  if (value.mapValue) return Object.fromEntries(
+    Object.entries(value.mapValue.fields || {}).map(([key, child]) => [key, decodeFirestoreRestValue(child)]),
+  );
+  return null;
+}
+
+async function readFirestoreCollectionAsUser(req: any, collectionName: string) {
+  const authHeader = String(req.headers?.authorization || "");
+  if (!authHeader.startsWith("Bearer ") || !firebaseProjectId) return [];
+  const response = await axios.get(
+    `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(firebaseProjectId)}/databases/${encodeURIComponent(firebaseDatabaseId)}/documents/${encodeURIComponent(collectionName)}`,
+    {
+      headers: { Authorization: authHeader },
+      params: { pageSize: 1000 },
+      timeout: 15_000,
+    },
+  );
+  return (response.data?.documents || []).map((document: any) => ({
+    id: String(document.name || "").split("/").pop() || "",
+    data: Object.fromEntries(
+      Object.entries(document.fields || {}).map(([key, value]) => [key, decodeFirestoreRestValue(value)]),
+    ),
+  }));
+}
+
+function accessAccount(uid: string, data: any, ownerEmail: string) {
+  const email = String(data?.email || data?.managerEmail || "").trim().toLowerCase();
+  const isOwner = email === ownerEmail;
+  return {
+    uid,
+    email,
+    displayName: String(data?.displayName || data?.managerName || ""),
+    disabled: isOwner ? false : data?.active === false,
+    createdAt: data?.createdAt || null,
+    lastLoginAt: data?.lastLoginAt || null,
+    configured: isOwner || Boolean(data?.role || data?.allowedViews),
+    role: isOwner ? "owner" : String(data?.role || "legacy"),
+    allowedViews: isOwner
+      ? CRM_ACCESS_VIEWS
+      : Array.isArray(data?.allowedViews) ? normalizedAllowedValues(data.allowedViews, CRM_ACCESS_VIEWS) : CRM_ACCESS_VIEWS,
+    notificationTopics: isOwner
+      ? ["all"]
+      : Array.isArray(data?.notificationTopics) ? normalizedAllowedValues(data.notificationTopics, CRM_NOTIFICATION_TOPICS) : ["all"],
+    active: isOwner ? true : data?.active !== false,
+  };
+}
+
 app.get("/api/access/me", async (req, res) => {
   const decoded: any = await requireCrmUser(req, res);
   if (!decoded) return;
@@ -549,14 +605,31 @@ app.get("/api/admin/accounts", async (req, res) => {
   const owner: any = await requireFinanceOwner(req, res);
   if (!owner) return;
   try {
-    const [usersResult, profilesSnapshot] = await Promise.all([
-      getAdminAuth().listUsers(1000),
-      adminDb.collection("crm_access_profiles").get(),
-    ]);
-    const profiles = new Map(profilesSnapshot.docs.map((item: any) => [item.id, item.data() || {}]));
-    const accounts = usersResult.users.map((account: any) => {
+    const ownerEmail = String(owner.email || "").trim().toLowerCase();
+    let authUsers: any[] = [];
+    let authListError = "";
+    try {
+      authUsers = (await getAdminAuth().listUsers(1000)).users;
+    } catch (error: any) {
+      authListError = String(error?.code || error?.message || "Firebase Auth недоступен");
+      console.warn("[admin] Firebase Auth account list fallback:", authListError);
+    }
+
+    const profiles = new Map<string, any>();
+    try {
+      if (adminDb) {
+        const snapshot = await adminDb.collection("crm_access_profiles").get();
+        snapshot.docs.forEach((item: any) => profiles.set(item.id, item.data() || {}));
+      }
+    } catch (error: any) {
+      console.warn("[admin] access profiles Admin read fallback:", error?.message || error);
+      const rows = await readFirestoreCollectionAsUser(req, "crm_access_profiles").catch(() => []);
+      rows.forEach((item: any) => profiles.set(item.id, item.data || {}));
+    }
+
+    let accounts = authUsers.map((account: any) => {
       const profile: any = profiles.get(account.uid) || null;
-      const isOwner = String(account.email || "").trim().toLowerCase() === "ndtiger86@gmail.com";
+      const isOwner = String(account.email || "").trim().toLowerCase() === ownerEmail;
       return {
         uid: account.uid,
         email: account.email || "",
@@ -571,7 +644,34 @@ app.get("/api/admin/accounts", async (req, res) => {
         active: isOwner ? true : profile?.active !== false,
       };
     });
-    res.json({ accounts, views: CRM_ACCESS_VIEWS, notificationTopics: CRM_NOTIFICATION_TOPICS });
+
+    if (!accounts.length) {
+      const managerRows = await readFirestoreCollectionAsUser(req, "manager_profiles").catch((error: any) => {
+        console.warn("[admin] manager profiles fallback:", error?.message || error);
+        return [];
+      });
+      const fallback = new Map<string, any>();
+      fallback.set(owner.uid, accessAccount(owner.uid, {
+        email: ownerEmail,
+        displayName: owner.name || "Владелец",
+        role: "owner",
+        active: true,
+      }, ownerEmail));
+      profiles.forEach((data, uid) => fallback.set(uid, accessAccount(uid, data, ownerEmail)));
+      managerRows.forEach((item: any) => {
+        const current = fallback.get(item.id);
+        fallback.set(item.id, accessAccount(item.id, { ...item.data, ...(current || {}) }, ownerEmail));
+      });
+      accounts = Array.from(fallback.values()).filter(account => account.email);
+    }
+
+    accounts.sort((a: any, b: any) => Number(b.role === "owner") - Number(a.role === "owner") || a.email.localeCompare(b.email));
+    res.json({
+      accounts,
+      views: CRM_ACCESS_VIEWS,
+      notificationTopics: CRM_NOTIFICATION_TOPICS,
+      degraded: Boolean(authListError),
+    });
   } catch (error: any) {
     console.error("[admin] accounts list:", error?.message || error);
     res.status(500).json({ error: "Не удалось загрузить аккаунты CRM" });
