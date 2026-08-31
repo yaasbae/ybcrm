@@ -11,6 +11,7 @@ import { cn, formatCurrency } from '../lib/utils';
 import imageCompression from 'browser-image-compression';
 import { db, OperationType, handleFirestoreError, storage } from '../firebase';
 import { collection, onSnapshot, doc, setDoc, deleteDoc, query, orderBy } from 'firebase/firestore';
+import { emitPushEvent } from '../lib/pushNotifications';
 import { ref, uploadBytes, getDownloadURL, deleteObject, listAll } from 'firebase/storage';
 import { UnitEconomics } from '../types';
 
@@ -226,6 +227,7 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
       };
 
       await setDoc(doc(db, 'products', id), productData);
+      void emitPushEvent('stock_changed', `stock-saved:${id}:${Date.now()}`, { action: editingId ? 'Изменено' : 'Добавлено', productName: productData.name });
 
       setIsAdding(false);
       setEditingId(null);
@@ -399,6 +401,7 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
 
       // 2. Delete document from Firestore
       await deleteDoc(doc(db, 'products', id));
+      void emitPushEvent('stock_changed', `stock-deleted:${id}:${Date.now()}`, { action: 'Удалено', productName: products.find(product => product.id === id)?.name || id });
     } catch (err) {
       handleFirestoreError(err, OperationType.DELETE, `products/${id}`);
     }
@@ -418,6 +421,7 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
       };
 
       await setDoc(doc(db, 'products', id), duplicate);
+      void emitPushEvent('stock_changed', `stock-duplicated:${id}`, { action: 'Создана копия', productName: duplicate.name });
       setNewProduct(duplicate);
       setEditingId(id);
       setExpandedProductId(id);

@@ -1,0 +1,73 @@
+.unified-inbox {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  height: var(--inbox-height, 65dvh);
+  overflow: hidden;
+}
+
+.unified-inbox-notice {
+  flex-shrink: 0;
+  max-height: 80px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.unified-inbox-grid {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.unified-inbox-scroll {
+  min-height: 0;
+  min-width: 0;
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  overflow-anchor: none;
+}
+
+.unified-inbox-composer {
+  flex-shrink: 0;
+  padding-bottom: max(12px, env(safe-area-inset-bottom));
+}
+
+@media (min-width: 1024px) {
+  .unified-inbox-grid {
+    grid-template-columns: 300px minmax(0, 1fr);
+  }
+}
+
+@media (min-width: 1280px) {
+  .unified-inbox-grid {
+    grid-template-columns: 320px minmax(0, 1fr) 240px;
+  }
+}
+
+@media (max-width: 1023px) {
+  .unified-inbox-mobile-chat {
+    position: fixed;
+    z-index: 60;
+    top: var(--inbox-viewport-top, 0px);
+    left: 0;
+    width: 100%;
+    background: var(--card-bg, #fff);
+    padding-top: env(safe-area-inset-top);
+    overscroll-behavior: none;
+  }
+
+  .unified-inbox-mobile-chat .unified-inbox-notice {
+    margin-bottom: 0;
+    max-height: 64px;
+  }
+
+  .unified-inbox-mobile-chat .unified-inbox-grid {
+    border-radius: 0 !important;
+  }
+}

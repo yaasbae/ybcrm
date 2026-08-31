@@ -14,8 +14,9 @@ import {
 } from 'lucide-react';
 import Papa from 'papaparse';
 import { collection, onSnapshot, query } from 'firebase/firestore';
-import { db } from '../firebase';
+import { auth, db } from '../firebase';
 import { cn, formatCurrency } from '../lib/utils';
+import { buildShiftCalendar } from '../lib/shiftCalendar';
 
 interface PayrollPageProps {
   onBack: () => void;
@@ -57,6 +58,8 @@ interface PayrollOrder {
 interface PayrollManagerContact {
   id: string;
   managerName?: string;
+  managerId?: string;
+  managerEmail?: string;
   clientPhone?: string;
   clientName?: string;
   date?: string;
@@ -66,6 +69,8 @@ interface PayrollManagerContact {
 interface PayrollManagerShift {
   id: string;
   managerName?: string;
+  managerId?: string;
+  managerEmail?: string;
   dateKey?: string;
   startedAt?: string;
   targetContacts?: number;
@@ -193,11 +198,6 @@ const toMonthKey = (date: Date | null) => {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
 };
 
-const toDayKey = (date: Date | null) => {
-  if (!date) return '';
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-};
-
 const parseOrderDate = (value: unknown): Date | null => {
   if (!value) return null;
   if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
@@ -207,21 +207,6 @@ const parseOrderDate = (value: unknown): Date | null => {
   }
   const date = new Date(String(value));
   return Number.isNaN(date.getTime()) ? null : date;
-};
-
-const parseShiftDate = (value: unknown): Date | null => {
-  if (!value) return null;
-  if (typeof value === 'string') {
-    const parsed = new Date(value);
-    return Number.isNaN(parsed.getTime()) ? null : parsed;
-  }
-  if (typeof value === 'object' && value && 'toDate' in value && typeof (value as { toDate?: () => Date }).toDate === 'function') {
-    return (value as { toDate: () => Date }).toDate();
-  }
-  if (typeof value === 'object' && value && typeof (value as { seconds?: number }).seconds === 'number') {
-    return new Date((value as { seconds: number }).seconds * 1000);
-  }
-  return null;
 };
 
 const isPayrollSaleOrder = (order: PayrollOrder) => {
@@ -291,6 +276,8 @@ export const PayrollPage: React.FC<PayrollPageProps> = ({ onBack }) => {
   const [orders, setOrders] = useState<PayrollOrder[]>([]);
   const [managerContacts, setManagerContacts] = useState<PayrollManagerContact[]>([]);
   const [managerShifts, setManagerShifts] = useState<PayrollManagerShift[]>([]);
+  const [shiftStartEvents, setShiftStartEvents] = useState<PayrollManagerShift[]>([]);
+  const [managerAliases, setManagerAliases] = useState<Record<string, string>>({});
   const [ordersLoading, setOrdersLoading] = useState(true);
 
   useEffect(() => {
@@ -326,6 +313,33 @@ export const PayrollPage: React.FC<PayrollPageProps> = ({ onBack }) => {
   }, []);
 
   useEffect(() => {
+    let active = true;
+    const loadStartEvents = async () => {
+      try {
+        await auth.authStateReady();
+        const token = await auth.currentUser?.getIdToken();
+        if (!token) return;
+        const response = await fetch(`/api/manager-shifts/start-events?month=${encodeURIComponent(monthKey)}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || 'Не удалось загрузить подтверждения смен');
+        if (!active) return;
+        setShiftStartEvents(Array.isArray(payload.events) ? payload.events : []);
+        setManagerAliases(payload.aliases && typeof payload.aliases === 'object' ? payload.aliases : {});
+      } catch (error) {
+        console.warn('Не удалось загрузить подтверждения начала смен:', error);
+        if (active) {
+          setShiftStartEvents([]);
+          setManagerAliases({});
+        }
+      }
+    };
+    loadStartEvents();
+    return () => { active = false; };
+  }, [monthKey]);
+
+  useEffect(() => {
     const unsubscribe = onSnapshot(
       query(collection(db, 'manager_shifts')),
       snapshot => setManagerShifts(snapshot.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() } as PayrollManagerShift))),
@@ -355,97 +369,28 @@ export const PayrollPage: React.FC<PayrollPageProps> = ({ onBack }) => {
     }, {});
   }, [orders, monthKey]);
 
-  const managerShiftStats = useMemo(() => {
-    const contactsByManagerDay = managerContacts.reduce<Record<string, Set<string>>>((acc, entry) => {
-      const date = parseShiftDate(entry.date);
-      const manager = String(entry.managerName || '').trim();
-      if (!date || !manager || toMonthKey(date) !== monthKey || String(entry.status || '').trim() === 'в работе') return acc;
-      const dayKey = `${manager}__${toDayKey(date)}`;
-      if (!acc[dayKey]) acc[dayKey] = new Set();
-      acc[dayKey].add(String(entry.clientPhone || entry.clientName || entry.id || '').trim());
-      return acc;
-    }, {});
-
-    return MANAGER_LINKS.reduce<Record<string, { creditedShifts: number; contacts: number; accrued: number }>>((acc, manager) => {
-      const monthShifts = managerShifts.filter(shift => (
-        String(shift.managerName || '').trim() === manager
-        && String(shift.dateKey || '').startsWith(monthKey)
-        && shift.startedAt
-      ));
-      const creditedShifts = monthShifts.filter(shift => {
-        const contacts = contactsByManagerDay[`${manager}__${shift.dateKey}`]?.size || 0;
-        const target = Number(shift.targetContacts) || SHIFT_TARGET_CONTACTS;
-        return contacts >= target;
-      });
-      const contacts = Object.entries(contactsByManagerDay).reduce((sum, [key, set]) => (
-        key.startsWith(`${manager}__`) ? sum + set.size : sum
-      ), 0);
-      acc[manager] = {
-        creditedShifts: creditedShifts.length,
-        contacts,
-        accrued: creditedShifts.reduce((sum, shift) => sum + (Number(shift.basePay) || SHIFT_BASE_PAY), 0),
-      };
-      return acc;
-    }, {});
-  }, [managerContacts, managerShifts, monthKey]);
-
   const shiftCalendar = useMemo(() => {
-    const [yearRaw, monthRaw] = monthKey.split('-').map(value => Number(value));
-    const year = Number.isFinite(yearRaw) ? yearRaw : new Date().getFullYear();
-    const monthIndex = Number.isFinite(monthRaw) ? monthRaw - 1 : new Date().getMonth();
-    const monthStart = new Date(year, monthIndex, 1);
-    const daysInMonth = new Date(year, monthIndex + 1, 0).getDate();
-    const leadingDays = (monthStart.getDay() + 6) % 7;
-    const totalCells = Math.ceil((leadingDays + daysInMonth) / 7) * 7;
+    return buildShiftCalendar(
+      monthKey,
+      managerContacts,
+      [...managerShifts, ...shiftStartEvents],
+      MANAGER_LINKS,
+      SHIFT_TARGET_CONTACTS,
+      SHIFT_BASE_PAY,
+      managerAliases,
+    );
+  }, [managerAliases, managerContacts, managerShifts, monthKey, shiftStartEvents]);
 
-    const contactsByManagerDay = managerContacts.reduce<Record<string, Set<string>>>((acc, entry) => {
-      const date = parseShiftDate(entry.date);
-      const manager = String(entry.managerName || '').trim();
-      if (!date || !manager || toMonthKey(date) !== monthKey || String(entry.status || '').trim() === 'в работе') return acc;
-      const key = `${manager}__${toDayKey(date)}`;
-      if (!acc[key]) acc[key] = new Set();
-      acc[key].add(String(entry.clientPhone || entry.clientName || entry.id || '').trim());
-      return acc;
-    }, {});
-
-    const shiftsByDay = managerShifts.reduce<Record<string, PayrollManagerShift[]>>((acc, shift) => {
-      const dateKey = String(shift.dateKey || '').trim();
-      if (!dateKey.startsWith(monthKey) || !shift.startedAt) return acc;
-      if (!acc[dateKey]) acc[dateKey] = [];
-      acc[dateKey].push(shift);
-      return acc;
-    }, {});
-
-    const days = Array.from({ length: totalCells }, (_, index) => {
-      const dayNumber = index - leadingDays + 1;
-      const isCurrentMonth = dayNumber >= 1 && dayNumber <= daysInMonth;
-      const date = new Date(year, monthIndex, isCurrentMonth ? dayNumber : 1);
-      const dateKey = isCurrentMonth ? toDayKey(date) : '';
-      const shifts = (dateKey ? shiftsByDay[dateKey] || [] : []).map(shift => {
-        const manager = String(shift.managerName || 'Менеджер').trim();
-        const target = Number(shift.targetContacts) || SHIFT_TARGET_CONTACTS;
-        const contacts = contactsByManagerDay[`${manager}__${dateKey}`]?.size || 0;
-        const basePay = Number(shift.basePay) || SHIFT_BASE_PAY;
-        const credited = contacts >= target;
-        return { ...shift, manager, contacts, target, basePay, credited };
-      });
-      return {
-        key: isCurrentMonth ? dateKey : `empty-${index}`,
-        dayNumber: isCurrentMonth ? dayNumber : null,
-        isCurrentMonth,
-        shifts,
-        contacts: shifts.reduce((sum, shift) => sum + shift.contacts, 0),
-        accrued: shifts.reduce((sum, shift) => sum + (shift.credited ? shift.basePay : 0), 0),
-      };
-    });
-
-    const creditedShifts = days.reduce((sum, day) => sum + day.shifts.filter(shift => shift.credited).length, 0);
-    const totalShifts = days.reduce((sum, day) => sum + day.shifts.length, 0);
-    const totalContacts = days.reduce((sum, day) => sum + day.contacts, 0);
-    const accrued = days.reduce((sum, day) => sum + day.accrued, 0);
-
-    return { days, creditedShifts, totalShifts, totalContacts, accrued };
-  }, [managerContacts, managerShifts, monthKey]);
+  const managerShiftStats = useMemo(() => MANAGER_LINKS.reduce<Record<string, { creditedShifts: number; contacts: number; accrued: number }>>((acc, manager) => {
+    const summary = shiftCalendar.managers.find(row => row.manager === manager);
+    const managerDays = shiftCalendar.days.flatMap(day => day.shifts).filter(shift => shift.manager === manager);
+    acc[manager] = {
+      creditedShifts: summary?.creditedShifts || 0,
+      contacts: summary?.contacts || 0,
+      accrued: managerDays.reduce((sum, shift) => sum + (shift.credited ? shift.basePay : 0), 0),
+    };
+    return acc;
+  }, {}), [shiftCalendar]);
 
   const applyManagerLink = (person: PayrollPerson): PayrollPerson => {
     if (!person.linkedManager) return person;
@@ -627,7 +572,7 @@ export const PayrollPage: React.FC<PayrollPageProps> = ({ onBack }) => {
               </div>
               <h2 className="mt-3 text-[22px] font-semibold tracking-[-0.03em] text-[#1F2937]">Кто выходил и кому засчиталась смена</h2>
               <p className="mt-1 max-w-3xl text-[12px] font-medium leading-5 text-[#6B7280]">
-                Смена засчитывается, когда менеджер начал день и поднял минимум {SHIFT_TARGET_CONTACTS} клиентов. Пустые дни скрывают лишний шум, дни со сменами подсвечены.
+                Смена засчитывается, когда менеджер начал день и поднял минимум {SHIFT_TARGET_CONTACTS} клиентов. Если касания были, но смену не начали, менеджер всё равно виден — без начисления оплаты.
               </p>
             </div>
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:min-w-[520px]">
@@ -636,6 +581,20 @@ export const PayrollPage: React.FC<PayrollPageProps> = ({ onBack }) => {
               <CalendarStat label="Касаний" value={String(shiftCalendar.totalContacts)} tone="violet" />
               <CalendarStat label="ФОТ смен" value={formatCurrency(shiftCalendar.accrued)} tone="orange" />
             </div>
+          </div>
+
+          <div className="mt-4 flex flex-wrap gap-2" aria-label="Сводка по менеджерам">
+            {shiftCalendar.managers.map(manager => (
+              <div key={manager.manager} className="min-w-[190px] flex-1 rounded-[10px] border border-[#E6E9EF] bg-[#FBFCFD] px-3 py-2.5 sm:max-w-[280px]">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="truncate text-[12px] font-semibold text-[#1F2937]">{manager.manager}</span>
+                  <span className="shrink-0 text-[11px] font-semibold text-emerald-600">{manager.creditedShifts}/{manager.shifts} зачтено</span>
+                </div>
+                <p className="mt-1 text-[10px] font-medium text-[#6B7280]">
+                  {manager.contacts} касаний{manager.missingStarts > 0 ? ` · без старта: ${manager.missingStarts}` : ''}
+                </p>
+              </div>
+            ))}
           </div>
 
           <div className="mt-5 overflow-x-auto pb-1">
@@ -657,14 +616,11 @@ export const PayrollPage: React.FC<PayrollPageProps> = ({ onBack }) => {
                       <>
                         <div className="flex items-center justify-between gap-2">
                           <span className="text-[12px] font-semibold text-[#1F2937]">{day.dayNumber}</span>
-                          {day.shifts.length > 0 && (
-                            <span className={cn(
-                              'rounded-full px-2 py-0.5 text-[10px] font-semibold',
-                              day.accrued > 0 ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'
-                            )}>
-                              {day.accrued > 0 ? formatCurrency(day.accrued) : 'не зачтено'}
-                            </span>
-                          )}
+                          {day.shifts.length > 0 && <div className="flex flex-wrap justify-end gap-1">
+                            {day.accrued > 0 && <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">{formatCurrency(day.accrued)}</span>}
+                            {day.missingStarts > 0 && <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-700">без старта: {day.missingStarts}</span>}
+                            {day.accrued === 0 && day.missingStarts === 0 && <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-700">не зачтено</span>}
+                          </div>}
                         </div>
                         <div className="mt-2 space-y-1.5">
                           {day.shifts.slice(0, 3).map(shift => (
@@ -674,12 +630,12 @@ export const PayrollPage: React.FC<PayrollPageProps> = ({ onBack }) => {
                                 'rounded-[9px] border bg-white px-2 py-1.5',
                                 shift.credited ? 'border-emerald-100' : 'border-amber-100'
                               )}
-                              title={`${shift.manager}: ${shift.contacts}/${shift.target} клиентов`}
+                              title={shift.missingStart ? `${shift.manager}: ${shift.contacts} касаний, смена не начата` : `${shift.manager}: ${shift.contacts}/${shift.target} клиентов`}
                             >
                               <div className="flex items-center justify-between gap-2">
                                 <span className="truncate text-[11px] font-semibold text-[#1F2937]">{shift.manager}</span>
                                 <span className={cn('text-[10px] font-semibold', shift.credited ? 'text-emerald-600' : 'text-amber-600')}>
-                                  {shift.contacts}/{shift.target}
+                                  {shift.missingStart ? 'смена не начата' : `${shift.contacts}/${shift.target}`}
                                 </span>
                               </div>
                             </div>

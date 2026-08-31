@@ -1,5 +1,7 @@
 import { auth } from '../firebase';
 
+const PUSH_PREFERENCE_KEY = 'ybcrm_push_preference';
+
 export type PushEventType =
   | 'order_created'
   | 'instagram_message'
@@ -7,7 +9,11 @@ export type PushEventType =
   | 'cdek_status_changed'
   | 'payment_due'
   | 'order_overdue'
-  | 'manager_assigned';
+  | 'manager_assigned'
+  | 'order_status_changed'
+  | 'manager_shift_started'
+  | 'production_changed'
+  | 'stock_changed';
 
 const urlBase64ToUint8Array = (value: string) => {
   const padding = '='.repeat((4 - value.length % 4) % 4);
@@ -35,6 +41,17 @@ export const getPushState = async () => {
   return { supported: true, enabled: Boolean(subscription) && Notification.permission === 'granted', permission: Notification.permission };
 };
 
+const saveSubscription = async (subscription: PushSubscription) => {
+  const headers = await authHeaders();
+  const response = await fetch('/api/push/subscribe', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...headers },
+    body: JSON.stringify({ subscription: subscription.toJSON() }),
+  });
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.error || 'Не удалось включить уведомления');
+};
+
 export const enablePushNotifications = async () => {
   if (!getPushSupport()) throw new Error('Этот браузер не поддерживает push-уведомления');
   const permission = await Notification.requestPermission();
@@ -49,18 +66,36 @@ export const enablePushNotifications = async () => {
     userVisibleOnly: true,
     applicationServerKey: urlBase64ToUint8Array(keyPayload.publicKey),
   });
-  const response = await fetch('/api/push/subscribe', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...headers },
-    body: JSON.stringify({ subscription: subscription.toJSON() }),
-  });
-  const payload = await response.json();
-  if (!response.ok) throw new Error(payload.error || 'Не удалось включить уведомления');
+  await saveSubscription(subscription);
+  window.localStorage.setItem(PUSH_PREFERENCE_KEY, 'on');
   return true;
+};
+
+export const repairPushNotifications = async () => {
+  const state = await getPushState();
+  if (!state.supported || state.permission !== 'granted') return state;
+  if (window.localStorage.getItem(PUSH_PREFERENCE_KEY) === 'off') return state;
+
+  const registration = await navigator.serviceWorker.register('/push-sw.js');
+  let subscription = await registration.pushManager.getSubscription();
+  if (!subscription) {
+    const headers = await authHeaders();
+    const keyResponse = await fetch('/api/push/vapid-public-key', { headers });
+    const keyPayload = await keyResponse.json();
+    if (!keyResponse.ok || !keyPayload.publicKey) throw new Error(keyPayload.error || 'Push-сервис не настроен');
+    subscription = await registration.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(keyPayload.publicKey),
+    });
+  }
+  await saveSubscription(subscription);
+  window.localStorage.setItem(PUSH_PREFERENCE_KEY, 'on');
+  return { supported: true, enabled: true, permission: Notification.permission };
 };
 
 export const disablePushNotifications = async () => {
   if (!getPushSupport()) return;
+  window.localStorage.setItem(PUSH_PREFERENCE_KEY, 'off');
   const registration = await navigator.serviceWorker.register('/push-sw.js');
   const subscription = await registration.pushManager.getSubscription();
   if (!subscription) return;

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import {
   PieChart, Pie, Cell, ResponsiveContainer, Tooltip,
   ComposedChart, CartesianGrid, XAxis, YAxis, Bar, Line
@@ -14,7 +15,13 @@ import {
 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { formatCurrency, cn } from '../../lib/utils';
-import { PREPAYMENT_FILTER_VALUE } from '../../lib/orderFilters';
+import {
+  isOverdueOrder,
+  OVERDUE_FILTER_VALUE,
+  PREPAYMENT_FILTER_VALUE,
+  REFUND_OR_CANCELLED_FILTER_VALUE,
+} from '../../lib/orderFilters';
+import { isReceivedOrderStatus, normalizeOrderStatus, ORDER_STATUS_OPTIONS } from '../../lib/orderStatuses';
 import {
   getConfirmedPaidAmount,
   getInitialInvoiceAmount,
@@ -27,15 +34,18 @@ import { motion, AnimatePresence } from 'motion/react';
 import { OrderData } from '../AnalyticsDashboard';
 import { auth, db } from '../../firebase';
 import { collection, doc, getDoc, getDocs, limit, onSnapshot, orderBy, query, setDoc } from 'firebase/firestore';
+import { emitPushEvent } from '../../lib/pushNotifications';
+import { formatClientPhone, normalizeClientPhone, normalizeClientPhoneInput } from '../../lib/clientMerge';
+import { managerNameForEmail } from '../../lib/managerIdentity';
+import { onAuthStateChanged } from 'firebase/auth';
+import { logAuditEvent } from '../../lib/auditLog';
 
-const STATUS_RENAMES: Record<string, string> = {
-  'Накроен': 'Накроить',
-};
+const normalizeStatusOption = (status: string) => normalizeOrderStatus(status);
 
-const normalizeStatusOption = (status: string) => STATUS_RENAMES[String(status || '').trim()] || String(status || '').trim();
-
-const STATUS_OPTIONS = ['Черновик', 'Новый', 'В работе', 'Накроить', 'Заказ ткань', 'Оплачен', 'Упакован', 'Принят СДЭК', 'Отгружен', 'Доставлен', 'Вручен', 'Возврат', 'Отмена', 'Обмен'];
-const DELIVERY_OPTIONS = ['СДЭК', 'Почта РФ', 'Боксберри', 'Самовывоз', 'Курьер', 'DBS'];
+const STATUS_OPTIONS: string[] = [...ORDER_STATUS_OPTIONS];
+const STATUS_ORDER = new Map(STATUS_OPTIONS.map((status, index) => [status, index]));
+const DELIVERY_OPTIONS = ['СДЭК до ПВЗ', 'СДЭК до двери', 'СДЭК', 'Почта РФ', 'Боксберри', 'Самовывоз', 'Курьер', 'DBS'];
+const DEFAULT_MANAGERS = ['Менеджер 1', 'Менеджер 2', 'Собственник'];
 const SOURCE_OPTIONS = ['Instagram', 'WhatsApp', 'ТГ', 'Блогер', 'Контент', 'Сарафан', 'Повторный'];
 const PAYMENT_TYPE_OPTIONS = ['QR код', 'Сплитами', 'Долями', 'Наличкой', 'Наложенный СДЭК'];
 const INVOICE_PAYMENT_OPTIONS = ['Предоплата 50%', 'Полная оплата', 'Оплата с примеркой', 'Сплитами'];
@@ -70,6 +80,7 @@ interface ProductCatalogItem {
   height?: string;
   weight?: string;
   sellingPrice?: number;
+  costPrice?: number;
   photos?: string[];
 }
 
@@ -139,6 +150,10 @@ const CDEK_TARIFFS = [
 
 const normalizeProductName = (value: string) => value.trim().toLowerCase();
 const shortCdekId = (value: string) => value ? `${value.slice(0, 8)}...${value.slice(-4)}` : '';
+const getTodayDateKey = () => {
+  const date = new Date();
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+};
 const normalizeInstagramUsername = (value: unknown) => {
   let clean = String(value || '').trim();
   if (!clean) return '';
@@ -154,7 +169,7 @@ const getInstagramProfileUrl = (value: unknown) => {
   return username ? `https://www.instagram.com/${encodeURIComponent(username)}/` : '';
 };
 const getContactName = (contact: any) => String(contact?.fullName || contact?.name || contact?.clientName || '').trim();
-const getContactPhone = (contact: any) => String(contact?.phone || contact?.userId || contact?.clientPhone || '').replace(/[^0-9]/g, '');
+const getContactPhone = (contact: any) => normalizeClientPhone(contact?.phone || contact?.userId || contact?.clientPhone);
 const getContactInsta = (contact: any) => normalizeInstagramUsername(contact?.insta || contact?.instagram || contact?.clientInsta || '');
 const getContactCity = (contact: any) => String(contact?.city || contact?.clientCity || '').trim();
 const getContactAddress = (contact: any) => String(contact?.address || contact?.clientAddress || '').trim();
@@ -243,6 +258,12 @@ const getOrderItemHeights = (order: Partial<Pick<OrderData, 'itemHeights' | 'ite
   return items.map((_, index) => index === 0 ? fallbackHeight : '');
 };
 
+const getOrderItemSewn = (order: Partial<Pick<OrderData, 'itemSewn' | 'items' | 'item'>>): boolean[] => {
+  const items = getOrderItems(order);
+  const savedStates = Array.isArray(order.itemSewn) ? order.itemSewn : [];
+  return items.map((_, index) => Boolean(savedStates[index]));
+};
+
 const isPaidTochkaStatus = isConfirmedPaymentStatus;
 
 const getItemPricesTotal = (prices: number[]) => prices.reduce((sum, price) => sum + (Number(price) || 0), 0);
@@ -261,7 +282,149 @@ const mergeOptions = (...lists: (string[] | undefined)[]) =>
 const optionsWithCurrent = (items: string[], current: string, fallback: string[] = []) => {
   const options = mergeOptions(items.map(normalizeStatusOption), fallback.map(normalizeStatusOption));
   const value = normalizeStatusOption(current);
-  return value && !options.includes(value) ? [value, ...options] : options;
+  const withCurrent = value && !options.includes(value) ? [...options, value] : options;
+  return withCurrent
+    .map((option, originalIndex) => ({ option, originalIndex }))
+    .sort((a, b) => {
+      const aRank = STATUS_ORDER.get(a.option) ?? STATUS_OPTIONS.length + a.originalIndex;
+      const bRank = STATUS_ORDER.get(b.option) ?? STATUS_OPTIONS.length + b.originalIndex;
+      return aRank - bRank;
+    })
+    .map(item => item.option);
+};
+
+const getStatusControlTone = (status: string) => {
+  const normalized = String(status || '').toLowerCase();
+  if (normalized.includes('оплачен') || normalized.includes('получен') || normalized.includes('вручен')) {
+    return 'border-emerald-200 bg-emerald-50 text-emerald-700';
+  }
+  if (normalized.includes('сдэк') || normalized.includes('отгружен') || normalized.includes('в пути') || normalized.includes('доставлен')) {
+    return 'border-blue-200 bg-blue-50 text-blue-700';
+  }
+  if (normalized.includes('возврат') || normalized.includes('отмена')) {
+    return 'border-red-200 bg-red-50 text-red-600';
+  }
+  return 'border-violet-200 bg-violet-50 text-violet-700';
+};
+
+const OrderStatusMenu: React.FC<{
+  orderId: string;
+  value: string;
+  options: string[];
+  onChange: (value: string) => void;
+  className?: string;
+}> = ({ orderId, value, options, onChange, className }) => {
+  const [open, setOpen] = useState(false);
+  const [position, setPosition] = useState({ top: 0, left: 0, width: 220 });
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const menuOptions = optionsWithCurrent(options, value, STATUS_OPTIONS);
+
+  const toggleMenu = (event: React.MouseEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+    if (!open && buttonRef.current) {
+      const rect = buttonRef.current.getBoundingClientRect();
+      const width = Math.max(220, rect.width);
+      const estimatedHeight = Math.min(360, menuOptions.length * 40 + 16);
+      const spaceBelow = window.innerHeight - rect.bottom;
+      const top = spaceBelow >= Math.min(estimatedHeight, 240)
+        ? rect.bottom + 6
+        : Math.max(8, rect.top - estimatedHeight - 6);
+      setPosition({
+        top,
+        left: Math.max(8, Math.min(rect.left, window.innerWidth - width - 8)),
+        width,
+      });
+    }
+    setOpen(current => !current);
+  };
+
+  useEffect(() => {
+    if (!open) return;
+    const closeOutside = (event: PointerEvent) => {
+      const target = event.target as Node;
+      if (buttonRef.current?.contains(target) || menuRef.current?.contains(target)) return;
+      setOpen(false);
+    };
+    const closeMenu = () => setOpen(false);
+    const closeOnOutsideScroll = (event: Event) => {
+      const target = event.target as Node | null;
+      if (target && menuRef.current?.contains(target)) return;
+      setOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('pointerdown', closeOutside);
+    document.addEventListener('keydown', closeOnEscape);
+    window.addEventListener('resize', closeMenu);
+    window.addEventListener('scroll', closeOnOutsideScroll, true);
+    return () => {
+      document.removeEventListener('pointerdown', closeOutside);
+      document.removeEventListener('keydown', closeOnEscape);
+      window.removeEventListener('resize', closeMenu);
+      window.removeEventListener('scroll', closeOnOutsideScroll, true);
+    };
+  }, [open]);
+
+  return (
+    <>
+      <button
+        ref={buttonRef}
+        type="button"
+        onClick={toggleMenu}
+        className={cn(
+          'inline-flex min-h-11 min-w-0 cursor-pointer items-center justify-between gap-2 rounded-[9px] border px-3 text-left text-[11px] font-semibold outline-none transition-colors focus-visible:ring-2 focus-visible:ring-[#5638F4]/20',
+          getStatusControlTone(value),
+          className,
+        )}
+        aria-label={`Статус заказа ${orderId}: ${value || 'не выбран'}`}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+      >
+        <span className="flex min-w-0 items-center gap-2">
+          <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-current" />
+          <span className="truncate">{value || 'Выбрать статус'}</span>
+        </span>
+        <ChevronRight className={cn('h-3.5 w-3.5 shrink-0 rotate-90 transition-transform', open && '-rotate-90')} />
+      </button>
+      {open && typeof document !== 'undefined' && createPortal(
+        <div
+          ref={menuRef}
+          role="listbox"
+          aria-label={`Выбор статуса заказа ${orderId}`}
+          style={{ position: 'fixed', top: position.top, left: position.left, width: position.width }}
+          className="z-[9999] max-h-[360px] overscroll-contain overflow-y-auto rounded-[12px] border border-[#E6E9EF] bg-white p-1.5 shadow-[0_18px_50px_rgba(31,41,55,0.18)]"
+        >
+          {menuOptions.map(option => {
+            const selected = option === value;
+            return (
+              <button
+                key={option}
+                type="button"
+                role="option"
+                aria-selected={selected}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  if (!selected) onChange(option);
+                  setOpen(false);
+                }}
+                className={cn(
+                  'flex min-h-10 w-full items-center gap-2 rounded-[8px] px-3 text-left text-[12px] font-medium transition-colors hover:bg-[#F6F7F9] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#5638F4]/20',
+                  selected ? 'bg-[#F1EEFF] text-[#5638F4]' : 'text-[#344054]',
+                )}
+              >
+                <span className={cn('h-2 w-2 shrink-0 rounded-full', selected ? 'bg-[#5638F4]' : 'bg-[#D0D5DD]')} />
+                <span className="flex-1">{option}</span>
+                {selected && <CheckCircle2 className="h-4 w-4" />}
+              </button>
+            );
+          })}
+        </div>,
+        document.body,
+      )}
+    </>
+  );
 };
 
 const parsePackageNumber = (value: unknown, fallback: number): number => {
@@ -394,7 +557,7 @@ const buildOrdersPrintHtml = (orders: OrderData[]) => {
         </td>
         <td>
           <strong>${escapePrintHtml(order.clientName || '-')}</strong>
-          <span>${order.clientPhone ? `+${escapePrintHtml(order.clientPhone)}` : '-'}</span>
+          <span>${order.clientPhone ? escapePrintHtml(formatClientPhone(order.clientPhone)) : '-'}</span>
         </td>
         <td>
           <strong>${escapePrintHtml(order.status || '-')}</strong>
@@ -515,7 +678,7 @@ const buildCustomerOrderDocumentHtml = (order: OrderData) => {
   <header><div><div class="brand">YAASBAE</div><div class="muted">Документ заказа</div></div><div class="right"><strong>№ ${escapePrintHtml(order.orderId)}</strong><div class="muted">${escapePrintHtml(order.date.toLocaleDateString('ru-RU'))}</div></div></header>
   <h1>Заказ клиента</h1><div class="muted">Состав, доставка и сумма к оплате</div>
   <section class="grid">
-    <div class="card"><div class="label">Клиент</div><div class="value">${escapePrintHtml(order.clientName || '—')}<br>${order.clientPhone ? `+${escapePrintHtml(order.clientPhone)}` : '—'}${instagram ? `<br><a href="${getInstagramProfileUrl(instagram)}">@${escapePrintHtml(instagram)}</a>` : ''}</div></div>
+    <div class="card"><div class="label">Клиент</div><div class="value">${escapePrintHtml(order.clientName || '—')}<br>${order.clientPhone ? escapePrintHtml(formatClientPhone(order.clientPhone)) : '—'}${instagram ? `<br><a href="${getInstagramProfileUrl(instagram)}">@${escapePrintHtml(instagram)}</a>` : ''}</div></div>
     <div class="card"><div class="label">Доставка</div><div class="value">${escapePrintHtml(order.deliveryMethod || '—')}<br>${escapePrintHtml(order.clientAddress || order.clientCity || '—')}${order.cdekNumber ? `<br>Накладная СДЭК № ${escapePrintHtml(order.cdekNumber)}` : ''}</div></div>
   </section>
   <table><thead><tr><th>Наименование</th><th>Количество</th><th>Стоимость</th></tr></thead><tbody>${rows}</tbody></table>
@@ -730,7 +893,7 @@ function buildOrderShareText(order: Partial<OrderData>, paymentUrl: string, paym
     order.height ? `Рост: ${order.height}` : '',
     order.deliveryMethod ? `Доставка: ${order.deliveryMethod}` : '',
     order.clientName ? `ФИО: ${order.clientName}` : '',
-    order.clientPhone ? `Телефон: ${order.clientPhone}` : '',
+    order.clientPhone ? `Телефон: ${formatClientPhone(order.clientPhone)}` : '',
     instagramUrl ? `Instagram: ${instagramUrl}` : '',
     cdekAddress ? `Адрес СДЭК: ${cdekAddress}` : '',
     '',
@@ -751,7 +914,7 @@ function buildPaymentShareText(order: Partial<OrderData>, paymentUrl: string, am
     itemsText ? `Модель: ${itemsText}` : '',
     order.deliveryMethod ? `Доставка: ${order.deliveryMethod}` : '',
     order.clientName ? `ФИО: ${order.clientName}` : '',
-    order.clientPhone ? `Телефон: ${order.clientPhone}` : '',
+    order.clientPhone ? `Телефон: ${formatClientPhone(order.clientPhone)}` : '',
     instagramUrl ? `Instagram: ${instagramUrl}` : '',
     cdekAddress ? `Адрес СДЭК: ${cdekAddress}` : '',
     '',
@@ -1239,7 +1402,7 @@ const CdekOrderBlock: React.FC<{
   const product = getProductForOrder(productCatalog, orderItems[0] || order.item);
   const saved = order.cdekPayload || {};
   const initialDeliveryType = String(saved.deliveryType || '').trim()
-    || (String(order.deliveryMethod || '').toLowerCase().includes('курьер') ? 'door' : 'pvz');
+    || (/курьер|до двери/i.test(String(order.deliveryMethod || '')) ? 'door' : 'pvz');
   const [deliveryType, setDeliveryType] = useState(initialDeliveryType);
   const [cityQuery, setCityQuery] = useState(String(saved.toCity || order.clientCity || ''));
   const [toCityCode, setToCityCode] = useState(String(saved.toCityCode || ''));
@@ -1265,6 +1428,7 @@ const CdekOrderBlock: React.FC<{
   const [statusText, setStatusText] = useState('');
   const [settingsChecked, setSettingsChecked] = useState(false);
   const [editing, setEditing] = useState(false);
+  const [repeatShipmentDate, setRepeatShipmentDate] = useState(getTodayDateKey);
   const autoCreateAttemptedRef = useRef(false);
   const clientCitySyncedRef = useRef(false);
   const syncedPointCodeRef = useRef('');
@@ -1509,7 +1673,8 @@ const CdekOrderBlock: React.FC<{
     }
   }, [deliveryPoint, order.clientAddress, order.orderId, selectedPoint, updateOrderData]);
 
-  const createCdekOrder = async () => {
+  const createCdekOrder = async (recreate = false) => {
+    if (recreate && !window.confirm(`Создать новую накладную СДЭК на ${repeatShipmentDate}, сохранив этот заказ в CRM?`)) return;
     setSubmitting(true);
     setError('');
     setStatusText('');
@@ -1534,6 +1699,8 @@ const CdekOrderBlock: React.FC<{
         width,
         height,
         comment: `CRM заказ #${order.orderId}. Товар: ${formatCurrency(Number(order.revenue) || 0)}. Доставка: ${formatCurrency(Number(order.deliveryPrice) || 0)}. ${String(order.paymentType || '').toLowerCase().includes('налож') ? 'Оплата при получении' : 'Оплачивается онлайн'}`,
+        recreate,
+        shipmentDate: recreate ? repeatShipmentDate : String(saved.shipmentDate || ''),
       };
       if (!payload.recipientName || !payload.recipientPhone) throw new Error('Нужны ФИО и телефон клиента');
       if (deliveryType === 'pvz' && !toCityCode) throw new Error('Выберите город СДЭК из подсказки');
@@ -1563,7 +1730,7 @@ const CdekOrderBlock: React.FC<{
         : data.cdekNumber
           ? `Накладная: ${data.cdekNumber}`
           : `Создан. ID: ${shortCdekId(data.cdekUuid || '')}`;
-      if (!order.paymentUrl) {
+      if (!recreate && !order.paymentUrl) {
         try {
           const amount = getOrderPaymentDue(order);
           if (amount > 0) {
@@ -1588,7 +1755,7 @@ const CdekOrderBlock: React.FC<{
           // Накладная уже создана; счёт можно повторно создать отдельной кнопкой в блоке оплаты.
         }
       }
-      setStatusText(nextStatusText);
+      setStatusText(data.recreated ? `Повторная накладная: ${data.cdekNumber || shortCdekId(data.cdekUuid || '')}` : nextStatusText);
       setEditing(false);
     } catch (e: any) {
       setError(e.message || 'Не удалось создать СДЭК');
@@ -1721,7 +1888,7 @@ const CdekOrderBlock: React.FC<{
 
         <div className="rounded-lg border border-zinc-100 bg-white px-3 py-3">
           <p className="text-[10px] font-black uppercase tracking-wider text-zinc-400">
-            {deliveryType === 'pvz' ? 'До ПВЗ' : 'Курьером'} · {CDEK_TARIFFS.find(item => item.code === tariffCode)?.label || `тариф ${tariffCode}`}
+            {deliveryType === 'pvz' ? 'До ПВЗ' : 'До двери'} · {CDEK_TARIFFS.find(item => item.code === tariffCode)?.label || `тариф ${tariffCode}`}
           </p>
           <p className="mt-1.5 text-[12px] font-bold leading-5 text-zinc-700">{cityQuery || order.clientCity || '—'}</p>
           <p className="text-[11px] font-medium leading-5 text-zinc-500">{destination || '—'}</p>
@@ -1775,7 +1942,7 @@ const CdekOrderBlock: React.FC<{
           ) : (
             <button
               type="button"
-              onClick={createCdekOrder}
+              onClick={() => createCdekOrder()}
               disabled={submitting || !settingsChecked}
               className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg bg-zinc-900 px-3 text-[10px] font-black uppercase tracking-wider text-white transition-colors hover:bg-black disabled:opacity-50"
             >
@@ -1784,6 +1951,28 @@ const CdekOrderBlock: React.FC<{
             </button>
           )}
         </div>
+        {order.cdekUuid && (
+          <div className="flex items-end gap-2 rounded-lg border border-amber-200 bg-amber-50/70 p-2.5">
+            <label className="min-w-0 flex-1">
+              <span className="mb-1 block text-[9px] font-black uppercase tracking-wider text-amber-700">Новая дата отправки</span>
+              <input
+                type="date"
+                min={new Date().toISOString().slice(0, 10)}
+                value={repeatShipmentDate}
+                onChange={event => setRepeatShipmentDate(event.target.value)}
+                className="h-10 w-full rounded-lg border border-amber-200 bg-white px-3 text-[12px] font-bold text-zinc-700 outline-none focus:border-amber-400"
+              />
+            </label>
+            <button
+              type="button"
+              onClick={() => createCdekOrder(true)}
+              disabled={submitting || !settingsChecked || !repeatShipmentDate}
+              className="h-10 shrink-0 rounded-lg bg-amber-600 px-3 text-[10px] font-black uppercase tracking-wider text-white hover:bg-amber-700 disabled:opacity-50"
+            >
+              {submitting ? 'Создаю…' : 'Повторить накладную'}
+            </button>
+          </div>
+        )}
         {error && <p className="text-[11px] font-bold leading-4 text-red-500">{error}</p>}
         {statusText && <p className="text-[11px] font-bold text-emerald-600">{statusText}</p>}
       </div>
@@ -1829,7 +2018,7 @@ const CdekOrderBlock: React.FC<{
           className={inputClass}
         >
           <option value="pvz">До ПВЗ</option>
-          <option value="door">Курьером</option>
+          <option value="door">До двери (курьер СДЭК)</option>
         </select>
         <select value={tariffCode} onChange={e => setTariffCode(e.target.value)} className={inputClass} title="Тариф СДЭК">
           {CDEK_TARIFFS.map(tariff => (
@@ -1954,7 +2143,7 @@ const CdekOrderBlock: React.FC<{
         ))}
         <button
           type="button"
-          onClick={createCdekOrder}
+          onClick={() => createCdekOrder()}
           disabled={submitting || !settingsChecked}
           className={cn(
             'rounded-lg border border-zinc-200 bg-zinc-900 font-black uppercase tracking-widest text-white hover:bg-black transition-all flex items-center justify-center gap-1.5 disabled:opacity-60',
@@ -2015,6 +2204,7 @@ const OrderSummaryRow = React.memo(({
   const orderItemColors = getOrderItemColors(order);
   const orderItemSizes = getOrderItemSizes(order);
   const orderItemHeights = getOrderItemHeights(order);
+  const orderItemSewn = getOrderItemSewn(order);
   const paidAmount = Number(order.paidAmount) || 0;
   const deliveryAmount = Number(order.deliveryPrice) || 0;
   const deadlineDate = addBusinessDays(order.date, 7);
@@ -2054,11 +2244,18 @@ const OrderSummaryRow = React.memo(({
 
   return (
     <tr className={cn(
-      "yb-order-row group border-b border-zinc-100 bg-white transition-colors hover:bg-zinc-50/60",
-      order.isPinned && "bg-amber-50/40 hover:bg-amber-50/60",
-      expanded && "bg-zinc-50/70",
-      selected && "bg-blue-50/30",
-      order.isOverdue && !order.isShipped && "bg-red-50/20"
+      "yb-order-row group border-b transition-colors",
+      isReceivedOrderStatus(order.status)
+        ? "border-emerald-100 bg-emerald-50/70 hover:bg-emerald-100/70"
+        : order.isPinned
+          ? "border-zinc-100 bg-amber-50/40 hover:bg-amber-50/60"
+          : isOverdueOrder(order)
+            ? "border-zinc-100 bg-red-50/20 hover:bg-red-50/40"
+            : expanded
+              ? "border-zinc-100 bg-zinc-50/70"
+              : selected
+                ? "border-zinc-100 bg-blue-50/30"
+                : "border-zinc-100 bg-white hover:bg-zinc-50/60"
     )}>
       <td className="px-4 py-5 align-top">
         <input
@@ -2081,7 +2278,7 @@ const OrderSummaryRow = React.memo(({
           </span>
           <div className="min-w-0">
             <p className="max-w-[180px] truncate text-[13px] font-semibold text-zinc-950">{order.clientName || '—'}</p>
-            <p className="mt-1 text-[11px] font-medium text-zinc-400">{order.clientPhone ? `+${order.clientPhone}` : '—'}</p>
+            <p className="mt-1 text-[11px] font-medium text-zinc-400">{formatClientPhone(order.clientPhone) || '—'}</p>
             {normalizeInstagramUsername(order.clientInsta) && (
               <a
                 href={getInstagramProfileUrl(order.clientInsta)}
@@ -2096,20 +2293,18 @@ const OrderSummaryRow = React.memo(({
         </div>
       </td>
       <td className="px-5 py-5 align-top">
-        <select
+        <OrderStatusMenu
+          orderId={displayOrderId}
           value={order.status || 'Новый'}
-          onChange={(event) => updateOrderData(order.orderId, 'status', event.target.value)}
-          onClick={(event) => event.stopPropagation()}
-          className={cn(
-            "h-8 w-full max-w-[165px] cursor-pointer rounded-[8px] border border-[#E6E9EF] bg-white px-2.5 text-[10px] font-black uppercase tracking-[0.08em] outline-none transition-colors focus:border-[#5638F4] focus:ring-2 focus:ring-[#5638F4]/10",
-            statusTone,
-          )}
-          aria-label={`Статус заказа ${displayOrderId}`}
-        >
-          {optionsWithCurrent(handbookStatuses, order.status, STATUS_OPTIONS).map(status => (
-            <option key={status} value={status}>{status}</option>
-          ))}
-        </select>
+          options={handbookStatuses}
+          onChange={nextStatus => updateOrderData(order.orderId, 'status', nextStatus)}
+          className="w-full max-w-[175px] text-[10px] font-black uppercase tracking-[0.06em]"
+        />
+        {isOverdueOrder(order) && (
+          <span className="mt-2 inline-flex items-center gap-1.5 rounded-full border border-red-200 bg-red-50 px-2 py-1 text-[9px] font-black uppercase tracking-[0.08em] text-red-600">
+            <AlertCircle className="h-3 w-3" /> Просрочен
+          </span>
+        )}
         <p className="mt-2 max-w-[160px] truncate text-[12px] font-semibold text-zinc-500">{order.deliveryMethod || '—'}</p>
         {order.manager && (
           <p className="mt-2 max-w-[170px] truncate text-[10px] font-bold uppercase tracking-[0.12em] text-zinc-400" title={order.manager}>
@@ -2126,12 +2321,32 @@ const OrderSummaryRow = React.memo(({
           {invoiceLabel} {formatCurrency(paidAmount)}
         </p>
       </td>
-      <td className="px-5 py-5 align-top">
-        <div className="max-w-[360px] space-y-1.5">
+      <td className="px-4 py-5 align-top">
+        <div className="min-w-[360px] max-w-[440px] space-y-1.5">
           {(orderItems.length ? orderItems : ['—']).map((item, index) => (
-            <div key={`${item}-${index}`} className="grid grid-cols-[minmax(0,1fr)_auto] gap-3">
+            <div key={`${item}-${index}`} className="grid grid-cols-[32px_minmax(0,1fr)_auto] items-start gap-2">
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  const next = orderItems.map((_, itemIndex) => itemIndex === index ? !orderItemSewn[itemIndex] : orderItemSewn[itemIndex]);
+                  updateOrderData(order.orderId, 'itemSewn', next);
+                }}
+                className={cn(
+                  "grid h-8 w-8 cursor-pointer place-items-center rounded-full border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300",
+                  orderItemSewn[index]
+                    ? "border-emerald-500 bg-emerald-500 text-white hover:bg-emerald-600"
+                    : "border-zinc-200 bg-white text-zinc-300 hover:border-emerald-300 hover:text-emerald-500"
+                )}
+                title={orderItemSewn[index] ? `«${item}» пошито — снять отметку` : `Отметить «${item}» как пошитое`}
+                aria-label={orderItemSewn[index] ? `Снять отметку «Пошито» с товара ${item}` : `Отметить товар ${item} как пошитый`}
+                aria-pressed={orderItemSewn[index]}
+              >
+                <CheckCircle2 className="h-4 w-4" />
+              </button>
               <div className="min-w-0">
-                <p className="truncate text-[13px] font-bold text-zinc-950" title={item}>{item}</p>
+                <p className={cn("whitespace-normal text-[13px] font-bold leading-[18px]", orderItemSewn[index] ? "text-emerald-700" : "text-zinc-950")} title={item}>{item}</p>
+                {orderItemSewn[index] && <p className="mt-0.5 text-[9px] font-black uppercase tracking-[0.08em] text-emerald-600">Пошито</p>}
                 {(orderItemColors[index] || orderItemSizes[index] || orderItemHeights[index]) && (
                   <p
                     className="mt-0.5 truncate text-[10px] font-semibold text-zinc-400"
@@ -2148,7 +2363,7 @@ const OrderSummaryRow = React.memo(({
           ))}
         </div>
       </td>
-      <td className="px-5 py-5 align-top">
+      <td className="px-4 py-5 align-top">
         {cdekNumber || cdekAddress ? (
           <div className="max-w-[250px]">
             <p className="truncate text-[11px] font-bold text-zinc-700" title={cdekNumber}>
@@ -2171,7 +2386,7 @@ const OrderSummaryRow = React.memo(({
           <span className="text-[11px] font-medium text-zinc-300">—</span>
         )}
       </td>
-      <td className="px-5 py-5 align-top">
+      <td className="px-3 py-5 align-top">
         <p className="text-[11px] font-semibold text-zinc-300 tabular-nums">
           старт {order.date.toLocaleDateString('ru-RU')}
         </p>
@@ -2182,7 +2397,7 @@ const OrderSummaryRow = React.memo(({
           до {deadlineDate.toLocaleDateString('ru-RU')}
         </p>
       </td>
-      <td className="px-5 py-4 align-middle text-right">
+      <td className="px-2 py-4 align-middle text-right">
         <div className="inline-flex items-center justify-end gap-1">
           <button
             type="button"
@@ -2225,6 +2440,8 @@ const OrderSummaryRow = React.memo(({
 const OrderDetailView: React.FC<{
   order: OrderData;
   productCatalog: ProductCatalogItem[];
+  handbookStatuses: string[];
+  handbookManagers: string[];
   updateOrderData: (id: string, field: string, value: any) => void;
   onEdit: () => void;
   onDone?: () => void;
@@ -2232,7 +2449,7 @@ const OrderDetailView: React.FC<{
   onBack?: () => void;
   mobile?: boolean;
   editing?: boolean;
-}> = ({ order, productCatalog, updateOrderData, onEdit, onDone, onDelete, onBack, mobile = false, editing = false }) => {
+}> = ({ order, productCatalog, handbookStatuses, handbookManagers, updateOrderData, onEdit, onDone, onDelete, onBack, mobile = false, editing = false }) => {
   const [documentLoading, setDocumentLoading] = useState(false);
   const [documentError, setDocumentError] = useState('');
   const items = getOrderItems(order);
@@ -2240,6 +2457,7 @@ const OrderDetailView: React.FC<{
   const colors = getOrderItemColors(order);
   const sizes = getOrderItemSizes(order);
   const heights = getOrderItemHeights(order);
+  const sewnItems = getOrderItemSewn(order);
   const revenue = Number(order.revenue) || getItemPricesTotal(prices);
   const deliveryPrice = Number(order.deliveryPrice) || 0;
   const invoiceType = order.invoiceType || getInvoiceTypeFromPaymentType(order.paymentType);
@@ -2253,12 +2471,16 @@ const OrderDetailView: React.FC<{
   const firstProduct = getProductForOrder(productCatalog, items[0] || order.item);
   const displayOrderId = String(order.orderId || '').replace(/^#+/, '');
   const statusLabel = order.status || 'Новый';
+  const received = isReceivedOrderStatus(statusLabel);
   const statusBadgeClass =
     statusLabel.toLowerCase().includes('оплачен') ? 'border-emerald-200 bg-emerald-50 text-emerald-700' :
-    statusLabel.toLowerCase().includes('отгружен') || statusLabel.toLowerCase().includes('доставлен') ? 'border-blue-200 bg-blue-50 text-blue-700' :
+    statusLabel.toLowerCase().includes('отгружен') || statusLabel.toLowerCase().includes('доставлен') || statusLabel.toLowerCase().includes('получен') ? 'border-blue-200 bg-blue-50 text-blue-700' :
     statusLabel.toLowerCase().includes('возврат') || statusLabel.toLowerCase().includes('отмена') ? 'border-red-200 bg-red-50 text-red-600' :
     'border-violet-200 bg-violet-50 text-violet-700';
-  const cardClass = 'rounded-[14px] border border-[#E6E9EF] bg-white shadow-[0_2px_12px_rgba(31,41,55,0.04)]';
+  const cardClass = cn(
+    'rounded-[14px] border shadow-[0_2px_12px_rgba(31,41,55,0.04)]',
+    received ? 'border-emerald-100 bg-emerald-50/70' : 'border-[#E6E9EF] bg-white',
+  );
   const editControlClass = 'h-10 w-full rounded-[9px] border border-[#D8DCE6] bg-white px-3 text-[13px] font-medium text-[#111827] outline-none transition-colors focus:border-[#5638F4] focus:ring-2 focus:ring-[#5638F4]/10';
 
   const editField = (field: string, value: unknown, placeholder: string, type: 'text' | 'number' = 'text') => (
@@ -2298,6 +2520,11 @@ const OrderDetailView: React.FC<{
     if (field === 'itemPrices') updateOrderData(order.orderId, 'revenue', getItemPricesTotal(next.map(Number)));
   };
 
+  const toggleItemSewn = (index: number) => {
+    const next = items.map((_, itemIndex) => itemIndex === index ? !sewnItems[itemIndex] : sewnItems[itemIndex]);
+    updateOrderData(order.orderId, 'itemSewn', next);
+  };
+
   const addOrderItem = () => {
     const currentItems = items.length ? items : [''];
     const nextItems = [...currentItems, ''];
@@ -2305,11 +2532,13 @@ const OrderDetailView: React.FC<{
     const nextColors = [...currentItems.map((_, index) => colors[index] || ''), ''];
     const nextSizes = [...currentItems.map((_, index) => sizes[index] || ''), ''];
     const nextHeights = [...currentItems.map((_, index) => heights[index] || ''), ''];
+    const nextSewnItems = [...currentItems.map((_, index) => Boolean(sewnItems[index])), false];
     updateOrderData(order.orderId, 'items', nextItems);
     updateOrderData(order.orderId, 'itemPrices', nextPrices);
     updateOrderData(order.orderId, 'itemColors', nextColors);
     updateOrderData(order.orderId, 'itemSizes', nextSizes);
     updateOrderData(order.orderId, 'itemHeights', nextHeights);
+    updateOrderData(order.orderId, 'itemSewn', nextSewnItems);
     updateOrderData(order.orderId, 'item', joinOrderItems(nextItems));
   };
 
@@ -2320,11 +2549,13 @@ const OrderDetailView: React.FC<{
     const nextColors = items.map((_, index) => colors[index] || '').filter((_, index) => index !== indexToRemove);
     const nextSizes = items.map((_, index) => sizes[index] || '').filter((_, index) => index !== indexToRemove);
     const nextHeights = items.map((_, index) => heights[index] || '').filter((_, index) => index !== indexToRemove);
+    const nextSewnItems = items.map((_, index) => Boolean(sewnItems[index])).filter((_, index) => index !== indexToRemove);
     updateOrderData(order.orderId, 'items', nextItems);
     updateOrderData(order.orderId, 'itemPrices', nextPrices);
     updateOrderData(order.orderId, 'itemColors', nextColors);
     updateOrderData(order.orderId, 'itemSizes', nextSizes);
     updateOrderData(order.orderId, 'itemHeights', nextHeights);
+    updateOrderData(order.orderId, 'itemSewn', nextSewnItems);
     updateOrderData(order.orderId, 'item', joinOrderItems(nextItems));
     updateOrderData(order.orderId, 'revenue', getItemPricesTotal(nextPrices));
   };
@@ -2386,7 +2617,7 @@ const OrderDetailView: React.FC<{
   );
 
   return (
-    <div className={cn('bg-[#F7F8FC]', mobile ? 'min-h-screen px-3 pb-5 pt-3' : 'p-4')}>
+    <div className={cn(received ? 'bg-emerald-50/60' : 'bg-[#F7F8FC]', mobile ? 'min-h-screen px-3 pb-5 pt-3' : 'p-4')}>
       {mobile ? (
         <div className="mb-3 flex h-12 items-center justify-between px-1">
           <button type="button" onClick={onBack} className="grid h-11 w-11 cursor-pointer place-items-center rounded-xl text-[#667085] hover:bg-white" aria-label="Назад">
@@ -2403,7 +2634,14 @@ const OrderDetailView: React.FC<{
         </div>
       )}
 
-      <div className={cn(cardClass, mobile ? 'border-[#DCD5FF] bg-gradient-to-br from-[#F8F6FF] to-white p-3' : 'flex items-center justify-between gap-5 px-6 py-4')}>
+      <div className={cn(
+        cardClass,
+        mobile
+          ? received
+            ? 'border-emerald-200 bg-gradient-to-br from-emerald-50 to-white p-3'
+            : 'border-[#DCD5FF] bg-gradient-to-br from-[#F8F6FF] to-white p-3'
+          : 'flex items-center justify-between gap-5 px-6 py-4',
+      )}>
         <div className={cn('flex items-center gap-4', mobile && 'gap-3 px-0 py-0')}>
           <span className={cn('grid shrink-0 place-items-center bg-[#F1EEFF] text-[#5638F4]', mobile ? 'h-12 w-12 rounded-[14px]' : 'h-14 w-14 rounded-[16px]')}>
             <ShoppingBag className={cn(mobile ? 'h-6 w-6' : 'h-7 w-7')} />
@@ -2412,17 +2650,21 @@ const OrderDetailView: React.FC<{
             <div className="flex flex-wrap items-center gap-2.5">
               <h2 className={cn('font-semibold tracking-tight text-[#0F172A]', mobile ? 'text-[26px] leading-none' : 'text-[30px] leading-none')}>#{displayOrderId}</h2>
               {editing ? (
-                <select
+                <OrderStatusMenu
+                  orderId={displayOrderId}
                   value={statusLabel}
-                  onChange={event => updateOrderData(order.orderId, 'status', event.target.value)}
-                  className={cn('h-8 min-w-[132px] rounded-full border px-3 text-[11px] font-semibold outline-none focus:ring-2 focus:ring-[#5638F4]/15', statusBadgeClass)}
-                  aria-label="Статус заказа"
-                >
-                  {optionsWithCurrent(STATUS_OPTIONS, statusLabel).map(status => <option key={status} value={status}>{status}</option>)}
-                </select>
+                  options={handbookStatuses}
+                  onChange={nextStatus => updateOrderData(order.orderId, 'status', nextStatus)}
+                  className="min-w-[160px] max-w-[220px]"
+                />
               ) : (
                 <span className={cn('inline-flex h-7 items-center gap-2 rounded-full border px-3 text-[11px] font-medium', statusBadgeClass)}>
                   <span className="h-1.5 w-1.5 rounded-full bg-current" /> {statusLabel}
+                </span>
+              )}
+              {isOverdueOrder(order) && (
+                <span className="inline-flex h-7 items-center gap-1.5 rounded-full border border-red-200 bg-red-50 px-3 text-[10px] font-semibold text-red-600">
+                  <AlertCircle className="h-3.5 w-3.5" /> Просрочен
                 </span>
               )}
             </div>
@@ -2464,7 +2706,7 @@ const OrderDetailView: React.FC<{
           {sectionTitle(<Users className="h-4 w-4" />, 'Клиент', true)}
           <div className="mt-5 space-y-4">
             {valueRow(<UserCircle className="h-4 w-4" />, 'ФИО', editing ? editField('clientName', order.clientName, 'ФИО клиента') : order.clientName)}
-            {valueRow(<Phone className="h-4 w-4" />, 'Телефон', editing ? editField('clientPhone', order.clientPhone, 'Телефон') : <span className="flex items-center justify-between gap-2"><span>{order.clientPhone || '—'}</span>{order.clientPhone && <a href={`tel:+${order.clientPhone}`} className="text-[#667085]"><Phone className="h-4 w-4" /></a>}</span>)}
+            {valueRow(<Phone className="h-4 w-4" />, 'Телефон', editing ? editField('clientPhone', order.clientPhone, 'Телефон') : <span className="flex items-center justify-between gap-2"><span>{formatClientPhone(order.clientPhone) || '—'}</span>{order.clientPhone && <a href={`tel:${formatClientPhone(order.clientPhone)}`} className="text-[#667085]"><Phone className="h-4 w-4" /></a>}</span>)}
             {valueRow(<Instagram className="h-4 w-4" />, 'Instagram', editing ? editField('clientInsta', order.clientInsta, 'Ссылка или @username') : normalizeInstagramUsername(order.clientInsta) ? <a href={getInstagramProfileUrl(order.clientInsta)} target="_blank" rel="noreferrer" className="flex items-center justify-between gap-2 text-[#5638F4] hover:underline"><span>@{normalizeInstagramUsername(order.clientInsta)}</span><ExternalLink className="h-4 w-4 text-[#667085]" /></a> : '—')}
             {valueRow(<MapPin className="h-4 w-4" />, 'Город', editing ? editField('clientCity', order.clientCity, 'Город') : order.clientCity)}
             {valueRow(<MapPin className="h-4 w-4" />, 'Адрес', editing ? editField('clientAddress', order.clientAddress, 'Адрес доставки') : order.clientAddress)}
@@ -2496,7 +2738,21 @@ const OrderDetailView: React.FC<{
                           <Trash2 className="h-4 w-4" />
                         </button>
                       </div>
-                    ) : <p className="text-[15px] font-semibold leading-5 text-[#111827]">{item}</p>}
+                    ) : <p className={cn("text-[15px] font-semibold leading-5", sewnItems[index] ? "text-emerald-700" : "text-[#111827]")}>{item}</p>}
+                    <button
+                      type="button"
+                      onClick={() => toggleItemSewn(index)}
+                      className={cn(
+                        "mt-2 inline-flex min-h-10 cursor-pointer items-center gap-2 rounded-[9px] border px-3 text-[12px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300",
+                        sewnItems[index]
+                          ? "border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
+                          : "border-[#E6E9EF] bg-white text-[#667085] hover:border-emerald-200 hover:text-emerald-700"
+                      )}
+                      aria-pressed={sewnItems[index]}
+                    >
+                      <CheckCircle2 className={cn("h-4 w-4", sewnItems[index] && "fill-emerald-500 text-white")} />
+                      {sewnItems[index] ? 'Пошито' : 'Отметить как пошитое'}
+                    </button>
                     <dl className="mt-4 grid grid-cols-[70px_minmax(0,1fr)] gap-y-2 text-[13px]">
                       <dt className="text-[#667085]">Цвет</dt><dd className="font-medium text-[#111827]">{editing ? <input value={colors[index] || ''} onChange={event => updateItemValue('itemColors', index, event.target.value)} className={editControlClass} /> : colors[index] || '—'}</dd>
                       <dt className="text-[#667085]">Размер</dt><dd className="font-medium text-[#111827]">{editing ? <input value={sizes[index] || ''} onChange={event => updateItemValue('itemSizes', index, event.target.value)} className={editControlClass} /> : sizes[index] || '—'}</dd>
@@ -2536,7 +2792,7 @@ const OrderDetailView: React.FC<{
               <dt className="text-[#667085]">Оплата:</dt><dd className="font-medium text-[#111827]">{editing ? editSelect('paymentType', order.paymentType, PAYMENT_TYPE_OPTIONS) : order.paymentType || getInvoicePaymentLabel(invoiceType)}</dd>
               <dt className="text-[#667085]">Тип оплаты:</dt><dd className="font-medium text-[#111827]">{editing ? editInvoiceTypeSelect() : getInvoicePaymentLabel(invoiceType)}</dd>
               <dt className="text-[#667085]">Источник:</dt><dd className="font-medium text-[#111827]">{editing ? editSelect('source', order.source, SOURCE_OPTIONS) : order.source || '—'}</dd>
-              <dt className="text-[#667085]">Менеджер:</dt><dd className="font-medium text-[#111827]">{editing ? editField('manager', order.manager, 'Менеджер') : order.manager || '—'}</dd>
+              <dt className="text-[#667085]">Менеджер:</dt><dd className="font-medium text-[#111827]">{editing ? editSelect('manager', order.manager, mergeOptions(handbookManagers, DEFAULT_MANAGERS)) : order.manager || '—'}</dd>
               <dt className="text-[#667085]">Блогер:</dt><dd className="font-medium text-[#111827]">{editing ? editField('blogger', order.blogger, 'Блогер') : order.blogger || '—'}</dd>
               <dt className="text-[#667085]">Метка:</dt><dd className="font-medium text-[#111827]">{editing ? editField('label', order.label, 'Метка') : order.label || '—'}</dd>
             </dl>
@@ -2852,6 +3108,8 @@ const OrderRow = React.memo(({
           <OrderDetailView
             order={order}
             productCatalog={productCatalog}
+            handbookStatuses={handbookStatuses}
+            handbookManagers={handbookManagers}
             updateOrderData={updateOrderData}
             onEdit={() => setIsEditing(true)}
             onDone={() => setIsEditing(false)}
@@ -2948,14 +3206,14 @@ const OrderRow = React.memo(({
                 <Phone size={16} className="text-zinc-400 shrink-0" />
                 <input
                   type="text"
-                  value={order.clientPhone}
-                  onChange={(e) => updateOrderData(order.orderId, 'clientPhone', e.target.value.replace(/[^0-9]/g, ''))}
+                  value={formatClientPhone(order.clientPhone)}
+                  onChange={(e) => updateOrderData(order.orderId, 'clientPhone', normalizeClientPhoneInput(e.target.value))}
                   placeholder="телефон"
                   className="min-w-0 flex-1 truncate bg-transparent text-[14px] font-medium text-[#6B7280] outline-none"
                 />
                 {order.clientPhone && (
                   <a
-                    href={`tel:+${order.clientPhone}`}
+                    href={`tel:${formatClientPhone(order.clientPhone)}`}
                     className="grid h-9 w-9 place-items-center rounded-full bg-blue-50 text-blue-600 hover:bg-blue-100"
                     title="Позвонить"
                   >
@@ -3145,7 +3403,7 @@ const OrderRow = React.memo(({
 
               <div className="grid grid-cols-2 gap-x-5 gap-y-4 rounded-[10px] border border-[#E6E9EF] bg-[#F8FAFC]/60 p-3 xl:grid-cols-5">
                 {fieldSelect('Источник', order.source || '', optionsWithCurrent(handbookSources, order.source || '', SOURCE_OPTIONS), (v) => updateOrderData(order.orderId, 'source', v))}
-                {fieldSelect('Менеджер', order.manager || '', optionsWithCurrent(handbookManagers, order.manager || ''), (v) => updateOrderData(order.orderId, 'manager', v))}
+                {fieldSelect('Менеджер', order.manager || '', mergeOptions(optionsWithCurrent(handbookManagers, order.manager || ''), DEFAULT_MANAGERS), (v) => updateOrderData(order.orderId, 'manager', v))}
                 {fieldSelect('Блогер', order.blogger || '', optionsWithCurrent(handbookBloggers, order.blogger || ''), (v) => updateOrderData(order.orderId, 'blogger', v))}
                 {fieldSelect('Оплата', order.paymentType || '', optionsWithCurrent(handbookPaymentTypes, order.paymentType || '', PAYMENT_TYPE_OPTIONS), (v) => updateOrderData(order.orderId, 'paymentType', v))}
                 {fieldSelect('Доставка', order.deliveryMethod || '', optionsWithCurrent(handbookDeliveries, order.deliveryMethod || '', DELIVERY_OPTIONS), (v) => updateOrderData(order.orderId, 'deliveryMethod', v))}
@@ -3260,6 +3518,7 @@ const OrderCard = React.memo(({
   const orderItemColors = getOrderItemColors(order);
   const orderItemSizes = getOrderItemSizes(order);
   const orderItemHeights = getOrderItemHeights(order);
+  const orderItemSewn = getOrderItemSewn(order);
   const [editItems, setEditItems] = useState<string[]>(orderItems.length ? orderItems : ['']);
   const [editItemPrices, setEditItemPrices] = useState<number[]>(orderItemPrices.length ? orderItemPrices : [0]);
   const [editItemColors, setEditItemColors] = useState<string[]>(orderItemColors.length ? orderItemColors : ['']);
@@ -3612,6 +3871,8 @@ const OrderCard = React.memo(({
       <OrderDetailView
         order={order}
         productCatalog={productCatalog}
+        handbookStatuses={handbookStatuses}
+        handbookManagers={handbookManagers}
         updateOrderData={updateOrderData}
         onBack={() => {
           setExpanded(false);
@@ -3629,25 +3890,15 @@ const OrderCard = React.memo(({
   return (
     <div className={cn(
       "yb-order-mobile-card m-3 flex flex-col gap-3 rounded-2xl border border-zinc-200/80 p-4 transition-colors",
-      order.isPinned
-        ? "border-amber-200 bg-amber-50/40"
-        : order.isOverdue && !order.isShipped
-          ? "bg-red-50/30"
-          : "bg-white"
+      isReceivedOrderStatus(order.status)
+        ? "border-emerald-200 bg-emerald-50/70"
+        : order.isPinned
+          ? "border-amber-200 bg-amber-50/40"
+          : isOverdueOrder(order)
+            ? "bg-red-50/30"
+            : "bg-white"
     )}>
       <div
-        role="button"
-        tabIndex={0}
-        onClick={() => {
-          setExpanded(v => !v);
-          if (expanded) setMobileEditing(false);
-        }}
-        onKeyDown={(event) => {
-          if (event.key === 'Enter' || event.key === ' ') {
-            event.preventDefault();
-            setExpanded(v => !v);
-          }
-        }}
         className="text-left"
       >
         <div className="mb-2 flex items-center justify-between gap-2">
@@ -3669,27 +3920,30 @@ const OrderCard = React.memo(({
             <Pin className={cn("h-3.5 w-3.5", order.isPinned && "fill-current")} />
             {order.isPinned ? 'Закреплён' : 'Закрепить'}
           </button>
-          <label
-            className="inline-flex min-w-[108px] max-w-[138px] items-center gap-1 rounded-lg border border-zinc-200 bg-white px-2 py-1.5 text-[9px] font-semibold text-zinc-500 shadow-sm"
-            onClick={event => event.stopPropagation()}
+          <OrderStatusMenu
+            orderId={order.orderId}
+            value={order.status || 'Новый'}
+            options={handbookStatuses}
+            onChange={nextStatus => updateOrderData(order.orderId, 'status', nextStatus)}
+            className="min-w-[128px] max-w-[170px] text-[9px] font-black uppercase tracking-wide"
+          />
+          <button
+            type="button"
+            onClick={() => setExpanded(true)}
+            className="inline-flex min-h-11 items-center gap-1 rounded-lg px-2 text-zinc-400 transition-colors hover:bg-zinc-100 hover:text-zinc-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-200"
+            aria-label={`Развернуть заказ ${order.orderId}`}
           >
-            <span className="text-[8px] font-light text-zinc-400">Статус</span>
-            <select
-              value={order.status || 'Новый'}
-              onChange={(event) => updateOrderData(order.orderId, 'status', event.target.value)}
-              className="min-w-0 flex-1 cursor-pointer bg-transparent text-[9px] font-black uppercase tracking-wide text-zinc-700 outline-none"
-              aria-label={`Поменять статус заказа ${order.orderId}`}
-            >
-              {optionsWithCurrent(handbookStatuses, order.status || 'Новый', STATUS_OPTIONS).map(status => (
-                <option key={status} value={status}>{status || '—'}</option>
-              ))}
-            </select>
-          </label>
-          <div className="flex items-center gap-1 text-zinc-300">
             <span className="text-[8px] font-light tracking-wide">Развернуть заказ</span>
             <Plus className="h-3.5 w-3.5 stroke-[1.25]" />
-          </div>
+          </button>
         </div>
+        {isOverdueOrder(order) && (
+          <div className="mb-2 flex justify-center">
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-red-200 bg-red-50 px-2.5 py-1 text-[9px] font-black uppercase tracking-[0.08em] text-red-600">
+              <AlertCircle className="h-3 w-3" /> Просрочен
+            </span>
+          </div>
+        )}
         <div className="min-w-0 space-y-3">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
@@ -3698,7 +3952,7 @@ const OrderCard = React.memo(({
             </div>
             <div className="min-w-0 text-right">
               <p className="truncate text-[12px] font-black text-zinc-950">{order.clientName || '—'}</p>
-              <p className="mt-1 text-[11px] font-semibold text-zinc-400">{order.clientPhone ? `+${order.clientPhone}` : '—'}</p>
+              <p className="mt-1 text-[11px] font-semibold text-zinc-400">{formatClientPhone(order.clientPhone) || '—'}</p>
               {normalizeInstagramUsername(order.clientInsta) && (
                 <a
                   href={getInstagramProfileUrl(order.clientInsta)}
@@ -3728,9 +3982,28 @@ const OrderCard = React.memo(({
           </div>
           <div className="space-y-1">
             {(orderItems.length ? orderItems : ['—']).map((item, index) => (
-              <div key={`${item}-${index}`} className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
+              <div key={`${item}-${index}`} className="grid grid-cols-[36px_minmax(0,1fr)_auto] items-start gap-2">
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    const next = orderItems.map((_, itemIndex) => itemIndex === index ? !orderItemSewn[itemIndex] : orderItemSewn[itemIndex]);
+                    updateOrderData(order.orderId, 'itemSewn', next);
+                  }}
+                  className={cn(
+                    "grid h-9 w-9 cursor-pointer place-items-center rounded-full border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300",
+                    orderItemSewn[index]
+                      ? "border-emerald-500 bg-emerald-500 text-white"
+                      : "border-zinc-200 bg-white text-zinc-300"
+                  )}
+                  aria-label={orderItemSewn[index] ? `Снять отметку «Пошито» с товара ${item}` : `Отметить товар ${item} как пошитый`}
+                  aria-pressed={orderItemSewn[index]}
+                >
+                  <CheckCircle2 className="h-4 w-4" />
+                </button>
                 <div className="min-w-0">
-                  <p className="truncate text-[12px] font-bold text-zinc-950">{item}</p>
+                  <p className={cn("truncate text-[12px] font-bold", orderItemSewn[index] ? "text-emerald-700" : "text-zinc-950")}>{item}</p>
+                  {orderItemSewn[index] && <p className="mt-0.5 text-[8px] font-black uppercase tracking-wide text-emerald-600">Пошито</p>}
                   {(orderItemColors[index] || orderItemSizes[index] || orderItemHeights[index]) && (
                     <p className="truncate text-[9px] font-semibold text-zinc-400">
                       {[orderItemColors[index], orderItemSizes[index], orderItemHeights[index]].filter(Boolean).join(' / ')}
@@ -3805,8 +4078,8 @@ const OrderCard = React.memo(({
             <Phone className="w-3 h-3" /> Телефон
           </span>
           <input
-            value={order.clientPhone || ''}
-            onChange={(e) => updateOrderData(order.orderId, 'clientPhone', e.target.value.replace(/[^0-9]/g, ''))}
+            value={formatClientPhone(order.clientPhone)}
+            onChange={(e) => updateOrderData(order.orderId, 'clientPhone', normalizeClientPhoneInput(e.target.value))}
             placeholder="Телефон"
             inputMode="numeric"
             className={mobileInputClass}
@@ -3915,7 +4188,7 @@ const OrderCard = React.memo(({
           {mobileSelect('Размер', order.rawRow?.[RAW_SIZE_INDEX] || '', optionsWithCurrent(handbookSizes, order.rawRow?.[RAW_SIZE_INDEX] || ''), (v) => updateOrderData(order.orderId, `rawRow[${RAW_SIZE_INDEX}]`, v))}
           {mobileSelect('Рост', order.height || '', optionsWithCurrent(handbookHeights, order.height || ''), (v) => updateOrderData(order.orderId, 'height', v))}
           {mobileSelect('Источник', order.source || '', optionsWithCurrent(handbookSources, order.source || '', SOURCE_OPTIONS), (v) => updateOrderData(order.orderId, 'source', v))}
-          {mobileSelect('Менеджер', order.manager || '', optionsWithCurrent(handbookManagers, order.manager || ''), (v) => updateOrderData(order.orderId, 'manager', v))}
+          {mobileSelect('Менеджер', order.manager || '', mergeOptions(optionsWithCurrent(handbookManagers, order.manager || ''), DEFAULT_MANAGERS), (v) => updateOrderData(order.orderId, 'manager', v))}
           {mobileSelect('Оплата', order.paymentType || '', optionsWithCurrent(handbookPaymentTypes, order.paymentType || '', PAYMENT_TYPE_OPTIONS), (v) => updateOrderData(order.orderId, 'paymentType', v))}
           {mobileSelect('Тип оплаты', getInvoicePaymentLabel(invoiceType), INVOICE_PAYMENT_OPTIONS, updateMobileInvoiceType)}
           {mobileSelect('Доставка', order.deliveryMethod || '', optionsWithCurrent(handbookDeliveries, order.deliveryMethod || '', DELIVERY_OPTIONS), (v) => updateOrderData(order.orderId, 'deliveryMethod', v))}
@@ -4172,7 +4445,7 @@ interface OrdersTabProps {
   searchTerm: string;
   setSearchTerm: (s: string) => void;
   updateOrderData: (id: string, field: string, value: any) => void;
-  deleteOrder: (id: string) => void;
+  deleteOrder: (id: string) => Promise<boolean>;
   newOrder: Partial<OrderData>;
   setNewOrder: React.Dispatch<React.SetStateAction<Partial<OrderData>>>;
   handleCreateOrder: (orderDraft?: Partial<OrderData>) => Promise<string | null>;
@@ -4260,6 +4533,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
   const [productCatalog, setProductCatalog] = useState<ProductCatalogItem[]>([]);
   const [newOrderItems, setNewOrderItems] = useState<string[]>(['']);
   const [newOrderItemPrices, setNewOrderItemPrices] = useState<number[]>([0]);
+  const [newOrderItemCosts, setNewOrderItemCosts] = useState<number[]>([0]);
   const [newOrderItemColors, setNewOrderItemColors] = useState<string[]>(['']);
   const [newOrderItemSizes, setNewOrderItemSizes] = useState<string[]>(['']);
   const [newOrderItemHeights, setNewOrderItemHeights] = useState<string[]>(['']);
@@ -4284,6 +4558,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
   const [expandedOrderId, setExpandedOrderId] = useState<string | null>(null);
   const [analyticsDetailsOpen, setAnalyticsDetailsOpen] = useState(false);
   const [selectedOrderKeys, setSelectedOrderKeys] = useState<Set<string>>(() => new Set());
+  const [bulkDeleting, setBulkDeleting] = useState(false);
   const [managerContacts, setManagerContacts] = useState<ManagerContactEntry[]>([]);
   const [managerShifts, setManagerShifts] = useState<ManagerShiftRecord[]>([]);
   const [selectedShiftManager, setSelectedShiftManager] = useState('');
@@ -4381,23 +4656,51 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
   }, []);
 
   useEffect(() => {
-    const user = auth.currentUser;
-    if (!user?.uid) {
-      setCurrentManagerProfile(null);
-      return;
-    }
-    const unsubscribe = onSnapshot(
-      doc(db, 'manager_profiles', user.uid),
-      snap => {
-        const data = snap.data() as ManagerProfile | undefined;
-        setCurrentManagerProfile(data ? { ...data, managerId: user.uid, managerEmail: user.email || data.managerEmail || null } : null);
-      },
-      error => {
-        console.error('Не удалось загрузить профиль менеджера:', error);
+    let unsubscribeProfile = () => {};
+    const unsubscribeAuth = onAuthStateChanged(auth, user => {
+      unsubscribeProfile();
+      if (!user?.uid) {
         setCurrentManagerProfile(null);
+        return;
       }
-    );
-    return () => unsubscribe();
+      const fixedManagerName = managerNameForEmail(user.email);
+      const profileRef = doc(db, 'manager_profiles', user.uid);
+      if (fixedManagerName) {
+        void setDoc(profileRef, {
+          managerName: fixedManagerName,
+          managerId: user.uid,
+          managerEmail: user.email || null,
+          displayName: user.displayName || null,
+          photoURL: user.photoURL || null,
+          updatedAt: new Date().toISOString(),
+        }, { merge: true }).catch(error => console.error('Не удалось привязать логин менеджера:', error));
+      }
+      unsubscribeProfile = onSnapshot(
+        profileRef,
+        snap => {
+          const data = snap.data() as ManagerProfile | undefined;
+          const managerName = fixedManagerName || data?.managerName;
+          setCurrentManagerProfile(managerName ? {
+            ...data,
+            managerName,
+            managerId: user.uid,
+            managerEmail: user.email || data?.managerEmail || null,
+          } : null);
+        },
+        error => {
+          console.error('Не удалось загрузить профиль менеджера:', error);
+          setCurrentManagerProfile(fixedManagerName ? {
+            managerName: fixedManagerName,
+            managerId: user.uid,
+            managerEmail: user.email || null,
+          } : null);
+        }
+      );
+    });
+    return () => {
+      unsubscribeProfile();
+      unsubscribeAuth();
+    };
   }, []);
 
   useEffect(() => {
@@ -4496,6 +4799,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
   }, [contacts, phoneQuery]);
 
   const isNewOrderCdek = String(newOrder.deliveryMethod || '').toLowerCase().includes('сдэк');
+  const isNewOrderBlogger = String(newOrder.source || '').toLowerCase().includes('блогер');
 
   useEffect(() => {
     const value = newCdekCityQuery.trim();
@@ -4757,7 +5061,8 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
   const managerShiftState = useMemo(() => {
     const todayKey = getLocalDateKey();
     const user = auth.currentUser;
-    const manager = currentManagerProfile?.managerName || selectedShiftManager || shiftManagers[0] || 'Менеджер 1';
+    const fixedManagerName = managerNameForEmail(user?.email);
+    const manager = fixedManagerName || currentManagerProfile?.managerName || selectedShiftManager || shiftManagers[0] || 'Менеджер 1';
     const profileUid = currentManagerProfile?.managerId || user?.uid || '';
     const profileEmail = normalizeAuthEmail(currentManagerProfile?.managerEmail || user?.email || '');
     const contactsToday = managerContacts.filter(entry => {
@@ -4791,7 +5096,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
       manager,
       managerId: profileUid,
       managerEmail: profileEmail,
-      isProfileBound: Boolean(currentManagerProfile?.managerName && profileUid),
+      isProfileBound: Boolean((fixedManagerName || currentManagerProfile?.managerName) && profileUid),
       contactsCount: uniqueClients.size,
       progress,
       shift: todayShift,
@@ -4808,7 +5113,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
       return;
     }
     const user = auth.currentUser;
-    const manager = selectedShiftManager || shiftManagers[0] || 'Менеджер 1';
+    const manager = managerNameForEmail(user?.email) || selectedShiftManager || shiftManagers[0] || 'Менеджер 1';
     if (!user?.uid || !manager) return;
     setProfileSaving(true);
     setShiftError('');
@@ -4821,6 +5126,13 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
         photoURL: user.photoURL || null,
         updatedAt: new Date().toISOString(),
       }, { merge: true });
+      await logAuditEvent({
+        action: 'manager_profile_bound',
+        entityType: 'manager_profile',
+        entityId: user.uid,
+        after: { managerName: manager, managerEmail: user.email || null },
+        metadata: { label: `Логин привязан к «${manager}»` },
+      });
       setSelectedShiftManager(manager);
     } catch (error: any) {
       console.error('Не удалось привязать логин менеджера:', error);
@@ -4845,19 +5157,51 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
     setShiftError('');
     try {
       const user = auth.currentUser;
+      if (!user?.uid) throw new Error('Логин менеджера не определён. Войдите в CRM заново.');
+      const startedAt = new Date().toISOString();
+      await setDoc(doc(db, 'manager_profiles', user.uid), {
+        managerName: manager,
+        managerId: user.uid,
+        managerEmail: user?.email || null,
+        displayName: user?.displayName || null,
+        updatedAt: startedAt,
+      }, { merge: true });
       await setDoc(doc(db, 'manager_shifts', `${managerShiftState.todayKey}_${managerDocKey(manager)}`), {
         managerName: manager,
         managerId: user?.uid || managerShiftState.managerId || null,
         managerEmail: user?.email || managerShiftState.managerEmail || null,
         startedBy: user?.email || user?.displayName || manager,
         dateKey: managerShiftState.todayKey,
-        startedAt: new Date().toISOString(),
+        startedAt,
         plannedStart: SHIFT_START_TIME,
         plannedEnd: SHIFT_END_TIME,
         targetContacts: SHIFT_TARGET_CONTACTS,
         basePay: SHIFT_BASE_PAY,
         status: 'active',
       }, { merge: true });
+      await logAuditEvent({
+        action: 'manager_shift_started',
+        entityType: 'manager_shift',
+        entityId: `${managerShiftState.todayKey}_${managerDocKey(manager)}`,
+        after: {
+          managerName: manager,
+          managerEmail: user.email || null,
+          dateKey: managerShiftState.todayKey,
+          startedAt,
+          status: 'active',
+        },
+        metadata: { label: `${manager} начал смену`, page: 'orders' },
+      });
+      void emitPushEvent(
+        'manager_shift_started',
+        `manager-shift-started:${managerShiftState.todayKey}:${user?.uid || managerDocKey(manager)}`,
+        {
+          manager,
+          managerEmail: user?.email || managerShiftState.managerEmail || '',
+          startedAt,
+          dateKey: managerShiftState.todayKey,
+        },
+      );
     } catch (error: any) {
       console.error('Не удалось начать смену:', error);
       setShiftError(error?.message || 'Не удалось начать смену. Проверьте соединение и права доступа.');
@@ -4906,11 +5250,13 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
 
     const nextItems = [...newOrderItems];
     const nextPrices = [...newOrderItemPrices];
+    const nextCosts = [...newOrderItemCosts];
     const nextColors = [...newOrderItemColors];
     const nextSizes = [...newOrderItemSizes];
     const nextHeights = [...newOrderItemHeights];
     nextItems[index] = value;
     if (product?.sellingPrice && !nextPrices[index]) nextPrices[index] = Number(product.sellingPrice) || 0;
+    if (product?.costPrice && !nextCosts[index]) nextCosts[index] = Number(product.costPrice) || 0;
     if (product?.color && !nextColors[index]) nextColors[index] = product.color;
     if (product?.sizeGrid && !nextSizes[index]) nextSizes[index] = product.sizeGrid;
     if (product?.height && !nextHeights[index]) nextHeights[index] = product.height;
@@ -4918,6 +5264,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
     rawRow[RAW_SIZE_INDEX] = nextSizes[0] || '';
     setNewOrderItems(nextItems);
     setNewOrderItemPrices(nextPrices);
+    setNewOrderItemCosts(nextCosts);
     setNewOrderItemColors(nextColors);
     setNewOrderItemSizes(nextSizes);
     setNewOrderItemHeights(nextHeights);
@@ -4930,6 +5277,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
   const addNewOrderItem = () => {
     setNewOrderItems([...newOrderItems, '']);
     setNewOrderItemPrices([...newOrderItemPrices, 0]);
+    setNewOrderItemCosts([...newOrderItemCosts, 0]);
     setNewOrderItemColors([...newOrderItemColors, '']);
     setNewOrderItemSizes([...newOrderItemSizes, '']);
     setNewOrderItemHeights([...newOrderItemHeights, '']);
@@ -4939,11 +5287,13 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
     if (newOrderItems.length <= 1) return;
     const nextItems = newOrderItems.filter((_, i) => i !== index);
     const nextPrices = newOrderItemPrices.filter((_, i) => i !== index);
+    const nextCosts = newOrderItemCosts.filter((_, i) => i !== index);
     const nextColors = newOrderItemColors.filter((_, i) => i !== index);
     const nextSizes = newOrderItemSizes.filter((_, i) => i !== index);
     const nextHeights = newOrderItemHeights.filter((_, i) => i !== index);
     setNewOrderItems(nextItems);
     setNewOrderItemPrices(nextPrices);
+    setNewOrderItemCosts(nextCosts);
     setNewOrderItemColors(nextColors);
     setNewOrderItemSizes(nextSizes);
     setNewOrderItemHeights(nextHeights);
@@ -4955,6 +5305,12 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
     nextPrices[index] = value;
     setNewOrderItemPrices(nextPrices);
     syncNewOrderItems(newOrderItems, nextPrices, newOrderItemColors, newOrderItemSizes, newOrderItemHeights);
+  };
+
+  const updateNewOrderItemCost = (index: number, value: number) => {
+    const nextCosts = [...newOrderItemCosts];
+    nextCosts[index] = value;
+    setNewOrderItemCosts(nextCosts);
   };
 
   const updateNewOrderItemColor = (index: number, value: string) => {
@@ -5103,6 +5459,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
     });
     setNewOrderItems(['']);
     setNewOrderItemPrices([0]);
+    setNewOrderItemCosts([0]);
     setNewOrderItemColors(['']);
     setNewOrderItemSizes(['']);
     setNewOrderItemHeights(['']);
@@ -5130,22 +5487,30 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
 
   const buildNewOrderSnapshot = (status = 'Новый') => {
     const itemPricesTotal = getItemPricesTotal(newOrderItemPrices);
+    const bloggerProductCost = getItemPricesTotal(newOrderItemCosts);
     const invoiceType = newOrder.invoiceType || getInvoiceTypeFromPaymentType(newOrder.paymentType);
     const deliveryPrice = Number(newOrder.deliveryPrice) || 0;
     const cdekAddress = newCdekDeliveryType === 'pvz' ? newCdekPointQuery : String(newOrder.clientAddress || '').trim();
     return {
       ...newOrder,
+      clientPhone: normalizeClientPhone(newOrder.clientPhone),
       rawRow: [...(newOrder.rawRow || [])],
       items: newOrderItems.map(item => item.trim()).filter(Boolean),
-      itemPrices: newOrderItems.map((item, index) => item.trim() ? (Number(newOrderItemPrices[index]) || 0) : 0).filter((_, index) => Boolean(newOrderItems[index]?.trim())),
+      itemPrices: newOrderItems.map((item, index) => item.trim() ? (isNewOrderBlogger ? 0 : (Number(newOrderItemPrices[index]) || 0)) : 0).filter((_, index) => Boolean(newOrderItems[index]?.trim())),
+      retailItemPrices: newOrderItems.map((item, index) => item.trim() ? (Number(newOrderItemPrices[index]) || 0) : 0).filter((_, index) => Boolean(newOrderItems[index]?.trim())),
+      itemCosts: newOrderItems.map((item, index) => item.trim() ? (Number(newOrderItemCosts[index]) || 0) : 0).filter((_, index) => Boolean(newOrderItems[index]?.trim())),
       itemColors: newOrderItems.map((item, index) => item.trim() ? String(newOrderItemColors[index] || '').trim() : '').filter((_, index) => Boolean(newOrderItems[index]?.trim())),
       itemSizes: newOrderItems.map((item, index) => item.trim() ? String(newOrderItemSizes[index] || '').trim() : '').filter((_, index) => Boolean(newOrderItems[index]?.trim())),
       itemHeights: newOrderItems.map((item, index) => item.trim() ? String(newOrderItemHeights[index] || '').trim() : '').filter((_, index) => Boolean(newOrderItems[index]?.trim())),
       item: joinOrderItems(newOrderItems),
-      revenue: itemPricesTotal,
+      revenue: isNewOrderBlogger ? 0 : itemPricesTotal,
+      isBlogger: isNewOrderBlogger,
+      bloggerProductCost: isNewOrderBlogger ? bloggerProductCost : 0,
+      bloggerDeliveryCost: isNewOrderBlogger ? deliveryPrice : 0,
+      bloggerTotalCost: isNewOrderBlogger ? bloggerProductCost + deliveryPrice : 0,
       invoiceType,
       paymentType: newOrder.paymentType || 'Предоплата 50%',
-      paidAmount: getInvoiceAmount({ revenue: itemPricesTotal, deliveryPrice, invoiceType }),
+      paidAmount: isNewOrderBlogger ? 0 : getInvoiceAmount({ revenue: itemPricesTotal, deliveryPrice, invoiceType }),
       clientCity: isNewOrderCdek ? newCdekCityQuery : String(newOrder.clientCity || '').trim(),
       clientAddress: isNewOrderCdek ? cdekAddress : String(newOrder.clientAddress || '').trim(),
       status,
@@ -5172,7 +5537,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
     if (!String(newOrder.manager || '').trim()) missing.push('менеджер');
     if (!String(newOrder.source || '').trim()) missing.push('источник');
     if (!String(newOrder.deliveryMethod || '').trim()) missing.push('доставка');
-    if (!String(newOrder.paymentType || '').trim()) missing.push('тип оплаты');
+    if (!isNewOrderBlogger && !String(newOrder.paymentType || '').trim()) missing.push('тип оплаты');
     if (String(newOrder.source || '').toLowerCase().includes('блогер') && !String(newOrder.blogger || '').trim()) missing.push('блогер');
     newOrderItems.forEach((item, index) => {
       const position = newOrderItems.length > 1 ? ` (позиция ${index + 1})` : '';
@@ -5180,7 +5545,9 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
       if (!String(newOrderItemColors[index] || '').trim()) missing.push(`цвет${position}`);
       if (!String(newOrderItemSizes[index] || '').trim()) missing.push(`размер${position}`);
       if (!String(newOrderItemHeights[index] || '').trim()) missing.push(`рост${position}`);
-      if ((Number(newOrderItemPrices[index]) || 0) <= 0) missing.push(`цена${position}`);
+      if (isNewOrderBlogger) {
+        if ((Number(newOrderItemCosts[index]) || 0) <= 0) missing.push(`себестоимость${position}`);
+      } else if ((Number(newOrderItemPrices[index]) || 0) <= 0) missing.push(`цена${position}`);
     });
     if (isNewOrderCdek) {
       if (!newCdekCityCode) missing.push('город СДЭК из подсказки');
@@ -5193,8 +5560,8 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
     }
     return Array.from(new Set(missing));
   }, [
-    isNewOrderCdek, newCdekCityCode, newCdekDeliveryType, newCdekPoint, newCdekWeight,
-    newOrder, newOrderItemColors, newOrderItemHeights, newOrderItemPrices, newOrderItemSizes, newOrderItems,
+    isNewOrderBlogger, isNewOrderCdek, newCdekCityCode, newCdekDeliveryType, newCdekPoint, newCdekWeight,
+    newOrder, newOrderItemColors, newOrderItemCosts, newOrderItemHeights, newOrderItemPrices, newOrderItemSizes, newOrderItems,
   ]);
 
   const persistNewOrderContact = async (orderSnapshot: Partial<OrderData>) => {
@@ -5203,7 +5570,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
     await setDoc(doc(db, 'contacts', contactId), {
       userId: contactId,
       fullName: orderSnapshot.clientName || '',
-      phone: orderSnapshot.clientPhone || '',
+      phone: normalizeClientPhone(orderSnapshot.clientPhone),
       insta: orderSnapshot.clientInsta || '',
       city: orderSnapshot.clientCity || '',
       address: orderSnapshot.clientAddress || '',
@@ -5264,7 +5631,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
       setNewOrderSubmitting(false);
       return;
     }
-    const paymentPageUrl = buildPaymentPageUrl(orderId);
+    const paymentPageUrl = orderSnapshot.isBlogger ? '' : buildPaymentPageUrl(orderId);
     let generatedPaymentUrl: string | null = null;
     let generatedPaymentError = '';
     setCreatedOrderId(orderId);
@@ -5308,7 +5675,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
       }
     }
 
-    if (tochkaConfigured || isYandexSplitPayment(orderSnapshot.paymentType)) {
+    if (!orderSnapshot.isBlogger && (tochkaConfigured || isYandexSplitPayment(orderSnapshot.paymentType))) {
       setIsCreatingQr(true);
       try {
         const amount = getOrderPaymentDue({
@@ -5388,6 +5755,32 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
     }, 250);
   };
 
+  const deleteSelectedOrders = async () => {
+    if (!selectedPrintOrders.length || bulkDeleting) return;
+    const orderIds = selectedPrintOrders.map(order => String(order.orderId || '').replace(/^#+/, '')).filter(Boolean);
+    const preview = orderIds.slice(0, 6).map(id => `#${id}`).join(', ');
+    const more = orderIds.length > 6 ? ` и ещё ${orderIds.length - 6}` : '';
+    const confirmed = window.confirm(
+      `Удалить выбранные заказы (${orderIds.length})?\n\n${preview}${more}\n\nЗаказы исчезнут из рабочего списка.`,
+    );
+    if (!confirmed) return;
+
+    setBulkDeleting(true);
+    try {
+      const results = await Promise.all(selectedPrintOrders.map(async order => ({
+        orderId: order.orderId,
+        success: await deleteOrder(order.orderId),
+      })));
+      const failed = results.filter(result => !result.success);
+      setSelectedOrderKeys(new Set());
+      if (failed.length) {
+        window.alert(`Не удалось удалить заказов: ${failed.length}. Обновите страницу и попробуйте ещё раз.`);
+      }
+    } finally {
+      setBulkDeleting(false);
+    }
+  };
+
   const orderWorkspaceSummary = useMemo(() => {
     const source = filteredOrders || [];
     const revenue = source.reduce((sum, order) => sum + (Number(order.revenue) || 0) + (Number(order.deliveryPrice) || 0), 0);
@@ -5397,9 +5790,12 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
     }).length;
     const inDelivery = source.filter(order => {
       const status = String(order.status || '').toLowerCase();
-      return status.includes('отгружен') || (Boolean(order.cdekNumber) && !status.includes('доставлен'));
+      return status.includes('отгружен') || (Boolean(order.cdekNumber) && !status.includes('доставлен') && !status.includes('получен'));
     }).length;
-    const delivered = source.filter(order => String(order.status || '').toLowerCase().includes('доставлен')).length;
+    const delivered = source.filter(order => {
+      const status = String(order.status || '').toLowerCase();
+      return status.includes('доставлен') || status.includes('получен');
+    }).length;
     return { total: source.length, revenue, awaitingPayment, inDelivery, delivered };
   }, [filteredOrders]);
 
@@ -5417,7 +5813,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
       const status = normalizeStatusOption(order.status || 'Новый') || 'Новый';
       counts.set(status, (counts.get(status) || 0) + 1);
     });
-    const priority = ['Новый', 'В работе', 'Накроить', 'Заказ ткань', 'Оплачен', 'Упакован', 'Принят СДЭК', 'Отгружен', 'Доставлен', 'Вручен', 'Возврат', 'Отмена', 'Обмен', 'Черновик'];
+    const priority = STATUS_OPTIONS;
     const priorityIndex = (status: string) => {
       const index = priority.indexOf(status);
       return index === -1 ? priority.length : index;
@@ -6164,7 +6560,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
               style={{ width: `${(filteredSlaStats?.onTime || 0) / (filteredSlaStats?.totalOrders || 1) * 100}%` }}
             >
               <div className="hidden group-hover/bar:block absolute bottom-full mb-1 left-1/2 -translate-x-1/2 px-2 py-1 bg-zinc-900 text-white text-[7px] rounded whitespace-nowrap z-10">
-                В работе (в срок): {filteredSlaStats?.onTime}
+                В срок: {filteredSlaStats?.onTime}
               </div>
             </div>
             <div
@@ -6334,9 +6730,9 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                     <input
                       type="text"
                       placeholder="Телефон"
-                      value={phoneQuery || newOrder.clientPhone || ''}
+                      value={formatClientPhone(phoneQuery || newOrder.clientPhone)}
                       onChange={(e) => {
-                        const val = e.target.value.replace(/[^0-9]/g, '');
+                        const val = normalizeClientPhoneInput(e.target.value);
                         setPhoneQuery(val);
                         setNewOrder({...newOrder, clientPhone: val});
                         setShowPhoneSuggestions(true);
@@ -6419,7 +6815,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
               </div>
 
               <div className="min-w-0 space-y-3">
-                {renderNewOrderSelect('Менеджер', newOrder.manager || '', handbookManagers, (v) => setNewOrder({...newOrder, manager: v}), 'Менеджер')}
+                {renderNewOrderSelect('Менеджер', newOrder.manager || '', mergeOptions(handbookManagers, DEFAULT_MANAGERS), (v) => setNewOrder({...newOrder, manager: v}), 'Менеджер')}
               </div>
 
               <div className="mt-4 border-t border-[#E6E9EF] pt-4">
@@ -6429,8 +6825,8 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                 </div>
                 <div className="grid grid-cols-3 gap-2">
                   <div className="rounded-[8px] border border-[#E6E9EF] bg-[#F6F7F9] p-2.5">
-                    <p className="text-[8px] font-medium uppercase tracking-[0.1em] text-[#9CA3AF]">Изделия</p>
-                    <p className="mt-1.5 text-[14px] font-medium tabular-nums text-[#1F2937]">{Number(newOrder.revenue || 0).toLocaleString('ru-RU')} ₽</p>
+                    <p className="text-[8px] font-medium uppercase tracking-[0.1em] text-[#9CA3AF]">{isNewOrderBlogger ? 'Себестоимость изделий' : 'Изделия'}</p>
+                    <p className="mt-1.5 text-[14px] font-medium tabular-nums text-[#1F2937]">{Number(isNewOrderBlogger ? getItemPricesTotal(newOrderItemCosts) : newOrder.revenue || 0).toLocaleString('ru-RU')} ₽</p>
                   </div>
                   <label className="rounded-[8px] border border-[#E6E9EF] bg-[#F6F7F9] p-2.5">
                     <span className="text-[8px] font-medium uppercase tracking-[0.1em] text-[#9CA3AF]">Доставка</span>
@@ -6446,8 +6842,8 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                     </span>
                   </label>
                   <div className="rounded-[8px] border border-emerald-100 bg-emerald-50/70 p-2.5">
-                    <p className="text-[8px] font-medium uppercase tracking-[0.1em] text-[#2EBA7F]">К оплате</p>
-                    <p className="mt-1.5 text-[14px] font-medium tabular-nums text-[#2EBA7F]">{Number(newOrder.paidAmount || 0).toLocaleString('ru-RU')} ₽</p>
+                    <p className="text-[8px] font-medium uppercase tracking-[0.1em] text-[#2EBA7F]">{isNewOrderBlogger ? 'Затраты на блогера' : 'К оплате'}</p>
+                    <p className="mt-1.5 text-[14px] font-medium tabular-nums text-[#2EBA7F]">{Number(isNewOrderBlogger ? getItemPricesTotal(newOrderItemCosts) + (Number(newOrder.deliveryPrice) || 0) : newOrder.paidAmount || 0).toLocaleString('ru-RU')} ₽</p>
                   </div>
                 </div>
               </div>
@@ -6484,14 +6880,16 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                   </div>
                   <div className="mt-3 flex min-w-0 items-end gap-2">
                     <label className="block min-w-0 flex-1">
-                      <span className={newOrderLabelClass}>Цена</span>
+                      <span className={newOrderLabelClass}>{isNewOrderBlogger ? 'Себестоимость' : 'Цена'}</span>
                       <span className="relative block min-w-0">
                         <span className="absolute left-4 top-1/2 -translate-y-1/2 text-[13px] font-black text-zinc-300">₽</span>
                         <input
                           type="number"
-                          placeholder="Цена изделия"
-                          value={newOrderItemPrices[index] || ''}
-                          onChange={(e) => updateNewOrderItemPrice(index, parseFloat(e.target.value) || 0)}
+                          placeholder={isNewOrderBlogger ? 'Себестоимость изделия' : 'Цена изделия'}
+                          value={(isNewOrderBlogger ? newOrderItemCosts[index] : newOrderItemPrices[index]) || ''}
+                          onChange={(e) => isNewOrderBlogger
+                            ? updateNewOrderItemCost(index, parseFloat(e.target.value) || 0)
+                            : updateNewOrderItemPrice(index, parseFloat(e.target.value) || 0)}
                           className={cn(newOrderFieldClass, "pl-10 text-right")}
                         />
                       </span>
@@ -6537,6 +6935,11 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
             <div className="space-y-3">
               {renderNewOrderSelect('Способ доставки', newOrder.deliveryMethod || '', mergeOptions(handbookDeliveries, DELIVERY_OPTIONS), (value) => {
                 setNewOrder({...newOrder, deliveryMethod: value});
+                if (/сдэк/i.test(value)) {
+                  const door = /до двери/i.test(value);
+                  setNewCdekDeliveryType(door ? 'door' : 'pvz');
+                  setNewCdekTariffCode(door ? '139' : '138');
+                }
                 setNewOrderFormError('');
               }, 'Выберите доставку')}
 
@@ -6557,7 +6960,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                         className={newOrderSelectClass}
                       >
                         <option value="pvz">До ПВЗ</option>
-                        <option value="door">Курьером</option>
+                        <option value="door">До двери (курьер СДЭК)</option>
                       </select>
                     </label>
                     <label className="block">
@@ -6718,7 +7121,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                 </div>
               )}
 
-              {renderNewOrderSelect('Тип оплаты', newOrder.paymentType || '', INVOICE_PAYMENT_OPTIONS, updateNewOrderPaymentType, 'Выберите тип оплаты')}
+              {!isNewOrderBlogger && renderNewOrderSelect('Тип оплаты', newOrder.paymentType || '', INVOICE_PAYMENT_OPTIONS, updateNewOrderPaymentType, 'Выберите тип оплаты')}
             </div>
           </section>
 
@@ -6760,11 +7163,15 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                   type="button"
                   onClick={createNewOrder}
                   disabled={newOrderSubmitting || newOrderMissingFields.length > 0}
-                  title={newOrderMissingFields.length ? `Заполните: ${newOrderMissingFields.join(', ')}` : 'Создать заказ, накладную и счёт'}
+                  title={newOrderMissingFields.length
+                    ? `Заполните: ${newOrderMissingFields.join(', ')}`
+                    : isNewOrderBlogger ? 'Создать расход на блогера без продажи' : 'Создать заказ, накладную и счёт'}
                   className="inline-flex h-10 w-full items-center justify-center gap-3 rounded-[6px] bg-[#7D7DE6] px-8 text-[11px] font-medium uppercase tracking-[0.12em] text-white shadow-sm transition-all hover:bg-[#6F6FE0] active:scale-[0.99] disabled:cursor-not-allowed disabled:bg-[#D7D7F5] disabled:shadow-none sm:w-auto"
                 >
                   {newOrderSubmitting ? <RefreshCcw className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-5 w-5" />}
-                  {isNewOrderCdek ? 'Создать заказ, накладную и счёт' : 'Создать заказ и счёт'}
+                  {isNewOrderBlogger
+                    ? isNewOrderCdek ? 'Создать расход и накладную' : 'Создать расход блогера'
+                    : isNewOrderCdek ? 'Создать заказ, накладную и счёт' : 'Создать заказ и счёт'}
                 </button>
               </div>
             </div>
@@ -6847,9 +7254,9 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                   <input
                     type="text"
                     placeholder="Телефон"
-                    value={phoneQuery || newOrder.clientPhone || ''}
+                    value={formatClientPhone(phoneQuery || newOrder.clientPhone)}
                     onChange={(e) => {
-                      const val = e.target.value.replace(/[^0-9]/g, '');
+                      const val = normalizeClientPhoneInput(e.target.value);
                       setPhoneQuery(val);
                       setNewOrder({...newOrder, clientPhone: val});
                       setShowPhoneSuggestions(true);
@@ -7329,7 +7736,16 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                 type="text"
                 placeholder="Найти заказ, клиента или товар..."
                 value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  setSearchTerm(value);
+                  if (value.trim()) {
+                    setOrdersFilterMonth(-1);
+                    setOrderStatusFilter('');
+                    setOrderBloggerFilter('');
+                  }
+                }}
+                aria-label="Поиск по заказам и клиентам"
                 className="h-10 w-full rounded-xl border border-zinc-200 bg-zinc-50/70 pl-9 pr-3 text-[11px] font-medium text-zinc-900 outline-none placeholder:text-zinc-400 focus:border-violet-300 focus:bg-white focus:ring-2 focus:ring-violet-500/10 sm:w-72"
               />
             </div>
@@ -7339,9 +7755,10 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
           {[
             { label: 'Все', value: '' },
             { label: 'Предоплата', value: PREPAYMENT_FILTER_VALUE },
-            { label: 'Упакован', value: 'Упакован' },
-            ...mergeOptions(handbookStatuses, STATUS_OPTIONS)
-              .filter(status => !['предоплата', 'упакован'].includes(status.trim().toLowerCase()))
+            { label: 'Просроченные', value: OVERDUE_FILTER_VALUE },
+            { label: 'Возвраты / отмены', value: REFUND_OR_CANCELLED_FILTER_VALUE },
+            ...optionsWithCurrent(handbookStatuses, '', STATUS_OPTIONS)
+              .filter(status => !['предоплата', 'возврат', 'отмена'].includes(status.trim().toLowerCase()))
               .map(status => ({ label: status, value: status })),
           ].map(({ label, value }) => {
             const active = orderStatusFilter === value;
@@ -7355,7 +7772,11 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                   active
                     ? value === PREPAYMENT_FILTER_VALUE
                       ? 'border-amber-500 bg-amber-500 text-white'
-                      : 'border-zinc-900 bg-zinc-900 text-white'
+                      : value === OVERDUE_FILTER_VALUE
+                        ? 'border-red-500 bg-red-500 text-white'
+                        : value === REFUND_OR_CANCELLED_FILTER_VALUE
+                          ? 'border-rose-600 bg-rose-600 text-white'
+                        : 'border-zinc-900 bg-zinc-900 text-white'
                     : 'border-zinc-200 bg-white text-zinc-600 hover:border-zinc-300'
                 )}
               >
@@ -7397,6 +7818,20 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
             <span className="text-[11px] font-medium text-[#9CA3AF]">
               выбрано: <b className="text-[#1F2937]">{selectedPrintOrders.length}</b>
             </span>
+            <button
+              type="button"
+              onClick={deleteSelectedOrders}
+              disabled={!selectedPrintOrders.length || bulkDeleting}
+              className={cn(
+                'inline-flex h-8 items-center gap-2 rounded-[6px] border px-3 text-[10px] font-medium uppercase tracking-[0.12em] transition-colors',
+                selectedPrintOrders.length && !bulkDeleting
+                  ? 'border-red-200 bg-white text-red-600 hover:border-red-300 hover:bg-red-50'
+                  : 'cursor-not-allowed border-[#E6E9EF] bg-white text-[#C5C9D1]',
+              )}
+            >
+              {bulkDeleting ? <RefreshCcw className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+              {bulkDeleting ? 'Удаление…' : 'Удалить выбранные'}
+            </button>
           </div>
           <div className="flex items-center gap-2">
             {selectedPrintOrders.length > 0 && (
@@ -7442,10 +7877,10 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                 <th className="w-[220px] border-none px-5 py-3">Клиент / Контакт</th>
                 <th className="w-[190px] border-none px-5 py-3">Статус</th>
                 <th className="w-[160px] border-none px-5 py-3">Финансы</th>
-                <th className="min-w-[320px] border-none px-5 py-3">Изделие</th>
-                <th className="w-[270px] border-none px-5 py-3">СДЭК / Адрес</th>
-                <th className="w-[140px] border-none px-5 py-3">Срок</th>
-                <th className="w-[80px] border-none px-5 py-3 text-right">Открыть</th>
+                <th className="min-w-[390px] border-none px-4 py-3">Изделие</th>
+                <th className="w-[250px] border-none px-4 py-3">СДЭК / Адрес</th>
+                <th className="w-[120px] border-none px-3 py-3">Срок</th>
+                <th className="w-[104px] border-none px-2 py-3 text-right">Открыть</th>
               </tr>
             </thead>
             <tbody>

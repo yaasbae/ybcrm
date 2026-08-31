@@ -8,9 +8,11 @@ import { motion } from 'motion/react';
 import { db } from '../firebase';
 import { doc, onSnapshot, setDoc } from 'firebase/firestore';
 import { YAASBAE_BLOGGERS } from '../data/bloggersYaasbae';
+import { normalizeOrderStatus, ORDER_STATUS_OPTIONS } from '../lib/orderStatuses';
 
 const DEFAULT_PAYMENT_TYPES = ["QR код", "Сплитами", "Долями", "Наличкой", "Наложенный СДЭК"];
-const DEFAULT_STATUSES = ["Новый", "В работе", "Накроить", "Заказ ткань", "Оплачен", "Упакован", "Отгружен", "Доставлен", "Вручен", "Возврат", "Отмена", "Обмен"];
+const DEFAULT_STATUSES = [...ORDER_STATUS_OPTIONS].filter(status => status !== 'Черновик');
+const DEFAULT_MANAGERS = ["Менеджер 1", "Менеджер 2", "Собственник"];
 const IMPORTED_BLOGGER_NAMES = Array.from(new Set(
   YAASBAE_BLOGGERS.map((blogger) => blogger.name.trim()).filter(Boolean)
 ));
@@ -26,7 +28,7 @@ export const HandbookPage: React.FC = () => {
   const [handbookLabels, setHandbookLabels] = useState<string[]>([]);
   const [handbookDeliveries, setHandbookDeliveries] = useState<string[]>([]);
   const [handbookPaymentTypes, setHandbookPaymentTypes] = useState<string[]>(DEFAULT_PAYMENT_TYPES);
-  const [handbookManagers, setHandbookManagers] = useState<string[]>([]);
+  const [handbookManagers, setHandbookManagers] = useState<string[]>(DEFAULT_MANAGERS);
   const [handbookBloggers, setHandbookBloggers] = useState<string[]>([]);
   const [saveError, setSaveError] = useState('');
 
@@ -40,12 +42,17 @@ export const HandbookPage: React.FC = () => {
         if (d.sizes) setHandbookSizes(d.sizes);
         if (d.heights) setHandbookHeights(d.heights);
         if (d.compositions) setHandbookCompositions(d.compositions);
-        if (d.statuses) setHandbookStatuses(d.statuses);
+        const currentStatuses = Array.isArray(d.statuses) ? d.statuses : [];
+        const normalizedCurrentStatuses = currentStatuses.map(normalizeOrderStatus).filter(Boolean);
+        const mergedStatuses = Array.from(new Set([...DEFAULT_STATUSES, ...normalizedCurrentStatuses]));
+        setHandbookStatuses(mergedStatuses);
         if (d.sources) setHandbookSources(d.sources);
         if (d.labels) setHandbookLabels(d.labels);
         if (d.deliveries) setHandbookDeliveries(d.deliveries);
         if (d.paymentTypes) setHandbookPaymentTypes(d.paymentTypes);
-        if (d.managers) setHandbookManagers(d.managers);
+        const currentManagers = Array.isArray(d.managers) ? d.managers : [];
+        const mergedManagers = Array.from(new Set([...currentManagers, ...DEFAULT_MANAGERS]));
+        setHandbookManagers(mergedManagers);
         const currentBloggers = Array.isArray(d.bloggers) ? d.bloggers : [];
         const mergedBloggers = Array.from(new Set([...currentBloggers, ...IMPORTED_BLOGGER_NAMES]));
         setHandbookBloggers(mergedBloggers);
@@ -53,6 +60,15 @@ export const HandbookPage: React.FC = () => {
           setDoc(doc(db, 'settings', 'handbook'), { bloggers: mergedBloggers }, { merge: true }).catch((err) => {
             console.error(err);
             setSaveError('Не удалось добавить блогеров из маркетинга в справочник.');
+          });
+        }
+        if (JSON.stringify(mergedStatuses) !== JSON.stringify(currentStatuses) || mergedManagers.length !== currentManagers.length) {
+          setDoc(doc(db, 'settings', 'handbook'), {
+            statuses: mergedStatuses,
+            managers: mergedManagers,
+          }, { merge: true }).catch((err) => {
+            console.error(err);
+            setSaveError('Не удалось обновить статусы и менеджеров в справочнике.');
           });
         }
       }

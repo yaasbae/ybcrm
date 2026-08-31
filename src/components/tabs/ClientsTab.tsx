@@ -3,13 +3,23 @@ import {
   Users, Search, Plus, X, RefreshCcw, Award,
   DollarSign, MapPin, Phone, Instagram, ExternalLink,
   Hash, TrendingUp, Upload, CheckCircle, MessageCircle,
-  Clock, ChevronDown, Send, Tag, AlertCircle, Mail
+  Clock, ChevronDown, Send, Tag, AlertCircle, Mail, ShoppingBag
 } from 'lucide-react';
 import { formatCurrency, cn } from '../../lib/utils';
 import { motion, AnimatePresence } from 'motion/react';
 import { db, auth } from '../../firebase';
 import { doc, updateDoc, onSnapshot, setDoc, writeBatch, collection, getDocs, getDoc, orderBy, query, addDoc, where, serverTimestamp, limit } from 'firebase/firestore';
 import { OrderData } from '../AnalyticsDashboard';
+import {
+  clientMatchesOrder,
+  formatClientPhone,
+  getClientPurchaseSummary,
+  getPurchaseAfterContactSummary,
+  mergeOrderClientsWithContacts,
+  normalizeClientPhone,
+  normalizeClientPhoneInput,
+} from '../../lib/clientMerge';
+import { managerNameForEmail } from '../../lib/managerIdentity';
 
 interface ClientsTabProps {
   stats: any;
@@ -22,7 +32,7 @@ interface ClientsTabProps {
 
 type BroadcastEntry = { sentAt: string; status: 'sent' | 'error' | 'no_tg'; message: string; broadcastId: string };
 type ContactStatus = 'в работе' | 'написали' | 'ответил' | 'не ответил' | 'отказ' | 'перезвонить';
-type ClientView = 'queue' | 'in_work' | 'contacted' | 'answered' | 'snoozed' | 'all';
+type ClientView = 'queue' | 'in_work' | 'contacted' | 'purchased' | 'answered' | 'snoozed' | 'all';
 type ContactAgeFilter = 'all' | '0-5' | '6-15' | '16-30' | '31-60' | '61-90' | '91-120' | '120+';
 type ManagerProfile = {
   managerName?: string;
@@ -43,8 +53,7 @@ const CONTACT_AGE_FILTERS: Array<{ key: ContactAgeFilter; label: string; min: nu
 ];
 
 function normalizePhone(value: string): string {
-  const digits = String(value || '').replace(/\D/g, '');
-  return digits.length === 11 && digits.startsWith('8') ? `7${digits.slice(1)}` : digits;
+  return normalizeClientPhone(value);
 }
 
 const getCurrentManagerIdentity = async () => {
@@ -60,7 +69,7 @@ const getCurrentManagerIdentity = async () => {
   }
   return {
     id: manager?.uid || 'unknown',
-    name: profile?.managerName || manager?.displayName || manager?.email || 'Менеджер',
+    name: managerNameForEmail(manager?.email) || profile?.managerName || manager?.displayName || manager?.email || 'Менеджер',
     email: manager?.email || profile?.managerEmail || null,
     photo: manager?.photoURL || null,
   };
@@ -82,10 +91,11 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
   const [isImporting, setIsImporting] = useState(false);
   const [importDone, setImportDone] = useState(false);
   const [fbClients, setFbClients] = useState<any[]>([]);
-  const [fbLoading, setFbLoading] = useState(false);
+  const [fbLoading, setFbLoading] = useState(true);
   const [clientPage, setClientPage] = useState(100);
   const PAGE_SIZE = 100;
   const loadMoreRef = useRef<HTMLDivElement | null>(null);
+  const historicalSyncDoneRef = useRef(false);
   const [clientView, setClientView] = useState<ClientView>('queue');
   const [quickSavingPhone, setQuickSavingPhone] = useState<string | null>(null);
   const [quickSavedPhone, setQuickSavedPhone] = useState<string | null>(null);
@@ -184,9 +194,7 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
     if (!addClientForm.fullName.trim() || !addClientForm.phone.trim()) return;
     setAddClientSaving(true);
     try {
-      let phone = addClientForm.phone.replace(/[^0-9]/g, '');
-      if (phone.length === 10) phone = '7' + phone;
-      else if (phone.length === 11 && phone.startsWith('8')) phone = '7' + phone.slice(1);
+      const phone = normalizeClientPhone(addClientForm.phone);
       const newClient = {
         fullName: addClientForm.fullName.trim(),
         phone,
@@ -392,7 +400,7 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
       setActivePanel('info');
       return;
     }
-    const phone = selectedLoyaltyClient.phone || selectedLoyaltyClient.name;
+    const phone = selectedLoyaltyClient.phone || selectedLoyaltyClient.userId || selectedLoyaltyClient.fullName || selectedLoyaltyClient.name;
     if (!phone) return;
     setContactHistoryLoading(true);
     const unsubscribe = onSnapshot(query(
@@ -411,7 +419,7 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
 
   const handleAddContact = async () => {
     if (!newContactNote.trim()) return;
-    const phone = selectedLoyaltyClient.phone || selectedLoyaltyClient.name;
+    const phone = selectedLoyaltyClient.phone || selectedLoyaltyClient.userId || selectedLoyaltyClient.fullName || selectedLoyaltyClient.name;
     setIsSendingContact(true);
     try {
       const manager = await getCurrentManagerIdentity();
@@ -449,9 +457,15 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
 
   const clientOrders = useMemo(() => {
     if (!selectedLoyaltyClient) return [];
-    const phone = selectedLoyaltyClient.phone;
-    return data.filter(o => o.clientPhone === phone).sort((a, b) => b.date.getTime() - a.date.getTime());
+    return data
+      .filter(order => clientMatchesOrder(selectedLoyaltyClient, order))
+      .sort((a, b) => b.date.getTime() - a.date.getTime());
   }, [selectedLoyaltyClient, data]);
+
+  const selectedPurchaseSummary = useMemo(
+    () => getClientPurchaseSummary(clientOrders),
+    [clientOrders],
+  );
 
   useEffect(() => {
     if (!selectedLoyaltyClient) {
@@ -460,7 +474,7 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
     }
 
     setIsLoyaltyLoading(true);
-    const userId = selectedLoyaltyClient.phone || selectedLoyaltyClient.name;
+    const userId = selectedLoyaltyClient.firestoreId || selectedLoyaltyClient.phone || selectedLoyaltyClient.userId || selectedLoyaltyClient.fullName || selectedLoyaltyClient.name;
     const docRef = doc(db, 'contacts', userId);
 
     const unsubscribe = onSnapshot(docRef, async (snap) => {
@@ -472,7 +486,7 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
       } else {
         const newLoyalty = {
           userId: userId,
-          fullName: selectedLoyaltyClient.name,
+          fullName: selectedLoyaltyClient.fullName || selectedLoyaltyClient.name,
           loyaltyCardId: `OCT-${Math.random().toString(36).substring(2, 8).toUpperCase()}`,
           currentDiscount: 5,
           totalSpent: selectedLoyaltyClient.total,
@@ -496,18 +510,105 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
   };
 
   const baseClients = useMemo(() => {
-    const source = fbClients.length > 0
-      ? fbClients
-      : (stats.topClients || []).map((c: any) => ({
-          fullName: c.name,
-          phone: c.phone,
-          insta: c.insta,
-          city: c.city,
-          totalSpent: c.total,
-          ordersCount: c.count,
-        }));
-    return source;
-  }, [fbClients, stats.topClients]);
+    const orderClients = (stats.topClients || []).map((client: any) => ({
+      fullName: client.name,
+      phone: client.phone,
+      insta: client.insta,
+      city: client.city,
+      totalSpent: client.total,
+      ordersCount: client.count,
+    }));
+    return mergeOrderClientsWithContacts(orderClients, fbClients).map((client: any) => ({
+      ...client,
+      purchaseAfterContact: getPurchaseAfterContactSummary(client, data),
+    }));
+  }, [data, fbClients, stats.topClients]);
+
+  useEffect(() => {
+    if (historicalSyncDoneRef.current || fbLoading) return;
+    if (String(auth.currentUser?.email || '').trim().toLowerCase() !== 'ndtiger86@gmail.com') return;
+    const orderClients = Array.isArray(stats.topClients) ? stats.topClients : [];
+    if (!fbClients.length && (!orderClients.length || !data.length)) return;
+    historicalSyncDoneRef.current = true;
+
+    const contactByKey = new Map<string, any>();
+    fbClients.forEach(contact => {
+      const phone = normalizeClientPhone(contact.phone || contact.userId || contact.firestoreId);
+      const name = String(contact.fullName || contact.name || '').trim().toLowerCase().replace(/ё/g, 'е').replace(/\s+/g, ' ');
+      if (phone) contactByKey.set(`phone:${phone}`, contact);
+      else if (name) contactByKey.set(`name:${name}`, contact);
+    });
+
+    const syncHistoricalClients = async () => {
+      const writes: Array<{ ref: ReturnType<typeof doc>; value: Record<string, unknown> }> = [];
+      const now = new Date().toISOString();
+      fbClients.forEach((contact: any) => {
+        const phone = normalizeClientPhone(contact.phone || contact.userId || contact.firestoreId);
+        if (phone && String(contact.phone || '') !== phone) {
+          writes.push({
+            ref: doc(db, 'contacts', String(contact.firestoreId || phone)),
+            value: { phone, updatedAt: now },
+          });
+        }
+      });
+      data.forEach(order => {
+        const rawPhone = String(order.rawClientPhone ?? order.clientPhone ?? '');
+        const phone = normalizeClientPhone(rawPhone);
+        if (phone && rawPhone !== phone) {
+          writes.push({
+            ref: doc(db, 'orders_new', String(order.orderId)),
+            value: { clientPhone: phone, updatedAt: now },
+          });
+        }
+      });
+      orderClients.forEach((client: any) => {
+        const phone = normalizeClientPhone(client.phone);
+        const nameKey = String(client.name || '').trim().toLowerCase().replace(/ё/g, 'е').replace(/\s+/g, ' ');
+        const key = phone ? `phone:${phone}` : `name:${nameKey}`;
+        const existing = contactByKey.get(key);
+        const orders = data
+          .filter(order => clientMatchesOrder({ phone, fullName: client.name }, order))
+          .sort((a, b) => a.date.getTime() - b.date.getTime());
+        if (!orders.length) return;
+        const summary = getClientPurchaseSummary(orders);
+        const fallbackId = `order-${encodeURIComponent(nameKey || String(orders[0].orderId)).replace(/%/g, '_').slice(0, 120)}`;
+        const documentId = String(existing?.firestoreId || phone || fallbackId);
+        const orderNumbers = orders.map(order => String(order.orderId || '').replace(/^#+/, ''));
+        const value = {
+          userId: existing?.userId || documentId,
+          fullName: existing?.fullName || existing?.name || client.name || orders[orders.length - 1].clientName || '',
+          phone,
+          insta: existing?.insta || client.insta || orders[orders.length - 1].clientInsta || '',
+          city: existing?.city || client.city || orders[orders.length - 1].clientCity || '',
+          totalSpent: summary.totalSpent,
+          ordersCount: summary.ordersCount,
+          orderNumbers,
+          firstOrderAt: orders[0].date.toISOString(),
+          lastOrderAt: orders[orders.length - 1].date.toISOString(),
+          lastOrderId: orderNumbers[orderNumbers.length - 1],
+          updatedAt: now,
+          ...(existing ? {} : { createdAt: now, source: 'История заказов CRM' }),
+        };
+        const unchanged = existing
+          && String(existing.phone || '') === phone
+          && Number(existing.totalSpent || 0) === summary.totalSpent
+          && Number(existing.ordersCount || 0) === summary.ordersCount
+          && JSON.stringify(existing.orderNumbers || []) === JSON.stringify(orderNumbers);
+        if (!unchanged) writes.push({ ref: doc(db, 'contacts', documentId), value });
+      });
+
+      for (let index = 0; index < writes.length; index += 350) {
+        const batch = writeBatch(db);
+        writes.slice(index, index + 350).forEach(write => batch.set(write.ref, write.value, { merge: true }));
+        await batch.commit();
+      }
+    };
+
+    void syncHistoricalClients().catch(error => {
+      historicalSyncDoneRef.current = false;
+      console.error('Не удалось объединить историю клиентов:', error);
+    });
+  }, [data, fbClients, fbLoading, stats.topClients]);
 
   const getContactDays = (client: any) => {
     if (!client.lastContactAt) return null;
@@ -560,6 +661,7 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
       if (clientView === 'queue' && client.lastContactAt) return false;
       if (clientView === 'in_work' && status !== 'в работе') return false;
       if (clientView === 'contacted' && (!client.lastContactAt || status === 'в работе')) return false;
+      if (clientView === 'purchased' && (!client.lastContactAt || !client.purchaseAfterContact?.count)) return false;
       if (clientView === 'answered' && status !== 'ответил') return false;
       if (clientView === 'snoozed' && status !== 'перезвонить') return false;
       return matchesContactAge(client, contactFilter);
@@ -586,6 +688,7 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
 
   const clientStats = useMemo(() => {
     const contacted = baseClients.filter((client: any) => client.lastContactAt).length;
+    const purchasedAfterContact = baseClients.filter((client: any) => client.purchaseAfterContact?.count > 0).length;
     const revenue = baseClients.reduce((sum: number, client: any) => sum + Number(client.totalSpent ?? client.total ?? 0), 0);
     const orders = baseClients.reduce((sum: number, client: any) => sum + Number(client.ordersCount ?? client.count ?? 0), 0);
     const needsContact = baseClients.filter((client: any) => {
@@ -596,6 +699,8 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
     return {
       total: baseClients.length || stats.uniqueClients || 0,
       contacted,
+      purchasedAfterContact,
+      conversionRate: contacted > 0 ? Math.round((purchasedAfterContact / contacted) * 1000) / 10 : 0,
       revenue,
       orders,
       needsContact,
@@ -606,6 +711,7 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
     { key: 'queue', label: 'Очередь', count: baseClients.filter((c: any) => !c.lastContactAt).length },
     { key: 'in_work', label: 'В работе', count: baseClients.filter((c: any) => c.lastContactStatus === 'в работе').length },
     { key: 'contacted', label: 'Уже писали', count: baseClients.filter((c: any) => c.lastContactAt && c.lastContactStatus !== 'в работе').length },
+    { key: 'purchased', label: 'Купили', count: baseClients.filter((c: any) => c.purchaseAfterContact?.count > 0).length },
     { key: 'answered', label: 'Ответили', count: baseClients.filter((c: any) => c.lastContactStatus === 'ответил').length },
     { key: 'snoozed', label: 'Отложены', count: baseClients.filter((c: any) => c.lastContactStatus === 'перезвонить').length },
     { key: 'all', label: 'Все', count: baseClients.length },
@@ -664,7 +770,7 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
             </div>
           </div>
 
-          <div className="grid grid-cols-2 divide-x divide-y divide-[#E6E9EF] md:grid-cols-4 md:divide-y-0">
+          <div className="grid grid-cols-2 divide-x divide-y divide-[#E6E9EF] md:grid-cols-5 md:divide-y-0">
             <div className="p-4">
               <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#9CA3AF]">Всего клиентов</p>
               <p className="mt-2 text-[28px] font-semibold text-[#1F2937]">{clientStats.total}</p>
@@ -681,6 +787,22 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
               <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#9CA3AF]">Нужен контакт</p>
               <p className="mt-2 text-[28px] font-semibold text-[#F5A623]">{clientStats.needsContact}</p>
             </div>
+            <button
+              type="button"
+              onClick={() => {
+                setClientView('purchased');
+                setContactFilter('all');
+              }}
+              className="p-4 text-left transition-colors hover:bg-[#F4FBF7] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#2EBA7F]/35"
+            >
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#0A9B62]">Купили после сообщения</p>
+              <div className="mt-2 flex items-end gap-2">
+                <p className="text-[28px] font-semibold text-[#2EBA7F]">{clientStats.purchasedAfterContact}</p>
+                <span className="mb-1 rounded-full bg-[#EAF8F1] px-2 py-0.5 text-[11px] font-semibold text-[#0A9B62]">
+                  {clientStats.conversionRate}%
+                </span>
+              </div>
+            </button>
           </div>
 
           <div className="border-t border-[#E6E9EF] p-3">
@@ -709,7 +831,7 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
             </div>
             <div className="mt-3">
               <p className="text-[12px] text-[#9CA3AF]">Статус меняется для всех менеджеров сразу</p>
-              {clientView === 'contacted' && (
+              {(clientView === 'contacted' || clientView === 'purchased') && (
                 <div className="mt-3 border-t border-[#EEF0F4] pt-3">
                   <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-[#9CA3AF]">
                     Когда писали
@@ -718,7 +840,9 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
                     {CONTACT_AGE_FILTERS.map(filter => {
                       const count = baseClients.filter((client: any) =>
                         client.lastContactAt &&
-                        client.lastContactStatus !== 'в работе' &&
+                        (clientView === 'purchased'
+                          ? client.purchaseAfterContact?.count > 0
+                          : client.lastContactStatus !== 'в работе') &&
                         matchesContactAge(client, filter.key)
                       ).length;
                       return (
@@ -786,7 +910,7 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
                           <td className="px-4 py-4 text-[13px] font-medium text-[#9CA3AF]">{i + 1}</td>
                           <td className="px-4 py-4">
                             <p className="truncate text-[15px] font-semibold text-[#1F2937]">{client.fullName || client.name || 'Неизвестно'}</p>
-                            <p className="mt-1 text-[13px] font-medium text-[#9CA3AF]">+{phone || 'нет телефона'}</p>
+                            <p className="mt-1 text-[13px] font-medium text-[#9CA3AF]">{formatClientPhone(phone) || 'нет телефона'}</p>
                           </td>
                           <td className="px-4 py-4">
                             <div className="space-y-1">
@@ -799,7 +923,9 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
                                   }}
                                   className="inline-flex min-h-9 max-w-full items-center gap-1.5 truncate rounded-[8px] bg-[#7D7DE6]/10 px-2.5 text-[13px] font-semibold text-[#6868D8] transition hover:bg-[#7D7DE6]/15"
                                 >
-                                  <Instagram size={14} />@{client.insta.replace('@', '')}
+                                  <Instagram size={14} />
+                                  <span>Написать</span>
+                                  <span className="max-w-[92px] truncate font-medium opacity-80">@{client.insta.replace('@', '')}</span>
                                   <ExternalLink size={12} />
                                 </button>
                               ) : (
@@ -852,6 +978,13 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
                               )}>
                                 {contact.days === null ? 'Не писали' : contact.days === 0 ? 'сегодня' : `${contact.days} дн.`}
                               </span>
+                              {client.purchaseAfterContact?.count > 0 && (
+                                <span className="ml-2 inline-flex items-center gap-1.5 rounded-[6px] bg-[#EAF8F1] px-2 py-1 text-[11px] font-semibold text-[#0A9B62]">
+                                  <ShoppingBag size={13} />
+                                  Купил {client.purchaseAfterContact.firstPurchaseAt?.toLocaleDateString('ru-RU')}
+                                  {' · '}{formatCurrency(client.purchaseAfterContact.total)}
+                                </span>
+                              )}
                               <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[11px] font-medium text-[#6B7280]">
                                 <span>статус: <b className="font-semibold text-[#1F2937]">{contact.status}</b></span>
                                 <span>дата: <b className="font-semibold text-[#1F2937]">{contact.date}</b></span>
@@ -868,7 +1001,7 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
                                   рассылка: {new Date(contact.broadcast.sentAt).toLocaleDateString('ru-RU')} · {contact.broadcast.status}
                                 </p>
                               )}
-                              {client.insta && contact.status !== 'написали' && contact.status !== 'ответил' && (
+                              {contact.status !== 'написали' && contact.status !== 'ответил' && (
                                 <button
                                   type="button"
                                   onClick={() => void markAsContacted(client)}
@@ -956,7 +1089,7 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
                         <div className="min-w-0">
                           <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#9CA3AF]">#{i + 1}</p>
                           <h4 className="mt-1 text-[17px] font-semibold text-[#1F2937]">{client.fullName || client.name || 'Неизвестно'}</h4>
-                          <p className="mt-1 text-[14px] font-medium text-[#9CA3AF]">+{phone || 'нет телефона'}</p>
+                          <p className="mt-1 text-[14px] font-medium text-[#9CA3AF]">{formatClientPhone(phone) || 'нет телефона'}</p>
                         </div>
                         <p className="shrink-0 text-right text-[16px] font-semibold text-[#2EBA7F]">{formatCurrency(client.totalSpent ?? client.total ?? 0)}</p>
                       </div>
@@ -967,17 +1100,22 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
                             onClick={() => openInstagram(client)}
                             className="inline-flex h-12 items-center justify-center gap-2 rounded-[8px] bg-[#7D7DE6] px-3 text-[13px] font-semibold text-white shadow-[0_8px_18px_rgba(125,125,230,0.18)]"
                           >
-                            <Instagram size={17} /> Открыть Instagram
+                            <Instagram size={17} /> Написать
                           </button>
                         ) : (
-                          <div className="inline-flex h-12 items-center justify-center rounded-[8px] border border-[#E6E9EF] bg-[#F6F7F9] px-3 text-[12px] font-medium text-[#9CA3AF]">
-                            Instagram не указан
-                          </div>
+                          <button
+                            type="button"
+                            disabled
+                            title="У клиента не указан Instagram"
+                            className="inline-flex h-12 cursor-not-allowed items-center justify-center gap-2 rounded-[8px] border border-[#E6E9EF] bg-[#F6F7F9] px-3 text-[12px] font-medium text-[#9CA3AF] opacity-70"
+                          >
+                            <Instagram size={17} /> Нет Instagram
+                          </button>
                         )}
                         <button
                           type="button"
                           onClick={() => void markAsContacted(client)}
-                          disabled={!client.insta || contact.status === 'написали' || contact.status === 'ответил' || quickSavingPhone === String(phone)}
+                          disabled={contact.status === 'написали' || contact.status === 'ответил' || quickSavingPhone === String(phone)}
                           className="inline-flex h-12 items-center justify-center gap-2 rounded-[8px] border border-[#2EBA7F]/30 bg-[#2EBA7F]/10 px-3 text-[13px] font-semibold text-[#0A9B62] disabled:cursor-not-allowed disabled:opacity-40"
                         >
                           {quickSavingPhone === String(phone)
@@ -996,6 +1134,16 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
                           <p className="mt-1 text-[14px] font-semibold text-[#1F2937]">{contact.days === null ? 'Не писали' : contact.days === 0 ? 'сегодня' : `${contact.days} дн.`}</p>
                         </div>
                       </div>
+                      {client.purchaseAfterContact?.count > 0 && (
+                        <div className="mt-3 flex items-center justify-between gap-3 rounded-[8px] border border-[#BFE8D3] bg-[#EAF8F1] p-3 text-[#0A9B62]">
+                          <span className="inline-flex items-center gap-2 text-[12px] font-semibold">
+                            <ShoppingBag size={16} /> Купил после сообщения
+                          </span>
+                          <span className="text-right text-[12px] font-semibold">
+                            {client.purchaseAfterContact.firstPurchaseAt?.toLocaleDateString('ru-RU')} · {formatCurrency(client.purchaseAfterContact.total)}
+                          </span>
+                        </div>
+                      )}
                       <div className="mt-3 rounded-[8px] border border-[#E6E9EF] bg-[#F6F7F9] p-3" onClick={e => e.stopPropagation()}>
                         <div className="grid grid-cols-2 gap-2 text-[11px] font-medium text-[#6B7280]">
                           <span>статус: <b className="text-[#1F2937]">{contact.status}</b></span>
@@ -1087,7 +1235,7 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
                 <div className="flex items-center justify-between mb-6">
                   <div className="flex items-center gap-3">
                     <div className="w-8 h-8 bg-zinc-900 rounded-lg flex items-center justify-center text-white text-xs font-black">
-                      {selectedLoyaltyClient.name?.charAt(0) || '?'}
+                      {(selectedLoyaltyClient.fullName || selectedLoyaltyClient.name || '?').charAt(0)}
                     </div>
                     <div>
                       <h2 className="text-[11px] font-black text-zinc-900 uppercase tracking-widest leading-tight">Карточка клиента</h2>
@@ -1434,7 +1582,7 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
                         <button
                           onClick={async () => {
                             setIsSaving(true);
-                            const userId = selectedLoyaltyClient.phone || selectedLoyaltyClient.name;
+                            const userId = selectedLoyaltyClient.firestoreId || selectedLoyaltyClient.phone || selectedLoyaltyClient.userId || selectedLoyaltyClient.fullName || selectedLoyaltyClient.name;
                             await updateDoc(doc(db, 'contacts', userId), localLoyaltyDetails);
                             setIsSaving(false);
                           }}
@@ -1460,11 +1608,11 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
                     <div className="grid grid-cols-2 gap-2">
                       <div className="tg-card bg-zinc-900 p-4 text-white">
                         <p className="text-[7px] font-black text-zinc-400 uppercase tracking-widest mb-1">Всего потрачено</p>
-                        <p className="text-sm font-black tracking-tight">{formatCurrency(loyaltyDetails?.totalSpent ?? selectedLoyaltyClient.total ?? selectedLoyaltyClient.totalSpent ?? 0)}</p>
+                        <p className="text-sm font-black tracking-tight">{formatCurrency(selectedPurchaseSummary.totalSpent)}</p>
                       </div>
                       <div className="tg-card p-4 border-zinc-200">
                         <p className="text-[7px] font-black text-zinc-400 uppercase tracking-widest mb-1">Количество заказов</p>
-                        <p className="text-sm font-black tracking-tight text-zinc-900">{loyaltyDetails?.ordersCount ?? selectedLoyaltyClient.count ?? selectedLoyaltyClient.ordersCount ?? 0}</p>
+                        <p className="text-sm font-black tracking-tight text-zinc-900">{selectedPurchaseSummary.ordersCount}</p>
                       </div>
                     </div>
 
@@ -1482,12 +1630,18 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
                                 <div className="leading-tight">
                                   <p className="text-[10px] font-bold text-zinc-900">#{order.orderId}</p>
                                   <p className="text-[8px] text-zinc-400 font-medium">{order.date.toLocaleDateString('ru-RU')}</p>
+                                  <p
+                                    className="mt-1 max-w-[190px] truncate text-[9px] font-medium text-zinc-600"
+                                    title={(Array.isArray(order.items) && order.items.length ? order.items : [order.item]).filter(Boolean).join(', ')}
+                                  >
+                                    {(Array.isArray(order.items) && order.items.length ? order.items : [order.item]).filter(Boolean).join(', ') || 'Изделие не указано'}
+                                  </p>
                                 </div>
                               </div>
                               <div className="text-right leading-tight">
                                 <p className="text-[10px] font-black text-zinc-900">{formatCurrency(order.revenue)}</p>
                                 <span className="text-[7px] font-black uppercase text-zinc-500 bg-zinc-100 px-1.5 py-0.5 rounded tracking-tighter">
-                                  {order.status || 'В работе'}
+                                  {order.status || 'Пошив'}
                                 </span>
                               </div>
                             </div>
@@ -1564,8 +1718,13 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
                     <label className="text-[9px] font-black text-zinc-400 uppercase tracking-widest ml-1">{field.label}</label>
                     <input
                       type={field.type}
-                      value={(addClientForm as any)[field.key]}
-                      onChange={e => setAddClientForm({ ...addClientForm, [field.key]: e.target.value })}
+                      value={field.key === 'phone'
+                        ? formatClientPhone((addClientForm as any)[field.key])
+                        : (addClientForm as any)[field.key]}
+                      onChange={e => setAddClientForm({
+                        ...addClientForm,
+                        [field.key]: field.key === 'phone' ? normalizeClientPhoneInput(e.target.value) : e.target.value,
+                      })}
                       placeholder={field.placeholder}
                       className="w-full bg-zinc-50 border border-zinc-200 rounded-xl px-3 py-2.5 text-[12px] font-medium focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 transition-all"
                     />
