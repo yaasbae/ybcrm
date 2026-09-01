@@ -23,6 +23,7 @@ import {
 } from '../../lib/orderFilters';
 import { isReceivedOrderStatus, normalizeOrderStatus, ORDER_STATUS_OPTIONS } from '../../lib/orderStatuses';
 import {
+  getCalculatedInitialInvoiceAmount,
   getConfirmedPaidAmount,
   getInitialInvoiceAmount,
   getOrderTotalAmount,
@@ -466,7 +467,7 @@ const getApiErrorMessage = (data: any, fallback: string): string => {
 };
 
 function getOrderPaymentDue(order: Partial<OrderData>): number {
-  return getInitialInvoiceAmount(order);
+  return getCalculatedInitialInvoiceAmount(order);
 }
 
 function getOrderFinalPaymentAmount(order: Partial<OrderData>): number {
@@ -1032,6 +1033,12 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
   const mainPaymentPaid = isPaidTochkaStatus(order.paymentStatus || '');
   const finalPaymentPaid = isPaidTochkaStatus(order.finalPaymentStatus || '');
   const initialAmount = getOrderPaymentDue(order);
+  const issuedMainAmount = Number(order.paymentAmount)
+    || Number(order.initialPaymentAmount)
+    || Number(order.paidAmount)
+    || initialAmount;
+  const mainInvoiceNeedsReplacement = Boolean(paymentUrl)
+    && Math.abs(issuedMainAmount - initialAmount) >= 0.01;
   const finalAmount = getOrderFinalPaymentAmount(order);
   const showFinalPayment = finalAmount > 0 && (
     invoiceType !== 'full' || Boolean(order.finalPaymentUrl) || getInitialInvoiceAmount(order) < getOrderTotalAmount(order)
@@ -1153,6 +1160,7 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
         updateOrderData(order.orderId, 'paymentAmount', amount);
         updateOrderData(order.orderId, 'initialPaymentAmount', amount);
         updateOrderData(order.orderId, 'paymentAccountingVersion', 2);
+        updateOrderData(order.orderId, 'paymentStatus', 'pending');
         if (data.paymentId) updateOrderData(order.orderId, 'paymentId', data.paymentId);
         if (data.provider) updateOrderData(order.orderId, 'paymentProvider', data.provider);
       }
@@ -1288,6 +1296,23 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
   return (
     <div className="mt-1.5 space-y-1">
       {paymentStatusBadge(mainPaymentStatusText, mainPaymentPaid, 'main')}
+      {mainInvoiceNeedsReplacement && (
+        <div className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-[9px] font-semibold leading-4 text-amber-700">
+          Созданный счёт: {formatCurrency(issuedMainAmount)}. Новый расчёт: {formatCurrency(initialAmount)}.
+          {mainPaymentPaid
+            ? ' Оплата уже подтверждена — перевыставление недоступно.'
+            : ' Перевыставьте счёт перед отправкой клиенту.'}
+        </div>
+      )}
+      {mainInvoiceNeedsReplacement && !mainPaymentPaid && (
+        <button
+          onClick={handleCreate}
+          disabled={loading || invoiceMissingFields.length > 0}
+          className="w-full rounded-md border border-amber-300 bg-amber-50 py-1.5 text-[9px] font-black text-amber-700 transition-colors hover:bg-amber-100 disabled:opacity-50"
+        >
+          {loading ? 'Перевыставляем…' : `Перевыставить на ${formatCurrency(initialAmount)}`}
+        </button>
+      )}
       <button
         onClick={() => refreshPayment('main')}
         disabled={refreshingMain}
@@ -1296,7 +1321,7 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
         <RefreshCcw size={8} className={refreshingMain ? 'animate-spin' : ''} />
         Проверить оплату
       </button>
-      {paymentUrl && (
+      {paymentUrl && !mainInvoiceNeedsReplacement && (
         <>
           <button
             onClick={() => shareOrder(shareText, targetPaymentUrl).catch(() => navigator.clipboard.writeText(shareText))}
