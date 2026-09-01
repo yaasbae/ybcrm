@@ -4534,7 +4534,6 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
   const [createdShowQr, setCreatedShowQr] = useState(false);
   const [createdDocumentLoading, setCreatedDocumentLoading] = useState(false);
   const [createdDocumentStatus, setCreatedDocumentStatus] = useState('');
-  const [tochkaConfigured, setTochkaConfigured] = useState(false);
   const [productCatalog, setProductCatalog] = useState<ProductCatalogItem[]>([]);
   const [newOrderItems, setNewOrderItems] = useState<string[]>(['']);
   const [newOrderItemPrices, setNewOrderItemPrices] = useState<number[]>([0]);
@@ -4599,10 +4598,6 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
     }
     updateOrderData(order.orderId, 'isPinned', !order.isPinned);
   };
-
-  useEffect(() => {
-    fetch('/api/tochka/status').then(r => r.json()).then(d => setTochkaConfigured(!!d.configured)).catch(() => {});
-  }, []);
 
   useEffect(() => {
     const reconcile = () => fetch('/api/tochka/reconcile-payments', { method: 'POST' }).catch(() => null);
@@ -5680,7 +5675,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
       }
     }
 
-    if (!orderSnapshot.isBlogger && (tochkaConfigured || isYandexSplitPayment(orderSnapshot.paymentType))) {
+    if (!orderSnapshot.isBlogger) {
       setIsCreatingQr(true);
       try {
         const amount = getOrderPaymentDue({
@@ -7536,7 +7531,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                 setCreatedShareText(buildOrderShareText({ ...orderSnapshot, orderId }, paymentPageUrl));
                 setCreatedPaymentUrl(null);
                 setCreatedPaymentError('');
-                if (tochkaConfigured || isYandexSplitPayment(orderSnapshot.paymentType)) {
+                if (!orderSnapshot.isBlogger) {
                   setIsCreatingQr(true);
                   try {
                     const amount = getOrderPaymentDue({

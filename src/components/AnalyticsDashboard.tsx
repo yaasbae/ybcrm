@@ -20,7 +20,7 @@ import { logAuditEvent } from '../lib/auditLog';
 import { isClientPurchaseOrder, normalizeClientPhone } from '../lib/clientMerge';
 import { getExchangeOrderId } from '../lib/orderExchange';
 import { db } from '../firebase';
-import { doc, onSnapshot, setDoc, collection, updateDoc, query, getDoc } from 'firebase/firestore';
+import { doc, onSnapshot, setDoc, collection, updateDoc, query, getDoc, runTransaction } from 'firebase/firestore';
 const AnalyticsTab = lazy(() => import('./tabs/AnalyticsTab').then(m => ({ default: m.AnalyticsTab })));
 const OrdersTab = lazy(() => import('./tabs/OrdersTab').then(m => ({ default: m.OrdersTab })));
 const ClientsTab = lazy(() => import('./tabs/ClientsTab').then(m => ({ default: m.ClientsTab })));
@@ -572,18 +572,22 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
 
     try {
       const orderRef = doc(db, 'orders_new', orderToCreate.orderId);
-      const beforeSnap = await getDoc(orderRef).catch(() => null);
-      const before = beforeSnap?.exists() ? beforeSnap.data() : null;
       const now = new Date().toISOString();
       const savedOrder = {
         ...orderToCreate,
         date: orderToCreate.date.toISOString(),
         deadlineDate: orderToCreate.deadlineDate.toISOString(),
-        createdAt: before && typeof before === 'object' && 'createdAt' in before ? (before as any).createdAt : now,
+        createdAt: now,
         updatedAt: now,
         deleted: false,
       };
-      await setDoc(orderRef, savedOrder, { merge: true });
+      await runTransaction(db, async transaction => {
+        const existing = await transaction.get(orderRef);
+        if (existing.exists()) {
+          throw new Error(`Заказ № ${orderToCreate.orderId} уже существует. Укажите новый номер — существующий заказ не изменён.`);
+        }
+        transaction.set(orderRef, savedOrder);
+      });
       const normalizedPhone = normalizeClientPhone(orderToCreate.clientPhone);
       const contactId = normalizedPhone || `order-${orderToCreate.orderId}`;
       const contactRef = doc(db, 'contacts', contactId);
@@ -602,10 +606,10 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
         lastOrderAt: orderToCreate.date.toISOString(),
       }, { merge: true });
       void logAuditEvent({
-        action: before ? 'order_upserted' : 'order_created',
+        action: 'order_created',
         entityType: 'order',
         entityId: orderToCreate.orderId,
-        before,
+        before: null,
         after: savedOrder,
         metadata: { source: 'crm_order_form' },
       });
