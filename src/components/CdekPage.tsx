@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { motion } from 'motion/react';
 import { AlertCircle, CheckCircle2, Loader2, MapPin, Package, Save, Search, Send, Truck } from 'lucide-react';
 import { cn, formatCurrency } from '../lib/utils';
+import { crmFetch } from '../lib/crmApi';
 
 type CityOption = {
   code: number;
@@ -173,7 +174,7 @@ export const CdekPage: React.FC = () => {
     setError('');
     setResult(null);
     try {
-      const res = await fetch('/api/cdek/create-order', {
+      const res = await crmFetch('/api/cdek/create-order', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(shipment),

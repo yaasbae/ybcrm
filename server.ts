@@ -513,12 +513,44 @@ const CRM_ACCESS_VIEWS = [
   "instagram", "bot", "content", "broadcast", "broadcast-v2", "studio", "ai-agent",
 ];
 const CRM_NOTIFICATION_TOPICS = ["all", "orders", "payments", "cdek", "shifts", "social", "stock", "production"];
+const CRM_ORDER_ACTIONS = ["create", "edit", "status", "exchange", "payments", "refund", "cdek", "delete", "export"];
 
 function normalizedAllowedValues(value: unknown, allowed: string[]) {
   const allowedSet = new Set(allowed);
   return Array.from(new Set((Array.isArray(value) ? value : [])
     .map(item => String(item || "").trim())
     .filter(item => allowedSet.has(item))));
+}
+
+async function requireCrmOrderAction(req: any, res: any, action: string) {
+  const decoded: any = await requireCrmUser(req, res);
+  if (!decoded) return null;
+  const email = String(decoded.email || '').trim().toLowerCase();
+  if (email === 'ndtiger86@gmail.com') return decoded;
+  try {
+    const snap = await adminDb.collection('crm_access_profiles').doc(decoded.uid).get();
+    // Старые аккаунты до появления детальных прав продолжают работать как раньше.
+    if (!snap.exists || !Array.isArray(snap.data()?.allowedOrderActions)) return decoded;
+    const profile = snap.data() || {};
+    if (profile.active === false) {
+      res.status(403).json({ error: 'Аккаунт отключён владельцем CRM', code: 'account_disabled' });
+      return null;
+    }
+    const allowed = normalizedAllowedValues(profile.allowedOrderActions, CRM_ORDER_ACTIONS);
+    if (!allowed.includes(action)) {
+      res.status(403).json({
+        error: 'Действие запрещено настройками аккаунта в админке',
+        code: 'order_action_denied',
+        action,
+      });
+      return null;
+    }
+    return decoded;
+  } catch (error: any) {
+    console.error('[access] order action check:', error?.message || error);
+    res.status(503).json({ error: 'Не удалось проверить права аккаунта' });
+    return null;
+  }
 }
 
 function decodeFirestoreRestValue(value: any): any {
@@ -573,6 +605,9 @@ function accessAccount(uid: string, data: any, ownerEmail: string) {
     notificationTopics: isOwner
       ? ["all"]
       : Array.isArray(data?.notificationTopics) ? normalizedAllowedValues(data.notificationTopics, CRM_NOTIFICATION_TOPICS) : ["all"],
+    allowedOrderActions: isOwner
+      ? CRM_ORDER_ACTIONS
+      : Array.isArray(data?.allowedOrderActions) ? normalizedAllowedValues(data.allowedOrderActions, CRM_ORDER_ACTIONS) : CRM_ORDER_ACTIONS,
     active: isOwner ? true : data?.active !== false,
   };
 }
@@ -591,11 +626,11 @@ app.get("/api/access/me", async (req, res) => {
   if (!decoded) return;
   const email = String(decoded.email || "").trim().toLowerCase();
   if (email === "ndtiger86@gmail.com") {
-    return res.json({ configured: true, role: "owner", allowedViews: CRM_ACCESS_VIEWS, notificationTopics: ["all"] });
+    return res.json({ configured: true, role: "owner", allowedViews: CRM_ACCESS_VIEWS, notificationTopics: ["all"], allowedOrderActions: CRM_ORDER_ACTIONS });
   }
   try {
     const snap = await adminDb.collection("crm_access_profiles").doc(decoded.uid).get();
-    if (!snap.exists) return res.json({ configured: false, role: "legacy", allowedViews: null, notificationTopics: null });
+    if (!snap.exists) return res.json({ configured: false, role: "legacy", allowedViews: null, notificationTopics: null, allowedOrderActions: CRM_ORDER_ACTIONS });
     const data = snap.data() || {};
     res.json({
       configured: true,
@@ -603,6 +638,9 @@ app.get("/api/access/me", async (req, res) => {
       active: data.active !== false,
       allowedViews: normalizedAllowedValues(data.allowedViews, CRM_ACCESS_VIEWS),
       notificationTopics: normalizedAllowedValues(data.notificationTopics, CRM_NOTIFICATION_TOPICS),
+      allowedOrderActions: Array.isArray(data.allowedOrderActions)
+        ? normalizedAllowedValues(data.allowedOrderActions, CRM_ORDER_ACTIONS)
+        : CRM_ORDER_ACTIONS,
     });
   } catch (error: any) {
     console.error("[access] current profile:", error?.message || error);
@@ -650,6 +688,11 @@ app.get("/api/admin/accounts", async (req, res) => {
         role: isOwner ? "owner" : String(profile?.role || "legacy"),
         allowedViews: isOwner ? CRM_ACCESS_VIEWS : (profile ? normalizedAllowedValues(profile.allowedViews, CRM_ACCESS_VIEWS) : CRM_ACCESS_VIEWS),
         notificationTopics: isOwner ? ["all"] : (profile ? normalizedAllowedValues(profile.notificationTopics, CRM_NOTIFICATION_TOPICS) : ["all"]),
+        allowedOrderActions: isOwner
+          ? CRM_ORDER_ACTIONS
+          : (profile && Array.isArray(profile.allowedOrderActions)
+            ? normalizedAllowedValues(profile.allowedOrderActions, CRM_ORDER_ACTIONS)
+            : CRM_ORDER_ACTIONS),
         active: isOwner ? true : profile?.active !== false,
       };
     });
@@ -679,6 +722,7 @@ app.get("/api/admin/accounts", async (req, res) => {
       accounts,
       views: CRM_ACCESS_VIEWS,
       notificationTopics: CRM_NOTIFICATION_TOPICS,
+      orderActions: CRM_ORDER_ACTIONS,
       degraded: Boolean(authListError),
     });
   } catch (error: any) {
@@ -696,6 +740,9 @@ app.post("/api/admin/accounts", async (req, res) => {
   const role = String(req.body?.role || "employee").trim().slice(0, 60) || "employee";
   const allowedViews = normalizedAllowedValues(req.body?.allowedViews, CRM_ACCESS_VIEWS);
   const notificationTopics = normalizedAllowedValues(req.body?.notificationTopics, CRM_NOTIFICATION_TOPICS);
+  const allowedOrderActions = Array.isArray(req.body?.allowedOrderActions)
+    ? normalizedAllowedValues(req.body.allowedOrderActions, CRM_ORDER_ACTIONS)
+    : CRM_ORDER_ACTIONS;
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: "Укажите корректную почту" });
   if (password.length < 8) return res.status(400).json({ error: "Пароль должен быть не короче 8 символов" });
   if (!allowedViews.length) return res.status(400).json({ error: "Выберите хотя бы один раздел CRM" });
@@ -707,6 +754,7 @@ app.post("/api/admin/accounts", async (req, res) => {
       role,
       allowedViews,
       notificationTopics,
+      allowedOrderActions,
       active: true,
       createdAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
@@ -716,7 +764,7 @@ app.post("/api/admin/accounts", async (req, res) => {
       action: "account_created",
       entityType: "account",
       entityId: account.uid,
-      after: { email, displayName, role, allowedViews, notificationTopics, active: true },
+      after: { email, displayName, role, allowedViews, notificationTopics, allowedOrderActions, active: true },
       metadata: { label: `Создан аккаунт ${email}` },
       actor: { type: "crm_user", uid: owner.uid, email: owner.email || "", name: owner.name || "" },
     });
@@ -736,6 +784,9 @@ app.patch("/api/admin/accounts/:uid", async (req, res) => {
   const displayName = String(req.body?.displayName || "").trim().slice(0, 120);
   const allowedViews = normalizedAllowedValues(req.body?.allowedViews, CRM_ACCESS_VIEWS);
   const notificationTopics = normalizedAllowedValues(req.body?.notificationTopics, CRM_NOTIFICATION_TOPICS);
+  const allowedOrderActions = Array.isArray(req.body?.allowedOrderActions)
+    ? normalizedAllowedValues(req.body.allowedOrderActions, CRM_ORDER_ACTIONS)
+    : CRM_ORDER_ACTIONS;
   const active = req.body?.active !== false;
   if (!allowedViews.length) return res.status(400).json({ error: "Выберите хотя бы один раздел CRM" });
   try {
@@ -751,6 +802,7 @@ app.patch("/api/admin/accounts/:uid", async (req, res) => {
         role,
         allowedViews,
         notificationTopics,
+        allowedOrderActions,
         active,
         updatedAt: FieldValue.serverTimestamp(),
         updatedBy: owner.email || owner.uid,
@@ -760,7 +812,7 @@ app.patch("/api/admin/accounts/:uid", async (req, res) => {
       action: "account_access_updated",
       entityType: "account",
       entityId: uid,
-      after: { email: account.email || "", displayName, role, allowedViews, notificationTopics, active },
+      after: { email: account.email || "", displayName, role, allowedViews, notificationTopics, allowedOrderActions, active },
       metadata: { label: `Обновлены права ${account.email || uid}` },
       actor: { type: "crm_user", uid: owner.uid, email: owner.email || "", name: owner.name || "" },
     });
@@ -2397,6 +2449,7 @@ async function createCdekWaybillPdf(
 }
 
 app.post("/api/cdek/create-order", async (req, res) => {
+  if (!await requireCrmOrderAction(req, res, req.body?.exchange === true ? 'exchange' : 'cdek')) return;
   try {
     const token = await getCdekToken();
     const settings = await getCdekSettings();
@@ -9134,6 +9187,7 @@ app.post('/api/yandex-pay/test', async (_req, res) => {
 });
 
 app.post('/api/yandex-pay/create-payment', async (req, res) => {
+  if (!await requireCrmOrderAction(req, res, 'payments')) return;
   const { orderId, amount, description } = req.body || {};
   const paymentAmount = Number(amount);
   if (!orderId || !Number.isFinite(paymentAmount) || paymentAmount <= 0) return res.status(400).json({ error: 'Нужны orderId и сумма больше 0' });
@@ -9203,6 +9257,7 @@ app.post('/api/yandex-pay/create-payment', async (req, res) => {
 });
 
 app.get('/api/yandex-pay/find-payment', async (req, res) => {
+  if (!await requireCrmOrderAction(req, res, 'payments')) return;
   const orderId = String(req.query.orderId || '').trim();
   if (!orderId) return res.status(400).json({ error: 'Нужен orderId' });
   try {
@@ -9275,6 +9330,7 @@ app.post('/api/yandex-pay', handleYandexPayWebhook);
 
 // Создать ссылку/QR на оплату
 app.post('/api/tochka/create-payment', async (req, res) => {
+  if (!await requireCrmOrderAction(req, res, 'payments')) return;
   const { orderId, amount, description } = req.body;
   const paymentAmount = Number(amount);
   if (!orderId || !Number.isFinite(paymentAmount) || paymentAmount <= 0) return res.status(400).json({ error: 'Нужны orderId и amount больше 0' });
@@ -9501,6 +9557,7 @@ app.post('/api/tochka/create-payment', async (req, res) => {
 
 // Найти оплату в Точке по номеру заказа и привязать operationId к заказу.
 app.get('/api/tochka/find-payment', async (req, res) => {
+  if (!await requireCrmOrderAction(req, res, 'payments')) return;
   const orderId = String(req.query.orderId || '').trim();
   const target = getTochkaPaymentTarget(orderId, req.query.kind);
   const amount = req.query.amount ? Number(req.query.amount) : undefined;
@@ -9664,6 +9721,7 @@ app.post('/api/tochka/reconcile-payments', async (_req, res) => {
 // Возврат оплаты через Точку по operationId. Для этого метода в документации
 // Точки нет отдельного шага отправки SMS-кода: доступ контролируется токеном.
 app.post('/api/tochka/refund-payment', async (req, res) => {
+  if (!await requireCrmOrderAction(req, res, 'refund')) return;
   const { orderId, operationId, amount, reason } = req.body || {};
   const refundAmount = Number(amount);
   const cleanOrderId = String(orderId || '').trim();

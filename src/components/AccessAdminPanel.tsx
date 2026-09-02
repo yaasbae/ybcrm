@@ -3,6 +3,7 @@ import { BellRing, Check, RefreshCcw, Save, Search, ShieldCheck, UserPlus, Users
 
 import { auth } from '../firebase';
 import { cn } from '../lib/utils';
+import { ALL_ORDER_ACTIONS, ORDER_ACTION_OPTIONS } from '../lib/orderPermissionConfig';
 
 type AccountAccess = {
   uid: string;
@@ -13,6 +14,7 @@ type AccountAccess = {
   role: string;
   allowedViews: string[];
   notificationTopics: string[];
+  allowedOrderActions: string[];
   active: boolean;
   createdAt?: string | null;
   lastLoginAt?: string | null;
@@ -38,6 +40,7 @@ const emptyNewAccount = {
   role: 'Сотрудник',
   allowedViews: [] as string[],
   notificationTopics: [] as string[],
+  allowedOrderActions: [...ALL_ORDER_ACTIONS] as string[],
 };
 
 const formatAccountDate = (value?: string | null) => {
@@ -103,7 +106,12 @@ export const AccessAdminPanel: React.FC = () => {
       const uid = preferredUid || selectedUid || next[0]?.uid || '';
       const selected = next.find(account => account.uid === uid) || next[0] || null;
       setSelectedUid(selected?.uid || '');
-      setDraft(selected ? { ...selected, allowedViews: [...selected.allowedViews], notificationTopics: [...selected.notificationTopics] } : null);
+      setDraft(selected ? {
+        ...selected,
+        allowedViews: [...selected.allowedViews],
+        notificationTopics: [...selected.notificationTopics],
+        allowedOrderActions: Array.isArray(selected.allowedOrderActions) ? [...selected.allowedOrderActions] : [...ALL_ORDER_ACTIONS],
+      } : null);
     } catch (loadError: any) {
       setError(loadError?.message || 'Не удалось загрузить аккаунты');
     } finally {
@@ -121,7 +129,12 @@ export const AccessAdminPanel: React.FC = () => {
 
   const selectAccount = (account: AccountAccess) => {
     setSelectedUid(account.uid);
-    setDraft({ ...account, allowedViews: [...account.allowedViews], notificationTopics: [...account.notificationTopics] });
+    setDraft({
+      ...account,
+      allowedViews: [...account.allowedViews],
+      notificationTopics: [...account.notificationTopics],
+      allowedOrderActions: Array.isArray(account.allowedOrderActions) ? [...account.allowedOrderActions] : [...ALL_ORDER_ACTIONS],
+    });
     setCreating(false);
     setNotice('');
     setError('');
@@ -154,6 +167,7 @@ export const AccessAdminPanel: React.FC = () => {
           active: draft.active,
           allowedViews: draft.allowedViews,
           notificationTopics: draft.notificationTopics,
+          allowedOrderActions: draft.allowedOrderActions,
         }),
       });
       setNotice('Права и уведомления сохранены');
@@ -163,6 +177,26 @@ export const AccessAdminPanel: React.FC = () => {
     } finally {
       setSaving(false);
     }
+  };
+
+  const toggleOrderAction = (value: string) => {
+    setDraft(current => {
+      if (!current || current.role === 'owner') return current;
+      const values = Array.isArray(current.allowedOrderActions) ? current.allowedOrderActions : [...ALL_ORDER_ACTIONS];
+      return {
+        ...current,
+        allowedOrderActions: values.includes(value) ? values.filter(item => item !== value) : [...values, value],
+      };
+    });
+  };
+
+  const toggleNewOrderAction = (value: string) => {
+    setNewAccount(current => ({
+      ...current,
+      allowedOrderActions: current.allowedOrderActions.includes(value)
+        ? current.allowedOrderActions.filter(item => item !== value)
+        : [...current.allowedOrderActions, value],
+    }));
   };
 
   const toggleNewList = (field: 'allowedViews' | 'notificationTopics', value: string) => {
@@ -243,7 +277,7 @@ export const AccessAdminPanel: React.FC = () => {
                 <input type="email" value={newAccount.email} onChange={event => setNewAccount(current => ({ ...current, email: event.target.value }))} placeholder="login@ybcrm.ru" className="h-11 rounded-lg border border-[#E6E9EF] px-3 text-[12px] outline-none focus:border-violet-300" />
                 <input type="password" value={newAccount.password} onChange={event => setNewAccount(current => ({ ...current, password: event.target.value }))} placeholder="Начальный пароль — минимум 8 символов" className="h-11 rounded-lg border border-[#E6E9EF] px-3 text-[12px] outline-none focus:border-violet-300" />
               </div>
-              <AccessChoices allowedViews={newAccount.allowedViews} notificationTopics={newAccount.notificationTopics} onToggleView={value => toggleNewList('allowedViews', value)} onToggleNotification={value => toggleNewList('notificationTopics', value)} />
+              <AccessChoices allowedViews={newAccount.allowedViews} notificationTopics={newAccount.notificationTopics} allowedOrderActions={newAccount.allowedOrderActions} onToggleView={value => toggleNewList('allowedViews', value)} onToggleNotification={value => toggleNewList('notificationTopics', value)} onToggleOrderAction={toggleNewOrderAction} />
               <div className="flex gap-2">
                 <button type="button" onClick={() => void createAccount()} disabled={saving} className="inline-flex h-10 items-center gap-2 rounded-lg bg-violet-600 px-4 text-[11px] font-semibold text-white disabled:opacity-50"><UserPlus className="h-4 w-4" />{saving ? 'Создаю…' : 'Создать аккаунт'}</button>
                 <button type="button" onClick={() => { setCreating(false); setNewAccount(emptyNewAccount); if (accounts[0]) selectAccount(accounts[0]); }} className="h-10 rounded-lg border border-[#E6E9EF] px-4 text-[11px] font-semibold text-[#667085]">Отмена</button>
@@ -263,9 +297,9 @@ export const AccessAdminPanel: React.FC = () => {
                 <label className="space-y-1"><span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[#98A2B3]">Имя / должность</span><input value={draft.displayName} disabled={draft.role === 'owner'} onChange={event => setDraft(current => current ? { ...current, displayName: event.target.value } : current)} className="h-11 w-full rounded-lg border border-[#E6E9EF] px-3 text-[12px] outline-none disabled:bg-[#F8F9FB]" /></label>
                 <label className="space-y-1"><span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[#98A2B3]">Роль</span><input value={draft.role === 'owner' ? 'Владелец' : draft.role} disabled={draft.role === 'owner'} onChange={event => setDraft(current => current ? { ...current, role: event.target.value } : current)} className="h-11 w-full rounded-lg border border-[#E6E9EF] px-3 text-[12px] outline-none disabled:bg-[#F8F9FB]" /></label>
               </div>
-              <AccessChoices allowedViews={draft.allowedViews} notificationTopics={draft.notificationTopics} disabled={draft.role === 'owner'} onToggleView={value => toggleDraftList('allowedViews', value)} onToggleNotification={value => toggleDraftList('notificationTopics', value)} />
+              <AccessChoices allowedViews={draft.allowedViews} notificationTopics={draft.notificationTopics} allowedOrderActions={draft.allowedOrderActions} disabled={draft.role === 'owner'} onToggleView={value => toggleDraftList('allowedViews', value)} onToggleNotification={value => toggleDraftList('notificationTopics', value)} onToggleOrderAction={toggleOrderAction} />
               {draft.role === 'owner' ? (
-                <div className="rounded-lg border border-violet-100 bg-violet-50 p-3 text-[11px] font-medium text-violet-800">У владельца всегда остаются все разделы и все уведомления.</div>
+                <div className="rounded-lg border border-violet-100 bg-violet-50 p-3 text-[11px] font-medium text-violet-800">У владельца всегда остаются все разделы, действия и уведомления.</div>
               ) : (
                 <button type="button" onClick={() => void saveDraft()} disabled={saving} className="inline-flex h-10 items-center gap-2 rounded-lg bg-violet-600 px-4 text-[11px] font-semibold text-white disabled:opacity-50"><Save className="h-4 w-4" />{saving ? 'Сохраняю…' : 'Сохранить права'}</button>
               )}
@@ -280,11 +314,14 @@ export const AccessAdminPanel: React.FC = () => {
 const AccessChoices: React.FC<{
   allowedViews: string[];
   notificationTopics: string[];
+  allowedOrderActions: string[];
   onToggleView: (value: string) => void;
   onToggleNotification: (value: string) => void;
+  onToggleOrderAction: (value: string) => void;
   disabled?: boolean;
-}> = ({ allowedViews, notificationTopics, onToggleView, onToggleNotification, disabled }) => (
-  <div className="grid gap-6 xl:grid-cols-[minmax(0,1.5fr)_minmax(280px,1fr)]">
+}> = ({ allowedViews, notificationTopics, allowedOrderActions, onToggleView, onToggleNotification, onToggleOrderAction, disabled }) => (
+  <div className="space-y-6">
+    <div className="grid gap-6 xl:grid-cols-[minmax(0,1.5fr)_minmax(280px,1fr)]">
     <div>
       <div className="mb-2 flex items-center justify-between gap-3"><p className="text-[11px] font-semibold text-[#344054]">Доступные разделы</p><span className="text-[10px] text-[#98A2B3]">{allowedViews.length} из {PAGE_OPTIONS.length}</span></div>
       <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">{PAGE_OPTIONS.map(([value, label]) => <ToggleCard key={value} checked={allowedViews.includes(value)} label={label} disabled={disabled} onClick={() => onToggleView(value)} />)}</div>
@@ -292,6 +329,20 @@ const AccessChoices: React.FC<{
     <div>
       <div className="mb-2 flex items-center gap-2"><BellRing className="h-4 w-4 text-violet-600" /><p className="text-[11px] font-semibold text-[#344054]">Какие уведомления получать</p></div>
       <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-1">{NOTIFICATION_OPTIONS.map(([value, label]) => <ToggleCard key={value} checked={notificationTopics.includes(value)} label={label} disabled={disabled} onClick={() => onToggleNotification(value)} />)}</div>
+    </div>
+    </div>
+    <div className="rounded-xl border border-[#E6E9EF] bg-[#FAFBFC] p-4">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <p className="text-[11px] font-semibold text-[#344054]">Действия на странице «Заказы»</p>
+          <p className="mt-1 text-[10px] text-[#98A2B3]">Раздел «Заказы» должен быть включён выше. Здесь задаётся, что сотрудник может менять внутри него.</p>
+        </div>
+        <span className="text-[10px] text-[#98A2B3]">{allowedOrderActions.length} из {ORDER_ACTION_OPTIONS.length}</span>
+      </div>
+      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+        {ORDER_ACTION_OPTIONS.map(([value, label]) => <ToggleCard key={value} checked={allowedOrderActions.includes(value)} label={label} disabled={disabled || !allowedViews.includes('orders')} onClick={() => onToggleOrderAction(value)} />)}
+      </div>
+      {!allowedViews.includes('orders') && <p className="mt-3 text-[10px] font-medium text-amber-700">Сначала включите сотруднику раздел «Заказы».</p>}
     </div>
   </div>
 );

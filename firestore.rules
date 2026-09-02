@@ -12,6 +12,48 @@ service cloud.firestore {
         (request.auth.token.email == "ndtiger86@gmail.com" && request.auth.token.email_verified == true);
     }
 
+    function accessProfilePath() {
+      return /databases/$(database)/documents/crm_access_profiles/$(request.auth.uid);
+    }
+
+    function hasOrderAction(action) {
+      return isAdmin() || (isAuthenticated() && (
+        !exists(accessProfilePath()) ||
+        !('allowedOrderActions' in get(accessProfilePath()).data) ||
+        (get(accessProfilePath()).data.active != false && get(accessProfilePath()).data.allowedOrderActions.hasAny([action]))
+      ));
+    }
+
+    function canUpdateOrder() {
+      let changed = request.resource.data.diff(resource.data).affectedKeys();
+      let specialFields = [
+        'updatedAt', 'activityAt',
+        'status', 'isShipped',
+        'orderId', 'exchangeOriginalOrderId', 'exchangeAt', 'exchangeCdekStatus', 'exchangeCdekError',
+        'paymentUrl', 'paymentId', 'paymentStatus', 'paymentCreatedAt', 'paymentAmount',
+        'initialPaymentAmount', 'paymentProvider', 'paymentPaidAt', 'paymentAccountingVersion', 'paidAmount',
+        'finalPaymentUrl', 'finalPaymentId', 'finalPaymentStatus', 'finalPaymentCreatedAt',
+        'finalPaymentAmount', 'finalPaymentProvider', 'finalPaymentPaidAt',
+        'cdekUuid', 'cdekNumber', 'cdekStatus', 'cdekPayload', 'cdekUpdatedAt',
+        'deleted', 'deletedAt'
+      ];
+      return
+        (changed.hasOnly(specialFields) || hasOrderAction('edit')) &&
+        (!changed.hasAny(['deleted', 'deletedAt']) || hasOrderAction('delete')) &&
+        (!changed.hasAny(['status']) ||
+          (request.resource.data.status == 'Обмен' && hasOrderAction('exchange')) ||
+          (request.resource.data.status != 'Обмен' && hasOrderAction('status'))) &&
+        (!changed.hasAny(['isShipped']) || hasOrderAction('status')) &&
+        (!changed.hasAny(['orderId', 'exchangeOriginalOrderId', 'exchangeAt', 'exchangeCdekStatus', 'exchangeCdekError']) || hasOrderAction('exchange')) &&
+        (!changed.hasAny([
+          'paymentUrl', 'paymentId', 'paymentStatus', 'paymentCreatedAt', 'paymentAmount',
+          'initialPaymentAmount', 'paymentProvider', 'paymentPaidAt', 'paymentAccountingVersion', 'paidAmount',
+          'finalPaymentUrl', 'finalPaymentId', 'finalPaymentStatus', 'finalPaymentCreatedAt',
+          'finalPaymentAmount', 'finalPaymentProvider', 'finalPaymentPaidAt'
+        ]) || hasOrderAction('payments')) &&
+        (!changed.hasAny(['cdekUuid', 'cdekNumber', 'cdekStatus', 'cdekPayload', 'cdekUpdatedAt']) || hasOrderAction('cdek'));
+    }
+
     // Products collection
     match /products/{document=**} {
       allow read: if true;
@@ -20,12 +62,18 @@ service cloud.firestore {
 
     // Orders collection
     match /orders/{document=**} {
-      allow read, write: if isAuthenticated();
+      allow read: if isAuthenticated();
+      allow create: if hasOrderAction('create');
+      allow update: if canUpdateOrder();
+      allow delete: if hasOrderAction('delete');
     }
 
     // New Orders collection
     match /orders_new/{document=**} {
-      allow read, write: if isAuthenticated();
+      allow read: if isAuthenticated();
+      allow create: if hasOrderAction('create');
+      allow update: if canUpdateOrder();
+      allow delete: if hasOrderAction('delete');
     }
 
     // CRM action journal: order edits, soft deletes and integration actions.

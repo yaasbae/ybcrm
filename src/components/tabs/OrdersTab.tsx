@@ -40,6 +40,8 @@ import { formatClientPhone, normalizeClientPhone, normalizeClientPhoneInput } fr
 import { managerNameForEmail } from '../../lib/managerIdentity';
 import { onAuthStateChanged } from 'firebase/auth';
 import { logAuditEvent } from '../../lib/auditLog';
+import { crmFetch } from '../../lib/crmApi';
+import { ORDER_ACTION_OPTIONS } from '../../lib/orderPermissionConfig';
 
 const normalizeStatusOption = (status: string) => normalizeOrderStatus(status);
 
@@ -1121,7 +1123,7 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
         kind,
       });
       if (amount > 0) query.set('amount', String(amount));
-      const res = await fetch(`${getPaymentFindEndpoint(order.paymentType)}?${query.toString()}`);
+      const res = await crmFetch(`${getPaymentFindEndpoint(order.paymentType)}?${query.toString()}`);
       const data = await res.json();
       if (!res.ok) {
         const paymentError: any = new Error(data.error || `Оплата в ${paymentProviderLabel} не найдена`);
@@ -1172,7 +1174,7 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
       if (invoiceMissingFields.length) throw new Error(`Заполните: ${invoiceMissingFields.join(', ')}`);
       const amount = getOrderPaymentDue(order);
       if (amount <= 0) throw new Error('Остаток к оплате 0 ₽');
-      const res = await fetch(getPaymentCreateEndpoint(order.paymentType), {
+      const res = await crmFetch(getPaymentCreateEndpoint(order.paymentType), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1206,7 +1208,7 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
       if (invoiceMissingFields.length) throw new Error(`Заполните: ${invoiceMissingFields.join(', ')}`);
       const amount = getOrderTotalAmount(order);
       if (amount <= 0) throw new Error('Сумма заказа 0 ₽');
-      const res = await fetch('/api/yandex-pay/create-payment', {
+      const res = await crmFetch('/api/yandex-pay/create-payment', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1246,7 +1248,7 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
       if (invoiceMissingFields.length) throw new Error(`Заполните: ${invoiceMissingFields.join(', ')}`);
       if (!mainPaymentPaid) throw new Error('Сначала дождитесь подтверждения первой оплаты');
       if (finalAmount <= 0) throw new Error('Сумма доплаты 0 ₽');
-      const res = await fetch(getPaymentCreateEndpoint(order.paymentType), {
+      const res = await crmFetch(getPaymentCreateEndpoint(order.paymentType), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1783,7 +1785,7 @@ const CdekOrderBlock: React.FC<{
         deliveryType === 'pvz' ? selectedPointLabel : toAddress,
       );
       persistPayload(payload);
-      const res = await fetch('/api/cdek/create-order', {
+      const res = await crmFetch('/api/cdek/create-order', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -1803,7 +1805,7 @@ const CdekOrderBlock: React.FC<{
         try {
           const amount = getOrderPaymentDue(order);
           if (amount > 0) {
-            const paymentResponse = await fetch(getPaymentCreateEndpoint(order.paymentType), {
+            const paymentResponse = await crmFetch(getPaymentCreateEndpoint(order.paymentType), {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
@@ -3799,7 +3801,7 @@ const OrderCard = React.memo(({
       const amount = dueAmount;
       if (amount <= 0) throw new Error('Сумма к оплате 0 ₽');
 
-      const res = await fetch(getPaymentCreateEndpoint(order.paymentType), {
+      const res = await crmFetch(getPaymentCreateEndpoint(order.paymentType), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -3834,7 +3836,7 @@ const OrderCard = React.memo(({
       const amount = getOrderTotalAmount({ ...order, revenue: liveRevenue });
       if (amount <= 0) throw new Error('Сумма заказа 0 ₽');
 
-      const res = await fetch('/api/yandex-pay/create-payment', {
+      const res = await crmFetch('/api/yandex-pay/create-payment', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -3875,7 +3877,7 @@ const OrderCard = React.memo(({
       if (!mainPaymentPaid) throw new Error('Сначала дождитесь подтверждения предоплаты в Точке');
       if (finalPaymentAmount <= 0) throw new Error('Сумма доплаты 0 ₽');
 
-      const res = await fetch(getPaymentCreateEndpoint(order.paymentType), {
+      const res = await crmFetch(getPaymentCreateEndpoint(order.paymentType), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -3918,7 +3920,7 @@ const OrderCard = React.memo(({
         kind,
       });
       if (amount > 0) query.set('amount', String(amount));
-      const res = await fetch(`${getPaymentFindEndpoint(order.paymentType)}?${query.toString()}`);
+      const res = await crmFetch(`${getPaymentFindEndpoint(order.paymentType)}?${query.toString()}`);
       const data = await res.json();
       if (!res.ok) {
         const paymentError: any = new Error(data.error || 'Оплата в Точке не найдена');
@@ -4576,6 +4578,7 @@ interface OrdersTabProps {
   autoRefresh: boolean;
   setAutoRefresh: (v: boolean) => void;
   fetchData: (isManual?: boolean) => void;
+  allowedOrderActions: string[];
 }
 
 export const OrdersTab: React.FC<OrdersTabProps> = ({
@@ -4619,6 +4622,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
   autoRefresh,
   setAutoRefresh,
   fetchData,
+  allowedOrderActions,
 }) => {
   const [contacts, setContacts] = useState<any[]>([]);
   const [clientQuery, setClientQuery] = useState('');
@@ -5745,7 +5749,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
 
     if (isNewOrderCdek) {
       try {
-        const response = await fetch('/api/cdek/create-order', {
+        const response = await crmFetch('/api/cdek/create-order', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -5788,7 +5792,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
           paidAmount: orderSnapshot.paidAmount || 0,
         });
         if (amount <= 0) throw new Error('Остаток к оплате 0 ₽');
-        const res = await fetch(getPaymentCreateEndpoint(orderSnapshot.paymentType), {
+        const res = await crmFetch(getPaymentCreateEndpoint(orderSnapshot.paymentType), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -5931,8 +5935,20 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
     };
   }, [data]);
 
+  const allowedOrderActionLabels = ORDER_ACTION_OPTIONS
+    .filter(([value]) => allowedOrderActions.includes(value))
+    .map(([, label]) => label);
+  const hasAllOrderActions = allowedOrderActionLabels.length === ORDER_ACTION_OPTIONS.length;
+
   return (
     <div className="yb-orders-space space-y-5 text-[#1F2937]">
+      {!hasAllOrderActions && (
+        <div className="rounded-xl border border-violet-100 bg-violet-50 px-4 py-3 text-[11px] leading-5 text-violet-800">
+          <b>Права этого аккаунта:</b>{' '}
+          {allowedOrderActionLabels.length ? allowedOrderActionLabels.join(' · ') : 'только просмотр заказов'}.
+          Ограничения меняются владельцем в разделе «Админка».
+        </div>
+      )}
       <div className="yb-orders-shift rounded-2xl border border-zinc-200/80 bg-white p-4 shadow-[0_12px_34px_rgba(31,41,55,0.04)] sm:p-5">
         <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
           <div className="min-w-0">
@@ -5952,7 +5968,8 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
             <button
               type="button"
               onClick={exportToCsv}
-              className="inline-flex h-10 items-center gap-2 rounded-[6px] border border-[#E6E9EF] bg-white px-4 text-[12px] font-medium text-[#6B7280] transition-colors hover:bg-[#F6F7F9]"
+              disabled={!allowedOrderActions.includes('export')}
+              className="inline-flex h-10 items-center gap-2 rounded-[6px] border border-[#E6E9EF] bg-white px-4 text-[12px] font-medium text-[#6B7280] transition-colors hover:bg-[#F6F7F9] disabled:cursor-not-allowed disabled:opacity-40"
             >
               <Copy className="h-4 w-4" />
               Экспорт
@@ -5968,7 +5985,8 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
             <button
               type="button"
               onClick={() => document.querySelector('[data-new-order-form]')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
-              className="inline-flex h-10 items-center gap-2 rounded-[6px] bg-[#7D7DE6] px-5 text-[12px] font-medium text-white transition-colors hover:bg-[#6F6FE0]"
+              disabled={!allowedOrderActions.includes('create')}
+              className="inline-flex h-10 items-center gap-2 rounded-[6px] bg-[#7D7DE6] px-5 text-[12px] font-medium text-white transition-colors hover:bg-[#6F6FE0] disabled:cursor-not-allowed disabled:opacity-40"
             >
               <Plus className="h-4 w-4" />
               Новый заказ
@@ -7644,7 +7662,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                       paidAmount: orderSnapshot.paidAmount || 0,
                     });
                     if (amount <= 0) throw new Error('Остаток к оплате 0 ₽');
-                    const res = await fetch(getPaymentCreateEndpoint(orderSnapshot.paymentType), {
+                    const res = await crmFetch(getPaymentCreateEndpoint(orderSnapshot.paymentType), {
                       method: 'POST',
                       headers: { 'Content-Type': 'application/json' },
                       body: JSON.stringify({

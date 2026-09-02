@@ -14,6 +14,8 @@ import { collection, onSnapshot, doc, setDoc, query, orderBy, getDoc, updateDoc 
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { emitPushEvent } from '../lib/pushNotifications';
 import { formatClientPhone, normalizeClientPhone, normalizeClientPhoneInput } from '../lib/clientMerge';
+import { crmFetch } from '../lib/crmApi';
+import { useOrderPermissions } from '../lib/orderPermissions';
 
 interface OrderFormProps {
   onBack: () => void;
@@ -34,6 +36,7 @@ const RAW_DELIVERY_INDEX = 15;
 const RAW_PAID_INDEX = 16;
 
 export const OrderForm: React.FC<OrderFormProps> = ({ onBack, initialClient }) => {
+  const { canOrderAction } = useOrderPermissions();
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -217,6 +220,10 @@ export const OrderForm: React.FC<OrderFormProps> = ({ onBack, initialClient }) =
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!canOrderAction('create')) {
+      setError('Создание заказов запрещено для этого аккаунта в админке.');
+      return;
+    }
     setLoading(true);
     setError(null);
 
@@ -379,7 +386,7 @@ export const OrderForm: React.FC<OrderFormProps> = ({ onBack, initialClient }) =
     setIsCreatingQr(true);
     setQrError(null);
     try {
-      const res = await fetch('/api/tochka/create-payment', {
+      const res = await crmFetch('/api/tochka/create-payment', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

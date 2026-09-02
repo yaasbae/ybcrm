@@ -19,6 +19,8 @@ import { emitPushEvent } from '../lib/pushNotifications';
 import { logAuditEvent } from '../lib/auditLog';
 import { isClientPurchaseOrder, normalizeClientPhone } from '../lib/clientMerge';
 import { getExchangeOrderId } from '../lib/orderExchange';
+import { getOrderActionForField, ORDER_ACTION_OPTIONS, useOrderPermissions, type OrderAction } from '../lib/orderPermissions';
+import { crmFetch } from '../lib/crmApi';
 import { db } from '../firebase';
 import { doc, onSnapshot, setDoc, collection, updateDoc, query, getDoc, runTransaction } from 'firebase/firestore';
 const AnalyticsTab = lazy(() => import('./tabs/AnalyticsTab').then(m => ({ default: m.AnalyticsTab })));
@@ -211,6 +213,11 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
   selectedMonth,
   setSelectedMonth
 }) => {
+  const { actions: allowedOrderActions, canOrderAction } = useOrderPermissions();
+  const denyOrderAction = (action: OrderAction) => {
+    const label = ORDER_ACTION_OPTIONS.find(([value]) => value === action)?.[1] || action;
+    window.alert(`Действие «${label}» запрещено для этого аккаунта в админке.`);
+  };
   const [activeTab, setActiveTab] = useState<'analytics' | 'clients' | 'marketing' | 'orders'>(initialTab ?? 'analytics');
   const [data, setData] = useState<OrderData[]>([]);
   const [firebaseOrders, setFirebaseOrders] = useState<OrderData[]>([]);
@@ -303,6 +310,11 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
 
 
   const updateOrderData = async (orderId: string, field: keyof OrderData | string, value: any) => {
+    const requiredAction = getOrderActionForField(String(field), value);
+    if (!canOrderAction(requiredAction)) {
+      denyOrderAction(requiredAction);
+      return;
+    }
     const order = data.find(o => o.orderId === orderId);
     if (order?.isFirebase) {
       try {
@@ -351,7 +363,7 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
           const deliveryPoint = String(saved.deliveryPoint || order.clientAddress?.match(/^([A-ZА-Я]{2,8}\d{1,5})(?:\s|,|·)/i)?.[1] || '').trim();
           const toAddress = String(saved.toAddress || order.clientAddress || '').trim();
           try {
-            const response = await fetch('/api/cdek/create-order', {
+            const response = await crmFetch('/api/cdek/create-order', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
@@ -458,6 +470,10 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
   };
 
   const deleteOrder = async (orderId: string): Promise<boolean> => {
+    if (!canOrderAction('delete')) {
+      denyOrderAction('delete');
+      return false;
+    }
     try {
       const existingOrder = data.find(order => order.orderId === orderId);
       const orderRef = doc(db, 'orders_new', existingOrder?.firestoreId || orderId);
@@ -486,6 +502,10 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
   };
 
   const handleCreateOrder = async (orderDraft: Partial<OrderData> = newOrder): Promise<string | null> => {
+    if (!canOrderAction('create')) {
+      denyOrderAction('create');
+      return null;
+    }
     if (!orderDraft.orderId || !orderDraft.clientName) {
       alert('Укажите ID заказа и ФИО клиента');
       return null;
@@ -750,6 +770,10 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
   }, [autoRefresh, firebaseOrders]);
 
   const exportToCsv = () => {
+    if (!canOrderAction('export')) {
+      denyOrderAction('export');
+      return;
+    }
     if (data.length === 0) return;
 
     const csvData = data.map(o => ({
@@ -1311,6 +1335,7 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
             autoRefresh={autoRefresh}
             setAutoRefresh={setAutoRefresh}
             fetchData={fetchData}
+            allowedOrderActions={allowedOrderActions}
           />
         )}
 
