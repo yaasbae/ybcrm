@@ -5308,12 +5308,21 @@ app.post("/api/chat/manychat", async (req, res) => {
           productMap.set(d.id, p);
           // Fallback: also index by name for better Gemini matching
           if (p.name) productMap.set(p.name.trim().toLowerCase(), p);
+          const materialsText = Array.isArray(p.materials)
+            ? p.materials
+              .filter((material: any) => String(material?.composition || '').trim())
+              .map((material: any) => `${String(material?.name || 'Материал').trim()}: ${String(material.composition).trim()}`)
+              .join('; ')
+            : '';
           
           const info = [
             `ID: ${d.id}`,
             `Название: ${p.name}`,
             `Цена: ${p.sellingPrice} руб.`,
-            p.composition ? `Состав: ${p.composition}` : null,
+            p.collectionName ? `Коллекция: ${p.collectionName}` : null,
+            p.releaseYear ? `Год: ${p.releaseYear}` : null,
+            p.seasonality ? `Сезонность: ${p.seasonality}` : null,
+            materialsText ? `Составы: ${materialsText}` : p.composition ? `Состав: ${p.composition}` : null,
             p.countryOfOrigin ? `Страна: ${p.countryOfOrigin}` : null,
             p.description ? `Описание: ${p.description}` : null,
             p.sizeDetails ? `Размеры: ${p.sizeDetails}` : null,

@@ -14,6 +14,12 @@ import { collection, onSnapshot, doc, setDoc, deleteDoc, query, orderBy } from '
 import { emitPushEvent } from '../lib/pushNotifications';
 import { ref, uploadBytes, getDownloadURL, deleteObject, listAll } from 'firebase/storage';
 import { UnitEconomics } from '../types';
+import {
+  ensureProductMaterials,
+  formatProductMaterials,
+  getPrimaryComposition,
+  type ProductMaterial,
+} from '../lib/productMaterials';
 
 interface ProductItem {
   id: string;
@@ -31,6 +37,9 @@ interface ProductItem {
   sellingPrice?: number;
   unitEconomics?: any;
   composition?: string;
+  materials?: ProductMaterial[];
+  collectionName?: string;
+  seasonality?: string;
   sizeDetails?: string;
   description?: string;
   countryOfOrigin?: string;
@@ -41,6 +50,68 @@ interface ProductItem {
 interface ProductsProps {
   onBack: () => void;
 }
+
+const SEASON_OPTIONS = ['Всесезон', 'Весна', 'Лето', 'Осень', 'Зима', 'Демисезон', 'Весна–лето', 'Осень–зима'];
+
+const MaterialCompositionEditor: React.FC<{
+  materials?: ProductMaterial[];
+  legacyComposition?: string;
+  onChange: (materials: ProductMaterial[]) => void;
+  compact?: boolean;
+}> = ({ materials, legacyComposition, onChange, compact = false }) => {
+  const rows = ensureProductMaterials(materials, legacyComposition);
+  const updateRow = (index: number, field: 'name' | 'composition', value: string) => {
+    onChange(rows.map((row, rowIndex) => rowIndex === index ? { ...row, [field]: value } : row));
+  };
+  const addRow = () => onChange([
+    ...rows,
+    { id: `material-${Date.now()}`, name: '', composition: '' },
+  ]);
+  const removeRow = (index: number) => onChange(rows.filter((_, rowIndex) => rowIndex !== index));
+  const inputClass = compact
+    ? 'h-11 min-w-0 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-medium text-slate-800 outline-none transition focus:border-[#7D7DE6] focus:ring-2 focus:ring-[#7D7DE6]/10'
+    : 'h-11 min-w-0 w-full rounded-2xl border border-slate-100 bg-slate-50 px-4 text-sm text-slate-800 outline-none transition focus:ring-2 focus:ring-blue-500/20';
+
+  return (
+    <section className={cn('space-y-3 rounded-2xl border p-4', compact ? 'border-slate-200 bg-white' : 'border-slate-100 bg-slate-50/60')}>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-widest text-slate-500"><Layers size={14} /> Состав материалов</p>
+          <p className="mt-1 text-[11px] leading-4 text-slate-400">Укажите каждый слой изделия отдельно. Пустые слои можно оставить незаполненными.</p>
+        </div>
+        <button type="button" onClick={addRow} className="inline-flex h-10 items-center gap-2 rounded-xl border border-violet-200 bg-violet-50 px-3 text-[11px] font-bold text-violet-700 transition hover:bg-violet-100">
+          <Plus size={14} /> Добавить материал
+        </button>
+      </div>
+      <div className="space-y-2">
+        {rows.map((row, index) => (
+          <div key={row.id} className="grid min-w-0 gap-2 sm:grid-cols-[minmax(150px,0.8fr)_minmax(220px,1.6fr)_44px]">
+            <input
+              className={cn(inputClass, index < 3 && 'bg-slate-100/80 font-semibold text-slate-600')}
+              value={row.name}
+              readOnly={index < 3}
+              aria-label={`Название материала ${index + 1}`}
+              placeholder="Например, флис"
+              onChange={event => updateRow(index, 'name', event.target.value)}
+            />
+            <input
+              className={inputClass}
+              value={row.composition}
+              aria-label={`Состав материала ${row.name || index + 1}`}
+              placeholder={index === 1 ? 'Например, синтепон 200 г/м²' : 'Например, 100% полиэстер'}
+              onChange={event => updateRow(index, 'composition', event.target.value)}
+            />
+            {index >= 3 ? (
+              <button type="button" onClick={() => removeRow(index)} className="inline-flex h-11 w-11 items-center justify-center rounded-xl border border-red-100 bg-red-50 text-red-500 transition hover:bg-red-100" aria-label={`Удалить материал ${row.name || index + 1}`}>
+                <Trash2 size={15} />
+              </button>
+            ) : <span className="hidden h-11 w-11 sm:block" aria-hidden="true" />}
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+};
 
 export const Products: React.FC<ProductsProps> = ({ onBack }) => {
   const [error, setError] = useState<string | null>(null);
@@ -148,6 +219,9 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
     costPrice: 0,
     sellingPrice: 0,
     composition: '',
+    materials: ensureProductMaterials([], ''),
+    collectionName: '',
+    seasonality: '',
     sizeDetails: '',
     description: '',
     countryOfOrigin: '',
@@ -203,6 +277,7 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
       // Фото уже загружены в Storage, фильтруем возможные base64 фаллбэки
       const finalPhotos = (newProduct.photos || []).filter(p => !p.startsWith('data:image'));
 
+      const productMaterials = ensureProductMaterials(newProduct.materials, newProduct.composition);
       const productData = {
         id,
         photos: finalPhotos.length > 0 ? finalPhotos : ['https://picsum.photos/seed/product/400/400'],
@@ -218,7 +293,10 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
         costPrice: Number(newProduct.costPrice) || 0,
         sellingPrice: Number(newProduct.sellingPrice) || 0,
         unitEconomics: newProduct.unitEconomics || null,
-        composition: newProduct.composition || '',
+        composition: getPrimaryComposition(productMaterials, newProduct.composition),
+        materials: productMaterials,
+        collectionName: String(newProduct.collectionName || '').trim(),
+        seasonality: String(newProduct.seasonality || '').trim(),
         sizeDetails: newProduct.sizeDetails || '',
         description: newProduct.description || '',
         countryOfOrigin: newProduct.countryOfOrigin || '',
@@ -248,6 +326,9 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
         costPrice: 0,
         sellingPrice: 0,
         composition: '',
+        materials: ensureProductMaterials([], ''),
+        collectionName: '',
+        seasonality: '',
         sizeDetails: '',
         description: '',
         countryOfOrigin: '',
@@ -265,14 +346,14 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
     try {
       const headers = [
         'Наименование', 'Цвет', 'Размерная сетка', 'Обхваты', 'Рост', 
-        'Вес', 'Вид нанесения', 'Номер лекала', 'Год выпуска',
-        'Состав', 'Описание размеров', 'Описание товара', 'Страна'
+        'Вес', 'Вид нанесения', 'Номер лекала', 'Год выпуска', 'Коллекция', 'Сезонность',
+        'Состав материалов', 'Описание размеров', 'Описание товара', 'Страна'
       ];
       
       const rows = products.map(p => [
         p.name, p.color, p.sizeGrid, p.girths, p.height,
-        p.weight, p.applicationType, p.patternNumber, p.releaseYear,
-        p.composition, p.sizeDetails, p.description, p.countryOfOrigin
+        p.weight, p.applicationType, p.patternNumber, p.releaseYear, p.collectionName, p.seasonality,
+        formatProductMaterials(p.materials, p.composition), p.sizeDetails, p.description, p.countryOfOrigin
       ].map(val => `"${String(val || '').replace(/"/g, '""')}"`).join(','));
 
       const csvContent = [headers.join(','), ...rows].join('\n');
@@ -294,6 +375,7 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
   const handleEditProduct = (product: ProductItem) => {
     setNewProduct({
       ...product,
+      materials: ensureProductMaterials(product.materials, product.composition),
       posts: product.posts || []
     });
     setEditingId(product.id);
@@ -310,6 +392,7 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
 
     setNewProduct({
       ...product,
+      materials: ensureProductMaterials(product.materials, product.composition),
       posts: product.posts || []
     });
     setEditingId(product.id);
@@ -417,6 +500,7 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
         name: `${product.name || 'Товар'} копия`,
         photos: [...(product.photos || [])],
         posts: [...(product.posts || [])],
+        materials: ensureProductMaterials(product.materials, product.composition).map(material => ({ ...material })),
         unitEconomics: product.unitEconomics ? JSON.parse(JSON.stringify(product.unitEconomics)) : null,
       };
 
@@ -544,6 +628,9 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
       costPrice: 0,
       sellingPrice: 0,
       composition: '',
+      materials: ensureProductMaterials([], ''),
+      collectionName: '',
+      seasonality: '',
       sizeDetails: '',
       description: '',
       countryOfOrigin: '',
@@ -666,6 +753,18 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
                 <input className={inputClass} value={newProduct.releaseYear || ''} onChange={e => setNewProduct({...newProduct, releaseYear: e.target.value})} />
               </label>
               <label className="min-w-0">
+                <span className={labelClass}>Коллекция</span>
+                <input className={inputClass} placeholder="Например, FLAME" value={newProduct.collectionName || ''} onChange={e => setNewProduct({...newProduct, collectionName: e.target.value})} />
+              </label>
+              <label className="min-w-0">
+                <span className={labelClass}>Сезонность</span>
+                <select className={inputClass} value={newProduct.seasonality || ''} onChange={e => setNewProduct({...newProduct, seasonality: e.target.value})}>
+                  <option value="">Не указана</option>
+                  {SEASON_OPTIONS.map(option => <option key={option} value={option}>{option}</option>)}
+                  {newProduct.seasonality && !SEASON_OPTIONS.includes(newProduct.seasonality) && <option value={newProduct.seasonality}>{newProduct.seasonality}</option>}
+                </select>
+              </label>
+              <label className="min-w-0">
                 <span className={labelClass}>Себестоимость, ₽</span>
                 <input type="number" className={`${inputClass} font-bold text-red-600`} value={newProduct.costPrice ?? ''} onChange={e => setNewProduct({...newProduct, costPrice: Number(e.target.value)})} />
               </label>
@@ -677,10 +776,14 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
                 <span className={labelClass}>Страна производства</span>
                 <input className={inputClass} value={newProduct.countryOfOrigin || ''} onChange={e => setNewProduct({...newProduct, countryOfOrigin: e.target.value})} />
               </label>
-              <label className="min-w-0 sm:col-span-2">
-                <span className={labelClass}>Состав</span>
-                <input className={inputClass} value={newProduct.composition || ''} onChange={e => setNewProduct({...newProduct, composition: e.target.value})} />
-              </label>
+              <div className="min-w-0 sm:col-span-2 xl:col-span-3 2xl:col-span-4">
+                <MaterialCompositionEditor
+                  compact
+                  materials={newProduct.materials}
+                  legacyComposition={newProduct.composition}
+                  onChange={materials => setNewProduct(current => ({ ...current, materials, composition: getPrimaryComposition(materials) }))}
+                />
+              </div>
               <label className="min-w-0 sm:col-span-2">
                 <span className={labelClass}>Описание размеров</span>
                 <input className={inputClass} value={newProduct.sizeDetails || ''} onChange={e => setNewProduct({...newProduct, sizeDetails: e.target.value})} />
@@ -1069,16 +1172,11 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
                         className="w-full px-4 py-3 bg-slate-50 border border-slate-100 rounded-2xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all"
                       />
                     </div>
-                    <div className="space-y-2">
-                      <label className="text-[11px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2">
-                        <Layers size={14} /> Состав
-                      </label>
-                      <input 
-                        type="text" 
-                        placeholder="100% хлопок"
-                        value={newProduct.composition}
-                        onChange={(e) => setNewProduct({...newProduct, composition: e.target.value})}
-                        className="w-full px-4 py-3 bg-slate-50 border border-slate-100 rounded-2xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all"
+                    <div className="md:col-span-2">
+                      <MaterialCompositionEditor
+                        materials={newProduct.materials}
+                        legacyComposition={newProduct.composition}
+                        onChange={materials => setNewProduct(current => ({ ...current, materials, composition: getPrimaryComposition(materials) }))}
                       />
                     </div>
                     <div className="space-y-2">
@@ -1268,6 +1366,32 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
                         onChange={(e) => setNewProduct({...newProduct, releaseYear: e.target.value})}
                         className="w-full px-4 py-3 bg-slate-50 border border-slate-100 rounded-2xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all"
                       />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-[11px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2">
+                        <Layers size={14} /> Коллекция
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="Например, FLAME"
+                        value={newProduct.collectionName || ''}
+                        onChange={(e) => setNewProduct({...newProduct, collectionName: e.target.value})}
+                        className="w-full px-4 py-3 bg-slate-50 border border-slate-100 rounded-2xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-[11px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2">
+                        <Calendar size={14} /> Сезонность
+                      </label>
+                      <select
+                        value={newProduct.seasonality || ''}
+                        onChange={(e) => setNewProduct({...newProduct, seasonality: e.target.value})}
+                        className="w-full px-4 py-3 bg-slate-50 border border-slate-100 rounded-2xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all"
+                      >
+                        <option value="">Не указана</option>
+                        {SEASON_OPTIONS.map(option => <option key={option} value={option}>{option}</option>)}
+                        {newProduct.seasonality && !SEASON_OPTIONS.includes(newProduct.seasonality) && <option value={newProduct.seasonality}>{newProduct.seasonality}</option>}
+                      </select>
                     </div>
                     <div className="space-y-2">
                       <label className="text-[11px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2">
@@ -1542,7 +1666,12 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
                           <div className="min-w-0">
                             <span className="block truncate text-[14px] font-semibold leading-5 text-[#1F2937]" title={product.name}>{product.name}</span>
                             <span className="mt-0.5 block truncate text-[10px] font-semibold uppercase tracking-[0.08em] text-[#9CA3AF]">
-                              {product.patternNumber ? `Лекало ${product.patternNumber}` : 'Без лекала'}{product.releaseYear ? ` · ${product.releaseYear}` : ''}
+                              {[
+                                product.patternNumber ? `Лекало ${product.patternNumber}` : 'Без лекала',
+                                product.collectionName,
+                                product.releaseYear,
+                                product.seasonality,
+                              ].filter(Boolean).join(' · ')}
                             </span>
                           </div>
                           <button
@@ -1674,7 +1803,12 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
                         <div className="min-w-0 flex-1">
                           <h3 className="break-words text-[15px] font-bold leading-5 text-slate-900">{product.name}</h3>
                           <p className="mt-1 truncate text-[10px] font-bold uppercase tracking-widest text-slate-400">
-                            {product.patternNumber ? `Лекало ${product.patternNumber}` : 'Без лекала'}{product.releaseYear ? ` · ${product.releaseYear}` : ''}
+                            {[
+                              product.patternNumber ? `Лекало ${product.patternNumber}` : 'Без лекала',
+                              product.collectionName,
+                              product.releaseYear,
+                              product.seasonality,
+                            ].filter(Boolean).join(' · ')}
                           </p>
                         </div>
                         <button
