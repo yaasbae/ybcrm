@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
 import heic2any from 'heic2any';
-import { Bot, Users, MessageSquare, Settings, RefreshCw, Send, CheckCircle2, Loader2, Shirt, Trash2, Plus, Image, Layout, Pencil, X } from 'lucide-react';
+import { Bot, Users, MessageSquare, Settings, RefreshCw, Send, CheckCircle2, Loader2, Shirt, Trash2, Plus, Image, Layout, Pencil, X, Megaphone, AlertTriangle, Clock3 } from 'lucide-react';
 import { motion } from 'motion/react';
 import { cn } from '../lib/utils';
 import { db, storage } from '../firebase';
 import { collection, getDocs, orderBy, query, limit, doc, setDoc, getDoc } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { TELEGRAM_BOT_MESSAGE_LIMIT, validateBotBroadcastMessage } from '../lib/botBroadcast';
 
 interface Subscriber {
   userId: string;
@@ -31,10 +32,20 @@ interface BotButton {
   response: string;
 }
 
+interface BotBroadcastHistory {
+  id: string;
+  message: string;
+  recipientCount: number;
+  sent: number;
+  failed: number;
+  createdAt: string;
+  status: 'sent' | 'partial' | 'failed';
+}
+
 const hideBotButton = (button: BotButton) => button.id !== 'tryon';
 
 export const BotPage: React.FC = () => {
-  const [tab, setTab] = useState<'subscribers' | 'messages' | 'catalog' | 'settings'>('subscribers');
+  const [tab, setTab] = useState<'subscribers' | 'broadcast' | 'messages' | 'catalog' | 'settings'>('subscribers');
   const [subscribers, setSubscribers] = useState<Subscriber[]>([]);
   const [messages, setMessages] = useState<BotMessage[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -47,6 +58,8 @@ export const BotPage: React.FC = () => {
   const [broadcastMsg, setBroadcastMsg] = useState('');
   const [isBroadcasting, setIsBroadcasting] = useState(false);
   const [broadcastResult, setBroadcastResult] = useState<any>(null);
+  const [broadcastConfirmed, setBroadcastConfirmed] = useState(false);
+  const [broadcastHistory, setBroadcastHistory] = useState<BotBroadcastHistory[]>([]);
 
   // Button editor state
   const [botButtons, setBotButtons] = useState<BotButton[]>([]);
@@ -76,13 +89,14 @@ export const BotPage: React.FC = () => {
 
   const loadData = async () => {
     setIsLoading(true);
-    const [subResult, msgResult, cfgResult, costumeResult, btnResult, managerResult] = await Promise.allSettled([
+    const [subResult, msgResult, cfgResult, costumeResult, btnResult, managerResult, broadcastResult] = await Promise.allSettled([
       getDocs(query(collection(db, 'bot_subscribers'), orderBy('subscribedAt', 'desc'))),
       getDocs(query(collection(db, 'bot_messages'), orderBy('receivedAt', 'desc'), limit(50))),
       getDoc(doc(db, 'settings', 'bot_config')),
       fetch('/api/bot/costumes').then(r => r.ok ? r.json() : []),
       fetch('/api/bot/buttons').then(r => r.ok ? r.json() : null),
       fetch('/api/bot/manager-config').then(r => r.ok ? r.json() : null),
+      fetch('/api/bot/broadcasts').then(r => r.ok ? r.json() : []),
     ]);
 
     if (subResult.status === 'fulfilled') {
@@ -102,6 +116,9 @@ export const BotPage: React.FC = () => {
     }
     if (managerResult.status === 'fulfilled' && Array.isArray(managerResult.value?.managerChatIds)) {
       setManagerChatIds(managerResult.value.managerChatIds.join('\n'));
+    }
+    if (broadcastResult.status === 'fulfilled' && Array.isArray(broadcastResult.value)) {
+      setBroadcastHistory(broadcastResult.value);
     }
     setIsLoading(false);
   };
@@ -268,22 +285,30 @@ export const BotPage: React.FC = () => {
   };
 
   const sendBotBroadcast = async () => {
-    if (!broadcastMsg.trim() || subscribers.length === 0) return;
+    const validation = validateBotBroadcastMessage(broadcastMsg);
+    if (validation.error || subscribers.length === 0 || !broadcastConfirmed) return;
     setIsBroadcasting(true);
     setBroadcastResult(null);
     try {
       const res = await fetch('/api/bot/broadcast', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: broadcastMsg, userIds: subscribers.map(s => s.userId) }),
+        body: JSON.stringify({ message: validation.message, audience: 'all' }),
       });
       const data = await res.json();
+      if (!res.ok || data.error) throw new Error(data.error || 'Не удалось отправить рассылку');
       setBroadcastResult(data);
+      setBroadcastMsg('');
+      setBroadcastConfirmed(false);
+      await loadData();
     } catch (e: any) {
       setBroadcastResult({ error: e.message });
     }
     setIsBroadcasting(false);
   };
+
+  const broadcastValidation = validateBotBroadcastMessage(broadcastMsg);
+  const broadcastReady = !broadcastValidation.error && subscribers.length > 0 && broadcastConfirmed && !isBroadcasting;
 
   return (
     <div className="max-w-4xl mx-auto px-4 py-4 space-y-4 font-sans text-zinc-900">
@@ -355,16 +380,17 @@ export const BotPage: React.FC = () => {
         </div>
 
         {/* Tabs */}
-        <div className="flex gap-1 p-2 border-b border-zinc-100 bg-zinc-50">
+        <div className="flex gap-1 overflow-x-auto p-2 border-b border-zinc-100 bg-zinc-50">
           {([
             { id: 'subscribers', label: 'Подписчики', icon: Users },
+            { id: 'broadcast', label: 'Рассылка', icon: Megaphone },
             { id: 'messages', label: 'Сообщения', icon: MessageSquare },
             { id: 'catalog', label: 'Каталог', icon: Shirt },
             { id: 'settings', label: 'Настройки', icon: Settings },
           ] as const).map(t => (
             <button key={t.id} onClick={() => setTab(t.id)}
               className={cn(
-                "flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all",
+                "flex shrink-0 items-center gap-1.5 px-3 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all",
                 tab === t.id ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-400 hover:text-zinc-700"
               )}>
               <t.icon size={11} />
@@ -390,8 +416,7 @@ export const BotPage: React.FC = () => {
                       <p className="text-[10px] mt-1">Когда кто-то напишет /start — появится здесь</p>
                     </div>
                   ) : (
-                    <>
-                      <div className="space-y-1">
+                    <div className="space-y-1">
                         {subscribers.map(s => (
                           <div key={s.userId} className="flex items-center gap-3 px-3 py-2.5 bg-zinc-50 rounded-xl">
                             <div className="w-8 h-8 bg-violet-100 rounded-full flex items-center justify-center shrink-0">
@@ -409,33 +434,102 @@ export const BotPage: React.FC = () => {
                           </div>
                         ))}
                       </div>
-
-                      {/* Рассылка по подписчикам бота */}
-                      <div className="mt-4 pt-4 border-t border-zinc-100 space-y-2">
-                        <label className="text-[9px] font-black text-zinc-400 uppercase tracking-widest">
-                          Рассылка по подписчикам бота ({subscribers.length} чел.)
-                        </label>
-                        <textarea
-                          value={broadcastMsg}
-                          onChange={e => setBroadcastMsg(e.target.value)}
-                          placeholder="Текст сообщения..."
-                          rows={3}
-                          className="w-full bg-zinc-50 border border-zinc-200 rounded-xl px-3 py-2.5 text-[12px] focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-400 transition-all resize-none"
-                        />
-                        <button onClick={sendBotBroadcast} disabled={isBroadcasting || !broadcastMsg.trim()}
-                          className="w-full py-2.5 bg-violet-500 text-white rounded-xl text-[10px] font-black hover:bg-violet-600 transition-all disabled:opacity-40 flex items-center justify-center gap-2">
-                          {isBroadcasting ? <Loader2 size={12} className="animate-spin" /> : <Send size={12} />}
-                          Отправить всем подписчикам
-                        </button>
-                        {broadcastResult && (
-                          <div className={cn("p-3 rounded-xl text-[10px] font-medium",
-                            broadcastResult.error ? "bg-red-50 text-red-700" : "bg-emerald-50 text-emerald-700")}>
-                            {broadcastResult.error || `Отправлено: ${broadcastResult.sent} / Ошибок: ${broadcastResult.failed}`}
-                          </div>
-                        )}
-                      </div>
-                    </>
                   )}
+                </div>
+              )}
+
+              {/* Рассылка */}
+              {tab === 'broadcast' && (
+                <div className="grid gap-4 lg:grid-cols-[minmax(0,1.35fr)_minmax(260px,0.65fr)]">
+                  <section className="space-y-4 rounded-2xl border border-zinc-200 bg-white p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="flex items-center gap-2 text-[12px] font-black text-zinc-900"><Megaphone size={15} className="text-violet-500" /> Новая рассылка</p>
+                        <p className="mt-1 text-[10px] leading-4 text-zinc-500">Сообщение получат все, кто запускал @YAASBAE_CLO_bot.</p>
+                      </div>
+                      <span className="shrink-0 rounded-full bg-violet-50 px-2.5 py-1 text-[9px] font-black text-violet-600">{subscribers.length} получателей</span>
+                    </div>
+
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between gap-3">
+                        <label htmlFor="bot-broadcast-message" className="text-[9px] font-black uppercase tracking-widest text-zinc-400">Текст сообщения</label>
+                        <span className={cn('text-[9px] font-bold', broadcastMsg.length > TELEGRAM_BOT_MESSAGE_LIMIT ? 'text-red-600' : 'text-zinc-400')}>
+                          {broadcastMsg.length} / {TELEGRAM_BOT_MESSAGE_LIMIT}
+                        </span>
+                      </div>
+                      <textarea
+                        id="bot-broadcast-message"
+                        value={broadcastMsg}
+                        onChange={event => { setBroadcastMsg(event.target.value); setBroadcastConfirmed(false); setBroadcastResult(null); }}
+                        placeholder="Например: Новая коллекция уже доступна. Нажмите кнопку в меню бота, чтобы посмотреть модели."
+                        rows={8}
+                        maxLength={TELEGRAM_BOT_MESSAGE_LIMIT + 500}
+                        className="min-h-40 w-full resize-y rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-3 text-[12px] leading-5 text-zinc-900 outline-none transition focus:border-violet-400 focus:ring-2 focus:ring-violet-500/20"
+                      />
+                      {broadcastMsg && broadcastValidation.error && (
+                        <p className="flex items-center gap-1.5 text-[10px] font-medium text-red-600"><AlertTriangle size={12} />{broadcastValidation.error}</p>
+                      )}
+                    </div>
+
+                    <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3">
+                      <p className="mb-2 text-[9px] font-black uppercase tracking-widest text-zinc-400">Предпросмотр в Telegram</p>
+                      <div className="max-w-[88%] whitespace-pre-wrap break-words rounded-2xl rounded-bl-md bg-white px-3 py-2.5 text-[11px] leading-5 text-zinc-800 shadow-sm">
+                        {broadcastMsg.trim() || <span className="text-zinc-400">Здесь появится текст сообщения</span>}
+                      </div>
+                    </div>
+
+                    <label className={cn('flex min-h-11 cursor-pointer items-start gap-3 rounded-xl border p-3 transition', broadcastConfirmed ? 'border-violet-200 bg-violet-50' : 'border-zinc-200 bg-white hover:bg-zinc-50')}>
+                      <input
+                        type="checkbox"
+                        checked={broadcastConfirmed}
+                        onChange={event => setBroadcastConfirmed(event.target.checked)}
+                        disabled={!broadcastMsg.trim() || subscribers.length === 0 || Boolean(broadcastValidation.error)}
+                        className="mt-0.5 h-4 w-4 accent-violet-600"
+                      />
+                      <span className="text-[10px] font-semibold leading-4 text-zinc-700">Подтверждаю отправку сообщения всем подписчикам бота: {subscribers.length} чел.</span>
+                    </label>
+
+                    <button
+                      type="button"
+                      onClick={sendBotBroadcast}
+                      disabled={!broadcastReady}
+                      className="flex min-h-11 w-full items-center justify-center gap-2 rounded-xl bg-violet-600 px-4 text-[11px] font-black text-white transition hover:bg-violet-700 focus:outline-none focus:ring-2 focus:ring-violet-500/30 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      {isBroadcasting ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
+                      {isBroadcasting ? 'Отправляю...' : `Отправить ${subscribers.length} подписчикам`}
+                    </button>
+
+                    {broadcastResult && (
+                      <div role="status" className={cn('rounded-xl p-3 text-[10px] font-semibold', broadcastResult.error ? 'bg-red-50 text-red-700' : 'bg-emerald-50 text-emerald-700')}>
+                        {broadcastResult.error || `Рассылка завершена. Доставлено: ${broadcastResult.sent} из ${broadcastResult.total}. Ошибок: ${broadcastResult.failed}.`}
+                      </div>
+                    )}
+                  </section>
+
+                  <aside className="space-y-3 rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="flex items-center gap-2 text-[11px] font-black text-zinc-900"><Clock3 size={14} className="text-zinc-400" /> История</p>
+                      <span className="text-[9px] font-bold text-zinc-400">Последние 20</span>
+                    </div>
+                    {broadcastHistory.length === 0 ? (
+                      <div className="rounded-xl border border-dashed border-zinc-200 bg-white px-3 py-8 text-center text-[10px] text-zinc-400">Рассылок пока не было</div>
+                    ) : (
+                      <div className="space-y-2">
+                        {broadcastHistory.map(item => (
+                          <div key={item.id} className="rounded-xl border border-zinc-200 bg-white p-3">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className={cn('rounded-full px-2 py-0.5 text-[8px] font-black uppercase', item.failed === 0 ? 'bg-emerald-50 text-emerald-600' : item.sent > 0 ? 'bg-amber-50 text-amber-700' : 'bg-red-50 text-red-600')}>
+                                {item.failed === 0 ? 'Отправлено' : item.sent > 0 ? 'Частично' : 'Ошибка'}
+                              </span>
+                              <span className="text-[8px] text-zinc-400">{item.createdAt ? new Date(item.createdAt).toLocaleString('ru') : '—'}</span>
+                            </div>
+                            <p className="mt-2 line-clamp-3 whitespace-pre-wrap text-[10px] leading-4 text-zinc-700">{item.message}</p>
+                            <p className="mt-2 text-[9px] font-bold text-zinc-400">Доставлено {item.sent} из {item.recipientCount || item.sent + item.failed}</p>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </aside>
                 </div>
               )}
 

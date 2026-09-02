@@ -38,6 +38,7 @@ import type {
   WebAuthnCredential,
 } from "@simplewebauthn/server";
 import { normalizeTelegramPhone, telegramDelivery, telegramAuthError } from "./src/lib/telegramAuth.ts";
+import { normalizeBotSubscriberIds, validateBotBroadcastMessage } from "./src/lib/botBroadcast.ts";
 
 const _require = createRequire(import.meta.url);
 const Database = _require("better-sqlite3");
@@ -5555,19 +5556,78 @@ app.put("/api/bot/costumes/:id", async (req, res) => {
 
 // ─── Bot API endpoints ───────────────────────────────────────────────────────
 
+let botBroadcastRunning = false;
+
 app.post("/api/bot/broadcast", async (req, res) => {
-  const { message, userIds } = req.body;
-  if (!message || !userIds?.length) return res.status(400).json({ error: "Нужны message и userIds" });
-  if (!botInstance) return res.status(500).json({ error: "Бот не запущен" });
-  let sent = 0, failed = 0;
-  for (const uid of userIds) {
+  const validated = validateBotBroadcastMessage(req.body?.message);
+  if (validated.error) return res.status(400).json({ error: validated.error });
+  if (!botInstance) return res.status(503).json({ error: "Бот не запущен" });
+
+  let userIds = normalizeBotSubscriberIds(req.body?.userIds);
+  if (req.body?.audience === "all" || userIds.length === 0) {
     try {
-      await botInstance.telegram.sendMessage(uid, message);
-      sent++;
-      await new Promise(r => setTimeout(r, 50));
-    } catch { failed++; }
+      if (adminDb) {
+        const subscribersSnap = await adminDb.collection("bot_subscribers").get();
+        userIds = normalizeBotSubscriberIds(subscribersSnap.docs.map((item: any) => item.id));
+      } else if (db) {
+        const subscribersSnap = await getDocs(collection(db, "bot_subscribers"));
+        userIds = normalizeBotSubscriberIds(subscribersSnap.docs.map(item => item.id));
+      } else {
+        return res.status(500).json({ error: "База подписчиков недоступна" });
+      }
+    } catch (error) {
+      console.error("[bot-broadcast] subscribers load failed", error);
+      return res.status(500).json({ error: "Не удалось загрузить подписчиков бота" });
+    }
   }
-  res.json({ success: true, sent, failed });
+  if (userIds.length === 0) return res.status(400).json({ error: "У бота пока нет подписчиков" });
+  if (botBroadcastRunning) return res.status(409).json({ error: "Предыдущая рассылка ещё выполняется" });
+
+  botBroadcastRunning = true;
+  try {
+    let sent = 0, failed = 0;
+    for (const uid of userIds) {
+      try {
+        await botInstance.telegram.sendMessage(uid, validated.message);
+        sent++;
+        await new Promise(r => setTimeout(r, 50));
+      } catch { failed++; }
+    }
+
+    const historyItem = {
+      message: validated.message,
+      audience: "all",
+      recipientCount: userIds.length,
+      sent,
+      failed,
+      createdAt: new Date().toISOString(),
+      status: failed === 0 ? "sent" : sent > 0 ? "partial" : "failed",
+    };
+    let id = "";
+    try {
+      if (adminDb) id = (await adminDb.collection("bot_broadcasts").add(historyItem)).id;
+      else if (db) id = (await addDoc(collection(db, "bot_broadcasts"), historyItem)).id;
+    } catch (error) {
+      console.error("[bot-broadcast] history save failed", error);
+    }
+    res.json({ success: true, id, sent, failed, total: userIds.length, createdAt: historyItem.createdAt });
+  } finally {
+    botBroadcastRunning = false;
+  }
+});
+
+app.get("/api/bot/broadcasts", async (_req, res) => {
+  try {
+    if (adminDb) {
+      const snapshot = await adminDb.collection("bot_broadcasts").orderBy("createdAt", "desc").limit(20).get();
+      return res.json(snapshot.docs.map((item: any) => ({ id: item.id, ...item.data() })));
+    }
+    if (!db) return res.status(500).json({ error: "База рассылок недоступна" });
+    const snapshot = await getDocs(query(collection(db, "bot_broadcasts"), orderBy("createdAt", "desc")));
+    res.json(snapshot.docs.slice(0, 20).map(item => ({ id: item.id, ...item.data() })));
+  } catch (error: any) {
+    res.status(500).json({ error: error?.message || "Не удалось загрузить историю рассылок" });
+  }
 });
 
 app.post("/api/bot/config", async (req, res) => {
