@@ -1021,6 +1021,7 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
   const [showFinalQr, setShowFinalQr] = useState(false);
   const [error, setError] = useState('');
   const [finalError, setFinalError] = useState('');
+  const [manualConfirmationRequired, setManualConfirmationRequired] = useState(false);
   const qrRef = useRef<HTMLDivElement>(null);
   const finalQrRef = useRef<HTMLDivElement>(null);
 
@@ -1039,6 +1040,13 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
     || initialAmount;
   const mainInvoiceNeedsReplacement = Boolean(paymentUrl)
     && Math.abs(issuedMainAmount - initialAmount) >= 0.01;
+  const paymentCreatedAtMs = new Date(String((order as any).paymentCreatedAt || '')).getTime();
+  const paymentStatusWindowExpired = Boolean(paymentUrl) && !mainPaymentPaid
+    && Number.isFinite(paymentCreatedAtMs)
+    && Date.now() - paymentCreatedAtMs > 96 * 60 * 60 * 1000;
+  const canConfirmMainPaymentManually = !mainPaymentPaid
+    && Boolean(paymentUrl)
+    && (manualConfirmationRequired || paymentStatusWindowExpired);
   const finalAmount = getOrderFinalPaymentAmount(order);
   const showFinalPayment = finalAmount > 0 && (
     invoiceType !== 'full' || Boolean(order.finalPaymentUrl) || getInitialInvoiceAmount(order) < getOrderTotalAmount(order)
@@ -1115,7 +1123,11 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
       if (amount > 0) query.set('amount', String(amount));
       const res = await fetch(`${getPaymentFindEndpoint(order.paymentType)}?${query.toString()}`);
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || `Оплата в ${paymentProviderLabel} не найдена`);
+      if (!res.ok) {
+        const paymentError: any = new Error(data.error || `Оплата в ${paymentProviderLabel} не найдена`);
+        paymentError.status = res.status;
+        throw paymentError;
+      }
       if (isFinal) {
         updateOrderData(order.orderId, 'finalPaymentStatus', data.paymentStatus || 'found');
         updateOrderData(order.orderId, 'finalPaymentAmount', data.paymentAmount || amount);
@@ -1128,12 +1140,29 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
         if (data.paymentPaidAt) updateOrderData(order.orderId, 'paymentPaidAt', data.paymentPaidAt);
       }
     } catch (e: any) {
+      if (e?.status === 409) setManualConfirmationRequired(true);
       if (isFinal) setFinalError(e.message || `Оплата в ${paymentProviderLabel} не найдена`);
       else setError(e.message || `Оплата в ${paymentProviderLabel} не найдена`);
     } finally {
       setRefreshingFinal(false);
       setRefreshingMain(false);
     }
+  };
+
+  const confirmMainPaymentManually = () => {
+    const confirmed = window.confirm(
+      `Подтвердите, что предоплата ${formatCurrency(issuedMainAmount)} по заказу #${order.orderId} действительно поступила в Точку. После подтверждения CRM разрешит создать доплату.`,
+    );
+    if (!confirmed) return;
+    const confirmedAt = new Date().toISOString();
+    updateOrderData(order.orderId, 'paymentStatus', 'manual_confirmed');
+    updateOrderData(order.orderId, 'paymentPaidAt', confirmedAt);
+    updateOrderData(order.orderId, 'paymentAmount', issuedMainAmount);
+    updateOrderData(order.orderId, 'initialPaymentAmount', issuedMainAmount);
+    updateOrderData(order.orderId, 'paymentAccountingVersion', 2);
+    setError('');
+    setFinalError('');
+    setManualConfirmationRequired(false);
   };
 
   const handleCreate = async () => {
@@ -1321,6 +1350,16 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
         <RefreshCcw size={8} className={refreshingMain ? 'animate-spin' : ''} />
         Проверить оплату
       </button>
+      {canConfirmMainPaymentManually && (
+        <button
+          type="button"
+          onClick={confirmMainPaymentManually}
+          className="w-full rounded-md border border-amber-300 bg-amber-50 py-1.5 text-[9px] font-black text-amber-700 transition-colors hover:bg-amber-100"
+        >
+          Подтвердить предоплату вручную
+        </button>
+      )}
+      {error && <p className="mt-1 text-[8px] font-bold text-red-500">{error}</p>}
       {paymentUrl && !mainInvoiceNeedsReplacement && (
         <>
           <button
@@ -3534,6 +3573,7 @@ const OrderCard = React.memo(({
   const [mobileFinalPaymentRefreshing, setMobileFinalPaymentRefreshing] = useState(false);
   const [mobilePaymentError, setMobilePaymentError] = useState('');
   const [mobileFinalPaymentError, setMobileFinalPaymentError] = useState('');
+  const [mobileManualConfirmationRequired, setMobileManualConfirmationRequired] = useState(false);
   const [mobileCdekCopied, setMobileCdekCopied] = useState(false);
   const [showMobileQr, setShowMobileQr] = useState(false);
   const [showMobileFinalQr, setShowMobileFinalQr] = useState(false);
@@ -3589,6 +3629,11 @@ const OrderCard = React.memo(({
     : mobileFinalPaymentUrl
       ? 'Доплата ожидает оплаты'
       : 'Доплата не создана';
+  const mobilePaymentCreatedAtMs = new Date(String((order as any).paymentCreatedAt || '')).getTime();
+  const canConfirmMobilePaymentManually = !mainPaymentPaid && Boolean(paymentUrl) && (
+    mobileManualConfirmationRequired
+    || (Number.isFinite(mobilePaymentCreatedAtMs) && Date.now() - mobilePaymentCreatedAtMs > 96 * 60 * 60 * 1000)
+  );
   const shareText = paymentUrl ? buildPaymentShareText(order, paymentUrl, liveInvoiceAmount, 'Счет на оплату', mobilePaymentProviderLabel) : '';
   const finalShareText = mobileFinalPaymentUrl ? buildPaymentShareText(order, mobileFinalPaymentUrl, finalPaymentAmount, 'Счет на доплату') : '';
   const invoiceTone = liveInvoiceAmount <= 0
@@ -3875,7 +3920,11 @@ const OrderCard = React.memo(({
       if (amount > 0) query.set('amount', String(amount));
       const res = await fetch(`${getPaymentFindEndpoint(order.paymentType)}?${query.toString()}`);
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Оплата в Точке не найдена');
+      if (!res.ok) {
+        const paymentError: any = new Error(data.error || 'Оплата в Точке не найдена');
+        paymentError.status = res.status;
+        throw paymentError;
+      }
       if (isFinal) {
         updateOrderData(order.orderId, 'finalPaymentStatus', data.paymentStatus || 'found');
         updateOrderData(order.orderId, 'finalPaymentAmount', data.paymentAmount || amount);
@@ -3888,12 +3937,30 @@ const OrderCard = React.memo(({
         if (data.paymentPaidAt) updateOrderData(order.orderId, 'paymentPaidAt', data.paymentPaidAt);
       }
     } catch (e: any) {
+      if (e?.status === 409) setMobileManualConfirmationRequired(true);
       if (isFinal) setMobileFinalPaymentError(e.message || 'Оплата в Точке не найдена');
       else setMobilePaymentError(e.message || 'Оплата в Точке не найдена');
     } finally {
       setMobilePaymentRefreshing(false);
       setMobileFinalPaymentRefreshing(false);
     }
+  };
+
+  const confirmMobilePaymentManually = () => {
+    const amount = Number(order.paymentAmount) || dueAmount;
+    const confirmed = window.confirm(
+      `Подтвердите, что предоплата ${formatCurrency(amount)} по заказу #${order.orderId} действительно поступила в Точку. После подтверждения CRM разрешит создать доплату.`,
+    );
+    if (!confirmed) return;
+    const confirmedAt = new Date().toISOString();
+    updateOrderData(order.orderId, 'paymentStatus', 'manual_confirmed');
+    updateOrderData(order.orderId, 'paymentPaidAt', confirmedAt);
+    updateOrderData(order.orderId, 'paymentAmount', amount);
+    updateOrderData(order.orderId, 'initialPaymentAmount', amount);
+    updateOrderData(order.orderId, 'paymentAccountingVersion', 2);
+    setMobilePaymentError('');
+    setMobileFinalPaymentError('');
+    setMobileManualConfirmationRequired(false);
   };
 
   if (expanded) {
@@ -4297,6 +4364,18 @@ const OrderCard = React.memo(({
                 {isMobileSplitPayment ? 'Яндекс Сплит' : 'Поделиться'}
               </button>
             </div>
+            {canConfirmMobilePaymentManually && (
+              <button
+                type="button"
+                onClick={confirmMobilePaymentManually}
+                className="w-full rounded-lg border border-amber-300 bg-amber-50 py-2 text-[10px] font-bold text-amber-700"
+              >
+                Подтвердить предоплату вручную
+              </button>
+            )}
+            {mobilePaymentError && (
+              <p className="text-[9px] font-bold text-red-500">{mobilePaymentError}</p>
+            )}
             {!isMobileYandexProvider && (
               <button
                 onClick={createMobileYandexSplitPayment}
