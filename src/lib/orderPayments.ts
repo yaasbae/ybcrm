@@ -18,7 +18,7 @@ export type PaymentAccountingOrder = {
 
 export const isConfirmedPaymentStatus = (status?: string) => {
   const normalized = String(status || '').toLowerCase();
-  return ['paid', 'approved', 'completed', 'succeeded', 'success', 'done', 'captured', 'confirmed'].some(value => normalized.includes(value));
+  return ['paid', 'approved', 'accepted', 'completed', 'succeeded', 'success', 'done', 'captured', 'confirmed'].some(value => normalized.includes(value));
 };
 
 export const getOrderTotalAmount = (order: PaymentAccountingOrder) =>

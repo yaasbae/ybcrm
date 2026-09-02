@@ -7903,6 +7903,7 @@ async function fetchTochkaQrById(token: string, merchantId: string, accountId: s
   const encodedAccount = encodeURIComponent(accountId);
   const encodedQr = encodeURIComponent(qrId);
   const urls = [
+    `${TOCHKA_API}/sbp/v1.0/qr-codes/${encodedQr}/payment-status`,
     `${TOCHKA_API}/sbp/v1.0/qr-code/${encodedQr}`,
     `${TOCHKA_API}/sbp/v1.0/qr-code/merchant/${encodedMerchant}/${encodedAccount}/${encodedQr}`,
     `${TOCHKA_API}/sbp/v1.0/qr-code/merchant/${encodedMerchant}/${encodedAccount}`,
@@ -8848,7 +8849,7 @@ function findFinanceOrderForOperation(operation: any, orders: any[]) {
 
 function isTochkaPaidStatus(status: any) {
   const normalized = String(status || '').toLowerCase();
-  return ['paid', 'approved', 'completed', 'succeeded', 'success', 'done'].some(item => normalized.includes(item));
+  return ['paid', 'approved', 'accepted', 'completed', 'succeeded', 'success', 'done'].some(item => normalized.includes(item));
 }
 
 function getTochkaPaymentTarget(orderId: any, kind?: any) {
@@ -9572,7 +9573,14 @@ app.get('/api/tochka/find-payment', async (req, res) => {
   } catch (e: any) {
     const errData = e.response?.data;
     console.error('[tochka] find-payment error:', errData || e.message);
-    res.status(e.response?.status || 500).json({ error: e.message, details: errData });
+    const consentForbidden = e.response?.status === 403
+      && /forbidden by consent/i.test(JSON.stringify(errData || ''));
+    res.status(consentForbidden ? 409 : (e.response?.status || 500)).json({
+      error: consentForbidden
+        ? 'Точка не разрешила проверку через старый API. CRM уже попробовала проверить статус самого QR-кода.'
+        : e.message,
+      details: errData,
+    });
   }
 });
 

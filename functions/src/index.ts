@@ -173,6 +173,7 @@ async function fetchTochkaQrById(token: string, merchantId: string, accountId: s
   const encodedAccount = encodeURIComponent(accountId);
   const encodedQr = encodeURIComponent(qrId);
   const urls = [
+    `${TOCHKA_API}/sbp/v1.0/qr-codes/${encodedQr}/payment-status`,
     `${TOCHKA_API}/sbp/v1.0/qr-code/${encodedQr}`,
     `${TOCHKA_API}/sbp/v1.0/qr-code/merchant/${encodedMerchant}/${encodedAccount}/${encodedQr}`,
     `${TOCHKA_API}/sbp/v1.0/qr-code/merchant/${encodedMerchant}/${encodedAccount}`,
@@ -186,7 +187,9 @@ async function fetchTochkaQrById(token: string, merchantId: string, accountId: s
         timeout: 20000,
       });
       const paymentUrl = getTochkaPaymentUrl(response.data);
-      if (paymentUrl) return { data: response.data, paymentUrl };
+      const paymentStatus = getTochkaOperationStatus(response.data)
+        || findTochkaValueByKeys(response.data, ['qrcStatus', 'qrStatus', 'status']);
+      if (paymentUrl || paymentStatus) return { data: response.data, paymentUrl, paymentStatus };
       lastError = new Error('QR response has no payment url');
     } catch (error: any) {
       lastError = error;
@@ -215,7 +218,7 @@ function normalizeTochkaAmount(value: any) {
 
 function isTochkaPaidStatus(status: any) {
   const s = String(status || '').toLowerCase();
-  return ['paid', 'approved', 'completed', 'succeeded', 'success', 'done'].some(x => s.includes(x));
+  return ['paid', 'approved', 'accepted', 'completed', 'succeeded', 'success', 'done'].some(x => s.includes(x));
 }
 
 function getTochkaPaymentTarget(orderId: string, kind?: string) {
@@ -837,13 +840,29 @@ export const tochkaFindPayment = onRequest({ timeoutSeconds: 30 }, async (req: R
   try {
     const settings = await getTochkaSettings();
     if (!settings?.jwtToken) { res.status(400).json({ error: 'Токен Точки не настроен' }); return; }
-    const { jwtToken, customerCode } = settings;
+    const { jwtToken, customerCode, merchantId, accountId } = settings;
     if (!customerCode) { res.status(400).json({ error: 'customerCode Точки не настроен' }); return; }
 
-    const operation = await findTochkaOperation(jwtToken, customerCode, target.paymentLinkId, amount)
-      || (target.isFinal ? await findTochkaOperation(jwtToken, customerCode, target.cleanOrderId, amount) : null);
+    const primaryOrder = await db.doc(`orders_new/${target.cleanOrderId}`).get();
+    const legacyOrder = primaryOrder.exists ? null : await db.doc(`orders/${target.cleanOrderId}`).get();
+    const orderData = primaryOrder.exists ? primaryOrder.data() : legacyOrder?.data() || {};
+    const storedPaymentId = String(target.isFinal ? orderData?.finalPaymentId || '' : orderData?.paymentId || '').trim();
+    let operation: any = null;
+    let operationId = '';
 
-    const operationId = getTochkaOperationId(operation);
+    if (storedPaymentId && merchantId && accountId) {
+      const qrDetails = await fetchTochkaQrById(jwtToken, String(merchantId), String(accountId), storedPaymentId).catch(() => null);
+      if (qrDetails?.data) {
+        operation = { ...qrDetails.data, status: qrDetails.paymentStatus || getTochkaOperationStatus(qrDetails.data) };
+        operationId = storedPaymentId;
+      }
+    }
+
+    if (!operation) {
+      operation = await findTochkaOperation(jwtToken, customerCode, target.paymentLinkId, amount)
+        || (target.isFinal ? await findTochkaOperation(jwtToken, customerCode, target.cleanOrderId, amount) : null);
+      operationId = getTochkaOperationId(operation);
+    }
     if (!operation || !operationId) {
       res.status(404).json({ error: `Оплата по заказу ${orderId} в Точке не найдена` }); return;
     }

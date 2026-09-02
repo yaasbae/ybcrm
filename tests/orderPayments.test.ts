@@ -4,7 +4,12 @@ import {
   getCalculatedInitialInvoiceAmount,
   getInitialInvoiceAmount,
   getPlannedFinalPaymentAmount,
+  isConfirmedPaymentStatus,
 } from '../src/lib/orderPayments';
+
+test('recognizes the successful SBP QR status returned by Tochka', () => {
+  assert.equal(isConfirmedPaymentStatus('Accepted'), true);
+});
 
 test('recalculates a 50% prepayment even when an older full invoice exists', () => {
   const order = {
