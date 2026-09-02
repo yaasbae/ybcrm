@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   getCalculatedInitialInvoiceAmount,
   getInitialInvoiceAmount,
+  getPlannedFinalPaymentAmount,
 } from '../src/lib/orderPayments';
 
 test('recalculates a 50% prepayment even when an older full invoice exists', () => {
@@ -16,6 +17,7 @@ test('recalculates a 50% prepayment even when an older full invoice exists', () 
 
   assert.equal(getInitialInvoiceAmount(order), 15550);
   assert.equal(getCalculatedInitialInvoiceAmount(order), 7775);
+  assert.equal(getPlannedFinalPaymentAmount(order), 7775);
 });
 
 test('uses the full order total for full payment', () => {

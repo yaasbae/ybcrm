@@ -82,6 +82,11 @@ async function authorize(app: ReturnType<typeof createApp>) {
 }
 
 describe("MCP HTTP and OAuth integration", () => {
+  it("trusts the single Cloud Run proxy hop", () => {
+    const app = createApp(testContainer());
+    expect(app.get("trust proxy")).toBe(1);
+  });
+
   it("publishes discovery metadata and an RFC 9728 auth challenge", async () => {
     const app = createApp(testContainer());
     const metadata = await request(app).get("/.well-known/oauth-protected-resource/mcp").expect(200);

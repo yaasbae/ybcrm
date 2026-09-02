@@ -16,6 +16,11 @@ export function createApp(container: Container) {
   const app = express();
   const auth = authMiddleware(container.config);
 
+  // Cloud Run terminates HTTPS in front of Express and supplies the real
+  // client address through X-Forwarded-For. express-rate-limit validates this
+  // setting and otherwise emits an error on the first request of every
+  // instance, which can interrupt MCP/OAuth clients during a cold start.
+  app.set("trust proxy", 1);
   app.use(helmet());
   app.use(cors());
   app.use(express.json({ limit: "2mb" }));
