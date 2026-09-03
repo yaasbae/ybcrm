@@ -1089,7 +1089,6 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
     if (String(order.deliveryMethod || '').toLowerCase().includes('сдэк')) {
       if (!String(order.clientCity || order.cdekPayload?.toCity || '').trim()) missing.push('город СДЭК');
       if (!String(order.clientAddress || order.cdekPayload?.deliveryPoint || order.cdekPayload?.toAddress || '').trim()) missing.push('адрес или ПВЗ');
-      if (!order.cdekUuid && !order.cdekNumber) missing.push('накладная СДЭК');
     }
     return Array.from(new Set(missing));
   }, [order]);
@@ -1353,10 +1352,16 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
         <button
           onClick={handleCreate}
           disabled={loading || invoiceMissingFields.length > 0}
+          title={invoiceMissingFields.length ? `Заполните: ${invoiceMissingFields.join(', ')}` : `Перевыставить счёт на ${formatCurrency(initialAmount)}`}
           className="w-full rounded-md border border-amber-300 bg-amber-50 py-1.5 text-[9px] font-black text-amber-700 transition-colors hover:bg-amber-100 disabled:opacity-50"
         >
           {loading ? 'Перевыставляем…' : `Перевыставить на ${formatCurrency(initialAmount)}`}
         </button>
+      )}
+      {mainInvoiceNeedsReplacement && !mainPaymentPaid && invoiceMissingFields.length > 0 && (
+        <p className="text-[8px] font-bold leading-3 text-amber-600">
+          Для перевыставления заполните: {invoiceMissingFields.join(', ')}
+        </p>
       )}
       <button
         onClick={() => refreshPayment('main')}
