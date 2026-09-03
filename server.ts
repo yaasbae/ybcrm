@@ -8986,9 +8986,15 @@ function getTochkaPaymentTarget(orderId: any, kind?: any) {
 function buildTochkaPaymentFields(target: { isFinal: boolean }, paymentId: string, paymentStatus: string, paymentAmount: number, operation?: any) {
   const paidAt = new Date().toISOString();
   const isPaid = isTochkaPaidStatus(paymentStatus);
+  const trxId = operation ? findTochkaValueByKeys(operation, ['trxId', 'operationId']) : '';
+  const refTransactionId = operation ? findTochkaValueByKeys(operation, ['refTransactionId']) : '';
+  const qrcId = operation ? findTochkaValueByKeys(operation, ['qrcId', 'qrId']) : '';
   if (target.isFinal) {
     return {
       ...(paymentId ? { finalPaymentId: paymentId } : {}),
+      ...(qrcId ? { finalPaymentQrcId: String(qrcId) } : {}),
+      ...(trxId ? { finalPaymentTrxId: String(trxId) } : {}),
+      ...(refTransactionId ? { finalPaymentRefTransactionId: String(refTransactionId) } : {}),
       finalPaymentStatus: paymentStatus,
       ...(paymentAmount > 0 ? { finalPaymentAmount: paymentAmount } : {}),
       finalPaymentFoundAt: paidAt,
@@ -8999,6 +9005,9 @@ function buildTochkaPaymentFields(target: { isFinal: boolean }, paymentId: strin
   }
   return {
     ...(paymentId ? { paymentId } : {}),
+    ...(qrcId ? { paymentQrcId: String(qrcId) } : {}),
+    ...(trxId ? { paymentTrxId: String(trxId) } : {}),
+    ...(refTransactionId ? { paymentRefTransactionId: String(refTransactionId) } : {}),
     paymentStatus,
     ...(paymentAmount > 0 ? { paymentAmount } : {}),
     tochkaPaymentFoundAt: paidAt,
@@ -9355,6 +9364,98 @@ app.get('/api/yandex-pay/find-payment', async (req, res) => {
     res.json({ success: true, paymentStatus: status, paymentId: yandexOrderId, paymentUrl: remoteOrder.paymentUrl || '', paymentPaidAt: paid ? remoteOrder.updated : null });
   } catch (error: any) {
     res.status(error?.response?.status || 500).json({ error: error?.response?.data?.message || error?.message || 'Не удалось проверить Сплит', details: error?.response?.data });
+  }
+});
+
+app.post('/api/yandex-pay/refund-payment', async (req, res) => {
+  const actor: any = await requireCrmOrderAction(req, res, 'refund');
+  if (!actor) return;
+  const orderId = String(req.body?.orderId || '').trim();
+  const target = getYandexPaymentTarget(orderId);
+  const reason = String(req.body?.reason || 'Клиенту не подошёл товар').trim().slice(0, 500);
+  if (!orderId) return res.status(400).json({ error: 'Нужен orderId' });
+
+  try {
+    const credentials = await getYandexPayCredentials();
+    if (!credentials.apiKey) return res.status(503).json({ error: 'Яндекс Сплит не настроен' });
+    const snapshot = await getOrderSnapshot(target.cleanOrderId);
+    if (!orderSnapshotExists(snapshot)) return res.status(404).json({ error: `Заказ ${target.cleanOrderId} не найден` });
+    const order = snapshot.data() || {};
+    const yandexOrderId = String(target.isFinal ? order.finalPaymentId : order.paymentId || '').trim();
+    const storedAmount = Number(target.isFinal ? order.finalPaymentAmount : (order.paymentAmount || order.initialPaymentAmount)) || 0;
+    const refundAmount = Number(req.body?.amount) || storedAmount;
+    const hasScopedRefunds = Boolean(order.mainRefundStatus || order.finalRefundStatus);
+    const existingRefundStatus = String(
+      (target.isFinal ? order.finalRefundStatus : order.mainRefundStatus)
+      || (!hasScopedRefunds ? order.refundStatus : '')
+      || '',
+    ).trim();
+    if (!yandexOrderId) return res.status(409).json({ error: 'У платежа Яндекс Сплита не найден идентификатор' });
+    if (!Number.isFinite(refundAmount) || refundAmount < 1 || refundAmount > storedAmount) {
+      return res.status(400).json({ error: `Сумма возврата должна быть от 1 ₽ до ${storedAmount.toFixed(2)} ₽` });
+    }
+    if (existingRefundStatus && !/fail/i.test(existingRefundStatus)) {
+      return res.status(409).json({ error: 'Возврат этого платежа уже создан' });
+    }
+
+    const externalOperationId = `ybcrm-refund-${createHash('sha256')
+      .update(`${target.cleanOrderId}:${target.isFinal ? 'final' : 'main'}:${refundAmount.toFixed(2)}`)
+      .digest('hex').slice(0, 24)}`;
+    const response = await axios.post(
+      `${getYandexPayBaseUrl(credentials.sandbox)}/v2/orders/${encodeURIComponent(yandexOrderId)}/refund`,
+      {
+        refundAmount: refundAmount.toFixed(2),
+        externalOperationId,
+        motive: reason,
+        managerId: String(actor.uid || '').slice(0, 2048),
+      },
+      { headers: yandexPayHeaders(randomBytes(16).toString('hex'), credentials.apiKey), timeout: 20000 },
+    );
+    const operation = response.data?.data?.operation || response.data?.data || {};
+    const refundStatus = String(operation.status || 'PENDING');
+    const refundId = String(operation.operationId || externalOperationId);
+    const previousScopedRefunds = (Number(order.mainRefundAmount) || 0) + (Number(order.finalRefundAmount) || 0);
+    const previousRefundAmount = previousScopedRefunds || Number(order.refundAmount) || 0;
+    const refundedAt = new Date().toISOString();
+    const scopedPatch = target.isFinal ? {
+      finalRefundAmount: refundAmount,
+      finalRefundStatus: refundStatus,
+      finalRefundId: refundId,
+      finalRefundedAt: refundedAt,
+    } : {
+      mainRefundAmount: refundAmount,
+      mainRefundStatus: refundStatus,
+      mainRefundId: refundId,
+      mainRefundedAt: refundedAt,
+    };
+    const patch = {
+      ...scopedPatch,
+      status: 'Возврат',
+      refundAmount: previousRefundAmount + refundAmount,
+      refundStatus,
+      refundId,
+      refundPaymentId: yandexOrderId,
+      refundReason: reason,
+      refundedAt,
+      paymentAccountingVersion: 2,
+    };
+    await persistOrderPatch(target.cleanOrderId, patch);
+    await writeAuditLog({
+      action: 'yandex_payment_refunded',
+      entityType: 'order',
+      entityId: target.cleanOrderId,
+      after: patch,
+      metadata: { label: `Возврат Яндекс Сплит: заказ ${target.cleanOrderId}`, amount: refundAmount, kind: target.isFinal ? 'final' : 'main' },
+      actor: { type: 'crm_user', uid: actor.uid, email: actor.email || '', name: actor.name || '' },
+    });
+    res.json({ success: true, refundId, refundStatus, refundAmount, kind: target.isFinal ? 'final' : 'main' });
+  } catch (error: any) {
+    const details = error?.response?.data;
+    console.error('[yandex-pay] refund-payment:', details || error?.message || error);
+    res.status(error?.response?.status || 500).json({
+      error: details?.message || details?.reason || error?.message || 'Не удалось оформить возврат Яндекс Сплита',
+      details,
+    });
   }
 });
 
@@ -9857,33 +9958,76 @@ app.post('/api/tochka/reconcile-payments', async (_req, res) => {
   }
 });
 
-// Возврат оплаты через Точку по operationId. Для этого метода в документации
-// Точки нет отдельного шага отправки SMS-кода: доступ контролируется токеном.
+// Возврат оплаты через СБП Точки по QR и идентификатору исходной транзакции.
 app.post('/api/tochka/refund-payment', async (req, res) => {
-  if (!await requireCrmOrderAction(req, res, 'refund')) return;
-  const { orderId, operationId, amount, reason } = req.body || {};
+  const actor: any = await requireCrmOrderAction(req, res, 'refund');
+  if (!actor) return;
+  const { orderId, operationId, amount, reason, kind } = req.body || {};
   const refundAmount = Number(amount);
-  const cleanOrderId = String(orderId || '').trim();
+  const target = getTochkaPaymentTarget(String(orderId || ''), kind);
+  const cleanOrderId = target.cleanOrderId;
   let cleanOperationId = String(operationId || '').trim();
 
   if (!cleanOrderId) return res.status(400).json({ error: 'Нужен orderId' });
   if (!Number.isFinite(refundAmount) || refundAmount <= 0) return res.status(400).json({ error: 'Нужна сумма возврата больше 0' });
-  if (!db) return res.status(503).json({ error: 'DB не подключена' });
+  if (!db && !adminDb) return res.status(503).json({ error: 'DB не подключена' });
 
   try {
     const token = await getTochkaToken();
     if (!token) return res.status(400).json({ error: 'Токен Точки не настроен' });
-    const snap = await getDoc(doc(db, 'settings', 'tochka_api'));
-    const customerCode = snap?.data()?.customerCode;
-    if (!cleanOperationId) {
-      cleanOperationId = await findTochkaOperationId(token, customerCode, cleanOrderId, refundAmount);
+    const settings = await readTochkaSettingsDoc('tochka_api');
+    const customerCode = settings?.customerCode;
+    const orderSnapshot = await getOrderSnapshot(cleanOrderId);
+    if (!orderSnapshotExists(orderSnapshot)) return res.status(404).json({ error: `Заказ ${cleanOrderId} не найден` });
+    const order = orderSnapshot.data() || {};
+    const storedPaymentAmount = Number(target.isFinal
+      ? order.finalPaymentAmount
+      : (order.paymentAmount || order.initialPaymentAmount)) || 0;
+    const hasScopedRefunds = Boolean(order.mainRefundStatus || order.finalRefundStatus);
+    const existingRefundStatus = String(
+      (target.isFinal ? order.finalRefundStatus : order.mainRefundStatus)
+      || (!hasScopedRefunds ? order.refundStatus : '')
+      || '',
+    ).trim();
+    if (storedPaymentAmount > 0 && refundAmount > storedPaymentAmount) {
+      return res.status(400).json({ error: `Сумма возврата больше платежа ${storedPaymentAmount.toFixed(2)} ₽` });
     }
-    if (!cleanOperationId) {
-      return res.status(400).json({ error: 'Не нашёл operationId платежа в Точке. У старого заказа нужно вручную привязать paymentId.' });
+    if (existingRefundStatus && !/fail|error/i.test(existingRefundStatus)) {
+      return res.status(409).json({ error: 'Возврат этого платежа уже создан' });
+    }
+    const qrcId = String(
+      (target.isFinal ? order.finalPaymentQrcId : order.paymentQrcId)
+      || (target.isFinal ? order.finalPaymentId : order.paymentId)
+      || cleanOperationId,
+    ).trim();
+    if (!qrcId) return res.status(409).json({ error: 'У платежа не найден идентификатор QR Точки' });
+    if (!settings?.merchantId || !settings?.accountId) {
+      return res.status(503).json({ error: 'В настройках Точки не указаны merchantId или accountId' });
+    }
+    const qrDetails = await fetchTochkaQrById(
+      token,
+      String(settings.merchantId),
+      String(settings.accountId),
+      qrcId,
+    ).catch(() => null);
+    const paymentData = qrDetails?.data || {};
+    const trxId = String(
+      (target.isFinal ? order.finalPaymentTrxId : order.paymentTrxId)
+      || findTochkaValueByKeys(paymentData, ['trxId', 'operationId'])
+      || '',
+    ).trim();
+    const refTransactionId = String(
+      (target.isFinal ? order.finalPaymentRefTransactionId : order.paymentRefTransactionId)
+      || findTochkaValueByKeys(paymentData, ['refTransactionId'])
+      || '',
+    ).trim();
+    if (!trxId && !refTransactionId) {
+      return res.status(409).json({ error: 'Точка ещё не вернула идентификатор оплаченной операции. Сначала нажмите «Проверить оплату».' });
     }
 
-    console.log(`[tochka] refund start order=${cleanOrderId} operation=${cleanOperationId} amount=${refundAmount}`);
-    await addDoc(collection(db, 'tochka_logs'), {
+    cleanOperationId = trxId || refTransactionId;
+    console.log(`[tochka] refund start order=${cleanOrderId} qrc=${qrcId} transaction=${cleanOperationId} amount=${refundAmount}`);
+    await writeTochkaLog({
       orderId: cleanOrderId,
       paymentId: cleanOperationId,
       amount: refundAmount,
@@ -9893,11 +10037,15 @@ app.post('/api/tochka/refund-payment', async (req, res) => {
     }).catch(() => {});
 
     const response = await axios.post(
-      `${TOCHKA_API}/acquiring/v1.0/payments/${encodeURIComponent(cleanOperationId)}/refund`,
+      `${TOCHKA_API}/sbp/v1.0/refund`,
       {
         Data: {
+          bankCode: String(settings.bankCode || '044525104'),
+          accountCode: String(settings.accountId),
           amount: Math.round(refundAmount * 100) / 100,
-          reason: reason || `Возврат заказа ${cleanOrderId}`,
+          qrcId,
+          ...(refTransactionId ? { refTransactionId } : { trxId }),
+          purpose: reason || `Возврат заказа ${cleanOrderId}`,
         },
       },
       {
@@ -9910,26 +10058,45 @@ app.post('/api/tochka/refund-payment', async (req, res) => {
     );
 
     const refundData = response.data || {};
-    const refundId = refundData.operationId
+    const refundId = refundData.requestId
+      || refundData.Data?.requestId
+      || refundData.operationId
       || refundData.refundOperationId
       || refundData.data?.operationId
       || refundData.Data?.operationId
       || refundData.Data?.refundOperationId
       || null;
     const refundStatus = refundData.status || refundData.data?.status || refundData.Data?.status || 'refund_requested';
+    const refundedAt = new Date().toISOString();
+    const previousScopedRefunds = (Number(order.mainRefundAmount) || 0) + (Number(order.finalRefundAmount) || 0);
+    const previousRefundAmount = previousScopedRefunds || Number(order.refundAmount) || 0;
+    const scopedFields = target.isFinal ? {
+      finalRefundAmount: refundAmount,
+      finalRefundStatus: refundStatus,
+      finalRefundId: refundId,
+      finalRefundedAt: refundedAt,
+    } : {
+      mainRefundAmount: refundAmount,
+      mainRefundStatus: refundStatus,
+      mainRefundId: refundId,
+      mainRefundedAt: refundedAt,
+    };
     const refundFields = {
+      ...scopedFields,
       status: 'Возврат',
-      refundAmount,
+      refundAmount: previousRefundAmount + refundAmount,
       refundStatus,
       refundId,
       refundPaymentId: cleanOperationId,
+      refundQrcId: qrcId,
       refundReason: reason || '',
-      refundedAt: new Date().toISOString(),
+      refundedAt,
       refundResponse: JSON.stringify(refundData).slice(0, 2000),
+      paymentAccountingVersion: 2,
     };
 
-    await updateDoc(doc(db, 'orders_new', cleanOrderId), refundFields).catch(() => {});
-    await addDoc(collection(db, 'tochka_logs'), {
+    await persistOrderPatch(cleanOrderId, refundFields);
+    await writeTochkaLog({
       orderId: cleanOrderId,
       paymentId: cleanOperationId,
       refundId,
@@ -9939,11 +10106,20 @@ app.post('/api/tochka/refund-payment', async (req, res) => {
       createdAt: new Date().toISOString(),
     }).catch(() => {});
 
-    res.json({ success: true, refundId, refundStatus, data: refundData });
+    await writeAuditLog({
+      action: 'tochka_payment_refunded',
+      entityType: 'order',
+      entityId: cleanOrderId,
+      after: refundFields,
+      metadata: { label: `Возврат Точка: заказ ${cleanOrderId}`, amount: refundAmount, kind: target.isFinal ? 'final' : 'main' },
+      actor: { type: 'crm_user', uid: actor.uid, email: actor.email || '', name: actor.name || '' },
+    });
+
+    res.json({ success: true, refundId, refundStatus, refundAmount, kind: target.isFinal ? 'final' : 'main', data: refundData });
   } catch (e: any) {
     const errData = e.response?.data;
     console.error('[tochka] refund error:', errData || e.message);
-    await addDoc(collection(db, 'tochka_logs'), {
+    await writeTochkaLog({
       orderId: cleanOrderId,
       paymentId: cleanOperationId,
       amount: refundAmount,
@@ -9993,7 +10169,7 @@ app.post('/api/tochka/webhook', async (req, res) => {
       const status = ['Paid', 'paid', 'APPROVED'].includes(body.status) ? 'paid' : body.status;
       if (body.paymentLinkId) {
         const target = getTochkaPaymentTarget(body.paymentLinkId);
-        const patch = buildTochkaPaymentFields(target, body.operationId || '', status, normalizeTochkaAmount(body.amount));
+        const patch = buildTochkaPaymentFields(target, body.qrcId || body.operationId || '', status, normalizeTochkaAmount(body.amount), body);
         await persistOrderPatch(target.cleanOrderId, patch);
         if (isTochkaPaidStatus(status)) {
           await dispatchPushEvent('payment_received', `payment:${body.operationId || body.paymentLinkId}`, {
@@ -10009,6 +10185,7 @@ app.post('/api/tochka/webhook', async (req, res) => {
             body.operationId,
             status,
             normalizeTochkaAmount(body.amount),
+            body,
           );
           if (adminDb) {
             const snap = await adminDb.collection('orders_new').where(field, '==', body.operationId).get();

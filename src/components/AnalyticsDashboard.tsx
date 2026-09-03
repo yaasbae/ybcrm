@@ -104,6 +104,14 @@ export interface OrderData {
   refundPaymentId?: string;
   refundReason?: string;
   refundedAt?: string;
+  mainRefundAmount?: number;
+  mainRefundStatus?: string;
+  mainRefundId?: string;
+  mainRefundedAt?: string;
+  finalRefundAmount?: number;
+  finalRefundStatus?: string;
+  finalRefundId?: string;
+  finalRefundedAt?: string;
   tochkaPaymentFoundAt?: string;
   tochkaPaymentData?: string;
   paymentStatus?: string;
@@ -265,7 +273,7 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
     revenue: 0,
     paidAmount: 0,
     deliveryMethod: '',
-    paymentType: 'Предоплата 50%',
+    paymentType: 'QR код',
     invoiceType: 'prepayment',
     source: '',
     height: '',
@@ -660,7 +668,7 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
         revenue: 0,
         paidAmount: 0,
         deliveryMethod: '',
-        paymentType: 'Предоплата 50%',
+        paymentType: 'QR код',
         invoiceType: 'prepayment',
         source: '',
         height: '',

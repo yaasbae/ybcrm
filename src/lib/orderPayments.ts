@@ -62,7 +62,7 @@ export const getConfirmedPaidAmount = (order: PaymentAccountingOrder) => {
 };
 
 export const getPlannedFinalPaymentAmount = (order: PaymentAccountingOrder) =>
-  Math.max(0, getOrderTotalAmount(order) - getCalculatedInitialInvoiceAmount(order));
+  Math.max(0, getOrderTotalAmount(order) - getInitialInvoiceAmount(order));
 
 export const getOutstandingPaymentAmount = (order: PaymentAccountingOrder) =>
   Math.max(0, getOrderTotalAmount(order) - getConfirmedPaidAmount(order));

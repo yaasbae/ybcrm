@@ -51,7 +51,7 @@ const DELIVERY_OPTIONS = ['СДЭК до ПВЗ', 'СДЭК до двери', '�
 const DEFAULT_MANAGERS = ['Менеджер 1', 'Менеджер 2', 'Собственник'];
 const SOURCE_OPTIONS = ['Instagram', 'WhatsApp', 'ТГ', 'Блогер', 'Контент', 'Сарафан', 'Повторный'];
 const PAYMENT_TYPE_OPTIONS = ['QR код', 'Сплитами', 'Долями', 'Наличкой', 'Наложенный СДЭК'];
-const INVOICE_PAYMENT_OPTIONS = ['Предоплата 50%', 'Полная оплата', 'Оплата с примеркой', 'Сплитами'];
+const INVOICE_PAYMENT_OPTIONS = ['Предоплата 50%', 'Оплата с примеркой'];
 const SplitMark = ({ className = '' }: { className?: string }) => (
   <span className={cn('relative inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center', className)} aria-hidden="true">
     <span className="absolute h-2.5 w-2.5 rounded-full bg-[#F43F5E]" />
@@ -509,6 +509,18 @@ function isYandexSplitPayment(paymentType?: string): boolean {
   return String(paymentType || '').toLowerCase().includes('сплит');
 }
 
+function getOperationalInvoiceType(order: Partial<OrderData>): 'prepayment' | 'full' | 'fitting' {
+  if (isYandexSplitPayment(order.paymentType) || order.paymentProvider === 'yandex_split') return 'full';
+  if (order.invoiceType === 'fitting' || /пример/i.test(String(order.paymentType || ''))) return 'fitting';
+  return 'prepayment';
+}
+
+function getPaymentMethodLabel(order: Partial<OrderData>): string {
+  if (order.paymentProvider === 'yandex_split' || isYandexSplitPayment(order.paymentType)) return 'Сплитами';
+  const current = String(order.paymentType || '').trim();
+  return PAYMENT_TYPE_OPTIONS.includes(current) ? current : 'QR код';
+}
+
 function getPaymentCreateEndpoint(paymentType?: string): string {
   return isYandexSplitPayment(paymentType) ? '/api/yandex-pay/create-payment' : '/api/tochka/create-payment';
 }
@@ -541,7 +553,7 @@ const buildOrdersPrintHtml = (orders: OrderData[]) => {
     const colors = getOrderItemColors(order);
     const sizes = getOrderItemSizes(order);
     const heights = getOrderItemHeights(order);
-    const invoiceType = order.invoiceType || getInvoiceTypeFromPaymentType(order.paymentType);
+    const invoiceType = getOperationalInvoiceType(order);
     const invoiceLabel = getInvoicePaymentLabel(invoiceType);
     const deadlineDate = addBusinessDays(order.date, 7);
     const itemLines = (items.length ? items : ['-']).map((item, index) => {
@@ -642,7 +654,7 @@ const buildCustomerOrderDocumentHtml = (order: OrderData) => {
   const heights = getOrderItemHeights(order);
   const instagram = normalizeInstagramUsername(order.clientInsta);
   const total = (Number(order.revenue) || 0) + (Number(order.deliveryPrice) || 0);
-  const invoiceType = order.invoiceType || getInvoiceTypeFromPaymentType(order.paymentType);
+  const invoiceType = getOperationalInvoiceType(order);
   const invoiceAmount = Number(order.paidAmount) || getInvoiceAmount({
     revenue: Number(order.revenue) || 0,
     deliveryPrice: Number(order.deliveryPrice) || 0,
@@ -1023,6 +1035,8 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
   const [showFinalQr, setShowFinalQr] = useState(false);
   const [error, setError] = useState('');
   const [finalError, setFinalError] = useState('');
+  const [refundLoading, setRefundLoading] = useState<'main' | 'final' | null>(null);
+  const [refundError, setRefundError] = useState('');
   const [manualConfirmationRequired, setManualConfirmationRequired] = useState(false);
   const qrRef = useRef<HTMLDivElement>(null);
   const finalQrRef = useRef<HTMLDivElement>(null);
@@ -1032,16 +1046,17 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
   const isSplitPayment = isYandexSplitPayment(order.paymentType);
   const isYandexProvider = isSplitPayment || order.paymentProvider === 'yandex_split';
   const paymentProviderLabel = isYandexProvider ? 'Яндекс Сплит' : 'СБП';
-  const invoiceType = order.invoiceType || getInvoiceTypeFromPaymentType(order.paymentType);
+  const invoiceType = getOperationalInvoiceType(order);
   const mainPaymentPaid = isPaidTochkaStatus(order.paymentStatus || '');
   const finalPaymentPaid = isPaidTochkaStatus(order.finalPaymentStatus || '');
-  const initialAmount = getOrderPaymentDue(order);
+  const orderTotal = getOrderTotalAmount(order);
+  const initialAmount = hasIssuedMainInvoice(order)
+    ? getInitialInvoiceAmount(order)
+    : isYandexProvider ? orderTotal : orderTotal * 0.5;
   const issuedMainAmount = Number(order.paymentAmount)
     || Number(order.initialPaymentAmount)
     || Number(order.paidAmount)
     || initialAmount;
-  const mainInvoiceNeedsReplacement = Boolean(paymentUrl)
-    && Math.abs(issuedMainAmount - initialAmount) >= 0.01;
   const paymentCreatedAtMs = new Date(String((order as any).paymentCreatedAt || '')).getTime();
   const paymentStatusWindowExpired = Boolean(paymentUrl) && !mainPaymentPaid
     && Number.isFinite(paymentCreatedAtMs)
@@ -1050,10 +1065,8 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
     && Boolean(paymentUrl)
     && (manualConfirmationRequired || paymentStatusWindowExpired);
   const finalAmount = getOrderFinalPaymentAmount(order);
-  const showFinalPayment = finalAmount > 0 && (
-    invoiceType !== 'full' || Boolean(order.finalPaymentUrl) || getInitialInvoiceAmount(order) < getOrderTotalAmount(order)
-  );
-  const mainPaymentLabel = getShortPaymentLabel(invoiceType);
+  const showFinalPayment = !isYandexProvider && finalAmount > 0;
+  const mainPaymentLabel = isYandexProvider ? 'Яндекс Сплит' : 'Предоплата 50%';
   const mainPaymentStatusText = mainPaymentPaid
     ? `${mainPaymentLabel} оплачена`
     : paymentUrl
@@ -1064,6 +1077,9 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
     : finalPaymentUrl
       ? 'Доплата ожидает оплаты'
       : 'Доплата не создана';
+  const mainRefundState = String((order as any).mainRefundStatus || order.refundStatus || '');
+  const mainRefunded = Boolean(mainRefundState) && !/fail|error/i.test(mainRefundState);
+  const finalRefunded = Boolean((order as any).finalRefundStatus) && !/fail|error/i.test(String((order as any).finalRefundStatus));
   const shareText = buildPaymentShareText(order, targetPaymentUrl, initialAmount, 'Счет на оплату', paymentProviderLabel);
   const finalShareText = finalPaymentUrl
     ? buildPaymentShareText(order, finalPaymentUrl, finalAmount, 'Счет на доплату')
@@ -1185,8 +1201,8 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
     setError('');
     try {
       if (invoiceMissingFields.length) throw new Error(`Заполните: ${invoiceMissingFields.join(', ')}`);
-      const amount = getOrderPaymentDue(order);
-      if (amount <= 0) throw new Error('Остаток к оплате 0 ₽');
+      const amount = initialAmount;
+      if (amount <= 0) throw new Error('Сумма предоплаты 0 ₽');
       const res = await crmFetch(getPaymentCreateEndpoint(order.paymentType), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1286,6 +1302,37 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
     finally { setFinalLoading(false); }
   };
 
+  const refundPayment = async (kind: 'main' | 'final') => {
+    const isFinal = kind === 'final';
+    const amount = isFinal ? finalAmount : issuedMainAmount;
+    const provider = String(isFinal ? order.finalPaymentProvider : order.paymentProvider || '').toLowerCase();
+    const yandex = provider === 'yandex_split' || (!isFinal && isYandexProvider);
+    const label = yandex ? 'платёж Яндекс Сплита' : isFinal ? 'доплату' : 'предоплату';
+    if (!window.confirm(`Вернуть ${label} ${formatCurrency(amount)} клиенту по заказу #${order.orderId}? Это реальная операция возврата денег.`)) return;
+    setRefundLoading(kind);
+    setRefundError('');
+    try {
+      const res = await crmFetch(yandex ? '/api/yandex-pay/refund-payment' : '/api/tochka/refund-payment', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          orderId: isFinal ? `${order.orderId}-final` : order.orderId,
+          kind,
+          operationId: isFinal ? order.finalPaymentId : order.paymentId,
+          amount,
+          reason: 'Клиенту не подошёл товар',
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Не удалось оформить возврат');
+      // The server persists the refund and the Firestore listener refreshes the card.
+    } catch (e: any) {
+      setRefundError(e.message || 'Не удалось оформить возврат');
+    } finally {
+      setRefundLoading(null);
+    }
+  };
+
   useEffect(() => {
     setPaymentUrl(order.paymentUrl || null);
   }, [order.paymentUrl]);
@@ -1305,7 +1352,7 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
           className="w-full text-[8px] font-black py-1 rounded-md border border-violet-200 bg-violet-50 text-violet-600 hover:bg-violet-500 hover:text-white hover:border-violet-500 transition-all flex items-center justify-center gap-1 disabled:opacity-50"
         >
           {loading ? <RefreshCcw size={8} className="animate-spin" /> : <QrCodeIcon size={8} />}
-          {loading ? 'Создаём...' : 'Создать счёт'}
+          {loading ? 'Создаём...' : `Создать предоплату ${formatCurrency(initialAmount)}`}
         </button>
         {!isYandexProvider && (
           <button
@@ -1331,7 +1378,13 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
         </button>
         {error && <p className="mt-1 text-[8px] font-bold text-red-500">{error}</p>}
         {showFinalPayment && (
-          <p className="text-[8px] font-bold text-zinc-400">Доплата появится после создания основного счёта</p>
+          <button
+            type="button"
+            disabled
+            className="w-full rounded-md border border-orange-200 bg-orange-50 py-1.5 text-[8px] font-black text-orange-600 opacity-50"
+          >
+            Создать доплату {formatCurrency(finalAmount)} · после предоплаты
+          </button>
         )}
       </div>
     );
@@ -1340,29 +1393,6 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
   return (
     <div className="mt-1.5 space-y-1">
       {paymentStatusBadge(mainPaymentStatusText, mainPaymentPaid, 'main')}
-      {mainInvoiceNeedsReplacement && (
-        <div className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-[9px] font-semibold leading-4 text-amber-700">
-          Созданный счёт: {formatCurrency(issuedMainAmount)}. Новый расчёт: {formatCurrency(initialAmount)}.
-          {mainPaymentPaid
-            ? ' Оплата уже подтверждена — перевыставление недоступно.'
-            : ' Перевыставьте счёт перед отправкой клиенту.'}
-        </div>
-      )}
-      {mainInvoiceNeedsReplacement && !mainPaymentPaid && (
-        <button
-          onClick={handleCreate}
-          disabled={loading || invoiceMissingFields.length > 0}
-          title={invoiceMissingFields.length ? `Заполните: ${invoiceMissingFields.join(', ')}` : `Перевыставить счёт на ${formatCurrency(initialAmount)}`}
-          className="w-full rounded-md border border-amber-300 bg-amber-50 py-1.5 text-[9px] font-black text-amber-700 transition-colors hover:bg-amber-100 disabled:opacity-50"
-        >
-          {loading ? 'Перевыставляем…' : `Перевыставить на ${formatCurrency(initialAmount)}`}
-        </button>
-      )}
-      {mainInvoiceNeedsReplacement && !mainPaymentPaid && invoiceMissingFields.length > 0 && (
-        <p className="text-[8px] font-bold leading-3 text-amber-600">
-          Для перевыставления заполните: {invoiceMissingFields.join(', ')}
-        </p>
-      )}
       <button
         onClick={() => refreshPayment('main')}
         disabled={refreshingMain}
@@ -1381,7 +1411,7 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
         </button>
       )}
       {error && <p className="mt-1 text-[8px] font-bold text-red-500">{error}</p>}
-      {paymentUrl && !mainInvoiceNeedsReplacement && (
+      {paymentUrl && (
         <>
           <button
             onClick={() => shareOrder(shareText, targetPaymentUrl).catch(() => navigator.clipboard.writeText(shareText))}
@@ -1394,17 +1424,6 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
           >
             {isSplitPayment ? <SplitMark /> : <Send size={8} />} {isSplitPayment ? 'Яндекс Сплит' : 'Отправить ссылку СБП'}
           </button>
-          {!isYandexProvider && (
-            <button
-              onClick={handleCreateYandexSplit}
-              disabled={splitLoading || invoiceMissingFields.length > 0}
-              title={invoiceMissingFields.length ? `Заполните: ${invoiceMissingFields.join(', ')}` : 'Создать Яндекс Сплит'}
-              className="w-full rounded-md border border-zinc-950 bg-zinc-950 py-1.5 text-[8px] font-black uppercase tracking-wide text-white transition-all hover:bg-black disabled:opacity-50 flex items-center justify-center gap-1"
-            >
-              {splitLoading ? <RefreshCcw size={8} className="animate-spin" /> : <SplitMark />}
-              {splitLoading ? 'Создаём...' : 'Яндекс Сплит'}
-            </button>
-          )}
           <button
             onClick={() => setShowQr(v => !v)}
             className="w-full text-[8px] font-black py-1 rounded-md border border-[#6B4DFF]/20 bg-[#6B4DFF] text-white hover:bg-[#5738F3] transition-all flex items-center justify-center gap-1"
@@ -1426,6 +1445,17 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
           )}
         </>
       )}
+      {mainPaymentPaid && !mainRefunded && (
+        <button
+          type="button"
+          onClick={() => refundPayment('main')}
+          disabled={refundLoading !== null}
+          className="w-full rounded-md border border-red-200 bg-red-50 py-1.5 text-[8px] font-black text-red-600 transition-colors hover:bg-red-100 disabled:opacity-50"
+        >
+          {refundLoading === 'main' ? 'Оформляем возврат…' : isYandexProvider ? `Вернуть Сплит ${formatCurrency(issuedMainAmount)}` : `Вернуть предоплату ${formatCurrency(issuedMainAmount)}`}
+        </button>
+      )}
+      {mainRefunded && <p className="text-[8px] font-bold text-red-500">Возврат предоплаты оформлен</p>}
       {showFinalPayment && (
         <div className="border-t border-zinc-100 pt-1.5">
           {paymentStatusBadge(finalPaymentStatusText, finalPaymentPaid, 'final')}
@@ -1476,8 +1506,20 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
             </button>
           )}
           {finalError && <p className="mt-1 text-[8px] font-bold text-red-500">{finalError}</p>}
+          {finalPaymentPaid && !finalRefunded && (
+            <button
+              type="button"
+              onClick={() => refundPayment('final')}
+              disabled={refundLoading !== null}
+              className="mt-1 w-full rounded-md border border-red-200 bg-red-50 py-1.5 text-[8px] font-black text-red-600 transition-colors hover:bg-red-100 disabled:opacity-50"
+            >
+              {refundLoading === 'final' ? 'Оформляем возврат…' : `Вернуть доплату ${formatCurrency(finalAmount)}`}
+            </button>
+          )}
+          {finalRefunded && <p className="mt-1 text-[8px] font-bold text-red-500">Возврат доплаты оформлен</p>}
         </div>
       )}
+      {refundError && <p className="mt-1 text-[8px] font-bold text-red-500">{refundError}</p>}
     </div>
   );
 };
@@ -1822,7 +1864,9 @@ const CdekOrderBlock: React.FC<{
           : `Создан. ID: ${shortCdekId(data.cdekUuid || '')}`;
       if (!recreate && !order.paymentUrl) {
         try {
-          const amount = getOrderPaymentDue(order);
+          const amount = isYandexSplitPayment(order.paymentType)
+            ? getOrderTotalAmount(order)
+            : getOrderTotalAmount(order) * 0.5;
           if (amount > 0) {
             const paymentResponse = await crmFetch(getPaymentCreateEndpoint(order.paymentType), {
               method: 'POST',
@@ -2298,7 +2342,7 @@ const OrderSummaryRow = React.memo(({
   const paidAmount = Number(order.paidAmount) || 0;
   const deliveryAmount = Number(order.deliveryPrice) || 0;
   const deadlineDate = addBusinessDays(order.date, 7);
-  const invoiceType = order.invoiceType || getInvoiceTypeFromPaymentType(order.paymentType);
+  const invoiceType = getOperationalInvoiceType(order);
   const invoiceTone = paidAmount <= 0
     ? 'text-zinc-300'
     : invoiceType === 'full'
@@ -2550,7 +2594,7 @@ const OrderDetailView: React.FC<{
   const sewnItems = getOrderItemSewn(order);
   const revenue = Number(order.revenue) || getItemPricesTotal(prices);
   const deliveryPrice = Number(order.deliveryPrice) || 0;
-  const invoiceType = order.invoiceType || getInvoiceTypeFromPaymentType(order.paymentType);
+  const invoiceType = getOperationalInvoiceType(order);
   const invoiceAmount = getInvoiceAmount({ revenue, deliveryPrice, invoiceType });
   const dueAmount = getOrderPaymentDue({ ...order, revenue, paidAmount: invoiceAmount });
   const saved = order.cdekPayload || {};
@@ -2879,7 +2923,7 @@ const OrderDetailView: React.FC<{
               'grid grid-cols-[92px_minmax(0,1fr)] content-start gap-y-2 text-[12px]',
               mobile ? 'border-t border-[#E6E9EF] pt-5' : 'border-l border-[#E6E9EF] pl-6',
             )}>
-              <dt className="text-[#667085]">Оплата:</dt><dd className="font-medium text-[#111827]">{editing ? editSelect('paymentType', order.paymentType, PAYMENT_TYPE_OPTIONS) : order.paymentType || getInvoicePaymentLabel(invoiceType)}</dd>
+              <dt className="text-[#667085]">Способ оплаты:</dt><dd className="font-medium text-[#111827]">{editing ? editSelect('paymentType', getPaymentMethodLabel(order), PAYMENT_TYPE_OPTIONS) : getPaymentMethodLabel(order)}</dd>
               <dt className="text-[#667085]">Тип оплаты:</dt><dd className="font-medium text-[#111827]">{editing ? editInvoiceTypeSelect() : getInvoicePaymentLabel(invoiceType)}</dd>
               <dt className="text-[#667085]">Источник:</dt><dd className="font-medium text-[#111827]">{editing ? editSelect('source', order.source, SOURCE_OPTIONS) : order.source || '—'}</dd>
               <dt className="text-[#667085]">Менеджер:</dt><dd className="font-medium text-[#111827]">{editing ? editSelect('manager', order.manager, mergeOptions(handbookManagers, DEFAULT_MANAGERS)) : order.manager || '—'}</dd>
@@ -3495,7 +3539,7 @@ const OrderRow = React.memo(({
                 {fieldSelect('Источник', order.source || '', optionsWithCurrent(handbookSources, order.source || '', SOURCE_OPTIONS), (v) => updateOrderData(order.orderId, 'source', v))}
                 {fieldSelect('Менеджер', order.manager || '', mergeOptions(optionsWithCurrent(handbookManagers, order.manager || ''), DEFAULT_MANAGERS), (v) => updateOrderData(order.orderId, 'manager', v))}
                 {fieldSelect('Блогер', order.blogger || '', optionsWithCurrent(handbookBloggers, order.blogger || ''), (v) => updateOrderData(order.orderId, 'blogger', v))}
-                {fieldSelect('Оплата', order.paymentType || '', optionsWithCurrent(handbookPaymentTypes, order.paymentType || '', PAYMENT_TYPE_OPTIONS), (v) => updateOrderData(order.orderId, 'paymentType', v))}
+                {fieldSelect('Способ оплаты', getPaymentMethodLabel(order), optionsWithCurrent(handbookPaymentTypes, getPaymentMethodLabel(order), PAYMENT_TYPE_OPTIONS), (v) => updateOrderData(order.orderId, 'paymentType', v))}
                 {fieldSelect('Доставка', order.deliveryMethod || '', optionsWithCurrent(handbookDeliveries, order.deliveryMethod || '', DELIVERY_OPTIONS), (v) => updateOrderData(order.orderId, 'deliveryMethod', v))}
                 {fieldSelect('Метка', order.label || '', optionsWithCurrent(handbookLabels, order.label || ''), (v) => updateOrderData(order.orderId, 'label', v))}
                 {fieldSelect('Тип оплаты', getInvoicePaymentLabel(liveInvoiceType), INVOICE_PAYMENT_OPTIONS, updateOrderInvoiceType)}
@@ -3594,6 +3638,8 @@ const OrderCard = React.memo(({
   const [mobileFinalPaymentRefreshing, setMobileFinalPaymentRefreshing] = useState(false);
   const [mobilePaymentError, setMobilePaymentError] = useState('');
   const [mobileFinalPaymentError, setMobileFinalPaymentError] = useState('');
+  const [mobileRefundLoading, setMobileRefundLoading] = useState<'main' | 'final' | null>(null);
+  const [mobileRefundError, setMobileRefundError] = useState('');
   const [mobileManualConfirmationRequired, setMobileManualConfirmationRequired] = useState(false);
   const [mobileCdekCopied, setMobileCdekCopied] = useState(false);
   const [showMobileQr, setShowMobileQr] = useState(false);
@@ -3627,46 +3673,47 @@ const OrderCard = React.memo(({
     mobileCdekAddress ? `Адрес доставки: ${mobileCdekAddress}` : '',
     mobileCdekNumber ? `Отследить: https://www.cdek.ru/ru/tracking?order_id=${encodeURIComponent(mobileCdekNumber)}` : '',
   ].filter(Boolean).join('\n');
-  const invoiceType = order.invoiceType || getInvoiceTypeFromPaymentType(order.paymentType);
-  const liveInvoiceAmount = getInvoiceAmount({
-    revenue: liveRevenue,
-    deliveryPrice: order.deliveryPrice || 0,
-    invoiceType,
-  });
-  const dueAmount = getOrderPaymentDue({ ...order, revenue: liveRevenue, paidAmount: liveInvoiceAmount });
-  const finalPaymentAmount = getOrderFinalPaymentAmount({ ...order, revenue: liveRevenue, paidAmount: liveInvoiceAmount });
-  const showFinalPayment = finalPaymentAmount > 0 && (
-    invoiceType !== 'full' || Boolean(order.finalPaymentUrl) || getInitialInvoiceAmount(order) < getOrderTotalAmount(order)
-  );
+  const invoiceType = getOperationalInvoiceType(order);
+  const mobileOrderTotal = getOrderTotalAmount({ ...order, revenue: liveRevenue });
+  const plannedInitialAmount = isMobileYandexProvider ? mobileOrderTotal : mobileOrderTotal * 0.5;
+  const issuedMobileMainAmount = Number(order.paymentAmount)
+    || Number(order.initialPaymentAmount)
+    || (paymentUrl ? Number(order.paidAmount) || 0 : 0)
+    || plannedInitialAmount;
+  const liveInvoiceAmount = paymentUrl ? issuedMobileMainAmount : plannedInitialAmount;
+  const dueAmount = liveInvoiceAmount;
+  const finalPaymentAmount = mobileFinalPaymentUrl && Number(order.finalPaymentAmount) > 0
+    ? Number(order.finalPaymentAmount)
+    : Math.max(0, mobileOrderTotal - issuedMobileMainAmount);
+  const showFinalPayment = !isMobileYandexProvider && finalPaymentAmount > 0;
   const mainPaymentPaid = isPaidTochkaStatus(order.paymentStatus || '');
   const finalPaymentPaid = isPaidTochkaStatus(order.finalPaymentStatus || '');
   const mainPaymentStatusText = mainPaymentPaid
-    ? `${getShortPaymentLabel(invoiceType)} оплачена`
+    ? `${isMobileYandexProvider ? 'Яндекс Сплит' : 'Предоплата 50%'} оплачена`
     : paymentUrl
-      ? `${getShortPaymentLabel(invoiceType)} ожидает оплаты`
-      : `${getShortPaymentLabel(invoiceType)} не создана`;
+      ? `${isMobileYandexProvider ? 'Яндекс Сплит' : 'Предоплата 50%'} ожидает оплаты`
+      : `${isMobileYandexProvider ? 'Яндекс Сплит' : 'Предоплата 50%'} не создана`;
   const finalPaymentStatusText = finalPaymentPaid
     ? 'Доплата оплачена'
     : mobileFinalPaymentUrl
       ? 'Доплата ожидает оплаты'
       : 'Доплата не создана';
+  const mobileMainRefundState = String((order as any).mainRefundStatus || order.refundStatus || '');
+  const mobileMainRefunded = Boolean(mobileMainRefundState) && !/fail|error/i.test(mobileMainRefundState);
+  const mobileFinalRefunded = Boolean((order as any).finalRefundStatus) && !/fail|error/i.test(String((order as any).finalRefundStatus));
   const mobilePaymentCreatedAtMs = new Date(String((order as any).paymentCreatedAt || '')).getTime();
   const canConfirmMobilePaymentManually = !isMobileYandexProvider && !mainPaymentPaid && Boolean(paymentUrl) && (
     mobileManualConfirmationRequired
     || (Number.isFinite(mobilePaymentCreatedAtMs) && Date.now() - mobilePaymentCreatedAtMs > 96 * 60 * 60 * 1000)
   );
-  const shareText = paymentUrl ? buildPaymentShareText(order, paymentUrl, liveInvoiceAmount, 'Счет на оплату', mobilePaymentProviderLabel) : '';
+  const shareText = paymentUrl ? buildPaymentShareText(order, paymentUrl, issuedMobileMainAmount, 'Счет на предоплату', mobilePaymentProviderLabel) : '';
   const finalShareText = mobileFinalPaymentUrl ? buildPaymentShareText(order, mobileFinalPaymentUrl, finalPaymentAmount, 'Счет на доплату') : '';
   const invoiceTone = liveInvoiceAmount <= 0
     ? 'text-zinc-300'
-    : invoiceType === 'full'
+    : isMobileYandexProvider
       ? 'text-emerald-600'
       : 'text-orange-500';
-  const invoiceLabel = invoiceType === 'full'
-    ? 'оплата'
-    : invoiceType === 'fitting'
-      ? 'примерка'
-      : 'предоплата';
+  const invoiceLabel = isMobileYandexProvider ? 'оплата Сплит' : 'предоплата 50%';
   useEffect(() => {
     setEditItems(orderItems.length ? orderItems : ['']);
     setEditItemPrices(orderItemPrices.length ? orderItemPrices : [0]);
@@ -3998,6 +4045,37 @@ const OrderCard = React.memo(({
     }
   };
 
+  const refundMobilePayment = async (kind: 'main' | 'final') => {
+    const isFinal = kind === 'final';
+    const amount = isFinal ? finalPaymentAmount : issuedMobileMainAmount;
+    const provider = String(isFinal ? order.finalPaymentProvider : order.paymentProvider || '').toLowerCase();
+    const yandex = provider === 'yandex_split' || (!isFinal && isMobileYandexProvider);
+    const label = yandex ? 'платёж Яндекс Сплита' : isFinal ? 'доплату' : 'предоплату';
+    if (!window.confirm(`Вернуть ${label} ${formatCurrency(amount)} клиенту по заказу #${order.orderId}? Это реальная операция возврата денег.`)) return;
+    setMobileRefundLoading(kind);
+    setMobileRefundError('');
+    try {
+      const res = await crmFetch(yandex ? '/api/yandex-pay/refund-payment' : '/api/tochka/refund-payment', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          orderId: isFinal ? `${order.orderId}-final` : order.orderId,
+          kind,
+          operationId: isFinal ? order.finalPaymentId : order.paymentId,
+          amount,
+          reason: 'Клиенту не подошёл товар',
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Не удалось оформить возврат');
+      // The server persists the refund and the Firestore listener refreshes the card.
+    } catch (e: any) {
+      setMobileRefundError(e.message || 'Не удалось оформить возврат');
+    } finally {
+      setMobileRefundLoading(null);
+    }
+  };
+
   if (expanded) {
     return (
       <OrderDetailView
@@ -4321,7 +4399,7 @@ const OrderCard = React.memo(({
           {mobileSelect('Рост', order.height || '', optionsWithCurrent(handbookHeights, order.height || ''), (v) => updateOrderData(order.orderId, 'height', v))}
           {mobileSelect('Источник', order.source || '', optionsWithCurrent(handbookSources, order.source || '', SOURCE_OPTIONS), (v) => updateOrderData(order.orderId, 'source', v))}
           {mobileSelect('Менеджер', order.manager || '', mergeOptions(optionsWithCurrent(handbookManagers, order.manager || ''), DEFAULT_MANAGERS), (v) => updateOrderData(order.orderId, 'manager', v))}
-          {mobileSelect('Оплата', order.paymentType || '', optionsWithCurrent(handbookPaymentTypes, order.paymentType || '', PAYMENT_TYPE_OPTIONS), (v) => updateOrderData(order.orderId, 'paymentType', v))}
+          {mobileSelect('Способ оплаты', getPaymentMethodLabel(order), optionsWithCurrent(handbookPaymentTypes, getPaymentMethodLabel(order), PAYMENT_TYPE_OPTIONS), (v) => updateOrderData(order.orderId, 'paymentType', v))}
           {mobileSelect('Тип оплаты', getInvoicePaymentLabel(invoiceType), INVOICE_PAYMENT_OPTIONS, updateMobileInvoiceType)}
           {mobileSelect('Доставка', order.deliveryMethod || '', optionsWithCurrent(handbookDeliveries, order.deliveryMethod || '', DELIVERY_OPTIONS), (v) => updateOrderData(order.orderId, 'deliveryMethod', v))}
           {mobileSelect('Метка', order.label || '', optionsWithCurrent(handbookLabels, order.label || ''), (v) => updateOrderData(order.orderId, 'label', v))}
@@ -4343,11 +4421,11 @@ const OrderCard = React.memo(({
         </div>
         <div className={cn(
           "min-w-0 rounded-lg border p-2",
-          invoiceType === 'full' ? "bg-emerald-50 border-emerald-100" : "bg-orange-50 border-orange-100"
+          isMobileYandexProvider ? "bg-emerald-50 border-emerald-100" : "bg-orange-50 border-orange-100"
         )}>
           <p className={cn(
             "truncate text-[7px] font-bold uppercase",
-            invoiceType === 'full' ? "text-emerald-500" : "text-orange-500"
+            isMobileYandexProvider ? "text-emerald-500" : "text-orange-500"
           )}>{invoiceLabel}</p>
           <p className={cn("truncate text-[11px] font-black", invoiceTone)}>{formatCurrency(liveInvoiceAmount)}</p>
         </div>
@@ -4411,16 +4489,17 @@ const OrderCard = React.memo(({
             {mobilePaymentError && (
               <p className="text-[9px] font-bold text-red-500">{mobilePaymentError}</p>
             )}
-            {!isMobileYandexProvider && (
+            {mainPaymentPaid && !mobileMainRefunded && (
               <button
-                onClick={createMobileYandexSplitPayment}
-                disabled={mobileSplitPaymentLoading}
-                className="w-full py-2 rounded-lg border border-zinc-950 bg-zinc-950 text-white text-[10px] font-bold flex items-center justify-center gap-1.5 disabled:opacity-60"
+                type="button"
+                onClick={() => refundMobilePayment('main')}
+                disabled={mobileRefundLoading !== null}
+                className="w-full rounded-lg border border-red-200 bg-red-50 py-2 text-[10px] font-bold text-red-600 disabled:opacity-60"
               >
-                {mobileSplitPaymentLoading ? <RefreshCcw size={10} className="animate-spin" /> : <SplitMark />}
-                {mobileSplitPaymentLoading ? 'Создаём...' : 'Яндекс Сплит'}
+                {mobileRefundLoading === 'main' ? 'Оформляем возврат…' : isMobileYandexProvider ? `Вернуть Сплит ${formatCurrency(issuedMobileMainAmount)}` : `Вернуть предоплату ${formatCurrency(issuedMobileMainAmount)}`}
               </button>
             )}
+            {mobileMainRefunded && <p className="text-[9px] font-bold text-red-500">Возврат предоплаты оформлен</p>}
             <button
               onClick={() => setShowMobileQr(v => !v)}
               className="w-full py-2 rounded-lg bg-[#6B4DFF] border border-[#6B4DFF] text-[10px] font-bold text-white"
@@ -4449,7 +4528,7 @@ const OrderCard = React.memo(({
               className="w-full py-2 rounded-lg border border-violet-200 bg-violet-50 text-violet-600 text-[10px] font-bold flex items-center justify-center gap-1.5 disabled:opacity-60"
             >
               {mobilePaymentLoading ? <RefreshCcw size={11} className="animate-spin" /> : <QrCodeIcon size={11} />}
-              {mobilePaymentLoading ? 'Создаём...' : 'Создать счёт'}
+              {mobilePaymentLoading ? 'Создаём...' : `Создать предоплату ${formatCurrency(dueAmount)}`}
             </button>
             {!isMobileYandexProvider && (
               <button
@@ -4533,8 +4612,20 @@ const OrderCard = React.memo(({
             {mobileFinalPaymentError && (
               <p className="mt-1 text-[9px] font-bold text-red-500">{mobileFinalPaymentError}</p>
             )}
+            {finalPaymentPaid && !mobileFinalRefunded && (
+              <button
+                type="button"
+                onClick={() => refundMobilePayment('final')}
+                disabled={mobileRefundLoading !== null}
+                className="w-full rounded-lg border border-red-200 bg-red-50 py-2 text-[10px] font-bold text-red-600 disabled:opacity-60"
+              >
+                {mobileRefundLoading === 'final' ? 'Оформляем возврат…' : `Вернуть доплату ${formatCurrency(finalPaymentAmount)}`}
+              </button>
+            )}
+            {mobileFinalRefunded && <p className="text-[9px] font-bold text-red-500">Возврат доплаты оформлен</p>}
           </div>
         )}
+        {mobileRefundError && <p className="text-[9px] font-bold text-red-500">{mobileRefundError}</p>}
       </div>
 
       {String(order.deliveryMethod || '').toLowerCase().includes('сдэк') && (
@@ -5494,7 +5585,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
   };
 
   const updateNewOrderPaymentType = (value: string) => {
-    const invoiceType = getInvoiceTypeFromPaymentType(value);
+    const invoiceType = isYandexSplitPayment(value) ? 'full' : 'prepayment';
     setNewOrder(prev => {
       const revenue = Number(prev.revenue) || 0;
       const deliveryPrice = Number(prev.deliveryPrice) || 0;
@@ -5591,7 +5682,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
       revenue: 0,
       deliveryPrice: 0,
       paidAmount: 0,
-      paymentType: 'Предоплата 50%',
+      paymentType: 'QR код',
       invoiceType: 'prepayment',
       source: '',
       deliveryMethod: '',
@@ -5650,7 +5741,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
       bloggerDeliveryCost: isNewOrderBlogger ? deliveryPrice : 0,
       bloggerTotalCost: isNewOrderBlogger ? bloggerProductCost + deliveryPrice : 0,
       invoiceType,
-      paymentType: newOrder.paymentType || 'Предоплата 50%',
+      paymentType: newOrder.paymentType || 'QR код',
       paidAmount: isNewOrderBlogger ? 0 : getInvoiceAmount({ revenue: itemPricesTotal, deliveryPrice, invoiceType }),
       clientCity: isNewOrderCdek ? newCdekCityQuery : String(newOrder.clientCity || '').trim(),
       clientAddress: isNewOrderCdek ? cdekAddress : String(newOrder.clientAddress || '').trim(),
@@ -7276,7 +7367,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                 </div>
               )}
 
-              {!isNewOrderBlogger && renderNewOrderSelect('Тип оплаты', newOrder.paymentType || '', INVOICE_PAYMENT_OPTIONS, updateNewOrderPaymentType, 'Выберите тип оплаты')}
+              {!isNewOrderBlogger && renderNewOrderSelect('Способ оплаты', newOrder.paymentType || '', PAYMENT_TYPE_OPTIONS, updateNewOrderPaymentType, 'Выберите способ оплаты')}
             </div>
           </section>
 
@@ -7570,8 +7661,8 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                       newOrder.paymentType ? "text-zinc-900" : "text-zinc-400"
                     )}
                   >
-                    <option value="">Вид оплаты</option>
-                    {INVOICE_PAYMENT_OPTIONS.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                    <option value="">Способ оплаты</option>
+                    {PAYMENT_TYPE_OPTIONS.map(opt => <option key={opt} value={opt}>{opt}</option>)}
                   </select>
                   <ChevronRight className="absolute right-3 top-1/2 -translate-y-1/2 w-3 h-3 text-zinc-400 rotate-90 pointer-events-none" />
                 </div>
@@ -7671,7 +7762,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                   item: joinOrderItems(newOrderItems),
                   revenue: itemPricesTotal,
                   invoiceType,
-                  paymentType: newOrder.paymentType || 'Предоплата 50%',
+                  paymentType: newOrder.paymentType || 'QR код',
                   paidAmount: getInvoiceAmount({ revenue: itemPricesTotal, deliveryPrice, invoiceType }),
                 };
                 const orderId = await handleCreateOrder(orderSnapshot);
