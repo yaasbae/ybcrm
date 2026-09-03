@@ -19,6 +19,13 @@ export const normalizeOrderActions = (value: unknown): OrderAction[] => {
   return Array.from(new Set(value.map(String).filter(item => allowed.has(item)))) as OrderAction[];
 };
 
+// Detailed order permissions were added after the employee accounts already
+// existed. Only enforce a stored list after the owner has explicitly saved the
+// new controls; older profile documents must keep their previous full access.
+export const resolveOrderActions = (value: unknown, configured: unknown): OrderAction[] => (
+  configured === true ? normalizeOrderActions(value) : [...ALL_ORDER_ACTIONS]
+);
+
 export const getOrderActionForField = (field: string, value?: unknown): OrderAction => {
   if (field === 'status') {
     return String(value || '').trim().toLowerCase() === 'обмен' ? 'exchange' : 'status';
@@ -28,4 +35,3 @@ export const getOrderActionForField = (field: string, value?: unknown): OrderAct
   if (/^(cdek|exchangeCdek)/.test(field)) return 'cdek';
   return 'edit';
 };
-

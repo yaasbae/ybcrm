@@ -39,6 +39,7 @@ import type {
 } from "@simplewebauthn/server";
 import { normalizeTelegramPhone, telegramDelivery, telegramAuthError } from "./src/lib/telegramAuth.ts";
 import { normalizeBotSubscriberIds, validateBotBroadcastMessage } from "./src/lib/botBroadcast.ts";
+import { resolveOrderActions, type OrderAction } from "./src/lib/orderPermissionConfig.ts";
 
 const _require = createRequire(import.meta.url);
 const Database = _require("better-sqlite3");
@@ -523,7 +524,7 @@ function normalizedAllowedValues(value: unknown, allowed: string[]) {
     .filter(item => allowedSet.has(item))));
 }
 
-async function requireCrmOrderAction(req: any, res: any, action: string) {
+async function requireCrmOrderAction(req: any, res: any, action: OrderAction) {
   const decoded: any = await requireCrmUser(req, res);
   if (!decoded) return null;
   const email = String(decoded.email || '').trim().toLowerCase();
@@ -531,13 +532,13 @@ async function requireCrmOrderAction(req: any, res: any, action: string) {
   try {
     const snap = await adminDb.collection('crm_access_profiles').doc(decoded.uid).get();
     // Старые аккаунты до появления детальных прав продолжают работать как раньше.
-    if (!snap.exists || !Array.isArray(snap.data()?.allowedOrderActions)) return decoded;
+    if (!snap.exists) return decoded;
     const profile = snap.data() || {};
     if (profile.active === false) {
       res.status(403).json({ error: 'Аккаунт отключён владельцем CRM', code: 'account_disabled' });
       return null;
     }
-    const allowed = normalizedAllowedValues(profile.allowedOrderActions, CRM_ORDER_ACTIONS);
+    const allowed = resolveOrderActions(profile.allowedOrderActions, profile.orderActionsConfigured);
     if (!allowed.includes(action)) {
       res.status(403).json({
         error: 'Действие запрещено настройками аккаунта в админке',
@@ -608,7 +609,7 @@ function accessAccount(uid: string, data: any, ownerEmail: string) {
       : Array.isArray(data?.notificationTopics) ? normalizedAllowedValues(data.notificationTopics, CRM_NOTIFICATION_TOPICS) : ["all"],
     allowedOrderActions: isOwner
       ? CRM_ORDER_ACTIONS
-      : Array.isArray(data?.allowedOrderActions) ? normalizedAllowedValues(data.allowedOrderActions, CRM_ORDER_ACTIONS) : CRM_ORDER_ACTIONS,
+      : resolveOrderActions(data?.allowedOrderActions, data?.orderActionsConfigured),
     active: isOwner ? true : data?.active !== false,
   };
 }
@@ -639,9 +640,7 @@ app.get("/api/access/me", async (req, res) => {
       active: data.active !== false,
       allowedViews: normalizedAllowedValues(data.allowedViews, CRM_ACCESS_VIEWS),
       notificationTopics: normalizedAllowedValues(data.notificationTopics, CRM_NOTIFICATION_TOPICS),
-      allowedOrderActions: Array.isArray(data.allowedOrderActions)
-        ? normalizedAllowedValues(data.allowedOrderActions, CRM_ORDER_ACTIONS)
-        : CRM_ORDER_ACTIONS,
+      allowedOrderActions: resolveOrderActions(data.allowedOrderActions, data.orderActionsConfigured),
     });
   } catch (error: any) {
     console.error("[access] current profile:", error?.message || error);
@@ -691,9 +690,7 @@ app.get("/api/admin/accounts", async (req, res) => {
         notificationTopics: isOwner ? ["all"] : (profile ? normalizedAllowedValues(profile.notificationTopics, CRM_NOTIFICATION_TOPICS) : ["all"]),
         allowedOrderActions: isOwner
           ? CRM_ORDER_ACTIONS
-          : (profile && Array.isArray(profile.allowedOrderActions)
-            ? normalizedAllowedValues(profile.allowedOrderActions, CRM_ORDER_ACTIONS)
-            : CRM_ORDER_ACTIONS),
+          : resolveOrderActions(profile?.allowedOrderActions, profile?.orderActionsConfigured),
         active: isOwner ? true : profile?.active !== false,
       };
     });
@@ -756,6 +753,7 @@ app.post("/api/admin/accounts", async (req, res) => {
       allowedViews,
       notificationTopics,
       allowedOrderActions,
+      orderActionsConfigured: true,
       active: true,
       createdAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
@@ -804,6 +802,7 @@ app.patch("/api/admin/accounts/:uid", async (req, res) => {
         allowedViews,
         notificationTopics,
         allowedOrderActions,
+        orderActionsConfigured: true,
         active,
         updatedAt: FieldValue.serverTimestamp(),
         updatedBy: owner.email || owner.uid,
@@ -9699,14 +9698,85 @@ app.get('/api/tochka/find-payment', async (req, res) => {
   } catch (e: any) {
     const errData = e.response?.data;
     console.error('[tochka] find-payment error:', errData || e.message);
-    const consentForbidden = e.response?.status === 403
-      && /forbidden by consent/i.test(JSON.stringify(errData || ''));
+    // Any 403 here is from Tochka: CRM access was already checked before this
+    // try block. The current consent can create SBP QR codes but cannot list
+    // acquiring operations, so offer an explicit verified fallback.
+    const consentForbidden = e.response?.status === 403;
     res.status(consentForbidden ? 409 : (e.response?.status || 500)).json({
       error: consentForbidden
-        ? 'Точка не разрешила проверку через старый API. CRM уже попробовала проверить статус самого QR-кода.'
+        ? 'Точка не разрешает CRM проверить оплату автоматически. Сверьте поступление в банке и подтвердите предоплату вручную.'
         : e.message,
+      code: consentForbidden ? 'tochka_consent_required' : 'tochka_payment_lookup_failed',
+      manualConfirmationAllowed: consentForbidden,
       details: errData,
     });
+  }
+});
+
+// Explicit fallback for a bank consent that allows QR creation but not payment
+// lookup. It is guarded by the payment permission and only works when a payment
+// link or bank id has already been created for the order.
+app.post('/api/tochka/confirm-payment', async (req, res) => {
+  const actor: any = await requireCrmOrderAction(req, res, 'payments');
+  if (!actor) return;
+  const orderId = String(req.body?.orderId || '').trim();
+  const target = getTochkaPaymentTarget(orderId, req.body?.kind);
+  if (!orderId) return res.status(400).json({ error: 'Нужен orderId' });
+
+  try {
+    const orderSnapshot = await getOrderSnapshot(target.cleanOrderId);
+    const orderExists = typeof orderSnapshot?.exists === 'function'
+      ? orderSnapshot.exists()
+      : Boolean(orderSnapshot?.exists);
+    if (!orderExists) return res.status(404).json({ error: `Заказ ${target.cleanOrderId} не найден` });
+    const orderData = orderSnapshot.data() || {};
+    const paymentUrl = String(target.isFinal ? orderData.finalPaymentUrl : orderData.paymentUrl || '').trim();
+    const paymentId = String(target.isFinal ? orderData.finalPaymentId : orderData.paymentId || '').trim();
+    if (!paymentUrl && !paymentId) {
+      return res.status(409).json({ error: 'Сначала создайте ссылку оплаты для этого заказа' });
+    }
+
+    const requestedAmount = Number(req.body?.amount) || 0;
+    const storedAmount = Number(target.isFinal
+      ? orderData.finalPaymentAmount
+      : (orderData.paymentAmount || orderData.initialPaymentAmount)) || 0;
+    const paymentAmount = storedAmount || requestedAmount;
+    if (paymentAmount <= 0) return res.status(400).json({ error: 'Сумма оплаты не определена' });
+
+    const confirmedAt = new Date().toISOString();
+    const patch = target.isFinal
+      ? {
+          finalPaymentStatus: 'manual_confirmed',
+          finalPaymentPaidAt: confirmedAt,
+          finalPaymentAmount: paymentAmount,
+          paymentAccountingVersion: 2,
+        }
+      : {
+          paymentStatus: 'manual_confirmed',
+          paymentPaidAt: confirmedAt,
+          paymentAmount,
+          initialPaymentAmount: paymentAmount,
+          paymentAccountingVersion: 2,
+        };
+    await persistOrderPatch(target.cleanOrderId, patch);
+    await writeAuditLog({
+      action: target.isFinal ? 'final_payment_manually_confirmed' : 'payment_manually_confirmed',
+      entityType: 'order',
+      entityId: target.cleanOrderId,
+      after: patch,
+      metadata: { label: `Оплата подтверждена вручную: заказ ${target.cleanOrderId}`, amount: paymentAmount },
+      actor: { type: 'crm_user', uid: actor.uid, email: actor.email || '', name: actor.name || '' },
+    });
+    res.json({
+      success: true,
+      kind: target.isFinal ? 'final' : 'main',
+      paymentStatus: 'manual_confirmed',
+      paymentPaidAt: confirmedAt,
+      paymentAmount,
+    });
+  } catch (e: any) {
+    console.error('[tochka] manual payment confirmation:', e?.message || e);
+    res.status(500).json({ error: 'Не удалось сохранить подтверждение оплаты' });
   }
 });
 

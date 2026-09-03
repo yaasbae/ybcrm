@@ -1046,7 +1046,7 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
   const paymentStatusWindowExpired = Boolean(paymentUrl) && !mainPaymentPaid
     && Number.isFinite(paymentCreatedAtMs)
     && Date.now() - paymentCreatedAtMs > 96 * 60 * 60 * 1000;
-  const canConfirmMainPaymentManually = !mainPaymentPaid
+  const canConfirmMainPaymentManually = !isYandexProvider && !mainPaymentPaid
     && Boolean(paymentUrl)
     && (manualConfirmationRequired || paymentStatusWindowExpired);
   const finalAmount = getOrderFinalPaymentAmount(order);
@@ -1128,6 +1128,7 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
       if (!res.ok) {
         const paymentError: any = new Error(data.error || `Оплата в ${paymentProviderLabel} не найдена`);
         paymentError.status = res.status;
+        paymentError.manualConfirmationAllowed = data.manualConfirmationAllowed === true;
         throw paymentError;
       }
       if (isFinal) {
@@ -1142,7 +1143,7 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
         if (data.paymentPaidAt) updateOrderData(order.orderId, 'paymentPaidAt', data.paymentPaidAt);
       }
     } catch (e: any) {
-      if (e?.status === 409) setManualConfirmationRequired(true);
+      if (e?.status === 409 || e?.manualConfirmationAllowed) setManualConfirmationRequired(true);
       if (isFinal) setFinalError(e.message || `Оплата в ${paymentProviderLabel} не найдена`);
       else setError(e.message || `Оплата в ${paymentProviderLabel} не найдена`);
     } finally {
@@ -1151,20 +1152,33 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
     }
   };
 
-  const confirmMainPaymentManually = () => {
+  const confirmMainPaymentManually = async () => {
     const confirmed = window.confirm(
       `Подтвердите, что предоплата ${formatCurrency(issuedMainAmount)} по заказу #${order.orderId} действительно поступила в Точку. После подтверждения CRM разрешит создать доплату.`,
     );
     if (!confirmed) return;
-    const confirmedAt = new Date().toISOString();
-    updateOrderData(order.orderId, 'paymentStatus', 'manual_confirmed');
-    updateOrderData(order.orderId, 'paymentPaidAt', confirmedAt);
-    updateOrderData(order.orderId, 'paymentAmount', issuedMainAmount);
-    updateOrderData(order.orderId, 'initialPaymentAmount', issuedMainAmount);
-    updateOrderData(order.orderId, 'paymentAccountingVersion', 2);
-    setError('');
-    setFinalError('');
-    setManualConfirmationRequired(false);
+    setRefreshingMain(true);
+    try {
+      const res = await crmFetch('/api/tochka/confirm-payment', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orderId: order.orderId, kind: 'main', amount: issuedMainAmount }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Не удалось подтвердить предоплату');
+      updateOrderData(order.orderId, 'paymentStatus', data.paymentStatus || 'manual_confirmed');
+      updateOrderData(order.orderId, 'paymentPaidAt', data.paymentPaidAt || new Date().toISOString());
+      updateOrderData(order.orderId, 'paymentAmount', data.paymentAmount || issuedMainAmount);
+      updateOrderData(order.orderId, 'initialPaymentAmount', data.paymentAmount || issuedMainAmount);
+      updateOrderData(order.orderId, 'paymentAccountingVersion', 2);
+      setError('');
+      setFinalError('');
+      setManualConfirmationRequired(false);
+    } catch (e: any) {
+      setError(e.message || 'Не удалось подтвердить предоплату');
+    } finally {
+      setRefreshingMain(false);
+    }
   };
 
   const handleCreate = async () => {
@@ -3632,7 +3646,7 @@ const OrderCard = React.memo(({
       ? 'Доплата ожидает оплаты'
       : 'Доплата не создана';
   const mobilePaymentCreatedAtMs = new Date(String((order as any).paymentCreatedAt || '')).getTime();
-  const canConfirmMobilePaymentManually = !mainPaymentPaid && Boolean(paymentUrl) && (
+  const canConfirmMobilePaymentManually = !isMobileYandexProvider && !mainPaymentPaid && Boolean(paymentUrl) && (
     mobileManualConfirmationRequired
     || (Number.isFinite(mobilePaymentCreatedAtMs) && Date.now() - mobilePaymentCreatedAtMs > 96 * 60 * 60 * 1000)
   );
@@ -3925,6 +3939,7 @@ const OrderCard = React.memo(({
       if (!res.ok) {
         const paymentError: any = new Error(data.error || 'Оплата в Точке не найдена');
         paymentError.status = res.status;
+        paymentError.manualConfirmationAllowed = data.manualConfirmationAllowed === true;
         throw paymentError;
       }
       if (isFinal) {
@@ -3939,7 +3954,7 @@ const OrderCard = React.memo(({
         if (data.paymentPaidAt) updateOrderData(order.orderId, 'paymentPaidAt', data.paymentPaidAt);
       }
     } catch (e: any) {
-      if (e?.status === 409) setMobileManualConfirmationRequired(true);
+      if (e?.status === 409 || e?.manualConfirmationAllowed) setMobileManualConfirmationRequired(true);
       if (isFinal) setMobileFinalPaymentError(e.message || 'Оплата в Точке не найдена');
       else setMobilePaymentError(e.message || 'Оплата в Точке не найдена');
     } finally {
@@ -3948,21 +3963,34 @@ const OrderCard = React.memo(({
     }
   };
 
-  const confirmMobilePaymentManually = () => {
+  const confirmMobilePaymentManually = async () => {
     const amount = Number(order.paymentAmount) || dueAmount;
     const confirmed = window.confirm(
       `Подтвердите, что предоплата ${formatCurrency(amount)} по заказу #${order.orderId} действительно поступила в Точку. После подтверждения CRM разрешит создать доплату.`,
     );
     if (!confirmed) return;
-    const confirmedAt = new Date().toISOString();
-    updateOrderData(order.orderId, 'paymentStatus', 'manual_confirmed');
-    updateOrderData(order.orderId, 'paymentPaidAt', confirmedAt);
-    updateOrderData(order.orderId, 'paymentAmount', amount);
-    updateOrderData(order.orderId, 'initialPaymentAmount', amount);
-    updateOrderData(order.orderId, 'paymentAccountingVersion', 2);
-    setMobilePaymentError('');
-    setMobileFinalPaymentError('');
-    setMobileManualConfirmationRequired(false);
+    setMobilePaymentRefreshing(true);
+    try {
+      const res = await crmFetch('/api/tochka/confirm-payment', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orderId: order.orderId, kind: 'main', amount }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Не удалось подтвердить предоплату');
+      updateOrderData(order.orderId, 'paymentStatus', data.paymentStatus || 'manual_confirmed');
+      updateOrderData(order.orderId, 'paymentPaidAt', data.paymentPaidAt || new Date().toISOString());
+      updateOrderData(order.orderId, 'paymentAmount', data.paymentAmount || amount);
+      updateOrderData(order.orderId, 'initialPaymentAmount', data.paymentAmount || amount);
+      updateOrderData(order.orderId, 'paymentAccountingVersion', 2);
+      setMobilePaymentError('');
+      setMobileFinalPaymentError('');
+      setMobileManualConfirmationRequired(false);
+    } catch (e: any) {
+      setMobilePaymentError(e.message || 'Не удалось подтвердить предоплату');
+    } finally {
+      setMobilePaymentRefreshing(false);
+    }
   };
 
   if (expanded) {
