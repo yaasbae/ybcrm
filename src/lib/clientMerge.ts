@@ -49,6 +49,17 @@ export const getClientPurchaseSummary = (orders: ClientRecord[]) => {
   };
 };
 
+export const sortClientsBySales = (clients: ClientRecord[]) => [...clients].sort((a, b) => {
+  const totalDifference = (Number(b.totalSpent ?? b.total) || 0) - (Number(a.totalSpent ?? a.total) || 0);
+  if (totalDifference !== 0) return totalDifference;
+
+  const orderDifference = (Number(b.ordersCount ?? b.count) || 0) - (Number(a.ordersCount ?? a.count) || 0);
+  if (orderDifference !== 0) return orderDifference;
+
+  return normalizeClientName(a.fullName || a.name)
+    .localeCompare(normalizeClientName(b.fullName || b.name), 'ru');
+});
+
 const getValidTime = (value: unknown) => {
   const date = value instanceof Date ? value : new Date(String(value || ''));
   return Number.isFinite(date.getTime()) ? date.getTime() : null;

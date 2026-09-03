@@ -9,6 +9,7 @@ import {
   mergeOrderClientsWithContacts,
   normalizeClientPhone,
   normalizeClientPhoneInput,
+  sortClientsBySales,
 } from '../src/lib/clientMerge';
 
 test('normalizes Russian phone numbers to one client key', () => {
@@ -65,4 +66,20 @@ test('keeps clients from new orders even when contacts already exist', () => {
   assert.equal(existing?.fullName, 'Существующий клиент');
   assert.equal(existing?.ordersCount, 2);
   assert.equal(existing?.totalSpent, 25000);
+});
+
+test('sorts the all-clients list by the displayed sales amount', () => {
+  const result = sortClientsBySales([
+    { fullName: 'Средний', totalSpent: 12000, ordersCount: 1 },
+    { fullName: 'Крупный', totalSpent: 45000, ordersCount: 2 },
+    { fullName: 'Повторный', totalSpent: 12000, ordersCount: 3 },
+    { fullName: 'Без покупок', totalSpent: 0, ordersCount: 0 },
+  ]);
+
+  assert.deepEqual(result.map(client => client.fullName), [
+    'Крупный',
+    'Повторный',
+    'Средний',
+    'Без покупок',
+  ]);
 });

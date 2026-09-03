@@ -18,6 +18,7 @@ import {
   mergeOrderClientsWithContacts,
   normalizeClientPhone,
   normalizeClientPhoneInput,
+  sortClientsBySales,
 } from '../../lib/clientMerge';
 import { managerNameForEmail } from '../../lib/managerIdentity';
 
@@ -648,7 +649,7 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
 
   const filteredClients = useMemo(() => {
     const q = searchTerm.trim().toLowerCase();
-    return baseClients.filter((client: any) => {
+    const matchingClients = baseClients.filter((client: any) => {
       const matchesSearch = !q ||
         (client.fullName || client.name || '').toLowerCase().includes(q) ||
         String(client.phone || '').includes(q) ||
@@ -666,6 +667,7 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
       if (clientView === 'snoozed' && status !== 'перезвонить') return false;
       return matchesContactAge(client, contactFilter);
     });
+    return clientView === 'all' ? sortClientsBySales(matchingClients) : matchingClients;
   }, [baseClients, clientView, contactFilter, searchTerm]);
 
   const visibleClients = filteredClients.slice(0, clientPage);
