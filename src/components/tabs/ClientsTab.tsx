@@ -3,7 +3,7 @@ import {
   Users, Search, Plus, X, RefreshCcw, Award,
   DollarSign, MapPin, Phone, Instagram, ExternalLink,
   Hash, TrendingUp, Upload, CheckCircle, MessageCircle,
-  Clock, ChevronDown, Send, Tag, AlertCircle, Mail, ShoppingBag
+  Clock, ChevronDown, Send, Tag, AlertCircle, Mail, ShoppingBag, UserCircle, Play
 } from 'lucide-react';
 import { formatCurrency, cn } from '../../lib/utils';
 import { motion, AnimatePresence } from 'motion/react';
@@ -21,6 +21,9 @@ import {
   sortClientsBySales,
 } from '../../lib/clientMerge';
 import { managerNameForEmail } from '../../lib/managerIdentity';
+import { onAuthStateChanged } from 'firebase/auth';
+import { logAuditEvent } from '../../lib/auditLog';
+import { emitPushEvent } from '../../lib/pushNotifications';
 
 interface ClientsTabProps {
   stats: any;
@@ -40,6 +43,231 @@ type ManagerProfile = {
   managerId?: string;
   managerEmail?: string | null;
   displayName?: string | null;
+};
+
+type ManagerContactEntry = {
+  id: string;
+  managerName?: string;
+  managerId?: string;
+  managerEmail?: string;
+  clientPhone?: string;
+  clientName?: string;
+  date?: unknown;
+  status?: string;
+};
+
+type ManagerShiftRecord = {
+  id: string;
+  managerName?: string;
+  managerId?: string;
+  dateKey?: string;
+  startedAt?: string;
+  status?: 'active' | 'closed';
+};
+
+const SHIFT_TARGET_CONTACTS = 100;
+const SHIFT_BASE_PAY = 1000;
+const SHIFT_START_TIME = '09:00';
+const SHIFT_END_TIME = '22:00';
+const OWNER_INFO_EMAIL = 'ndtiger86@gmail.com';
+const WORK_MANAGERS = ['Менеджер 1', 'Менеджер 2'];
+
+const localDateKey = (date = new Date()) => (
+  `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+);
+
+const parseWorkDate = (value: unknown) => {
+  if (!value) return null;
+  if (value instanceof Date) return value;
+  if (typeof value === 'string') {
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+  const timestamp = value as { toDate?: () => Date; seconds?: number };
+  if (typeof timestamp.toDate === 'function') return timestamp.toDate();
+  if (typeof timestamp.seconds === 'number') return new Date(timestamp.seconds * 1000);
+  return null;
+};
+
+const managerKey = (value: string) => String(value || 'manager')
+  .trim().toLowerCase().replace(/[^a-zа-яё0-9]+/gi, '_').replace(/^_+|_+$/g, '') || 'manager';
+
+const uniqueContactCount = (entries: ManagerContactEntry[]) => new Set(
+  entries.map(entry => String(entry.clientPhone || entry.clientName || entry.id || '').trim()).filter(Boolean)
+).size;
+
+const ClientWorkPanel: React.FC<{ data: OrderData[] }> = ({ data }) => {
+  const [contacts, setContacts] = useState<ManagerContactEntry[]>([]);
+  const [shifts, setShifts] = useState<ManagerShiftRecord[]>([]);
+  const [profile, setProfile] = useState<ManagerProfile | null>(null);
+  const [starting, setStarting] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    const unsubscribeContacts = onSnapshot(
+      query(collection(db, 'manager_contacts'), orderBy('date', 'desc'), limit(1500)),
+      snap => setContacts(snap.docs.map(item => ({ id: item.id, ...item.data() } as ManagerContactEntry))),
+      () => setContacts([]),
+    );
+    const unsubscribeShifts = onSnapshot(
+      query(collection(db, 'manager_shifts'), orderBy('startedAt', 'desc'), limit(100)),
+      snap => setShifts(snap.docs.map(item => ({ id: item.id, ...item.data() } as ManagerShiftRecord))),
+      () => setShifts([]),
+    );
+    return () => { unsubscribeContacts(); unsubscribeShifts(); };
+  }, []);
+
+  useEffect(() => {
+    let unsubscribeProfile = () => {};
+    const unsubscribeAuth = onAuthStateChanged(auth, user => {
+      unsubscribeProfile();
+      if (!user?.uid) { setProfile(null); return; }
+      const fixedName = managerNameForEmail(user.email);
+      const profileRef = doc(db, 'manager_profiles', user.uid);
+      if (fixedName) {
+        void setDoc(profileRef, {
+          managerName: fixedName,
+          managerId: user.uid,
+          managerEmail: user.email || null,
+          displayName: user.displayName || null,
+          updatedAt: new Date().toISOString(),
+        }, { merge: true });
+      }
+      unsubscribeProfile = onSnapshot(profileRef, snap => {
+        const saved = snap.data() as ManagerProfile | undefined;
+        setProfile({
+          ...saved,
+          managerName: fixedName || saved?.managerName,
+          managerId: user.uid,
+          managerEmail: user.email || saved?.managerEmail || null,
+        });
+      }, () => setProfile(fixedName ? { managerName: fixedName, managerId: user.uid, managerEmail: user.email } : null));
+    });
+    return () => { unsubscribeProfile(); unsubscribeAuth(); };
+  }, []);
+
+  const today = new Date();
+  const todayKey = localDateKey(today);
+  const currentEmail = String(auth.currentUser?.email || '').trim().toLowerCase();
+  const currentManager = managerNameForEmail(currentEmail) || profile?.managerName || '';
+  const isOwner = currentEmail === OWNER_INFO_EMAIL;
+  const currentShift = shifts.find(shift => shift.dateKey === todayKey && (
+    String(shift.managerId || '') === String(auth.currentUser?.uid || '') || shift.managerName === currentManager
+  ));
+
+  const managerMetrics = useMemo(() => WORK_MANAGERS.map(manager => {
+    const managerContacts = contacts.filter(entry => String(entry.managerName || '').trim() === manager && String(entry.status || '').trim() !== 'в работе');
+    const todayContacts = managerContacts.filter(entry => {
+      const date = parseWorkDate(entry.date);
+      return date ? localDateKey(date) === todayKey : false;
+    });
+    const monthContacts = managerContacts.filter(entry => {
+      const date = parseWorkDate(entry.date);
+      return date ? date.getFullYear() === today.getFullYear() && date.getMonth() === today.getMonth() : false;
+    });
+    const monthOrders = data.filter(order => {
+      const date = parseWorkDate(order.date);
+      return String(order.manager || '').trim() === manager
+        && !!date && date.getFullYear() === today.getFullYear() && date.getMonth() === today.getMonth();
+    });
+    return {
+      manager,
+      todayContacts: uniqueContactCount(todayContacts),
+      monthContacts: uniqueContactCount(monthContacts),
+      orders: monthOrders.length,
+      revenue: monthOrders.reduce((sum, order) => sum + (Number(order.revenue) || 0) + (Number(order.deliveryPrice) || 0), 0),
+    };
+  }), [contacts, data, todayKey]);
+
+  const ownMetrics = managerMetrics.find(item => item.manager === currentManager);
+  const ownContacts = ownMetrics?.todayContacts || 0;
+  const progress = Math.min(100, Math.round((ownContacts / SHIFT_TARGET_CONTACTS) * 100));
+  const earned = currentShift && ownContacts >= SHIFT_TARGET_CONTACTS ? SHIFT_BASE_PAY : 0;
+
+  const startShift = async () => {
+    const user = auth.currentUser;
+    if (!user?.uid || !currentManager || isOwner || currentShift) return;
+    setStarting(true);
+    setError('');
+    try {
+      const startedAt = new Date().toISOString();
+      const id = `${todayKey}_${managerKey(currentManager)}`;
+      await setDoc(doc(db, 'manager_shifts', id), {
+        managerName: currentManager,
+        managerId: user.uid,
+        managerEmail: user.email || null,
+        startedBy: user.email || user.displayName || currentManager,
+        dateKey: todayKey,
+        startedAt,
+        plannedStart: SHIFT_START_TIME,
+        plannedEnd: SHIFT_END_TIME,
+        targetContacts: SHIFT_TARGET_CONTACTS,
+        basePay: SHIFT_BASE_PAY,
+        status: 'active',
+      }, { merge: true });
+      await logAuditEvent({
+        action: 'manager_shift_started', entityType: 'manager_shift', entityId: id,
+        after: { managerName: currentManager, managerEmail: user.email || null, dateKey: todayKey, startedAt, status: 'active' },
+        metadata: { label: `${currentManager} начал смену`, page: 'clients' },
+      });
+      void emitPushEvent('manager_shift_started', `manager-shift-started:${todayKey}:${user.uid}`, { manager: currentManager, managerEmail: user.email || '', startedAt, dateKey: todayKey });
+    } catch (reason: any) {
+      setError(reason?.message || 'Не удалось начать смену. Проверьте доступ аккаунта.');
+    } finally { setStarting(false); }
+  };
+
+  return (
+    <section className="mb-4 space-y-3 rounded-[10px] border border-[#E6E9EF] bg-white p-4 shadow-[0_10px_28px_rgba(31,41,55,0.05)]">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        <div>
+          <div className="inline-flex items-center gap-2 rounded-full bg-violet-50 px-2.5 py-1 text-[10px] font-semibold text-violet-700"><Clock className="h-3.5 w-3.5" /> Смена менеджера</div>
+          <h2 className="mt-2 text-[22px] font-semibold tracking-[-0.02em] text-[#1F2937]">Работа по базе · {SHIFT_START_TIME}–{SHIFT_END_TIME}</h2>
+          <p className="mt-1 text-[12px] text-[#6B7280]">Здесь менеджеры начинают смену и фиксируют работу с клиентами.</p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="rounded-[8px] border border-[#E6E9EF] bg-[#F8FAFC] px-3 py-2 text-[11px] text-[#6B7280]">
+            Логин: <b className="text-[#1F2937]">{auth.currentUser?.email || 'не определён'}</b>
+            <span className="mx-2 text-[#D1D5DB]">·</span>{isOwner ? 'контроль владельца' : currentManager || 'менеджер не привязан'}
+          </div>
+          {!isOwner && (
+            <button type="button" onClick={startShift} disabled={starting || !!currentShift || !currentManager} className="inline-flex h-10 items-center gap-2 rounded-[8px] bg-[#1F2937] px-4 text-[12px] font-semibold text-white disabled:bg-emerald-50 disabled:text-emerald-700">
+              {currentShift ? <CheckCircle className="h-4 w-4" /> : <Play className="h-4 w-4" />}
+              {starting ? 'Запускаю…' : currentShift ? 'Смена начата' : 'Начать смену'}
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_180px]">
+        <div className="rounded-[10px] border border-[#E6E9EF] bg-[#F8FAFC] p-3">
+          <div className="flex items-end justify-between gap-3"><div><p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-[#9CA3AF]">Подъём базы сегодня</p><p className="mt-1 text-[22px] font-semibold text-[#1F2937]">{ownContacts}<span className="text-[12px] text-[#9CA3AF]">/{SHIFT_TARGET_CONTACTS} клиентов</span></p></div><span className="text-[11px] font-semibold text-[#6B7280]">{progress}%</span></div>
+          <div className="mt-2 h-2 overflow-hidden rounded-full bg-[#E6E9EF]"><div className="h-full rounded-full bg-[#7D7DE6]" style={{ width: `${progress}%` }} /></div>
+          <p className="mt-2 text-[10px] text-[#9CA3AF]">Источник: уникальные сохранённые касания «Написал» за сегодня.</p>
+        </div>
+        <div className="rounded-[10px] border border-[#E6E9EF] p-3"><p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-[#9CA3AF]">ФОТ смены</p><p className="mt-1 text-[22px] font-semibold text-[#1F2937]">{formatCurrency(earned)}</p><p className="mt-2 text-[10px] text-[#9CA3AF]">{earned ? 'Норма выполнена' : `Начисляется после ${SHIFT_TARGET_CONTACTS} касаний`}</p></div>
+      </div>
+
+      {error && <div className="rounded-[8px] border border-red-100 bg-red-50 px-3 py-2 text-[11px] text-red-700">{error}</div>}
+
+      <div className="grid gap-3 xl:grid-cols-2">
+        {managerMetrics.map(metric => {
+          const managerProgress = Math.min(100, Math.round((metric.todayContacts / SHIFT_TARGET_CONTACTS) * 100));
+          return (
+            <article key={metric.manager} className="rounded-[10px] border border-[#E6E9EF] bg-white p-3">
+              <div className="flex items-center justify-between"><div className="flex items-center gap-2"><UserCircle className="h-4 w-4 text-[#7D7DE6]" /><h3 className="text-[14px] font-semibold text-[#1F2937]">{metric.manager}</h3></div><span className="text-[10px] text-[#9CA3AF]">текущий месяц</span></div>
+              <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                <div className="rounded-[8px] bg-[#F8FAFC] p-2.5"><p className="text-[9px] uppercase tracking-wide text-[#9CA3AF]">Продажи</p><p className="mt-1 text-[17px] font-semibold">{metric.orders}</p><p className="text-[9px] text-[#9CA3AF]">заказы месяца</p></div>
+                <div className="rounded-[8px] bg-emerald-50/60 p-2.5"><p className="text-[9px] uppercase tracking-wide text-[#6B7280]">Сумма заказов</p><p className="mt-1 truncate text-[15px] font-semibold text-[#0A9B62]" title={formatCurrency(metric.revenue)}>{formatCurrency(metric.revenue)}</p><p className="text-[9px] text-[#6B7280]">товар + доставка</p></div>
+                <div className="rounded-[8px] bg-violet-50/60 p-2.5"><p className="text-[9px] uppercase tracking-wide text-[#6B7280]">База сегодня</p><p className="mt-1 text-[17px] font-semibold text-[#5B5BE0]">{metric.todayContacts}/{SHIFT_TARGET_CONTACTS}</p><p className="text-[9px] text-[#6B7280]">уникальные касания</p></div>
+                <div className="rounded-[8px] bg-[#F8FAFC] p-2.5"><p className="text-[9px] uppercase tracking-wide text-[#9CA3AF]">База за месяц</p><p className="mt-1 text-[17px] font-semibold">{metric.monthContacts}</p><p className="text-[9px] text-[#9CA3AF]">manager_contacts</p></div>
+              </div>
+              <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-[#E6E9EF]"><div className="h-full rounded-full bg-[#7D7DE6]" style={{ width: `${managerProgress}%` }} /></div>
+            </article>
+          );
+        })}
+      </div>
+    </section>
+  );
 };
 
 const CONTACT_AGE_FILTERS: Array<{ key: ContactAgeFilter; label: string; min: number; max?: number }> = [
@@ -721,6 +949,7 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
 
   return (
     <>
+      <ClientWorkPanel data={data} />
       <section className="space-y-4">
         <div className="rounded-[10px] border border-[#E6E9EF] bg-white shadow-[0_10px_28px_rgba(31,41,55,0.05)]">
           <div className="flex flex-col gap-4 border-b border-[#E6E9EF] p-4 lg:flex-row lg:items-center lg:justify-between">
