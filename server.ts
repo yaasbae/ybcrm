@@ -10226,6 +10226,81 @@ app.get('/api/tochka/status', async (_req, res) => {
   });
 });
 
+// Google Cloud does not expose transaction-level billing history through the
+// Cloud Billing Account API. Until Billing Export to BigQuery is connected,
+// this endpoint serves the last verified snapshot from Firestore and adds the
+// payment schedule calculated for the current date.
+app.get('/api/google-cloud-billing/summary', async (req, res) => {
+  const owner = await requireFinanceOwner(req, res);
+  if (!owner) return;
+
+  const verifiedSnapshot = {
+    billingAccountId: '013564-6559B0-059C19',
+    projectId: 'gen-lang-client-0565901030',
+    currency: 'TRY',
+    billingAccountOpen: true,
+    currentPeriod: {
+      from: '2026-09-01',
+      through: '2026-09-03',
+      expense: 91.04,
+      openingBalance: 858.81,
+      balanceBeforeLatestPayment: 949.85,
+    },
+    previousPeriod: {
+      from: '2026-08-01',
+      through: '2026-08-31',
+      expense: 1112.86,
+    },
+    latestPayment: {
+      reportedAt: '2026-09-04',
+      status: 'pending_history_sync',
+    },
+    verifiedAt: '2026-09-04T08:35:00+03:00',
+    source: 'Google Cloud Billing transaction history',
+  };
+
+  try {
+    let stored: any = {};
+    if (adminDb) {
+      const snap = await adminDb.collection('settings').doc('google_cloud_billing').get();
+      stored = snap.exists ? snap.data() || {} : {};
+    }
+    const snapshot = {
+      ...verifiedSnapshot,
+      ...stored,
+      currentPeriod: { ...verifiedSnapshot.currentPeriod, ...(stored.currentPeriod || {}) },
+      previousPeriod: { ...verifiedSnapshot.previousPeriod, ...(stored.previousPeriod || {}) },
+      latestPayment: { ...verifiedSnapshot.latestPayment, ...(stored.latestPayment || {}) },
+    };
+
+    const now = new Date();
+    const nextMonthlyCharge = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
+    const verifiedAtMs = Date.parse(String(snapshot.verifiedAt || ''));
+    const stale = !Number.isFinite(verifiedAtMs) || Date.now() - verifiedAtMs > 48 * 60 * 60 * 1000;
+
+    res.json({
+      configured: true,
+      ...snapshot,
+      stale,
+      schedule: {
+        monthlyChargeDay: 1,
+        nextMonthlyChargeDate: nextMonthlyCharge.toISOString().slice(0, 10),
+        thresholdAmount: 500,
+        rule: 'Списание при достижении порога 500 TRY или в месячную дату — что наступит раньше',
+      },
+      sync: {
+        mode: stored.sync?.mode || 'verified_snapshot',
+        automatic: stored.sync?.automatic === true,
+        note: stored.sync?.automatic === true
+          ? 'Расходы обновляются из настроенного Billing Export'
+          : 'Для автоматических расходов требуется Cloud Billing Export в BigQuery',
+      },
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Не удалось получить расходы Google Cloud' });
+  }
+});
+
 // Безопасная диагностика JWT: ничего не списывает и не создает счет.
 app.get('/api/tochka/jwt-diagnostics', async (_req, res) => {
   if (!db && !adminDb) return res.status(503).json({ error: 'DB не подключена' });

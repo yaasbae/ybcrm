@@ -3,6 +3,7 @@ import { motion } from 'motion/react';
 import {
   AlertCircle,
   Bot,
+  CalendarClock,
   CheckCircle2,
   ChevronRight,
   Copy,
@@ -21,7 +22,7 @@ import {
   WalletCards,
 } from 'lucide-react';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
-import { db } from '../firebase';
+import { auth, db } from '../firebase';
 import { cn } from '../lib/utils';
 
 type AppView = 'broadcast' | 'bot' | 'cdek' | 'content' | 'finance';
@@ -70,6 +71,20 @@ type YandexPayStatus = {
   apiKeySet?: boolean;
   sandbox?: boolean;
   callbackUrl?: string;
+};
+
+type CloudBillingSummary = {
+  configured?: boolean;
+  billingAccountOpen?: boolean;
+  currency?: string;
+  currentPeriod?: { from?: string; through?: string; expense?: number; openingBalance?: number; balanceBeforeLatestPayment?: number };
+  previousPeriod?: { from?: string; through?: string; expense?: number };
+  latestPayment?: { reportedAt?: string; status?: string };
+  verifiedAt?: string;
+  stale?: boolean;
+  schedule?: { monthlyChargeDay?: number; nextMonthlyChargeDate?: string; thresholdAmount?: number; rule?: string };
+  sync?: { automatic?: boolean; note?: string };
+  error?: string;
 };
 
 const inputClass =
@@ -179,6 +194,8 @@ async function readApiJson(res: Response) {
 }
 
 export const IntegrationsPage: React.FC<Props> = ({ onNavigate }) => {
+  const [cloudBillingState, setCloudBillingState] = useState<ApiState>('checking');
+  const [cloudBilling, setCloudBilling] = useState<CloudBillingSummary>({});
   const [tochkaState, setTochkaState] = useState<ApiState>('checking');
   const [tochkaToken, setTochkaToken] = useState('');
   const [tochkaMerchantId, setTochkaMerchantId] = useState('');
@@ -231,12 +248,29 @@ export const IntegrationsPage: React.FC<Props> = ({ onNavigate }) => {
   }, []);
 
   const loadStatuses = async () => {
+    setCloudBillingState('checking');
     setTochkaState('checking');
     setYandexPayState('checking');
     setCdekState('checking');
     setTgState('checking');
     setInstagramState('checking');
     setGeminiState('checking');
+
+    auth.currentUser?.getIdToken()
+      .then(token => fetch('/api/google-cloud-billing/summary', {
+        headers: { Authorization: `Bearer ${token}` },
+      }))
+      .then(async response => {
+        if (!response) throw new Error('Нужен вход владельца');
+        const data = await readApiJson(response);
+        if (!response.ok) throw new Error(data.error || 'Не удалось загрузить расходы');
+        setCloudBilling(data);
+        setCloudBillingState(data.billingAccountOpen ? (data.stale ? 'partial' : 'connected') : 'missing');
+      })
+      .catch(error => {
+        setCloudBilling({ error: error.message || 'Не удалось загрузить расходы' });
+        setCloudBillingState('missing');
+      });
 
     fetch('/api/tochka/status')
       .then(r => r.json())
@@ -603,6 +637,65 @@ export const IntegrationsPage: React.FC<Props> = ({ onNavigate }) => {
       </motion.div>
 
       <div className="grid gap-4 xl:grid-cols-2">
+        <ApiCard
+          title="Расходы Google Cloud"
+          subtitle="Отдельная сводка по хостингу CRM: начисления, период и ближайшее автоматическое списание."
+          icon={CalendarClock}
+          state={cloudBillingState}
+          accent="bg-[#4285F4]"
+        >
+          {cloudBilling.error ? (
+            <p className="rounded-[8px] bg-red-50 px-3 py-2 text-[12px] font-semibold text-[#F06B6B]">{cloudBilling.error}</p>
+          ) : (
+            <div className="space-y-4">
+              <div className="grid gap-3 sm:grid-cols-3">
+                <div className="rounded-[10px] border border-[#E6E9EF] bg-[#F6F7F9] p-4">
+                  <p className={labelClass}>Текущий период</p>
+                  <p className="mt-2 text-[22px] font-semibold text-[#1F2937]">
+                    {(cloudBilling.currentPeriod?.expense ?? 0).toLocaleString('ru-RU', { minimumFractionDigits: 2 })} {cloudBilling.currency || 'TRY'}
+                  </p>
+                  <p className="mt-1 text-[11px] text-[#6B7280]">
+                    {cloudBilling.currentPeriod?.from || '—'} — {cloudBilling.currentPeriod?.through || '—'}
+                  </p>
+                </div>
+                <div className="rounded-[10px] border border-[#E6E9EF] bg-[#F6F7F9] p-4">
+                  <p className={labelClass}>Прошлый месяц</p>
+                  <p className="mt-2 text-[22px] font-semibold text-[#1F2937]">
+                    {(cloudBilling.previousPeriod?.expense ?? 0).toLocaleString('ru-RU', { minimumFractionDigits: 2 })} {cloudBilling.currency || 'TRY'}
+                  </p>
+                  <p className="mt-1 text-[11px] text-[#6B7280]">Август 2026</p>
+                </div>
+                <div className="rounded-[10px] border border-[#E6E9EF] bg-[#F6F7F9] p-4">
+                  <p className={labelClass}>До оплаты сегодня</p>
+                  <p className="mt-2 text-[22px] font-semibold text-[#1F2937]">
+                    {(cloudBilling.currentPeriod?.balanceBeforeLatestPayment ?? 0).toLocaleString('ru-RU', { minimumFractionDigits: 2 })} {cloudBilling.currency || 'TRY'}
+                  </p>
+                  <p className="mt-1 text-[11px] font-medium text-[#F5A623]">Оплата ожидает отражения в истории</p>
+                </div>
+              </div>
+
+              <div className="rounded-[10px] border border-[#DCE8FF] bg-[#F3F7FF] p-4">
+                <div className="flex items-start gap-3">
+                  <CalendarClock className="mt-0.5 h-5 w-5 shrink-0 text-[#4285F4]" />
+                  <div>
+                    <p className="text-[13px] font-semibold text-[#1F2937]">График оплаты</p>
+                    <p className="mt-1 text-[12px] leading-5 text-[#6B7280]">
+                      Следующая месячная дата: <b>{cloudBilling.schedule?.nextMonthlyChargeDate || '—'}</b>. Google может списать раньше, если баланс достигнет порога <b>{cloudBilling.schedule?.thresholdAmount || 500} {cloudBilling.currency || 'TRY'}</b>.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-[#6B7280]">
+                <span>Проверено: {cloudBilling.verifiedAt ? new Date(cloudBilling.verifiedAt).toLocaleString('ru-RU') : '—'}</span>
+                <span className={cn('font-semibold', cloudBilling.sync?.automatic ? 'text-[#2EBA7F]' : 'text-[#F5A623]')}>
+                  {cloudBilling.sync?.automatic ? 'Автообновление включено' : 'Снимок из истории платежей'}
+                </span>
+              </div>
+            </div>
+          )}
+        </ApiCard>
+
         <ApiCard
           title="Точка Банк"
           subtitle="Рабочее подключение через JWT / API token. QR, счета и финансы используют только этот токен."
