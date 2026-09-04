@@ -6094,7 +6094,10 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
           Ограничения меняются владельцем в разделе «Админка».
         </div>
       )}
-      <div className="flex flex-col gap-3 rounded-2xl border border-zinc-200/80 bg-white p-4 shadow-[0_12px_34px_rgba(31,41,55,0.04)] sm:flex-row sm:items-center sm:justify-between">
+      <div className={cn(
+        "flex flex-col gap-3 border border-zinc-200/80 bg-white p-4 shadow-[0_12px_34px_rgba(31,41,55,0.04)] sm:flex-row sm:items-center sm:justify-between",
+        newOrderFormOpen ? "rounded-t-2xl border-b-0" : "rounded-2xl",
+      )}>
         <div>
           <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-400">Заказы</p>
           <h2 className="mt-1 text-[22px] font-semibold tracking-[-0.02em] text-zinc-950">Работа с заказами</h2>
@@ -6109,14 +6112,16 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
           </button>
           <button
             type="button"
-            onClick={() => {
-              setNewOrderFormOpen(true);
-              window.requestAnimationFrame(() => document.querySelector('[data-new-order-form]')?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
-            }}
+            onClick={() => setNewOrderFormOpen(open => !open)}
             disabled={!allowedOrderActions.includes('create')}
-            className="inline-flex h-10 items-center gap-2 rounded-[6px] bg-[#7D7DE6] px-5 text-[12px] font-medium text-white transition-colors hover:bg-[#6F6FE0] disabled:opacity-40"
+            aria-expanded={newOrderFormOpen}
+            className={cn(
+              "inline-flex h-10 items-center gap-2 rounded-[6px] px-5 text-[12px] font-medium transition-colors disabled:opacity-40",
+              newOrderFormOpen ? "bg-violet-50 text-[#5B5BE0] hover:bg-violet-100" : "bg-[#7D7DE6] text-white hover:bg-[#6F6FE0]",
+            )}
           >
-            <Plus className="h-4 w-4" /> Новый заказ
+            {newOrderFormOpen ? <ChevronRight className="h-4 w-4 -rotate-90" /> : <Plus className="h-4 w-4" />}
+            {newOrderFormOpen ? 'Скрыть форму' : 'Новый заказ'}
           </button>
         </div>
       </div>
@@ -6933,7 +6938,11 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
       </div>
 
       {/* New Order Form Block */}
-      <div data-new-order-form className={cn(softCardClass, "overflow-hidden p-3 text-[#1F2937] sm:p-4")}>
+      <div data-new-order-form className={cn(
+        softCardClass,
+        "!mt-0 overflow-hidden rounded-t-none border-t-0 p-3 text-[#1F2937] sm:p-4",
+        !newOrderFormOpen && "hidden",
+      )}>
         <button
           type="button"
           onClick={() => setNewOrderFormOpen(open => !open)}
@@ -6946,7 +6955,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
           <div className="min-w-0">
             <h3 className="text-[16px] font-medium leading-[22px] text-[#1F2937]">Новый заказ</h3>
             <p className="text-[11px] font-medium leading-[14px] text-[#9CA3AF]">
-              {newOrderFormOpen ? 'Клиент → изделие → доставка и оплата' : 'Нажмите, чтобы открыть компактную форму'}
+              Клиент → изделие → доставка и оплата
             </p>
           </div>
           <ChevronRight className={cn("ml-auto h-4 w-4 shrink-0 text-[#9CA3AF] transition-transform", newOrderFormOpen && "rotate-90")} />
