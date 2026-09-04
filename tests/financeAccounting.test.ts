@@ -64,3 +64,26 @@ test('keeps planned payments out of actual expenses until they are paid', () => 
   assert.equal(paid.pnl.netProfit, 13_000);
   assert.equal(paid.balance.payables, 0);
 });
+
+test('limits receivables, advances and planned payables to the selected month', () => {
+  const report = buildFinanceReport({
+    selectedDate: new Date(2026, 8, 1),
+    period: 'month',
+    bankBalance: 140_450,
+    products: [],
+    operations: [],
+    orders: [
+      { id: 'september', date: '02.09.2026', revenue: 20_000, paidAmount: 5_000, status: 'Новый' },
+      { id: 'august', date: '20.08.2026', revenue: 1_500_000, paidAmount: 0, status: 'Новый' },
+    ],
+    expenses: [
+      { id: 'september-plan', date: '15.09.2026', amount: 7_000, status: 'planned' },
+      { id: 'august-plan', date: '15.08.2026', amount: 900_000, status: 'planned' },
+    ],
+  });
+
+  assert.equal(report.balance.cash, 140_450);
+  assert.equal(report.balance.receivables, 15_000);
+  assert.equal(report.balance.customerAdvances, 5_000);
+  assert.equal(report.balance.payables, 7_000);
+});

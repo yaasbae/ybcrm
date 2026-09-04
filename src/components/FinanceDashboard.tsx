@@ -106,29 +106,6 @@ const FINANCE_OWNER_EMAIL = 'ndtiger86@gmail.com';
 const TOCHKA_EXPENSE_CATEGORY_OVERRIDES_STORAGE_KEY = 'ybcrm:tochka-expense-category-overrides';
 const TOCHKA_CUSTOM_EXPENSE_CATEGORIES_STORAGE_KEY = 'ybcrm:tochka-custom-expense-categories';
 
-const manualReturnOperations = [
-  { date: new Date(2026, 0, 26), amount: 17900 },
-  { date: new Date(2026, 0, 26), amount: 15000 },
-  { date: new Date(2026, 0, 13), amount: 5900 },
-  { date: new Date(2026, 2, 31), amount: 13550 },
-  { date: new Date(2026, 2, 11), amount: 11250 },
-  { date: new Date(2026, 2, 6), amount: 11900 },
-  { date: new Date(2026, 2, 6), amount: 10000 },
-  { date: new Date(2026, 3, 29), amount: 8450 },
-  { date: new Date(2026, 3, 20), amount: 11900 },
-  { date: new Date(2026, 3, 15), amount: 11900 },
-  { date: new Date(2026, 3, 13), amount: 10900 },
-  { date: new Date(2026, 3, 13), amount: 10000 },
-  { date: new Date(2026, 3, 2), amount: 17250 },
-  { date: new Date(2026, 4, 27), amount: 16250 },
-  { date: new Date(2026, 4, 22), amount: 9950 },
-  { date: new Date(2026, 4, 15), amount: 20550 },
-  { date: new Date(2026, 4, 12), amount: 6000 },
-  { date: new Date(2026, 4, 12), amount: 4400 },
-  { date: new Date(2026, 4, 11), amount: 15600 },
-  { date: new Date(2026, 4, 9), amount: 18900 },
-];
-
 const normalizeDate = (value: any): Date => {
   const date = parseFinanceDate(value);
   return date.getTime() > 0 ? date : new Date();
@@ -411,10 +388,6 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
       month.delivery += delivery;
     });
 
-    manualReturnOperations.forEach(operation => {
-      ensureMonth(operation.date).returns += operation.amount;
-    });
-
     expenses.filter(expense => expense.status !== 'planned' && expense.paid !== false).forEach(expense => {
       ensureMonth(expense.date).expense += Number(expense.amount) || 0;
     });
@@ -501,8 +474,8 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
   const selectedSalesAmount = Number.isFinite(Number(bankBreakdown?.salesAmount))
     ? Number(bankBreakdown?.salesAmount)
     : selectedFinancialStats.planned;
-  const selectedOutstanding = Number.isFinite(Number(bankBreakdown?.remainingForSelectedOrders))
-    ? Number(bankBreakdown?.remainingForSelectedOrders)
+  const selectedOutstanding = Number.isFinite(Number(bankBreakdown?.remainingFromSelectedMonth))
+    ? Number(bankBreakdown?.remainingFromSelectedMonth)
     : selectedFinancialStats.owed;
   const currentBankBalance = Number(tochkaSummary?.operatingBalance ?? tochkaSummary?.totalBalance ?? 0) || 0;
   const managementReport = useMemo(() => buildFinanceReport({
@@ -701,6 +674,9 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
   const startOfToday = new Date();
   startOfToday.setHours(0, 0, 0, 0);
   const plannedForCalendarMonth = plannedExpenses.filter(expense => expense.date.getMonth() === calendarMonth && expense.date.getFullYear() === calendarYear);
+  const upcomingPlannedForMonth = [...plannedForCalendarMonth]
+    .sort((a, b) => a.date.getTime() - b.date.getTime())
+    .slice(0, 5);
   const actualForCalendarMonth = actualManualExpenses.filter(expense => expense.date.getMonth() === calendarMonth && expense.date.getFullYear() === calendarYear);
   const plannedMonthTotal = plannedForCalendarMonth.reduce((sum, expense) => sum + (Number(expense.amount) || 0), 0);
   const actualMonthTotal = actualForCalendarMonth.reduce((sum, expense) => sum + (Number(expense.amount) || 0), 0);
@@ -924,7 +900,7 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
             <div className="rounded-[8px] border border-orange-100 bg-orange-50 px-4 py-3">
               <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-orange-500">К доплате сейчас</p>
               <p className="mt-1 text-[18px] font-black text-orange-600">{formatCurrency(selectedOutstanding)}</p>
-              <p className="mt-1 text-[11px] font-semibold text-orange-500">включая недоплаты прошлых месяцев</p>
+              <p className="mt-1 text-[11px] font-semibold text-orange-500">только заказы выбранного месяца</p>
             </div>
             <div className="rounded-[8px] border border-[#E6E9EF] bg-[#F6F7F9] px-4 py-3">
               <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-[#6B7280]">Результат месяца</p>
@@ -974,7 +950,7 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
               {[
                 ['Оплаты заказов этого месяца', bankBreakdown?.currentMonthOrderReceipts || 0, 'text-emerald-600'],
                 ['Доплаты за прошлые месяцы', bankBreakdown?.priorMonthDopayments || 0, 'text-indigo-600'],
-                ['Прочие / не сопоставленные поступления', bankBreakdown?.unmatchedIncome || 0, 'text-[#1F2937]'],
+                ['Поступления без найденного заказа CRM', bankBreakdown?.unmatchedIncome || 0, 'text-[#1F2937]'],
                 ['Осталось получить по продажам месяца', selectedOutstanding, 'text-orange-500'],
               ].map(([label, value, tone]) => (
                 <div key={String(label)} className="flex items-center justify-between gap-4 rounded-[8px] border border-[#E6E9EF] bg-[#F6F7F9] px-3 py-3">
@@ -1339,9 +1315,9 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
                   {[
                     { number: '01', label: 'Продажи', value: managementReport.pnl.revenue, detail: `${selectedFinancialStats.sales} заказов за период`, source: 'CRM', tone: 'text-[#1F2937]', badge: 'bg-[#EEF0F4] text-[#1F2937]', icon: ReceiptText },
                     { number: '02', label: 'Получено', value: managementReport.cashFlow.income, detail: 'реальные зачисления', source: 'Точка Банк', tone: 'text-emerald-600', badge: 'bg-emerald-50 text-emerald-700', icon: Landmark },
-                    { number: '03', label: 'К доплате', value: managementReport.balance.receivables, detail: 'долги клиентов', source: 'CRM ↔ Банк', tone: 'text-amber-600', badge: 'bg-amber-50 text-amber-700', icon: Link2 },
-                    { number: '04', label: 'Расходы', value: managementReport.cashFlow.expenses + managementReport.cashFlow.refunds, detail: 'списания и возвраты', source: 'Точка Банк', tone: 'text-red-500', badge: 'bg-red-50 text-red-600', icon: CreditCard },
-                    { number: '05', label: 'Чистая прибыль', value: managementReport.pnl.netProfit, detail: 'после себестоимости', source: 'P&L', tone: managementReport.pnl.netProfit >= 0 ? 'text-emerald-600' : 'text-red-500', badge: managementReport.pnl.netProfit >= 0 ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-600', icon: TrendingUp },
+                    { number: '03', label: 'К доплате', value: selectedOutstanding, detail: 'только по заказам выбранного месяца', source: 'CRM', tone: 'text-amber-600', badge: 'bg-amber-50 text-amber-700', icon: Link2 },
+                    { number: '04', label: 'Списано', value: managementReport.cashFlow.expenses + managementReport.cashFlow.refunds, detail: 'расходы и возвраты по выписке', source: 'Точка Банк', tone: 'text-red-500', badge: 'bg-red-50 text-red-600', icon: CreditCard },
+                    { number: '05', label: 'Прибыль месяца', value: managementReport.pnl.netProfit, detail: 'продажи − возвраты − себестоимость − расходы', source: 'P&L', tone: managementReport.pnl.netProfit >= 0 ? 'text-emerald-600' : 'text-red-500', badge: managementReport.pnl.netProfit >= 0 ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-600', icon: TrendingUp },
                     { number: '06', label: 'На счетах', value: managementReport.balance.cash, detail: 'остаток на сегодня', source: 'Точка Банк', tone: managementReport.balance.cash >= 0 ? 'text-indigo-600' : 'text-red-500', badge: 'bg-indigo-50 text-indigo-700', icon: Wallet },
                   ].map((step, index) => (
                     <div key={step.label} className="relative border-b border-[#E6E9EF] p-5 last:border-b-0 lg:border-b-0 lg:border-r lg:last:border-r-0">
@@ -1378,6 +1354,35 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
                     <p className={cn('mt-1 text-[18px] font-black', managementReport.reconciliation.rate >= 0.9 ? 'text-emerald-600' : 'text-amber-600')}>{Math.round(managementReport.reconciliation.rate * 100)}%</p>
                     <p className="mt-1 inline-flex items-center gap-1 text-[10px] font-bold text-[#6B7280]">Открыть несверенные <ChevronRight size={12} /></p>
                   </button>
+                </div>
+              </div>
+
+              <div className="overflow-hidden rounded-[12px] border border-[#E6E9EF] bg-white shadow-[0_8px_22px_rgba(31,41,55,0.03)]">
+                <div className="flex flex-col gap-3 border-b border-[#E6E9EF] px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-amber-600">Календарь на главной</p>
+                    <h3 className="mt-1 text-[18px] font-semibold text-[#1F2937]">Ближайшие платежи месяца</h3>
+                    <p className="mt-1 text-[11px] font-semibold text-[#6B7280]">План: {formatCurrency(plannedMonthTotal)} · просрочено: {formatCurrency(overduePlannedTotal)}</p>
+                  </div>
+                  <div className="flex gap-2">
+                    <button type="button" onClick={() => openExpenseModal('planned')} className="inline-flex h-10 items-center justify-center gap-2 rounded-[8px] bg-amber-600 px-4 text-[11px] font-bold text-white hover:bg-amber-700"><Plus size={15} />Запланировать</button>
+                    <button type="button" onClick={() => setActiveTab('calendar')} className="inline-flex h-10 items-center justify-center gap-2 rounded-[8px] border border-[#E6E9EF] px-4 text-[11px] font-bold text-[#1F2937] hover:bg-[#F6F7F9]">Весь календарь <ChevronRight size={14} /></button>
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 divide-y divide-[#E6E9EF] sm:grid-cols-5 sm:divide-x sm:divide-y-0">
+                  {upcomingPlannedForMonth.map(expense => {
+                    const isOverdue = expense.date.getTime() < startOfToday.getTime();
+                    return (
+                      <div key={expense.id} className={cn('min-h-[112px] p-4', isOverdue && 'bg-red-50/60')}>
+                        <p className={cn('text-[10px] font-black uppercase tracking-[0.12em]', isOverdue ? 'text-red-600' : 'text-amber-600')}>{expense.date.toLocaleDateString('ru-RU', { day: '2-digit', month: 'short' })}</p>
+                        <p className="mt-2 truncate text-[12px] font-bold text-[#1F2937]" title={expense.description}>{expense.description}</p>
+                        <p className={cn('mt-2 text-[15px] font-black', isOverdue ? 'text-red-600' : 'text-[#1F2937]')}>{formatCurrency(expense.amount)}</p>
+                      </div>
+                    );
+                  })}
+                  {!upcomingPlannedForMonth.length && (
+                    <div className="p-5 text-[12px] font-semibold text-[#6B7280] sm:col-span-5">На выбранный месяц платежей пока нет. Нажмите «Запланировать».</div>
+                  )}
                 </div>
               </div>
 

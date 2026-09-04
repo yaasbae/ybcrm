@@ -8231,8 +8231,7 @@ function getBalanceType(balance: any) {
 }
 
 function getBalanceAmount(balance: any) {
-  return normalizeTochkaAmount(
-    balance?.Amount?.amount
+  const raw = balance?.Amount?.amount
     ?? balance?.Amount?.Amount
     ?? balance?.amount?.amount
     ?? balance?.amount?.Amount
@@ -8241,8 +8240,11 @@ function getBalanceAmount(balance: any) {
     ?? balance?.balance
     ?? balance?.Balance
     ?? balance?.value
-    ?? 0
-  );
+    ?? 0;
+  // Open Banking /balances returns RUB amounts, not kopecks. The generic
+  // payment normalizer divides large minor-unit payment values by 100 and
+  // must not be used here (140450 ₽ used to become 1404.50 ₽).
+  return Number(raw) || Number(String(raw || '').replace(',', '.')) || 0;
 }
 
 function maskAccountId(accountId: string) {
@@ -10866,11 +10868,7 @@ app.get('/api/tochka/finance-summary', async (req, res) => {
         priorMonthDopayments: Number(selectedComparison.priorOrderReceipts) || 0,
         unmatchedIncome: Number(selectedComparison.unmatchedIncome) || 0,
         refunds: Number(selectedComparison.refunds) || 0,
-        remainingForSelectedOrders: allOrders.filter((order: any) => {
-          if (!isFinanceActiveOrder(order)) return false;
-          const orderMonthKey = getFinanceMonthKey(order?.date || order?.orderDate || order?.createdAt);
-          return Boolean(orderMonthKey && orderMonthKey <= monthKey);
-        }).reduce((sum: number, order: any) => sum + Math.max(0, getFinanceOrderTotal(order) - getFinanceOrderPaidAmount(order)), 0),
+        remainingForSelectedOrders: monthOrders.filter(isFinanceActiveOrder).reduce((sum: number, order: any) => sum + Math.max(0, getFinanceOrderTotal(order) - getFinanceOrderPaidAmount(order)), 0),
         remainingFromSelectedMonth: monthOrders.filter(isFinanceActiveOrder).reduce((sum: number, order: any) => sum + Math.max(0, getFinanceOrderTotal(order) - getFinanceOrderPaidAmount(order)), 0),
       },
       monthlyComparison,

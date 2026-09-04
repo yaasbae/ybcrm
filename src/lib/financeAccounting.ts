@@ -216,14 +216,18 @@ export const buildFinanceReport = (input: FinanceReportInput) => {
     .reduce((sum, operation) => sum + (Number(operation.absAmount) || 0), 0);
   const netCashFlow = cashIncome - cashRefunds - cashExpenses;
 
-  const activeOrders = input.orders.filter(isSale);
+  // The dashboard is period-scoped: receivables and customer advances must
+  // use the same selected orders as revenue instead of accumulating all time.
+  const activeOrders = sales;
   const receivables = activeOrders.reduce((sum, order) => sum + Math.max(0, getOrderRevenue(order) - getConfirmedPaidAmount(order)), 0);
   const inventory = input.products.reduce((sum, product) => {
     const stock = Number(product.stock ?? product.quantity ?? product.inStock) || 0;
     return sum + stock * getProductCost(product);
   }, 0);
   const assets = input.bankBalance + receivables + inventory;
-  const payables = input.expenses.filter(expense => (expense as any).status === 'planned' || (expense as any).paid === false)
+  const payables = input.expenses
+    .filter(expense => isWithin(expense.date, start, end))
+    .filter(expense => (expense as any).status === 'planned' || (expense as any).paid === false)
     .reduce((sum, expense) => sum + (Number(expense.amount) || 0), 0);
   const customerAdvances = activeOrders.reduce((sum, order) => {
     const paid = getConfirmedPaidAmount(order);
