@@ -51,7 +51,7 @@ const DELIVERY_OPTIONS = ['СДЭК до ПВЗ', 'СДЭК до двери', '�
 const DEFAULT_MANAGERS = ['Менеджер 1', 'Менеджер 2', 'Собственник'];
 const SOURCE_OPTIONS = ['Instagram', 'WhatsApp', 'ТГ', 'Блогер', 'Контент', 'Сарафан', 'Повторный'];
 const PAYMENT_TYPE_OPTIONS = ['QR код', 'Сплитами', 'Долями', 'Наличкой', 'Наложенный СДЭК'];
-const INVOICE_PAYMENT_OPTIONS = ['Предоплата 50%', 'Оплата с примеркой'];
+const INVOICE_PAYMENT_OPTIONS = ['Полная оплата 100%', 'Предоплата 50%', 'Оплата с примеркой'];
 const SplitMark = ({ className = '' }: { className?: string }) => (
   <span className={cn('relative inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center', className)} aria-hidden="true">
     <span className="absolute h-2.5 w-2.5 rounded-full bg-[#F43F5E]" />
@@ -511,8 +511,8 @@ function isYandexSplitPayment(paymentType?: string): boolean {
 
 function getOperationalInvoiceType(order: Partial<OrderData>): 'prepayment' | 'full' | 'fitting' {
   if (isYandexSplitPayment(order.paymentType) || order.paymentProvider === 'yandex_split') return 'full';
-  if (order.invoiceType === 'fitting' || /пример/i.test(String(order.paymentType || ''))) return 'fitting';
-  return 'prepayment';
+  if (order.invoiceType === 'full' || order.invoiceType === 'prepayment' || order.invoiceType === 'fitting') return order.invoiceType;
+  return getInvoiceTypeFromPaymentType(order.paymentType);
 }
 
 function getPaymentMethodLabel(order: Partial<OrderData>): string {
@@ -531,7 +531,7 @@ function getPaymentFindEndpoint(paymentType?: string): string {
 
 function getInvoicePaymentLabel(invoiceType?: 'prepayment' | 'full' | 'fitting'): string {
   if (invoiceType === 'fitting') return 'Оплата с примеркой';
-  if (invoiceType === 'full') return 'Полная оплата';
+  if (invoiceType === 'full') return 'Полная оплата 100%';
   return 'Предоплата 50%';
 }
 
@@ -1052,7 +1052,7 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
   const orderTotal = getOrderTotalAmount(order);
   const initialAmount = hasIssuedMainInvoice(order)
     ? getInitialInvoiceAmount(order)
-    : isYandexProvider ? orderTotal : orderTotal * 0.5;
+    : isYandexProvider ? orderTotal : getCalculatedInitialInvoiceAmount({ ...order, invoiceType });
   const issuedMainAmount = Number(order.paymentAmount)
     || Number(order.initialPaymentAmount)
     || Number(order.paidAmount)
@@ -1066,7 +1066,13 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
     && (manualConfirmationRequired || paymentStatusWindowExpired);
   const finalAmount = getOrderFinalPaymentAmount(order);
   const showFinalPayment = !isYandexProvider && finalAmount > 0;
-  const mainPaymentLabel = isYandexProvider ? 'Яндекс Сплит' : 'Предоплата 50%';
+  const mainPaymentLabel = isYandexProvider
+    ? 'Яндекс Сплит'
+    : invoiceType === 'full'
+      ? 'Полная оплата 100%'
+      : invoiceType === 'fitting'
+        ? 'Оплата с примеркой'
+        : 'Предоплата 50%';
   const mainPaymentStatusText = mainPaymentPaid
     ? `${mainPaymentLabel} оплачена`
     : paymentUrl
@@ -1168,8 +1174,9 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
   };
 
   const confirmMainPaymentManually = async () => {
+    const confirmationLabel = invoiceType === 'full' ? 'полная оплата' : 'предоплата';
     const confirmed = window.confirm(
-      `Подтвердите, что предоплата ${formatCurrency(issuedMainAmount)} по заказу #${order.orderId} действительно поступила в Точку. После подтверждения CRM разрешит создать доплату.`,
+      `Подтвердите, что ${confirmationLabel} ${formatCurrency(issuedMainAmount)} по заказу #${order.orderId} действительно поступила в Точку.${invoiceType === 'full' ? '' : ' После подтверждения CRM разрешит создать доплату.'}`,
     );
     if (!confirmed) return;
     setRefreshingMain(true);
@@ -1202,7 +1209,7 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
     try {
       if (invoiceMissingFields.length) throw new Error(`Заполните: ${invoiceMissingFields.join(', ')}`);
       const amount = initialAmount;
-      if (amount <= 0) throw new Error('Сумма предоплаты 0 ₽');
+      if (amount <= 0) throw new Error('Сумма оплаты 0 ₽');
       const res = await crmFetch(getPaymentCreateEndpoint(order.paymentType), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1352,7 +1359,7 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
           className="w-full text-[8px] font-black py-1 rounded-md border border-violet-200 bg-violet-50 text-violet-600 hover:bg-violet-500 hover:text-white hover:border-violet-500 transition-all flex items-center justify-center gap-1 disabled:opacity-50"
         >
           {loading ? <RefreshCcw size={8} className="animate-spin" /> : <QrCodeIcon size={8} />}
-          {loading ? 'Создаём...' : `Создать предоплату ${formatCurrency(initialAmount)}`}
+          {loading ? 'Создаём...' : `Создать ${invoiceType === 'full' ? 'полную оплату' : invoiceType === 'fitting' ? 'оплату с примеркой' : 'предоплату'} ${formatCurrency(initialAmount)}`}
         </button>
         {!isYandexProvider && (
           <button
@@ -1407,7 +1414,7 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
           onClick={confirmMainPaymentManually}
           className="w-full rounded-md border border-amber-300 bg-amber-50 py-1.5 text-[9px] font-black text-amber-700 transition-colors hover:bg-amber-100"
         >
-          Подтвердить предоплату вручную
+          Подтвердить {invoiceType === 'full' ? 'полную оплату' : 'предоплату'} вручную
         </button>
       )}
       {error && <p className="mt-1 text-[8px] font-bold text-red-500">{error}</p>}
@@ -1452,10 +1459,10 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
           disabled={refundLoading !== null}
           className="w-full rounded-md border border-red-200 bg-red-50 py-1.5 text-[8px] font-black text-red-600 transition-colors hover:bg-red-100 disabled:opacity-50"
         >
-          {refundLoading === 'main' ? 'Оформляем возврат…' : isYandexProvider ? `Вернуть Сплит ${formatCurrency(issuedMainAmount)}` : `Вернуть предоплату ${formatCurrency(issuedMainAmount)}`}
+          {refundLoading === 'main' ? 'Оформляем возврат…' : isYandexProvider ? `Вернуть Сплит ${formatCurrency(issuedMainAmount)}` : `Вернуть ${invoiceType === 'full' ? 'полную оплату' : 'предоплату'} ${formatCurrency(issuedMainAmount)}`}
         </button>
       )}
-      {mainRefunded && <p className="text-[8px] font-bold text-red-500">Возврат предоплаты оформлен</p>}
+      {mainRefunded && <p className="text-[8px] font-bold text-red-500">Возврат {invoiceType === 'full' ? 'полной оплаты' : 'предоплаты'} оформлен</p>}
       {showFinalPayment && (
         <div className="border-t border-zinc-100 pt-1.5">
           {paymentStatusBadge(finalPaymentStatusText, finalPaymentPaid, 'final')}
@@ -3675,7 +3682,9 @@ const OrderCard = React.memo(({
   ].filter(Boolean).join('\n');
   const invoiceType = getOperationalInvoiceType(order);
   const mobileOrderTotal = getOrderTotalAmount({ ...order, revenue: liveRevenue });
-  const plannedInitialAmount = isMobileYandexProvider ? mobileOrderTotal : mobileOrderTotal * 0.5;
+  const plannedInitialAmount = isMobileYandexProvider
+    ? mobileOrderTotal
+    : getCalculatedInitialInvoiceAmount({ ...order, revenue: liveRevenue, invoiceType });
   const issuedMobileMainAmount = Number(order.paymentAmount)
     || Number(order.initialPaymentAmount)
     || (paymentUrl ? Number(order.paidAmount) || 0 : 0)
@@ -3689,10 +3698,10 @@ const OrderCard = React.memo(({
   const mainPaymentPaid = isPaidTochkaStatus(order.paymentStatus || '');
   const finalPaymentPaid = isPaidTochkaStatus(order.finalPaymentStatus || '');
   const mainPaymentStatusText = mainPaymentPaid
-    ? `${isMobileYandexProvider ? 'Яндекс Сплит' : 'Предоплата 50%'} оплачена`
+    ? `${isMobileYandexProvider ? 'Яндекс Сплит' : getInvoicePaymentLabel(invoiceType)} оплачена`
     : paymentUrl
-      ? `${isMobileYandexProvider ? 'Яндекс Сплит' : 'Предоплата 50%'} ожидает оплаты`
-      : `${isMobileYandexProvider ? 'Яндекс Сплит' : 'Предоплата 50%'} не создана`;
+      ? `${isMobileYandexProvider ? 'Яндекс Сплит' : getInvoicePaymentLabel(invoiceType)} ожидает оплаты`
+      : `${isMobileYandexProvider ? 'Яндекс Сплит' : getInvoicePaymentLabel(invoiceType)} не создана`;
   const finalPaymentStatusText = finalPaymentPaid
     ? 'Доплата оплачена'
     : mobileFinalPaymentUrl
@@ -3706,14 +3715,14 @@ const OrderCard = React.memo(({
     mobileManualConfirmationRequired
     || (Number.isFinite(mobilePaymentCreatedAtMs) && Date.now() - mobilePaymentCreatedAtMs > 96 * 60 * 60 * 1000)
   );
-  const shareText = paymentUrl ? buildPaymentShareText(order, paymentUrl, issuedMobileMainAmount, 'Счет на предоплату', mobilePaymentProviderLabel) : '';
+  const shareText = paymentUrl ? buildPaymentShareText(order, paymentUrl, issuedMobileMainAmount, invoiceType === 'full' ? 'Счет на полную оплату' : 'Счет на предоплату', mobilePaymentProviderLabel) : '';
   const finalShareText = mobileFinalPaymentUrl ? buildPaymentShareText(order, mobileFinalPaymentUrl, finalPaymentAmount, 'Счет на доплату') : '';
   const invoiceTone = liveInvoiceAmount <= 0
     ? 'text-zinc-300'
     : isMobileYandexProvider
       ? 'text-emerald-600'
       : 'text-orange-500';
-  const invoiceLabel = isMobileYandexProvider ? 'оплата Сплит' : 'предоплата 50%';
+  const invoiceLabel = isMobileYandexProvider ? 'оплата Сплит' : getInvoicePaymentLabel(invoiceType).toLowerCase();
   useEffect(() => {
     setEditItems(orderItems.length ? orderItems : ['']);
     setEditItemPrices(orderItemPrices.length ? orderItemPrices : [0]);
@@ -4017,8 +4026,9 @@ const OrderCard = React.memo(({
 
   const confirmMobilePaymentManually = async () => {
     const amount = Number(order.paymentAmount) || dueAmount;
+    const confirmationLabel = invoiceType === 'full' ? 'полная оплата' : 'предоплата';
     const confirmed = window.confirm(
-      `Подтвердите, что предоплата ${formatCurrency(amount)} по заказу #${order.orderId} действительно поступила в Точку. После подтверждения CRM разрешит создать доплату.`,
+      `Подтвердите, что ${confirmationLabel} ${formatCurrency(amount)} по заказу #${order.orderId} действительно поступила в Точку.${invoiceType === 'full' ? '' : ' После подтверждения CRM разрешит создать доплату.'}`,
     );
     if (!confirmed) return;
     setMobilePaymentRefreshing(true);
@@ -4483,7 +4493,7 @@ const OrderCard = React.memo(({
                 onClick={confirmMobilePaymentManually}
                 className="w-full rounded-lg border border-amber-300 bg-amber-50 py-2 text-[10px] font-bold text-amber-700"
               >
-                Подтвердить предоплату вручную
+                Подтвердить {invoiceType === 'full' ? 'полную оплату' : 'предоплату'} вручную
               </button>
             )}
             {mobilePaymentError && (
@@ -4496,10 +4506,10 @@ const OrderCard = React.memo(({
                 disabled={mobileRefundLoading !== null}
                 className="w-full rounded-lg border border-red-200 bg-red-50 py-2 text-[10px] font-bold text-red-600 disabled:opacity-60"
               >
-                {mobileRefundLoading === 'main' ? 'Оформляем возврат…' : isMobileYandexProvider ? `Вернуть Сплит ${formatCurrency(issuedMobileMainAmount)}` : `Вернуть предоплату ${formatCurrency(issuedMobileMainAmount)}`}
+                {mobileRefundLoading === 'main' ? 'Оформляем возврат…' : isMobileYandexProvider ? `Вернуть Сплит ${formatCurrency(issuedMobileMainAmount)}` : `Вернуть ${invoiceType === 'full' ? 'полную оплату' : 'предоплату'} ${formatCurrency(issuedMobileMainAmount)}`}
               </button>
             )}
-            {mobileMainRefunded && <p className="text-[9px] font-bold text-red-500">Возврат предоплаты оформлен</p>}
+            {mobileMainRefunded && <p className="text-[9px] font-bold text-red-500">Возврат {invoiceType === 'full' ? 'полной оплаты' : 'предоплаты'} оформлен</p>}
             <button
               onClick={() => setShowMobileQr(v => !v)}
               className="w-full py-2 rounded-lg bg-[#6B4DFF] border border-[#6B4DFF] text-[10px] font-bold text-white"
@@ -4528,7 +4538,7 @@ const OrderCard = React.memo(({
               className="w-full py-2 rounded-lg border border-violet-200 bg-violet-50 text-violet-600 text-[10px] font-bold flex items-center justify-center gap-1.5 disabled:opacity-60"
             >
               {mobilePaymentLoading ? <RefreshCcw size={11} className="animate-spin" /> : <QrCodeIcon size={11} />}
-              {mobilePaymentLoading ? 'Создаём...' : `Создать предоплату ${formatCurrency(dueAmount)}`}
+              {mobilePaymentLoading ? 'Создаём...' : `Создать ${invoiceType === 'full' ? 'полную оплату' : invoiceType === 'fitting' ? 'оплату с примеркой' : 'предоплату'} ${formatCurrency(dueAmount)}`}
             </button>
             {!isMobileYandexProvider && (
               <button
@@ -5585,8 +5595,8 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
   };
 
   const updateNewOrderPaymentType = (value: string) => {
-    const invoiceType = isYandexSplitPayment(value) ? 'full' : 'prepayment';
     setNewOrder(prev => {
+      const invoiceType = isYandexSplitPayment(value) ? 'full' : (prev.invoiceType || 'prepayment');
       const revenue = Number(prev.revenue) || 0;
       const deliveryPrice = Number(prev.deliveryPrice) || 0;
       return {
@@ -5594,6 +5604,20 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
         paymentType: value,
         invoiceType,
         paidAmount: getInvoiceAmount({ revenue, deliveryPrice, invoiceType }),
+      };
+    });
+  };
+
+  const updateNewOrderInvoiceType = (value: string) => {
+    const invoiceType = getInvoiceTypeFromPaymentType(value);
+    setNewOrder(prev => {
+      const effectiveInvoiceType = isYandexSplitPayment(prev.paymentType) ? 'full' : invoiceType;
+      const revenue = Number(prev.revenue) || 0;
+      const deliveryPrice = Number(prev.deliveryPrice) || 0;
+      return {
+        ...prev,
+        invoiceType: effectiveInvoiceType,
+        paidAmount: getInvoiceAmount({ revenue, deliveryPrice, invoiceType: effectiveInvoiceType }),
       };
     });
   };
@@ -5910,11 +5934,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
     if (!orderSnapshot.isBlogger) {
       setIsCreatingQr(true);
       try {
-        const amount = getOrderPaymentDue({
-          revenue: orderSnapshot.revenue || 0,
-          deliveryPrice: orderSnapshot.deliveryPrice || 0,
-          paidAmount: orderSnapshot.paidAmount || 0,
-        });
+        const amount = getOrderPaymentDue(orderSnapshot);
         if (amount <= 0) throw new Error('Остаток к оплате 0 ₽');
         const res = await crmFetch(getPaymentCreateEndpoint(orderSnapshot.paymentType), {
           method: 'POST',
@@ -7367,7 +7387,18 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                 </div>
               )}
 
-              {!isNewOrderBlogger && renderNewOrderSelect('Способ оплаты', newOrder.paymentType || '', PAYMENT_TYPE_OPTIONS, updateNewOrderPaymentType, 'Выберите способ оплаты')}
+              {!isNewOrderBlogger && (
+                <div className="grid gap-3 sm:grid-cols-2">
+                  {renderNewOrderSelect('Способ оплаты', newOrder.paymentType || '', PAYMENT_TYPE_OPTIONS, updateNewOrderPaymentType, 'Выберите способ оплаты')}
+                  {renderNewOrderSelect(
+                    'Сумма первого платежа',
+                    getInvoicePaymentLabel(newOrder.invoiceType || 'prepayment'),
+                    INVOICE_PAYMENT_OPTIONS,
+                    updateNewOrderInvoiceType,
+                    'Выберите 100% или 50%',
+                  )}
+                </div>
+              )}
             </div>
           </section>
 
@@ -7780,11 +7811,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                 if (!orderSnapshot.isBlogger) {
                   setIsCreatingQr(true);
                   try {
-                    const amount = getOrderPaymentDue({
-                      revenue: orderSnapshot.revenue || 0,
-                      deliveryPrice: orderSnapshot.deliveryPrice || 0,
-                      paidAmount: orderSnapshot.paidAmount || 0,
-                    });
+                    const amount = getOrderPaymentDue(orderSnapshot);
                     if (amount <= 0) throw new Error('Остаток к оплате 0 ₽');
                     const res = await crmFetch(getPaymentCreateEndpoint(orderSnapshot.paymentType), {
                       method: 'POST',
