@@ -88,6 +88,11 @@ service cloud.firestore {
       allow read, write: if isAuthenticated();
     }
 
+    // Manual links between bank operations and CRM orders are owner-only.
+    match /finance_reconciliations/{document=**} {
+      allow read, write: if isAdmin();
+    }
+
     // Outsourced production journal. Signed-in production staff can add and edit entries.
     match /production_entries/{document=**} {
       allow read, write: if isAuthenticated();
