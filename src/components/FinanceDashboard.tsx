@@ -5,13 +5,15 @@ import {
   Trash2,
   ChevronRight, ChevronLeft, Briefcase, CreditCard,
   Building, UserCheck, Download, RefreshCcw,
-  Wallet, ReceiptText, Lock, ShieldCheck, Factory
+  Wallet, ReceiptText, Lock, ShieldCheck, Factory,
+  Landmark, Scale, PackageCheck, Sparkles, AlertTriangle, CheckCircle2, Link2, FileSpreadsheet, X
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn, formatCurrency } from '../lib/utils';
 import { auth, db, OperationType, handleFirestoreError } from '../firebase';
-import { collection, onSnapshot, doc, query, orderBy, deleteDoc, addDoc, serverTimestamp } from 'firebase/firestore';
+import { collection, onSnapshot, doc, query, orderBy, deleteDoc, addDoc, serverTimestamp, setDoc } from 'firebase/firestore';
 import { BarChart, Bar, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
+import { buildFinanceReport, parseFinanceDate, type FinancePeriod } from '../lib/financeAccounting';
 
 interface FinanceDashboardProps {
   onBack: () => void;
@@ -95,6 +97,8 @@ interface Expense {
   date: Date;
   description: string;
   isRecurring?: boolean;
+  status?: 'planned' | 'paid';
+  paid?: boolean;
 }
 
 const monthNames = ['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'];
@@ -126,9 +130,8 @@ const manualReturnOperations = [
 ];
 
 const normalizeDate = (value: any): Date => {
-  if (value?.toDate) return value.toDate();
-  const date = value ? new Date(value) : new Date();
-  return Number.isNaN(date.getTime()) ? new Date() : date;
+  const date = parseFinanceDate(value);
+  return date.getTime() > 0 ? date : new Date();
 };
 
 const getOrderRevenue = (order: any): number => {
@@ -146,9 +149,11 @@ const isActiveSale = (order: any): boolean => {
 };
 
 export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, userEmail }) => {
-  const [activeTab, setActiveTab] = useState<'dds' | 'calendar' | 'expenses'>('dds');
+  const [activeTab, setActiveTab] = useState<'overview' | 'pnl' | 'dds' | 'balance' | 'unit' | 'reconciliation' | 'bank' | 'calendar' | 'expenses'>('overview');
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [orders, setOrders] = useState<any[]>([]);
+  const [products, setProducts] = useState<any[]>([]);
+  const [reconciliationOverrides, setReconciliationOverrides] = useState<Record<string, string>>({});
   const [tochkaSummary, setTochkaSummary] = useState<TochkaFinanceSummary | null>(null);
   const [tochkaLoading, setTochkaLoading] = useState(false);
   const [tochkaError, setTochkaError] = useState('');
@@ -159,6 +164,7 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
   const [customExpenseCategories, setCustomExpenseCategories] = useState<string[]>([]);
   const [newExpenseCategoryName, setNewExpenseCategoryName] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [expenseEntryMode, setExpenseEntryMode] = useState<'planned' | 'paid'>('paid');
   const [newExpense, setNewExpense] = useState({
     category: 'other' as const,
     amount: '',
@@ -225,11 +231,29 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
       setOrders(ordData);
     });
 
+    const qProducts = query(collection(db, 'products'), orderBy('name', 'asc'));
+    const unsubscribeProducts = onSnapshot(qProducts, (snapshot) => {
+      setProducts(snapshot.docs.map(productDoc => ({ id: productDoc.id, ...productDoc.data() })));
+    });
+
+    const unsubscribeReconciliations = canViewFinance
+      ? onSnapshot(collection(db, 'finance_reconciliations'), (snapshot) => {
+        const next: Record<string, string> = {};
+        snapshot.docs.forEach(item => {
+          const data = item.data();
+          if (data.operationId && data.orderId) next[String(data.operationId)] = String(data.orderId);
+        });
+        setReconciliationOverrides(next);
+      }, error => console.warn('Не удалось загрузить ручную сверку', error))
+      : () => undefined;
+
     return () => {
       unsubscribeExpenses();
       unsubscribeOrders();
+      unsubscribeProducts();
+      unsubscribeReconciliations();
     };
-  }, []);
+  }, [canViewFinance]);
 
   useEffect(() => {
     if (!canViewFinance) return;
@@ -267,7 +291,9 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
         category: newExpense.category,
         amount: Number(newExpense.amount),
         description: newExpense.description,
-        date: new Date(newExpense.date),
+        date: new Date(`${newExpense.date}T12:00:00`),
+        status: expenseEntryMode,
+        paid: expenseEntryMode === 'paid',
         createdAt: serverTimestamp()
       });
       setIsModalOpen(false);
@@ -279,6 +305,32 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
       });
     } catch (err) {
       handleFirestoreError(err, OperationType.CREATE, 'expenses');
+    }
+  };
+
+  const openExpenseModal = (mode: 'planned' | 'paid') => {
+    setExpenseEntryMode(mode);
+    setNewExpense(current => ({
+      ...current,
+      date: mode === 'planned'
+        ? new Date(Date.now() + 86_400_000).toISOString().split('T')[0]
+        : new Date().toISOString().split('T')[0],
+    }));
+    setIsModalOpen(true);
+  };
+
+  const handleMarkExpensePaid = async (expense: Expense) => {
+    try {
+      await setDoc(doc(db, 'expenses', expense.id), {
+        status: 'paid',
+        paid: true,
+        plannedDate: expense.date,
+        date: new Date(),
+        paidAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      }, { merge: true });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, 'expenses');
     }
   };
 
@@ -363,7 +415,7 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
       ensureMonth(operation.date).returns += operation.amount;
     });
 
-    expenses.forEach(expense => {
+    expenses.filter(expense => expense.status !== 'planned' && expense.paid !== false).forEach(expense => {
       ensureMonth(expense.date).expense += Number(expense.amount) || 0;
     });
 
@@ -453,6 +505,64 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
     ? Number(bankBreakdown?.remainingForSelectedOrders)
     : selectedFinancialStats.owed;
   const currentBankBalance = Number(tochkaSummary?.operatingBalance ?? tochkaSummary?.totalBalance ?? 0) || 0;
+  const managementReport = useMemo(() => buildFinanceReport({
+    orders,
+    products,
+    expenses,
+    operations: tochkaSummary?.operations || [],
+    selectedDate: currentDate,
+    period: tochkaPeriod as FinancePeriod,
+    bankBalance: Number(tochkaSummary?.totalBalance) || 0,
+    expenseCategoryOverrides,
+    reconciliationOverrides,
+  }), [orders, products, expenses, tochkaSummary?.operations, tochkaSummary?.totalBalance, currentDate, tochkaPeriod, expenseCategoryOverrides, reconciliationOverrides]);
+
+  const actualManualExpenses = useMemo(() => expenses.filter(expense => expense.status !== 'planned' && expense.paid !== false), [expenses]);
+  const plannedExpenses = useMemo(() => expenses.filter(expense => expense.status === 'planned' || expense.paid === false), [expenses]);
+
+  const saveReconciliation = async (operationId: string, orderId: string) => {
+    const documentId = encodeURIComponent(operationId);
+    if (!orderId) {
+      await deleteDoc(doc(db, 'finance_reconciliations', documentId));
+      return;
+    }
+    await setDoc(doc(db, 'finance_reconciliations', documentId), {
+      operationId,
+      orderId,
+      updatedAt: serverTimestamp(),
+      updatedBy: userEmail || '',
+    }, { merge: true });
+  };
+  const reconciliationOrderOptions = useMemo(() => orders.slice().sort((a, b) => (
+    normalizeDate(b.date || b.orderDate).getTime() - normalizeDate(a.date || a.orderDate).getTime()
+  )), [orders]);
+
+  const exportFinanceCsv = (kind: 'pnl' | 'dds' | 'balance' | 'reconciliation') => {
+    const rows: Array<Array<string | number>> = kind === 'pnl'
+      ? [
+        ['Статья', 'Сумма'],
+        ['Выручка', managementReport.pnl.revenue],
+        ['Возвраты', -managementReport.pnl.returns],
+        ['Чистая выручка', managementReport.pnl.netRevenue],
+        ['Себестоимость', -managementReport.pnl.cogs],
+        ['Валовая прибыль', managementReport.pnl.grossProfit],
+        ['Операционные расходы', -managementReport.pnl.operatingExpenses],
+        ['Чистая прибыль', managementReport.pnl.netProfit],
+      ]
+      : kind === 'dds'
+        ? [['Показатель', 'Сумма'], ['Поступления', managementReport.cashFlow.income], ['Расходы', -managementReport.cashFlow.expenses], ['Возвраты', -managementReport.cashFlow.refunds], ['Чистый денежный поток', managementReport.cashFlow.net]]
+        : kind === 'balance'
+          ? [['Статья', 'Сумма'], ['Деньги', managementReport.balance.cash], ['Дебиторская задолженность', managementReport.balance.receivables], ['Запасы', managementReport.balance.inventory], ['Активы', managementReport.balance.assets], ['Кредиторская задолженность', managementReport.balance.payables], ['Авансы клиентов', managementReport.balance.customerAdvances], ['Капитал', managementReport.balance.equity]]
+          : [['Дата', 'Сумма', 'Описание', 'Заказ', 'Статус'], ...managementReport.reconciliation.rows.map(row => [row.date.toLocaleDateString('ru-RU'), row.amount, row.description, row.orderNumber || '', row.status])];
+    const csv = rows.map(row => row.map(value => `"${String(value).replace(/"/g, '""')}"`).join(';')).join('\n');
+    const blob = new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `finance-${kind}-${currentMonthKey}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
   const flowSteps = [
     {
       label: 'Продажи',
@@ -581,6 +691,21 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
     (tochkaSummary?.operations || []).filter(operation => operation.direction === 'income' && !operation.isInternalTransfer)
   ), [tochkaSummary?.operations]);
   const incomeOperationsTotal = incomeOperations.reduce((sum, operation) => sum + (Number(operation.absAmount) || 0), 0);
+  const calendarYear = currentDate.getFullYear();
+  const calendarMonth = currentDate.getMonth();
+  const calendarDaysInMonth = new Date(calendarYear, calendarMonth + 1, 0).getDate();
+  const calendarLeadingDays = (new Date(calendarYear, calendarMonth, 1).getDay() + 6) % 7;
+  const calendarSlots = Array.from({ length: calendarLeadingDays + calendarDaysInMonth }, (_, index) => (
+    index < calendarLeadingDays ? null : index - calendarLeadingDays + 1
+  ));
+  const startOfToday = new Date();
+  startOfToday.setHours(0, 0, 0, 0);
+  const plannedForCalendarMonth = plannedExpenses.filter(expense => expense.date.getMonth() === calendarMonth && expense.date.getFullYear() === calendarYear);
+  const actualForCalendarMonth = actualManualExpenses.filter(expense => expense.date.getMonth() === calendarMonth && expense.date.getFullYear() === calendarYear);
+  const plannedMonthTotal = plannedForCalendarMonth.reduce((sum, expense) => sum + (Number(expense.amount) || 0), 0);
+  const actualMonthTotal = actualForCalendarMonth.reduce((sum, expense) => sum + (Number(expense.amount) || 0), 0);
+  const overduePlanned = plannedExpenses.filter(expense => expense.date.getTime() < startOfToday.getTime());
+  const overduePlannedTotal = overduePlanned.reduce((sum, expense) => sum + (Number(expense.amount) || 0), 0);
 
   if (!canViewFinance) {
     return (
@@ -621,15 +746,114 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
               <p className="text-[14px] font-medium text-[#6B7280]">Управление денежными потоками и расходами</p>
             </div>
           </div>
-          <button 
-            onClick={() => setIsModalOpen(true)}
-            className="inline-flex h-11 items-center justify-center gap-2 rounded-[8px] bg-[#1F2937] px-5 text-[13px] font-semibold text-white shadow-[0_10px_24px_rgba(31,41,55,0.14)] transition-all hover:bg-[#111827] active:scale-95"
-          >
-            <Plus size={18} />
-            Добавить расход
-          </button>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            <button
+              type="button"
+              onClick={() => openExpenseModal('planned')}
+              className="inline-flex h-11 items-center justify-center gap-2 rounded-[8px] border border-[#D97706] bg-amber-50 px-5 text-[13px] font-semibold text-amber-800 transition-colors hover:bg-amber-100"
+            >
+              <CalendarIcon size={18} />
+              Запланировать платёж
+            </button>
+            <button
+              type="button"
+              onClick={() => openExpenseModal('paid')}
+              className="inline-flex h-11 items-center justify-center gap-2 rounded-[8px] bg-[#1F2937] px-5 text-[13px] font-semibold text-white shadow-[0_10px_24px_rgba(31,41,55,0.14)] transition-colors hover:bg-[#111827]"
+            >
+              <Plus size={18} />
+              Добавить расход
+            </button>
+          </div>
         </div>
 
+        <div className="rounded-[12px] border border-[#E6E9EF] bg-white p-2 shadow-[0_8px_22px_rgba(31,41,55,0.03)]">
+          <div className="flex max-w-full gap-1 overflow-x-auto">
+            {[
+              { id: 'overview', label: 'Главное', icon: Sparkles },
+              { id: 'pnl', label: 'Прибыль', icon: TrendingUp },
+              { id: 'dds', label: 'Движение денег', icon: PieChart },
+              { id: 'reconciliation', label: 'Сверка оплат', icon: Link2 },
+              { id: 'balance', label: 'Баланс', icon: Scale },
+              { id: 'unit', label: 'По товарам', icon: PackageCheck },
+              { id: 'bank', label: 'Банк и операции', icon: Landmark },
+              { id: 'expenses', label: 'Ручные расходы', icon: Trash2 },
+              { id: 'calendar', label: 'Календарь', icon: CalendarIcon },
+            ].map(tab => (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setActiveTab(tab.id as typeof activeTab)}
+                className={cn(
+                  "inline-flex h-10 shrink-0 items-center gap-2 rounded-[8px] px-4 text-[12px] font-bold transition-all",
+                  activeTab === tab.id ? "bg-[#1F2937] text-white shadow-sm" : "text-[#6B7280] hover:bg-[#F6F7F9] hover:text-[#1F2937]"
+                )}
+              >
+                <tab.icon size={15} />
+                {tab.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="flex flex-col gap-3 rounded-[12px] border border-[#E6E9EF] bg-white p-3 shadow-[0_8px_22px_rgba(31,41,55,0.03)] lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="px-1 text-[11px] font-bold uppercase tracking-[0.14em] text-[#9CA3AF]">Период</span>
+            <select
+              value={currentMonthKey}
+              onChange={(event) => {
+                const [year, month] = event.target.value.split('-').map(Number);
+                setCurrentDate(new Date(year, month - 1, 1));
+                setTochkaPeriod('month');
+              }}
+              className="h-10 rounded-[8px] border border-[#E6E9EF] bg-white px-3 text-[13px] font-bold text-[#1F2937] outline-none transition-colors hover:bg-[#F6F7F9] focus:border-[#7D7DE6]"
+            >
+              {monthNames.map((month, index) => {
+                const value = `${currentDate.getFullYear()}-${String(index + 1).padStart(2, '0')}`;
+                return <option key={value} value={value}>{month} {currentDate.getFullYear()}</option>;
+              })}
+            </select>
+            <div className="flex rounded-[8px] border border-[#E6E9EF] bg-[#F6F7F9] p-1">
+              {tochkaPeriodOptions.map(option => (
+                <button
+                  key={option.key}
+                  type="button"
+                  onClick={() => setTochkaPeriod(option.key)}
+                  className={cn(
+                    "h-8 rounded-[6px] px-3 text-[11px] font-bold transition-colors",
+                    tochkaPeriod === option.key ? "bg-white text-[#1F2937] shadow-sm" : "text-[#6B7280] hover:text-[#1F2937]"
+                  )}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="flex items-center justify-between gap-3 lg:justify-end">
+            <div className="text-right">
+              <p className={cn('text-[12px] font-bold', tochkaError ? 'text-red-500' : 'text-emerald-600')}>
+                {tochkaLoading ? 'Обновляем Точка Банк…' : tochkaError ? 'Банк требует внимания' : 'Точка Банк подключён'}
+              </p>
+              <p className="text-[10px] font-semibold text-[#9CA3AF]">Заказы из CRM · деньги по выписке</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setTochkaRefreshKey(key => key + 1)}
+              disabled={tochkaLoading}
+              aria-label="Обновить данные Точка Банка"
+              className={cn('inline-flex h-10 w-10 items-center justify-center rounded-[8px] border border-[#E6E9EF] bg-white text-[#6B7280] hover:bg-[#F6F7F9]', tochkaLoading && 'cursor-wait opacity-60')}
+            >
+              <RefreshCcw size={16} className={tochkaLoading ? 'animate-spin' : ''} />
+            </button>
+          </div>
+        </div>
+
+        {activeTab === 'bank' && (
+          <motion.div
+            initial={{ opacity: 0, y: 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0 }}
+            className="space-y-5"
+          >
         {/* Money Flow Overview */}
         <div className="overflow-hidden rounded-[10px] border border-[#E6E9EF] bg-white shadow-[0_8px_22px_rgba(31,41,55,0.03)]">
           <div className="flex flex-col gap-3 border-b border-[#E6E9EF] px-5 py-4 lg:flex-row lg:items-end lg:justify-between">
@@ -1086,30 +1310,189 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
             </div>
           </div>
         </div>
-
-        {/* Tabs */}
-        <div className="inline-flex max-w-full gap-1 overflow-x-auto rounded-[10px] border border-[#E6E9EF] bg-white p-1 shadow-[0_8px_22px_rgba(31,41,55,0.03)]">
-          {[
-            { id: 'dds', label: 'ДДС (Потоки)', icon: PieChart },
-            { id: 'calendar', label: 'Календарь', icon: CalendarIcon },
-            { id: 'expenses', label: 'Расходы', icon: Trash2 },
-          ].map(tab => (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id as any)}
-              className={cn(
-                "inline-flex h-9 items-center gap-2 rounded-[8px] px-4 text-[11px] font-semibold uppercase tracking-[0.12em] transition-all",
-                activeTab === tab.id ? "bg-[#1F2937] text-white shadow-sm" : "text-[#6B7280] hover:bg-[#F6F7F9] hover:text-[#1F2937]"
-              )}
-            >
-              <tab.icon size={14} />
-              {tab.label}
-            </button>
-          ))}
-        </div>
+          </motion.div>
+        )}
 
         {/* Content */}
         <AnimatePresence mode="wait">
+          {activeTab === 'overview' && (
+            <motion.div
+              layout
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0 }}
+              className="space-y-4"
+            >
+              <div className="overflow-hidden rounded-[14px] border border-[#E6E9EF] bg-white shadow-[0_12px_32px_rgba(31,41,55,0.05)]">
+                <div className="border-b border-[#E6E9EF] px-5 py-5 sm:px-6">
+                  <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#7D7DE6]">Главная цепочка денег</p>
+                  <div className="mt-1 flex flex-col gap-2 lg:flex-row lg:items-end lg:justify-between">
+                    <div>
+                      <h2 className="text-[24px] font-semibold tracking-tight text-[#1F2937]">От заказа до денег на счёте</h2>
+                      <p className="mt-1 text-[12px] font-medium text-[#6B7280]">Слева направо: что продали, что получили, что потратили и что осталось.</p>
+                    </div>
+                    <p className="text-[11px] font-semibold text-[#9CA3AF]">CRM отвечает за продажи · Точка Банк — за фактические деньги</p>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 lg:grid-cols-6">
+                  {[
+                    { number: '01', label: 'Продажи', value: managementReport.pnl.revenue, detail: `${selectedFinancialStats.sales} заказов за период`, source: 'CRM', tone: 'text-[#1F2937]', badge: 'bg-[#EEF0F4] text-[#1F2937]', icon: ReceiptText },
+                    { number: '02', label: 'Получено', value: managementReport.cashFlow.income, detail: 'реальные зачисления', source: 'Точка Банк', tone: 'text-emerald-600', badge: 'bg-emerald-50 text-emerald-700', icon: Landmark },
+                    { number: '03', label: 'К доплате', value: managementReport.balance.receivables, detail: 'долги клиентов', source: 'CRM ↔ Банк', tone: 'text-amber-600', badge: 'bg-amber-50 text-amber-700', icon: Link2 },
+                    { number: '04', label: 'Расходы', value: managementReport.cashFlow.expenses + managementReport.cashFlow.refunds, detail: 'списания и возвраты', source: 'Точка Банк', tone: 'text-red-500', badge: 'bg-red-50 text-red-600', icon: CreditCard },
+                    { number: '05', label: 'Чистая прибыль', value: managementReport.pnl.netProfit, detail: 'после себестоимости', source: 'P&L', tone: managementReport.pnl.netProfit >= 0 ? 'text-emerald-600' : 'text-red-500', badge: managementReport.pnl.netProfit >= 0 ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-600', icon: TrendingUp },
+                    { number: '06', label: 'На счетах', value: managementReport.balance.cash, detail: 'остаток на сегодня', source: 'Точка Банк', tone: managementReport.balance.cash >= 0 ? 'text-indigo-600' : 'text-red-500', badge: 'bg-indigo-50 text-indigo-700', icon: Wallet },
+                  ].map((step, index) => (
+                    <div key={step.label} className="relative border-b border-[#E6E9EF] p-5 last:border-b-0 lg:border-b-0 lg:border-r lg:last:border-r-0">
+                      <div className="flex items-center justify-between gap-3">
+                        <span className={cn('inline-flex h-7 min-w-7 items-center justify-center rounded-full px-2 text-[10px] font-black', step.badge)}>{step.number}</span>
+                        <step.icon size={17} className={step.tone} aria-hidden="true" />
+                      </div>
+                      <p className="mt-5 text-[11px] font-black uppercase tracking-[0.12em] text-[#6B7280]">{step.label}</p>
+                      <p className={cn('mt-2 whitespace-nowrap text-[22px] font-black tracking-tight', step.tone)}>{formatCurrency(step.value)}</p>
+                      <p className="mt-2 text-[11px] font-semibold leading-4 text-[#6B7280]">{step.detail}</p>
+                      <span className="mt-3 inline-flex rounded-full bg-[#F6F7F9] px-2 py-1 text-[9px] font-bold uppercase tracking-[0.1em] text-[#9CA3AF]">{step.source}</span>
+                      {index < 5 && (
+                        <span className="absolute -right-[13px] top-1/2 z-10 hidden h-7 w-7 -translate-y-1/2 items-center justify-center rounded-full border border-[#E6E9EF] bg-white text-[#9CA3AF] lg:flex">
+                          <ChevronRight size={14} />
+                        </span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+
+                <div className="grid grid-cols-1 border-t border-[#E6E9EF] bg-[#FAFAFB] sm:grid-cols-3 sm:divide-x sm:divide-[#E6E9EF]">
+                  <div className="border-b border-[#E6E9EF] px-5 py-4 sm:border-b-0">
+                    <p className="text-[10px] font-bold uppercase tracking-[0.13em] text-[#9CA3AF]">Деньги за период</p>
+                    <p className={cn('mt-1 text-[18px] font-black', managementReport.cashFlow.net >= 0 ? 'text-emerald-600' : 'text-red-500')}>{formatCurrency(managementReport.cashFlow.net)}</p>
+                    <p className="mt-1 text-[10px] font-semibold text-[#6B7280]">поступления минус списания</p>
+                  </div>
+                  <div className="border-b border-[#E6E9EF] px-5 py-4 sm:border-b-0">
+                    <p className="text-[10px] font-bold uppercase tracking-[0.13em] text-[#9CA3AF]">Рентабельность</p>
+                    <p className={cn('mt-1 text-[18px] font-black', managementReport.pnl.netProfit >= 0 ? 'text-emerald-600' : 'text-red-500')}>{managementReport.pnl.netRevenue > 0 ? Math.round(managementReport.pnl.netProfit / managementReport.pnl.netRevenue * 100) : 0}%</p>
+                    <p className="mt-1 text-[10px] font-semibold text-[#6B7280]">доля прибыли в выручке</p>
+                  </div>
+                  <button type="button" onClick={() => setActiveTab('reconciliation')} className="px-5 py-4 text-left transition-colors hover:bg-white">
+                    <p className="text-[10px] font-bold uppercase tracking-[0.13em] text-[#9CA3AF]">Сверено с банком</p>
+                    <p className={cn('mt-1 text-[18px] font-black', managementReport.reconciliation.rate >= 0.9 ? 'text-emerald-600' : 'text-amber-600')}>{Math.round(managementReport.reconciliation.rate * 100)}%</p>
+                    <p className="mt-1 inline-flex items-center gap-1 text-[10px] font-bold text-[#6B7280]">Открыть несверенные <ChevronRight size={12} /></p>
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 gap-3 xl:grid-cols-[1.1fr_0.9fr]">
+                <div className="rounded-[10px] border border-[#E6E9EF] bg-white p-5 shadow-[0_8px_22px_rgba(31,41,55,0.03)]">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-[#6B7280]">CFO Agent</p>
+                      <h3 className="mt-1 text-[20px] font-semibold text-[#1F2937]">Контрольные сигналы периода</h3>
+                    </div>
+                    <Sparkles size={20} className="text-indigo-500" />
+                  </div>
+                  <div className="mt-4 space-y-2">
+                    {managementReport.cfo.warnings.map((warning, index) => (
+                      <div key={`${warning.title}-${index}`} className={cn(
+                        'flex items-start gap-3 rounded-[8px] border p-4',
+                        warning.level === 'critical' ? 'border-red-100 bg-red-50' : warning.level === 'warning' ? 'border-amber-100 bg-amber-50' : 'border-emerald-100 bg-emerald-50'
+                      )}>
+                        {warning.level === 'info'
+                          ? <CheckCircle2 size={18} className="mt-0.5 shrink-0 text-emerald-600" />
+                          : <AlertTriangle size={18} className={cn('mt-0.5 shrink-0', warning.level === 'critical' ? 'text-red-500' : 'text-amber-600')} />}
+                        <div>
+                          <p className="text-[13px] font-bold text-[#1F2937]">{warning.title}</p>
+                          <p className="mt-1 text-[12px] font-medium leading-5 text-[#6B7280]">{warning.message}</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="rounded-[10px] border border-[#E6E9EF] bg-white p-5 shadow-[0_8px_22px_rgba(31,41,55,0.03)]">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-[#6B7280]">Reconciliation</p>
+                      <h3 className="mt-1 text-[20px] font-semibold text-[#1F2937]">Заказы ↔ Точка Банк</h3>
+                    </div>
+                    <span className={cn('text-[24px] font-black', managementReport.reconciliation.rate >= 0.9 ? 'text-emerald-600' : 'text-red-500')}>
+                      {Math.round(managementReport.reconciliation.rate * 100)}%
+                    </span>
+                  </div>
+                  <div className="mt-5 h-3 overflow-hidden rounded-full bg-[#E6E9EF]" role="progressbar" aria-label="Доля сверенных поступлений" aria-valuenow={Math.round(managementReport.reconciliation.rate * 100)} aria-valuemin={0} aria-valuemax={100}>
+                    <div className={cn('h-full rounded-full', managementReport.reconciliation.rate >= 0.9 ? 'bg-emerald-500' : 'bg-red-500')} style={{ width: `${Math.min(100, managementReport.reconciliation.rate * 100)}%` }} />
+                  </div>
+                  <div className="mt-5 grid grid-cols-2 gap-3">
+                    <div className="rounded-[8px] bg-emerald-50 p-3">
+                      <p className="text-[10px] font-bold uppercase text-emerald-700">Сверено</p>
+                      <p className="mt-2 text-[17px] font-black text-emerald-700">{formatCurrency(managementReport.reconciliation.reconciledAmount)}</p>
+                    </div>
+                    <div className="rounded-[8px] bg-red-50 p-3">
+                      <p className="text-[10px] font-bold uppercase text-red-600">Без заказа</p>
+                      <p className="mt-2 text-[17px] font-black text-red-600">{formatCurrency(managementReport.reconciliation.unmatchedAmount)}</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </motion.div>
+          )}
+
+          {activeTab === 'pnl' && (
+            <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="overflow-hidden rounded-[10px] border border-[#E6E9EF] bg-white shadow-[0_8px_22px_rgba(31,41,55,0.03)]">
+              <div className="flex items-center justify-between border-b border-[#E6E9EF] px-5 py-4">
+                <div>
+                  <h3 className="text-[13px] font-semibold uppercase tracking-[0.16em] text-[#1F2937]">Отчёт о прибылях и убытках</h3>
+                  <p className="mt-1 text-[12px] text-[#6B7280]">Метод начисления: выручка по дате заказа, себестоимость из карточек товаров.</p>
+                </div>
+                <button type="button" onClick={() => exportFinanceCsv('pnl')} className="inline-flex h-10 items-center gap-2 rounded-[8px] border border-[#E6E9EF] px-3 text-[12px] font-bold text-[#1F2937] hover:bg-[#F6F7F9]"><FileSpreadsheet size={16} />CSV</button>
+              </div>
+              <div className="divide-y divide-[#E6E9EF]">
+                {[
+                  ['Выручка', managementReport.pnl.revenue, 'text-[#1F2937]'],
+                  ['Возвраты и корректировки', -managementReport.pnl.returns, 'text-red-500'],
+                  ['Чистая выручка', managementReport.pnl.netRevenue, 'text-[#1F2937]'],
+                  ['Себестоимость реализованных товаров', -managementReport.pnl.cogs, 'text-red-500'],
+                  ['Валовая прибыль', managementReport.pnl.grossProfit, 'text-emerald-600'],
+                  ['Операционные расходы', -managementReport.pnl.operatingExpenses, 'text-red-500'],
+                  ['Чистая прибыль', managementReport.pnl.netProfit, managementReport.pnl.netProfit >= 0 ? 'text-emerald-600' : 'text-red-500'],
+                ].map(([label, value, tone], index) => (
+                  <div key={String(label)} className={cn('flex items-center justify-between px-5 py-4', index === 2 || index === 4 || index === 6 ? 'bg-[#F6F7F9]' : '')}>
+                    <span className={cn('text-[13px] text-[#1F2937]', index === 2 || index === 4 || index === 6 ? 'font-black' : 'font-semibold')}>{label}</span>
+                    <span className={cn('text-[14px] font-black', String(tone))}>{formatCurrency(Number(value))}</span>
+                  </div>
+                ))}
+              </div>
+            </motion.div>
+          )}
+
+          {activeTab === 'balance' && (
+            <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="grid grid-cols-1 gap-3 xl:grid-cols-2">
+              {[
+                { title: 'Активы', total: managementReport.balance.assets, rows: [['Деньги на счетах', managementReport.balance.cash], ['Дебиторская задолженность', managementReport.balance.receivables], ['Запасы по себестоимости', managementReport.balance.inventory]], tone: 'text-emerald-600' },
+                { title: 'Обязательства и капитал', total: managementReport.balance.liabilities + managementReport.balance.equity, rows: [['Кредиторская задолженность', managementReport.balance.payables], ['Авансы клиентов', managementReport.balance.customerAdvances], ['Расчётный капитал', managementReport.balance.equity]], tone: 'text-indigo-600' },
+              ].map(column => (
+                <div key={column.title} className="overflow-hidden rounded-[10px] border border-[#E6E9EF] bg-white shadow-[0_8px_22px_rgba(31,41,55,0.03)]">
+                  <div className="flex items-center justify-between border-b border-[#E6E9EF] px-5 py-4"><h3 className="text-[13px] font-bold uppercase tracking-[0.16em] text-[#1F2937]">{column.title}</h3><span className={cn('text-[18px] font-black', column.tone)}>{formatCurrency(column.total)}</span></div>
+                  <div className="divide-y divide-[#E6E9EF]">{column.rows.map(([label, value]) => <div key={String(label)} className="flex items-center justify-between px-5 py-4"><span className="text-[13px] font-semibold text-[#6B7280]">{label}</span><span className="text-[14px] font-black text-[#1F2937]">{formatCurrency(Number(value))}</span></div>)}</div>
+                </div>
+              ))}
+              <div className="xl:col-span-2 flex justify-end"><button type="button" onClick={() => exportFinanceCsv('balance')} className="inline-flex h-10 items-center gap-2 rounded-[8px] border border-[#E6E9EF] bg-white px-3 text-[12px] font-bold text-[#1F2937] hover:bg-[#F6F7F9]"><FileSpreadsheet size={16} />Экспорт баланса</button></div>
+            </motion.div>
+          )}
+
+          {activeTab === 'unit' && (
+            <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="overflow-hidden rounded-[10px] border border-[#E6E9EF] bg-white shadow-[0_8px_22px_rgba(31,41,55,0.03)]">
+              <div className="border-b border-[#E6E9EF] px-5 py-4"><h3 className="text-[13px] font-semibold uppercase tracking-[0.16em] text-[#1F2937]">Юнит-экономика фактических продаж</h3><p className="mt-1 text-[12px] text-[#6B7280]">Цена и маржа считаются по заказам, себестоимость — из каталога товаров.</p></div>
+              <div className="overflow-x-auto"><table className="w-full min-w-[820px]"><thead><tr className="bg-[#F6F7F9]">{['Товар', 'Единиц', 'Ср. цена', 'Себестоимость / ед.', 'Вклад', 'Маржа'].map((label, index) => <th key={label} className={cn('px-5 py-3 text-[10px] font-bold uppercase tracking-[0.12em] text-[#9CA3AF]', index ? 'text-right' : 'text-left')}>{label}</th>)}</tr></thead><tbody className="divide-y divide-[#E6E9EF]">{managementReport.unitEconomics.map(row => <tr key={row.id}><td className="px-5 py-4 text-[13px] font-bold text-[#1F2937]">{row.name}</td><td className="px-5 py-4 text-right text-[13px] font-semibold">{row.units}</td><td className="px-5 py-4 text-right text-[13px] font-semibold">{formatCurrency(row.averagePrice)}</td><td className="px-5 py-4 text-right text-[13px] font-semibold">{formatCurrency(row.unitCost)}</td><td className={cn('px-5 py-4 text-right text-[13px] font-black', row.contribution >= 0 ? 'text-emerald-600' : 'text-red-500')}>{formatCurrency(row.contribution)}</td><td className="px-5 py-4 text-right text-[13px] font-black">{Math.round(row.margin * 100)}%</td></tr>)}{!managementReport.unitEconomics.length && <tr><td colSpan={6} className="px-5 py-10 text-center text-[13px] font-semibold text-[#6B7280]">В выбранном периоде нет продаж с товарами.</td></tr>}</tbody></table></div>
+            </motion.div>
+          )}
+
+          {activeTab === 'reconciliation' && (
+            <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="overflow-hidden rounded-[10px] border border-[#E6E9EF] bg-white shadow-[0_8px_22px_rgba(31,41,55,0.03)]">
+              <div className="flex items-center justify-between border-b border-[#E6E9EF] px-5 py-4"><div><h3 className="text-[13px] font-semibold uppercase tracking-[0.16em] text-[#1F2937]">Сверка банковских поступлений</h3><p className="mt-1 text-[12px] text-[#6B7280]">Точная связь — по номеру заказа; предложение — по уникальной сумме и дате ±7 дней.</p></div><button type="button" onClick={() => exportFinanceCsv('reconciliation')} className="inline-flex h-10 items-center gap-2 rounded-[8px] border border-[#E6E9EF] px-3 text-[12px] font-bold hover:bg-[#F6F7F9]"><FileSpreadsheet size={16} />CSV</button></div>
+              <div className="overflow-x-auto"><table className="w-full min-w-[1120px]"><thead><tr className="bg-[#F6F7F9]">{['Дата', 'Операция банка', 'Сумма', 'Заказ', 'Клиент', 'Статус / ручная связь'].map(label => <th key={label} className="px-5 py-3 text-left text-[10px] font-bold uppercase tracking-[0.12em] text-[#9CA3AF]">{label}</th>)}</tr></thead><tbody className="divide-y divide-[#E6E9EF]">{managementReport.reconciliation.rows.map(row => <tr key={row.operationId}><td className="px-5 py-4 text-[12px] font-semibold text-[#6B7280]">{row.date.toLocaleDateString('ru-RU')}</td><td className="max-w-[320px] truncate px-5 py-4 text-[12px] font-semibold text-[#1F2937]" title={row.description}>{row.description}</td><td className="px-5 py-4 text-[12px] font-black text-emerald-600">{formatCurrency(row.amount)}</td><td className="px-5 py-4 text-[12px] font-bold">{row.orderNumber ? `#${row.orderNumber}` : '—'}</td><td className="px-5 py-4 text-[12px] font-semibold text-[#6B7280]">{row.clientName || '—'}</td><td className="px-5 py-3"><div className="flex min-w-[260px] items-center gap-2"><span className={cn('inline-flex shrink-0 rounded-full px-2.5 py-1 text-[10px] font-bold uppercase', row.status === 'matched' ? 'bg-emerald-50 text-emerald-700' : row.status === 'suggested' ? 'bg-amber-50 text-amber-700' : 'bg-red-50 text-red-600')}>{row.status === 'matched' ? (row.method === 'manual' ? 'Вручную' : 'Сверено') : row.status === 'suggested' ? 'Проверить' : 'Не найдено'}</span><select aria-label={`Связать операцию ${row.operationId} с заказом`} value={reconciliationOverrides[row.operationId] || ''} onChange={(event) => void saveReconciliation(row.operationId, event.target.value).catch(error => handleFirestoreError(error, OperationType.WRITE, 'finance_reconciliations'))} className="h-9 min-w-0 flex-1 rounded-[8px] border border-[#E6E9EF] bg-white px-2 text-[11px] font-semibold text-[#1F2937] outline-none focus:border-[#7D7DE6]"><option value="">Автоматически</option>{reconciliationOrderOptions.map(order => <option key={order.id} value={order.id}>#{order.orderNumber || order.id} · {order.clientName || 'без клиента'} · {formatCurrency(getOrderRevenue(order))}</option>)}</select></div></td></tr>)}{!managementReport.reconciliation.rows.length && <tr><td colSpan={6} className="px-5 py-10 text-center text-[13px] font-semibold text-[#6B7280]">Поступлений для сверки пока нет.</td></tr>}</tbody></table></div>
+            </motion.div>
+          )}
+
           {activeTab === 'dds' && (
             <motion.div
               layout
@@ -1120,8 +1503,24 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
             >
               <div className="overflow-hidden rounded-[10px] border border-[#E6E9EF] bg-white shadow-[0_8px_22px_rgba(31,41,55,0.03)]">
                 <div className="flex items-center justify-between border-b border-[#E6E9EF] px-5 py-4">
-                  <h3 className="text-[13px] font-semibold uppercase tracking-[0.16em] text-[#1F2937]">Движение денежных средств</h3>
-                  <Download size={16} className="text-slate-400 cursor-pointer hover:text-slate-600" />
+                  <div>
+                    <h3 className="text-[13px] font-semibold uppercase tracking-[0.16em] text-[#1F2937]">Отчёт о движении денежных средств</h3>
+                    <p className="mt-1 text-[12px] text-[#6B7280]">Кассовый метод: только фактические операции Точка Банка выбранного периода.</p>
+                  </div>
+                  <button type="button" onClick={() => exportFinanceCsv('dds')} className="inline-flex h-10 items-center gap-2 rounded-[8px] border border-[#E6E9EF] px-3 text-[12px] font-bold text-[#1F2937] hover:bg-[#F6F7F9]"><Download size={16} />CSV</button>
+                </div>
+                <div className="grid grid-cols-1 divide-y divide-[#E6E9EF] sm:grid-cols-4 sm:divide-x sm:divide-y-0">
+                  {[
+                    ['Поступления', managementReport.cashFlow.income, 'text-emerald-600'],
+                    ['Операционные списания', -managementReport.cashFlow.expenses, 'text-red-500'],
+                    ['Возвраты клиентам', -managementReport.cashFlow.refunds, 'text-red-500'],
+                    ['Чистый денежный поток', managementReport.cashFlow.net, managementReport.cashFlow.net >= 0 ? 'text-emerald-600' : 'text-red-500'],
+                  ].map(([label, value, tone]) => <div key={String(label)} className="p-5"><p className="text-[10px] font-bold uppercase tracking-[0.12em] text-[#9CA3AF]">{label}</p><p className={cn('mt-2 text-[20px] font-black', String(tone))}>{formatCurrency(Number(value))}</p></div>)}
+                </div>
+              </div>
+              <div className="overflow-hidden rounded-[10px] border border-[#E6E9EF] bg-white shadow-[0_8px_22px_rgba(31,41,55,0.03)]">
+                <div className="flex items-center justify-between border-b border-[#E6E9EF] px-5 py-4">
+                  <div><h3 className="text-[13px] font-semibold uppercase tracking-[0.16em] text-[#1F2937]">История заказов и оплат CRM</h3><p className="mt-1 text-[12px] text-[#6B7280]">Контрольный регистр по месяцам; банковский ДДС показан выше.</p></div>
                 </div>
                 <div className="overflow-x-auto">
                   <table className="w-full min-w-[1120px] table-fixed">
@@ -1178,8 +1577,8 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
               className="grid grid-cols-1 md:grid-cols-3 gap-8"
             >
               <div className="md:col-span-2 space-y-4">
-                {expenses.length > 0 ? (
-                  expenses.map((expense) => {
+                {actualManualExpenses.length > 0 ? (
+                  actualManualExpenses.map((expense) => {
                     const category = categories[expense.category as keyof typeof categories] || categories.other;
                     return (
                       <div key={expense.id} className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm flex items-center justify-between group hover:border-slate-200 transition-all">
@@ -1222,7 +1621,7 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
                   <h3 className="text-xs font-bold uppercase tracking-widest text-slate-400 mb-6">Категории расходов</h3>
                   <div className="space-y-4">
                     {Object.entries(categories).map(([key, cat]) => {
-                      const total = expenses.filter(e => e.category === key).reduce((a, b) => a + b.amount, 0);
+                      const total = actualManualExpenses.filter(e => e.category === key).reduce((a, b) => a + b.amount, 0);
                       return (
                         <div key={key} className="flex items-center justify-between">
                           <div className="flex items-center gap-2">
@@ -1245,91 +1644,95 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0 }}
+              className="space-y-4"
             >
-              <div className="bg-white rounded-3xl border border-slate-100 shadow-sm overflow-hidden">
-                <div className="p-6 border-b border-slate-50 flex items-center justify-between">
-                  <div className="flex items-center gap-4">
-                    <button onClick={() => {
-                      const newDate = new Date(currentDate);
-                      newDate.setMonth(newDate.getMonth() - 1);
-                      setCurrentDate(newDate);
-                    }} className="p-2 hover:bg-slate-50 rounded-full">
-                      <ChevronLeft size={20} />
-                    </button>
-                    <h3 className="text-sm font-bold uppercase tracking-widest">
-                      {currentDate.toLocaleString('default', { month: 'long', year: 'numeric' })}
-                    </h3>
-                    <button onClick={() => {
-                      const newDate = new Date(currentDate);
-                      newDate.setMonth(newDate.getMonth() + 1);
-                      setCurrentDate(newDate);
-                    }} className="p-2 hover:bg-slate-50 rounded-full">
-                      <ChevronRight size={20} />
-                    </button>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                <div className="rounded-[10px] border border-amber-200 bg-amber-50 p-4">
+                  <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-amber-700">Запланировано на месяц</p>
+                  <p className="mt-2 text-[22px] font-black text-amber-700">{formatCurrency(plannedMonthTotal)}</p>
+                  <p className="mt-1 text-[11px] font-semibold text-amber-800/70">{plannedForCalendarMonth.length} будущих платежей</p>
+                </div>
+                <div className="rounded-[10px] border border-[#E6E9EF] bg-white p-4">
+                  <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-[#6B7280]">Фактические ручные расходы</p>
+                  <p className="mt-2 text-[22px] font-black text-red-500">{formatCurrency(actualMonthTotal)}</p>
+                  <p className="mt-1 text-[11px] font-semibold text-[#6B7280]">без автоматических списаний банка</p>
+                </div>
+                <div className={cn('rounded-[10px] border p-4', overduePlanned.length ? 'border-red-200 bg-red-50' : 'border-emerald-200 bg-emerald-50')}>
+                  <p className={cn('text-[10px] font-bold uppercase tracking-[0.14em]', overduePlanned.length ? 'text-red-600' : 'text-emerald-700')}>Просрочено</p>
+                  <p className={cn('mt-2 text-[22px] font-black', overduePlanned.length ? 'text-red-600' : 'text-emerald-700')}>{formatCurrency(overduePlannedTotal)}</p>
+                  <p className={cn('mt-1 text-[11px] font-semibold', overduePlanned.length ? 'text-red-700/70' : 'text-emerald-800/70')}>{overduePlanned.length ? `${overduePlanned.length} платежей требуют внимания` : 'просроченных платежей нет'}</p>
+                </div>
+              </div>
+
+              <div className="overflow-hidden rounded-[12px] border border-[#E6E9EF] bg-white shadow-[0_8px_22px_rgba(31,41,55,0.03)]">
+                <div className="flex flex-col gap-4 border-b border-[#E6E9EF] p-5 lg:flex-row lg:items-center lg:justify-between">
+                  <div>
+                    <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-[#7D7DE6]">Платёжный календарь</p>
+                    <div className="mt-2 flex items-center gap-2">
+                      <button type="button" aria-label="Предыдущий месяц" onClick={() => setCurrentDate(new Date(calendarYear, calendarMonth - 1, 1))} className="inline-flex h-10 w-10 items-center justify-center rounded-[8px] border border-[#E6E9EF] text-[#6B7280] hover:bg-[#F6F7F9]"><ChevronLeft size={18} /></button>
+                      <h3 className="min-w-[170px] text-center text-[18px] font-semibold capitalize text-[#1F2937]">{currentDate.toLocaleString('ru-RU', { month: 'long', year: 'numeric' })}</h3>
+                      <button type="button" aria-label="Следующий месяц" onClick={() => setCurrentDate(new Date(calendarYear, calendarMonth + 1, 1))} className="inline-flex h-10 w-10 items-center justify-center rounded-[8px] border border-[#E6E9EF] text-[#6B7280] hover:bg-[#F6F7F9]"><ChevronRight size={18} /></button>
+                    </div>
+                  </div>
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+                    <div className="flex flex-wrap gap-x-4 gap-y-2 text-[11px] font-bold text-[#6B7280]">
+                      <span className="inline-flex items-center gap-2"><i className="h-2.5 w-2.5 rounded-full bg-amber-500" />План</span>
+                      <span className="inline-flex items-center gap-2"><i className="h-2.5 w-2.5 rounded-full bg-red-500" />Расход</span>
+                      <span className="inline-flex items-center gap-2"><i className="h-2.5 w-2.5 rounded-full bg-emerald-500" />Приход из банка</span>
+                    </div>
+                    <button type="button" onClick={() => openExpenseModal('planned')} className="inline-flex h-11 items-center justify-center gap-2 rounded-[8px] bg-amber-600 px-4 text-[12px] font-bold text-white transition-colors hover:bg-amber-700"><Plus size={16} />Запланировать платёж</button>
                   </div>
                 </div>
-                <div className="p-4 overflow-x-auto">
-                   <div className="min-w-[800px] space-y-4">
-                     <div className="grid grid-cols-7 gap-2">
-                        {['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'].map(d => (
-                          <div key={d} className="text-center py-2 text-[10px] font-black text-slate-400 uppercase tracking-widest">{d}</div>
-                        ))}
-                     </div>
-                     <div className="grid grid-cols-7 gap-2">
-                        {/* Placeholder for calendar logic - basic view */}
-                        {Array.from({ length: 31 }).map((_, i) => {
-                          const day = i + 1;
-                          const currentDateObj = new Date(currentDate.getFullYear(), currentDate.getMonth(), day);
-                          const dayExpenses = expenses.filter(e => e.date.getDate() === day && e.date.getMonth() === currentDate.getMonth() && e.date.getFullYear() === currentDate.getFullYear());
-                          
-                          const dayOrders = orders.filter(o => {
-                            const oDate = o.date ? new Date(o.date) : null;
-                            return oDate && oDate.getDate() === day && oDate.getMonth() === currentDate.getMonth() && oDate.getFullYear() === currentDate.getFullYear();
-                          });
-                          const dayIncome = dayOrders
-                            .filter(isActiveSale)
-                            .reduce((sum, order) => sum + (Number(order.paidAmount ?? order.paymentAmount ?? order.prepaymentAmount) || 0), 0);
-                          const dayDue = dayOrders
-                            .filter(isActiveSale)
-                            .reduce((sum, order) => {
-                              const revenue = getOrderRevenue(order);
-                              const delivery = Number(order.deliveryPrice ?? order.shippingCost) || 0;
-                              const paid = Number(order.paidAmount ?? order.paymentAmount ?? order.prepaymentAmount) || 0;
-                              return sum + Math.max(0, revenue + delivery - paid);
-                            }, 0);
-                          
-                          return (
-                            <div key={i} className={cn(
-                              "min-h-[100px] p-2 bg-slate-50 border border-slate-100 rounded-xl space-y-2 relative group hover:border-slate-300 transition-all",
-                              dayExpenses.length > 0 && "bg-red-50/20",
-                              dayIncome > 0 && "bg-emerald-50/20"
-                            )}>
-                              <span className="text-[10px] font-bold text-slate-400">{day}</span>
-                              <div className="space-y-1 mt-1">
-                                {dayIncome > 0 && (
-                                  <div className="text-[8px] font-bold text-emerald-600 bg-emerald-100/50 rounded px-1 flex justify-between">
-                                    <span>Опл:</span>
-                                    <span>+{formatCurrency(dayIncome)}</span>
-                                  </div>
-                                )}
-                                {dayDue > 0 && (
-                                  <div className="text-[8px] font-bold text-orange-600 bg-orange-100/60 rounded px-1 flex justify-between">
-                                    <span>Долг:</span>
-                                    <span>{formatCurrency(dayDue)}</span>
-                                  </div>
-                                )}
-                                {dayExpenses.map(e => (
-                                  <div key={e.id} className="text-[8px] font-bold text-red-600 bg-red-100/50 rounded px-1 flex justify-between">
-                                    <span>Р:</span>
-                                    <span>-{formatCurrency(e.amount)}</span>
-                                  </div>
-                                ))}
-                              </div>
+
+                <div className="overflow-x-auto p-4">
+                  <div className="min-w-[920px]">
+                    <div className="grid grid-cols-7 border-b border-[#E6E9EF]">
+                      {['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье'].map(dayName => (
+                        <div key={dayName} className="px-2 py-3 text-center text-[10px] font-bold uppercase tracking-[0.1em] text-[#9CA3AF]">{dayName}</div>
+                      ))}
+                    </div>
+                    <div className="grid grid-cols-7 border-l border-[#E6E9EF]">
+                      {calendarSlots.map((day, index) => {
+                        if (!day) return <div key={`empty-${index}`} className="min-h-[150px] border-b border-r border-[#E6E9EF] bg-[#FAFAFB]" />;
+                        const dayPlanned = plannedForCalendarMonth.filter(expense => expense.date.getDate() === day);
+                        const dayActual = actualForCalendarMonth.filter(expense => expense.date.getDate() === day);
+                        const dayIncome = incomeOperations
+                          .filter(operation => {
+                            const date = normalizeDate(operation.date);
+                            return date.getDate() === day && date.getMonth() === calendarMonth && date.getFullYear() === calendarYear;
+                          })
+                          .reduce((sum, operation) => sum + (Number(operation.absAmount) || 0), 0);
+                        const cellDate = new Date(calendarYear, calendarMonth, day);
+                        const isToday = cellDate.toDateString() === startOfToday.toDateString();
+
+                        return (
+                          <div key={day} className={cn('min-h-[150px] space-y-2 border-b border-r border-[#E6E9EF] bg-white p-2.5', isToday && 'bg-indigo-50/40')}>
+                            <div className="flex items-center justify-between">
+                              <span className={cn('inline-flex h-7 w-7 items-center justify-center rounded-full text-[11px] font-black', isToday ? 'bg-indigo-600 text-white' : 'text-[#6B7280]')}>{day}</span>
+                              {dayPlanned.length > 0 && <span className="text-[9px] font-bold text-amber-700">{dayPlanned.length} в плане</span>}
                             </div>
-                          );
-                        })}
-                     </div>
-                   </div>
+                            <div className="space-y-1.5">
+                              {dayIncome > 0 && <div className="rounded-[6px] border border-emerald-200 bg-emerald-50 px-2 py-1.5 text-[10px] font-bold text-emerald-700"><span className="block text-[9px] uppercase">Приход банка</span>+{formatCurrency(dayIncome)}</div>}
+                              {dayPlanned.map(expense => {
+                                const isOverdue = expense.date.getTime() < startOfToday.getTime();
+                                return (
+                                  <div key={expense.id} className={cn('rounded-[6px] border px-2 py-1.5', isOverdue ? 'border-red-200 bg-red-50' : 'border-amber-200 bg-amber-50')}>
+                                    <p className={cn('truncate text-[9px] font-bold uppercase', isOverdue ? 'text-red-600' : 'text-amber-700')}>{isOverdue ? 'Просрочен' : 'Запланирован'}</p>
+                                    <p className="mt-0.5 truncate text-[10px] font-bold text-[#1F2937]" title={expense.description}>{expense.description}</p>
+                                    <div className="mt-1 flex items-center justify-between gap-1">
+                                      <span className={cn('text-[10px] font-black', isOverdue ? 'text-red-600' : 'text-amber-700')}>{formatCurrency(expense.amount)}</span>
+                                      <button type="button" onClick={() => handleMarkExpensePaid(expense)} className="h-6 rounded-[5px] bg-white px-1.5 text-[9px] font-bold text-[#1F2937] shadow-sm hover:bg-[#F6F7F9]">Оплачен</button>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                              {dayActual.map(expense => <div key={expense.id} className="rounded-[6px] border border-red-200 bg-red-50 px-2 py-1.5 text-[10px] font-bold text-red-600"><span className="block truncate" title={expense.description}>{expense.description}</span>-{formatCurrency(expense.amount)}</div>)}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
                 </div>
               </div>
             </motion.div>
@@ -1352,15 +1755,27 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
               initial={{ opacity: 0, scale: 0.95, y: 20 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: 20 }}
-              className="bg-white w-full max-w-md rounded-[2rem] shadow-2xl relative z-10 overflow-hidden"
+              className="relative z-10 max-h-[calc(100vh-32px)] w-full max-w-md overflow-y-auto rounded-[2rem] bg-white shadow-2xl"
               onClick={(e) => e.stopPropagation()}
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="expense-modal-title"
             >
               <div className="p-8 space-y-6">
                 <div className="flex justify-between items-center">
-                  <h2 className="text-xl font-bold tracking-tight">Новый расход</h2>
-                  <button onClick={() => setIsModalOpen(false)} className="p-2 hover:bg-slate-100 rounded-full transition-colors text-slate-400">
-                    <Trash2 size={20} />
+                  <div>
+                    <p className={cn('text-[10px] font-bold uppercase tracking-[0.14em]', expenseEntryMode === 'planned' ? 'text-amber-600' : 'text-red-500')}>{expenseEntryMode === 'planned' ? 'Будущий платёж' : 'Фактическое списание'}</p>
+                    <h2 id="expense-modal-title" className="mt-1 text-xl font-bold tracking-tight">{expenseEntryMode === 'planned' ? 'Запланировать платёж' : 'Добавить расход'}</h2>
+                  </div>
+                  <button type="button" aria-label="Закрыть форму" onClick={() => setIsModalOpen(false)} className="inline-flex h-11 w-11 items-center justify-center rounded-full text-slate-400 transition-colors hover:bg-slate-100">
+                    <X size={20} />
                   </button>
+                </div>
+
+                <div className={cn('rounded-xl border px-4 py-3 text-[12px] font-semibold leading-5', expenseEntryMode === 'planned' ? 'border-amber-200 bg-amber-50 text-amber-800' : 'border-slate-200 bg-slate-50 text-slate-600')}>
+                  {expenseEntryMode === 'planned'
+                    ? 'Сумма появится в платёжном календаре, но не попадёт в фактические расходы, пока вы не отметите её оплаченной.'
+                    : 'Используйте эту форму, только если расход уже произошёл и деньги действительно списаны.'}
                 </div>
 
                 <div className="space-y-4">
@@ -1387,7 +1802,7 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
                       />
                     </div>
                     <div className="space-y-1.5">
-                      <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400 ml-1">Дата</label>
+                      <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400 ml-1">{expenseEntryMode === 'planned' ? 'Дата платежа' : 'Дата списания'}</label>
                       <input 
                         type="date"
                         value={newExpense.date}
@@ -1420,11 +1835,12 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
                 </div>
 
                 <div className="pt-4">
-                  <button 
+                  <button
+                    type="button"
                     onClick={handleAddExpense}
-                    className="w-full bg-slate-900 text-white py-4 rounded-2xl font-bold uppercase text-[11px] tracking-widest hover:bg-slate-800 transition-all shadow-xl active:scale-95"
+                    className={cn('w-full rounded-2xl py-4 text-[11px] font-bold uppercase tracking-widest text-white shadow-xl transition-colors', expenseEntryMode === 'planned' ? 'bg-amber-600 hover:bg-amber-700' : 'bg-slate-900 hover:bg-slate-800')}
                   >
-                    Зафиксировать расход
+                    {expenseEntryMode === 'planned' ? 'Добавить в календарь' : 'Зафиксировать расход'}
                   </button>
                 </div>
               </div>
