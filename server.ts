@@ -2969,10 +2969,12 @@ async function persistOrderPatch(orderId: string, patch: Record<string, unknown>
   if (adminDb) {
     try {
       const snapshot = await getOrderSnapshot(orderId);
-      const targetId = snapshot && (typeof snapshot.exists === "function" ? snapshot.exists() : snapshot.exists)
-        ? snapshot.id
-        : orderId;
-      await adminDb.collection("orders_new").doc(targetId).set(patch, { merge: true });
+      const exists = snapshot && (typeof snapshot.exists === "function" ? snapshot.exists() : snapshot.exists);
+      if (!exists) {
+        console.warn(`[orders] Patch skipped because CRM order ${orderId} does not exist`);
+        return;
+      }
+      await adminDb.collection("orders_new").doc(snapshot.id).update(patch);
       return;
     } catch (error: any) {
       adminError = error;
@@ -2982,8 +2984,11 @@ async function persistOrderPatch(orderId: string, patch: Record<string, unknown>
   if (db) {
     try {
       const snapshot = await getOrderSnapshot(orderId);
-      const targetId = snapshot?.exists?.() ? snapshot.id : orderId;
-      await updateDoc(doc(db, "orders_new", targetId), patch);
+      if (!snapshot?.exists?.()) {
+        console.warn(`[orders] Patch skipped because CRM order ${orderId} does not exist`);
+        return;
+      }
+      await updateDoc(doc(db, "orders_new", snapshot.id), patch);
       return;
     } catch (error: any) {
       throw new Error(`Не удалось сохранить заказ ${orderId}: ${error?.message || error}`);

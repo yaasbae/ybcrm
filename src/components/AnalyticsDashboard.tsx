@@ -19,6 +19,7 @@ import { emitPushEvent } from '../lib/pushNotifications';
 import { logAuditEvent } from '../lib/auditLog';
 import { isClientPurchaseOrder, normalizeClientPhone } from '../lib/clientMerge';
 import { getExchangeOrderId } from '../lib/orderExchange';
+import { resolveStoredOrderIdentity } from '../lib/orderRecords';
 import { getOrderActionForField, ORDER_ACTION_OPTIONS, useOrderPermissions, type OrderAction } from '../lib/orderPermissions';
 import { crmFetch } from '../lib/crmApi';
 import { db } from '../firebase';
@@ -723,7 +724,9 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
       snapshot.forEach(docSnap => {
         const d = docSnap.data();
         if (d.deleted === true) return;
-        const orderDate = d.date ? new Date(d.date) : new Date();
+        const storedIdentity = resolveStoredOrderIdentity(docSnap.id, d);
+        if (!storedIdentity) return;
+        const orderDate = storedIdentity.date;
         const storedDeadlineDate = d.deadlineDate || d.shipmentDate
           ? new Date(d.deadlineDate || d.shipmentDate)
           : null;
@@ -742,6 +745,7 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
         const isOverdue = !isShipped && !isRefundOrCancelledOrder({ status }) && new Date() > deadlineDate;
         fbOrders.push({
           ...d,
+          orderId: storedIdentity.orderId,
           firestoreId: docSnap.id,
           rawClientPhone: String(d.clientPhone || ''),
           clientPhone: normalizeClientPhone(d.clientPhone),
