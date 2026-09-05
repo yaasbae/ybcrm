@@ -96,6 +96,10 @@ const uniqueContactCount = (entries: ManagerContactEntry[]) => new Set(
   entries.map(entry => String(entry.clientPhone || entry.clientName || entry.id || '').trim()).filter(Boolean)
 ).size;
 
+const contactManagerName = (entry: ManagerContactEntry) => (
+  managerNameForEmail(entry.managerEmail) || String(entry.managerName || '').trim()
+);
+
 const ClientWorkPanel: React.FC<{ data: OrderData[] }> = ({ data }) => {
   const [contacts, setContacts] = useState<ManagerContactEntry[]>([]);
   const [shifts, setShifts] = useState<ManagerShiftRecord[]>([]);
@@ -156,7 +160,7 @@ const ClientWorkPanel: React.FC<{ data: OrderData[] }> = ({ data }) => {
   ));
 
   const managerMetrics = useMemo(() => WORK_MANAGERS.map(manager => {
-    const managerContacts = contacts.filter(entry => String(entry.managerName || '').trim() === manager && String(entry.status || '').trim() !== 'в работе');
+    const managerContacts = contacts.filter(entry => contactManagerName(entry) === manager && String(entry.status || '').trim() !== 'в работе');
     const todayContacts = managerContacts.filter(entry => {
       const date = parseWorkDate(entry.date);
       return date ? localDateKey(date) === todayKey : false;

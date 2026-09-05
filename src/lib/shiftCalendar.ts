@@ -31,6 +31,11 @@ export type ShiftCalendarActivity = ShiftCalendarRecord & {
   credited: boolean;
 };
 
+const FIXED_MANAGER_EMAILS: Record<string, string> = {
+  'yb1@ybcrm.ru': 'Менеджер 1',
+  'yb2@ybcrm.ru': 'Менеджер 2',
+};
+
 const dayKey = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 const monthOf = (date: Date) => dayKey(date).slice(0, 7);
 
@@ -68,9 +73,14 @@ export function buildShiftCalendar(
   const leadingDays = (monthStart.getDay() + 6) % 7;
   const totalCells = Math.ceil((leadingDays + daysInMonth) / 7) * 7;
 
-  const aliases = Object.fromEntries(Object.entries(identityAliases).map(([key, value]) => [String(key).trim().toLowerCase(), String(value).trim()]));
+  const aliases = {
+    ...FIXED_MANAGER_EMAILS,
+    ...Object.fromEntries(Object.entries(identityAliases).map(([key, value]) => [String(key).trim().toLowerCase(), String(value).trim()])),
+  };
   const canonicalManager = (row: { managerName?: string; managerEmail?: string; managerId?: string }) => {
-    const candidates = [row.managerId, row.managerEmail, row.managerName].map(value => String(value || '').trim()).filter(Boolean);
+    // Authenticated email is the strongest identity signal. Older records may
+    // contain a stale managerName after a shared browser session was reused.
+    const candidates = [row.managerEmail, row.managerId, row.managerName].map(value => String(value || '').trim()).filter(Boolean);
     for (const candidate of candidates) {
       const mapped = aliases[candidate.toLowerCase()];
       if (mapped) return mapped;

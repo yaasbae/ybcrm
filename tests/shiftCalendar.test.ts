@@ -47,3 +47,26 @@ test('joins an email contact to manager 2 using the authenticated profile alias'
   assert.equal(day?.shifts[0].contacts, 1);
   assert.equal(day?.shifts[0].missingStart, false);
 });
+
+test('uses the authenticated manager email when a saved display name is stale', () => {
+  const contacts = [{
+    id: 'manager-2-contact',
+    managerName: 'Менеджер 1',
+    managerEmail: 'yb2@ybcrm.ru',
+    date: '2026-09-05T10:00:00',
+    status: 'написали',
+  }];
+  const shifts = [{
+    id: 'manager-2-shift',
+    managerName: 'Менеджер 1',
+    managerEmail: 'yb2@ybcrm.ru',
+    dateKey: '2026-09-05',
+    startedAt: '2026-09-05T08:00:00',
+  }];
+  const calendar = buildShiftCalendar('2026-09', contacts, shifts);
+  const day = calendar.days.find(row => row.key === '2026-09-05');
+  assert.equal(day?.shifts[0].manager, 'Менеджер 2');
+  assert.equal(day?.shifts[0].contacts, 1);
+  assert.equal(calendar.managers.find(row => row.manager === 'Менеджер 2')?.contacts, 1);
+  assert.equal(calendar.managers.find(row => row.manager === 'Менеджер 1')?.contacts, 0);
+});
