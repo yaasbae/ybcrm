@@ -394,6 +394,7 @@ type PushEventType =
   | "order_created"
   | "instagram_message"
   | "payment_received"
+  | "payment_refunded"
   | "cdek_status_changed"
   | "payment_due"
   | "order_overdue"
@@ -425,6 +426,7 @@ type PushEventData = {
 
 const PUSH_EVENT_TYPES = new Set<PushEventType>([
   "order_created", "instagram_message", "payment_received", "cdek_status_changed",
+  "payment_refunded",
   "payment_due", "order_overdue", "manager_assigned",
   "order_status_changed", "manager_shift_started", "production_changed", "stock_changed",
 ]);
@@ -882,6 +884,7 @@ function pushContent(type: PushEventType, data: PushEventData) {
     case "order_created": return { title: "Новый заказ", body: `${order}${client ? ` · ${client}` : ""}`, url: pushOrderUrl(data.orderId) };
     case "instagram_message": return { title: "Новое сообщение Instagram", body: `${client || "Клиент"}${data.message ? `: ${String(data.message).slice(0, 110)}` : ""}`, url: `/instagram${data.conversationId ? `?conversation=${encodeURIComponent(data.conversationId)}` : ""}` };
     case "payment_received": return { title: "Оплата получена", body: `${order}${amount ? ` · ${amount.toLocaleString("ru-RU")} ₽` : ""}`, url: pushOrderUrl(data.orderId) };
+    case "payment_refunded": return { title: "Платёж возвращён", body: `${order}${amount ? ` · ${amount.toLocaleString("ru-RU")} ₽` : ""}`, url: pushOrderUrl(data.orderId) };
     case "cdek_status_changed": return { title: `СДЭК: ${data.status || "статус изменён"}`, body: `${order}${data.cdekNumber ? ` · накладная ${data.cdekNumber}` : ""}`, url: pushOrderUrl(data.orderId) };
     case "payment_due": return { title: "Нужна доплата", body: `${order}${amount ? ` · осталось ${amount.toLocaleString("ru-RU")} ₽` : ""}`, url: pushOrderUrl(data.orderId) };
     case "order_overdue": return { title: "Заказ просрочен", body: `${order}${data.deadline ? ` · срок ${data.deadline}` : ""}`, url: pushOrderUrl(data.orderId) };
@@ -920,7 +923,7 @@ async function dispatchPushEvent(type: PushEventType, eventId: string, data: Pus
       ? "production"
       : type === "stock_changed"
         ? "stock"
-    : type === "payment_received" || type === "payment_due"
+    : type === "payment_received" || type === "payment_refunded" || type === "payment_due"
       ? "payments"
       : type === "cdek_status_changed"
         ? "cdek"
@@ -7757,6 +7760,20 @@ async function requireFinanceOwner(req: any, res: any) {
   }
 }
 
+async function requireRefundOwner(req: any, res: any) {
+  const decoded: any = await requireCrmUser(req, res);
+  if (!decoded) return null;
+  const email = String(decoded.email || '').trim().toLowerCase();
+  if (email !== FINANCE_OWNER_EMAIL) {
+    res.status(403).json({
+      error: 'Возврат платежей доступен только владельцу CRM',
+      code: 'refund_owner_only',
+    });
+    return null;
+  }
+  return decoded;
+}
+
 function decodeJwtPayload(token: string) {
   try {
     const payloadPart = String(token || '').split('.')[1];
@@ -8988,6 +9005,22 @@ function isTochkaPaidStatus(status: any) {
   return ['paid', 'approved', 'accepted', 'completed', 'succeeded', 'success', 'done'].some(item => normalized.includes(item));
 }
 
+function isRefundCompletedStatus(status: any) {
+  const normalized = String(status || '').trim().toLowerCase();
+  return ['accepted', 'refunded', 'completed', 'succeeded', 'success', 'done'].includes(normalized);
+}
+
+function isRefundRejectedStatus(status: any) {
+  const normalized = String(status || '').trim().toLowerCase();
+  return ['rejected', 'failed', 'error', 'cancelled', 'canceled'].includes(normalized);
+}
+
+function getOrderStatusForRefund(status: any) {
+  if (isRefundCompletedStatus(status)) return 'Вернули платёж';
+  if (isRefundRejectedStatus(status)) return 'Ошибка возврата';
+  return 'Возврат ожидает подтверждения';
+}
+
 function getTochkaPaymentTarget(orderId: any, kind?: any) {
   const paymentLinkId = String(orderId || '').trim();
   const explicitFinal = String(kind || '').toLowerCase() === 'final';
@@ -9120,6 +9153,14 @@ async function findTochkaSbpPaymentByQr(
     timeout: 20000,
   });
   return findAcceptedSbpPaymentByQr(normalizeTochkaList(response.data), qrcId);
+}
+
+async function getTochkaRefundData(token: string, requestId: string) {
+  const response = await axios.get(`${TOCHKA_API}/sbp/v1.0/refund/${encodeURIComponent(requestId)}`, {
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    timeout: 20000,
+  });
+  return response.data || {};
 }
 
 // Сохранить JWT токен Точки
@@ -9440,7 +9481,7 @@ app.get('/api/yandex-pay/find-payment', async (req, res) => {
 });
 
 app.post('/api/yandex-pay/refund-payment', async (req, res) => {
-  const actor: any = await requireCrmOrderAction(req, res, 'refund');
+  const actor: any = await requireRefundOwner(req, res);
   if (!actor) return;
   const orderId = String(req.body?.orderId || '').trim();
   const target = getYandexPaymentTarget(orderId);
@@ -9502,7 +9543,7 @@ app.post('/api/yandex-pay/refund-payment', async (req, res) => {
     };
     const patch = {
       ...scopedPatch,
-      status: 'Вернули платёж',
+      status: getOrderStatusForRefund(refundStatus),
       refundAmount: previousRefundAmount + refundAmount,
       refundStatus,
       refundId,
@@ -9512,6 +9553,14 @@ app.post('/api/yandex-pay/refund-payment', async (req, res) => {
       paymentAccountingVersion: 2,
     };
     await persistOrderPatch(target.cleanOrderId, patch);
+    if (isRefundCompletedStatus(refundStatus)) {
+      await dispatchPushEvent('payment_refunded', `yandex-refund:${refundId}:${refundStatus}`, {
+        orderId: target.cleanOrderId,
+        clientName: order.clientName,
+        amount: refundAmount,
+        status: refundStatus,
+      }).catch(() => null);
+    }
     await writeAuditLog({
       action: 'yandex_payment_refunded',
       entityType: 'order',
@@ -10040,7 +10089,47 @@ app.post('/api/tochka/reconcile-payments', async (_req, res) => {
         results.push({ orderId: id, paymentStatus: patch.paymentStatus, finalPaymentStatus: patch.finalPaymentStatus });
       }
     }
-    res.json({ success: true, checked: candidates.length, updated: results.length, results });
+    const refundCandidates = orders.filter(({ data }) => {
+      const refundId = String(data?.refundId || '').trim();
+      const status = data?.refundStatus;
+      return refundId && !isRefundCompletedStatus(status) && !isRefundRejectedStatus(status);
+    }).slice(0, 60);
+    const refundResults: any[] = [];
+    for (const { id, data } of refundCandidates) {
+      const refundId = String(data.refundId || '').trim();
+      const statusData = await getTochkaRefundData(token, refundId).catch(() => null);
+      if (!statusData) continue;
+      const refundStatus = statusData.status || statusData.data?.status || statusData.Data?.status || data.refundStatus;
+      if (!refundStatus || refundStatus === data.refundStatus) continue;
+      const confirmedAt = new Date().toISOString();
+      const patch: Record<string, any> = {
+        refundStatus,
+        status: getOrderStatusForRefund(refundStatus),
+        refundResponse: JSON.stringify(statusData).slice(0, 2000),
+        ...(isRefundCompletedStatus(refundStatus) ? { refundConfirmedAt: confirmedAt } : {}),
+      };
+      if (String(data.mainRefundId || '') === refundId) patch.mainRefundStatus = refundStatus;
+      if (String(data.finalRefundId || '') === refundId) patch.finalRefundStatus = refundStatus;
+      await persistOrderPatch(id, patch);
+      if (isRefundCompletedStatus(refundStatus)) {
+        await dispatchPushEvent('payment_refunded', `tochka-refund:${refundId}:${refundStatus}`, {
+          orderId: id,
+          clientName: data.clientName,
+          amount: Number(data.refundAmount) || 0,
+          status: refundStatus,
+        }).catch(() => null);
+      }
+      refundResults.push({ orderId: id, refundId, refundStatus });
+    }
+    res.json({
+      success: true,
+      checked: candidates.length,
+      updated: results.length,
+      results,
+      refundChecked: refundCandidates.length,
+      refundUpdated: refundResults.length,
+      refundResults,
+    });
   } catch (e: any) {
     res.status(e.response?.status || 500).json({ error: e.message, details: e.response?.data });
   }
@@ -10048,7 +10137,7 @@ app.post('/api/tochka/reconcile-payments', async (_req, res) => {
 
 // Возврат оплаты через СБП Точки по QR и идентификатору исходной транзакции.
 app.post('/api/tochka/refund-payment', async (req, res) => {
-  const actor: any = await requireCrmOrderAction(req, res, 'refund');
+  const actor: any = await requireRefundOwner(req, res);
   if (!actor) return;
   const { orderId, operationId, amount, reason, kind } = req.body || {};
   const refundAmount = Number(amount);
@@ -10189,7 +10278,7 @@ app.post('/api/tochka/refund-payment', async (req, res) => {
       }
     );
 
-    const refundData = response.data || {};
+    let refundData = response.data || {};
     const refundId = refundData.requestId
       || refundData.Data?.requestId
       || refundData.operationId
@@ -10198,7 +10287,17 @@ app.post('/api/tochka/refund-payment', async (req, res) => {
       || refundData.Data?.operationId
       || refundData.Data?.refundOperationId
       || null;
-    const refundStatus = refundData.status || refundData.data?.status || refundData.Data?.status || 'refund_requested';
+    let refundStatus = refundData.status || refundData.data?.status || refundData.Data?.status || 'refund_requested';
+    if (refundId && !isRefundCompletedStatus(refundStatus) && !isRefundRejectedStatus(refundStatus)) {
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        await wait(800);
+        const statusData = await getTochkaRefundData(token, String(refundId)).catch(() => null);
+        if (!statusData) continue;
+        refundData = statusData;
+        refundStatus = statusData.status || statusData.data?.status || statusData.Data?.status || refundStatus;
+        if (isRefundCompletedStatus(refundStatus) || isRefundRejectedStatus(refundStatus)) break;
+      }
+    }
     const refundedAt = new Date().toISOString();
     const previousScopedRefunds = (Number(order.mainRefundAmount) || 0) + (Number(order.finalRefundAmount) || 0);
     const previousRefundAmount = previousScopedRefunds || Number(order.refundAmount) || 0;
@@ -10215,7 +10314,7 @@ app.post('/api/tochka/refund-payment', async (req, res) => {
     };
     const refundFields = {
       ...scopedFields,
-      status: 'Вернули платёж',
+      status: getOrderStatusForRefund(refundStatus),
       refundAmount: previousRefundAmount + refundAmount,
       refundStatus,
       refundId,
@@ -10228,6 +10327,14 @@ app.post('/api/tochka/refund-payment', async (req, res) => {
     };
 
     await persistOrderPatch(cleanOrderId, refundFields);
+    if (isRefundCompletedStatus(refundStatus)) {
+      await dispatchPushEvent('payment_refunded', `tochka-refund:${refundId}:${refundStatus}`, {
+        orderId: cleanOrderId,
+        clientName: order.clientName,
+        amount: refundAmount,
+        status: refundStatus,
+      }).catch(() => null);
+    }
     await writeTochkaLog({
       orderId: cleanOrderId,
       paymentId: cleanOperationId,

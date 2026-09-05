@@ -829,7 +829,8 @@ const shareCustomerOrderPdfById = async (
   const blob = await fetchCustomerOrderPdfById(orderId, onStatus);
   const file = new File([blob], `YAASBAE-order-${orderId}.pdf`, { type: 'application/pdf' });
   const nav = navigator as Navigator & { canShare?: (data: ShareData & { files?: File[] }) => boolean };
-  const canShareFile = Boolean(nav.share && nav.canShare?.({ files: [file] }));
+  const isMobileShareSheet = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+  const canShareFile = Boolean(isMobileShareSheet && nav.share && nav.canShare?.({ files: [file] }));
 
   if (canShareFile && nav.share) {
     onStatus?.('Выберите Telegram и отправьте PDF…');
@@ -1041,6 +1042,7 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
   const [manualConfirmationRequired, setManualConfirmationRequired] = useState(false);
   const qrRef = useRef<HTMLDivElement>(null);
   const finalQrRef = useRef<HTMLDivElement>(null);
+  const isRefundOwner = String(auth.currentUser?.email || '').trim().toLowerCase() === 'ndtiger86@gmail.com';
 
   const pageUrl = buildPaymentPageUrl(order.orderId);
   const targetPaymentUrl = paymentUrl || pageUrl;
@@ -1454,7 +1456,7 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
           )}
         </>
       )}
-      {showMainRefundAction && !mainRefunded && (
+      {isRefundOwner && showMainRefundAction && !mainRefunded && (
         <button
           type="button"
           onClick={() => refundPayment('main')}
@@ -1519,7 +1521,7 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
             </button>
           )}
           {finalError && <p className="mt-1 text-[8px] font-bold text-red-500">{finalError}</p>}
-          {finalPaymentPaid && !finalRefunded && (
+          {isRefundOwner && finalPaymentPaid && !finalRefunded && (
             <button
               type="button"
               onClick={() => refundPayment('final')}
@@ -3659,6 +3661,7 @@ const OrderCard = React.memo(({
   const [showMobileFinalQr, setShowMobileFinalQr] = useState(false);
   const mobileQrRef = useRef<HTMLDivElement>(null);
   const mobileFinalQrRef = useRef<HTMLDivElement>(null);
+  const isRefundOwner = String(auth.currentUser?.email || '').trim().toLowerCase() === 'ndtiger86@gmail.com';
   const paymentUrl = mobilePaymentUrl;
   const isMobileSplitPayment = isYandexSplitPayment(order.paymentType);
   const isMobileYandexProvider = isMobileSplitPayment || order.paymentProvider === 'yandex_split';
@@ -4506,7 +4509,7 @@ const OrderCard = React.memo(({
             {mobilePaymentError && (
               <p className="text-[9px] font-bold text-red-500">{mobilePaymentError}</p>
             )}
-            {showMobileMainRefundAction && !mobileMainRefunded && (
+            {isRefundOwner && showMobileMainRefundAction && !mobileMainRefunded && (
               <button
                 type="button"
                 onClick={() => refundMobilePayment('main')}
@@ -4633,7 +4636,7 @@ const OrderCard = React.memo(({
             {mobileFinalPaymentError && (
               <p className="mt-1 text-[9px] font-bold text-red-500">{mobileFinalPaymentError}</p>
             )}
-            {finalPaymentPaid && !mobileFinalRefunded && (
+            {isRefundOwner && finalPaymentPaid && !mobileFinalRefunded && (
               <button
                 type="button"
                 onClick={() => refundMobilePayment('final')}

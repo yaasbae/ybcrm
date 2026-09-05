@@ -7,6 +7,7 @@ export type PushEventType =
   | 'order_created'
   | 'instagram_message'
   | 'payment_received'
+  | 'payment_refunded'
   | 'cdek_status_changed'
   | 'payment_due'
   | 'order_overdue'
