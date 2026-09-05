@@ -1470,17 +1470,67 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
           )}
 
           {activeTab === 'balance' && (
-            <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="grid grid-cols-1 gap-3 xl:grid-cols-2">
-              {[
-                { title: 'Активы', total: managementReport.balance.assets, rows: [['Деньги на счетах', managementReport.balance.cash], ['Дебиторская задолженность', managementReport.balance.receivables], ['Запасы по себестоимости', managementReport.balance.inventory]], tone: 'text-emerald-600' },
-                { title: 'Обязательства и капитал', total: managementReport.balance.liabilities + managementReport.balance.equity, rows: [['Кредиторская задолженность', managementReport.balance.payables], ['Авансы клиентов', managementReport.balance.customerAdvances], ['Расчётный капитал', managementReport.balance.equity]], tone: 'text-indigo-600' },
-              ].map(column => (
-                <div key={column.title} className="overflow-hidden rounded-[10px] border border-[#E6E9EF] bg-white shadow-[0_8px_22px_rgba(31,41,55,0.03)]">
-                  <div className="flex items-center justify-between border-b border-[#E6E9EF] px-5 py-4"><h3 className="text-[13px] font-bold uppercase tracking-[0.16em] text-[#1F2937]">{column.title}</h3><span className={cn('text-[18px] font-black', column.tone)}>{formatCurrency(column.total)}</span></div>
-                  <div className="divide-y divide-[#E6E9EF]">{column.rows.map(([label, value]) => <div key={String(label)} className="flex items-center justify-between px-5 py-4"><span className="text-[13px] font-semibold text-[#6B7280]">{label}</span><span className="text-[14px] font-black text-[#1F2937]">{formatCurrency(Number(value))}</span></div>)}</div>
+            <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="space-y-3">
+              <div className="rounded-[12px] border border-indigo-200 bg-indigo-50/60 p-5">
+                <div className="flex items-start gap-3">
+                  <div className="mt-0.5 rounded-[8px] bg-white p-2 text-indigo-600 shadow-sm"><Scale size={18} /></div>
+                  <div>
+                    <p className="text-[10px] font-black uppercase tracking-[0.16em] text-indigo-600">Как читать этот отчёт</p>
+                    <h3 className="mt-1 text-[19px] font-semibold text-[#1F2937]">Баланс — это снимок того, что есть у бизнеса и кому принадлежат эти деньги</h3>
+                    <p className="mt-2 max-w-4xl text-[12px] font-medium leading-5 text-[#6B7280]">Слева показано, что сейчас есть у бизнеса. Справа — что из этого мы должны поставщикам или клиентам, а что остаётся бизнесу. Это расчёт CRM по имеющимся данным, а не официальный бухгалтерский баланс.</p>
+                  </div>
                 </div>
-              ))}
-              <div className="xl:col-span-2 flex justify-end"><button type="button" onClick={() => exportFinanceCsv('balance')} className="inline-flex h-10 items-center gap-2 rounded-[8px] border border-[#E6E9EF] bg-white px-3 text-[12px] font-bold text-[#1F2937] hover:bg-[#F6F7F9]"><FileSpreadsheet size={16} />Экспорт баланса</button></div>
+              </div>
+
+              <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
+                {[
+                  {
+                    title: 'Что есть у бизнеса',
+                    accountingTitle: 'Активы',
+                    total: managementReport.balance.assets,
+                    formula: 'деньги + долги клиентов + остатки товаров',
+                    rows: [
+                      { label: 'Деньги на счетах', value: managementReport.balance.cash, description: 'Фактические текущие остатки всех счетов Точка Банка, включая отложенные средства.', source: 'Источник: Точка Банк' },
+                      { label: 'Клиенты должны нам', accounting: 'Дебиторская задолженность', value: managementReport.balance.receivables, description: 'Неоплаченная часть заказов выбранного периода.', source: 'Формула: стоимость активных заказов − подтверждённые оплаты' },
+                      { label: 'Товары на складе', accounting: 'Запасы по себестоимости', value: managementReport.balance.inventory, description: 'Сколько нам стоили товары, которые сейчас числятся в остатках. Это не цена их будущей продажи.', source: 'Формула: остаток товара × себестоимость из карточки' },
+                    ],
+                    tone: 'text-emerald-600',
+                  },
+                  {
+                    title: 'Что мы должны и что остаётся',
+                    accountingTitle: 'Обязательства и расчётный капитал',
+                    total: managementReport.balance.liabilities + managementReport.balance.equity,
+                    formula: 'долги бизнеса + авансы клиентов + расчётный остаток',
+                    rows: [
+                      { label: 'Мы должны оплатить', accounting: 'Кредиторская задолженность', value: managementReport.balance.payables, description: 'Запланированные, но ещё не отмеченные оплаченными расходы выбранного периода.', source: 'Источник: платёжный календарь' },
+                      { label: 'Получили аванс от клиентов', accounting: 'Авансы клиентов', value: managementReport.balance.customerAdvances, description: 'Клиент уже заплатил, но заказ ещё новый или находится в производстве. До выполнения заказа эти деньги считаются нашим обязательством.', source: 'Источник: подтверждённые оплаты заказов' },
+                      { label: 'Остаётся бизнесу по расчёту', accounting: 'Расчётный капитал', value: managementReport.balance.equity, description: 'Технический остаток, который уравнивает две стороны отчёта. Это не прибыль и не сумма, которую можно вывести.', source: 'Формула: активы − наши долги − авансы клиентов' },
+                    ],
+                    tone: 'text-indigo-600',
+                  },
+                ].map(column => (
+                  <div key={column.title} className="overflow-hidden rounded-[10px] border border-[#E6E9EF] bg-white shadow-[0_8px_22px_rgba(31,41,55,0.03)]">
+                    <div className="border-b border-[#E6E9EF] px-5 py-4">
+                      <div className="flex items-start justify-between gap-4">
+                        <div><h3 className="text-[13px] font-bold uppercase tracking-[0.12em] text-[#1F2937]">{column.title}</h3><p className="mt-1 text-[10px] font-semibold text-[#9CA3AF]">Бухгалтерское название: {column.accountingTitle}</p></div>
+                        <span className={cn('whitespace-nowrap text-[18px] font-black', column.tone)}>{formatCurrency(column.total)}</span>
+                      </div>
+                      <p className="mt-3 rounded-[7px] bg-[#F6F7F9] px-3 py-2 text-[11px] font-semibold text-[#6B7280]">Итого = {column.formula}</p>
+                    </div>
+                    <div className="divide-y divide-[#E6E9EF]">{column.rows.map(row => (
+                      <div key={row.label} className="px-5 py-4">
+                        <div className="flex items-start justify-between gap-4"><div><p className="text-[13px] font-bold text-[#1F2937]">{row.label}</p>{row.accounting && <p className="mt-0.5 text-[10px] font-semibold text-[#9CA3AF]">В отчётности: {row.accounting}</p>}</div><span className="whitespace-nowrap text-[14px] font-black text-[#1F2937]">{formatCurrency(Number(row.value))}</span></div>
+                        <p className="mt-2 text-[11px] font-medium leading-4 text-[#6B7280]">{row.description}</p>
+                        <p className="mt-1 text-[10px] font-bold text-indigo-600">{row.source}</p>
+                      </div>
+                    ))}</div>
+                  </div>
+                ))}
+              </div>
+              <div className="flex flex-col gap-2 rounded-[10px] border border-amber-200 bg-amber-50 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+                <p className="text-[11px] font-semibold leading-4 text-amber-900"><strong>Важно:</strong> если оплаты банка ещё не связаны с заказами, строка «Клиенты должны нам» может быть завышена. Сначала проверьте вкладку «Сверка оплат».</p>
+                <button type="button" onClick={() => exportFinanceCsv('balance')} className="inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-[8px] border border-amber-300 bg-white px-3 text-[12px] font-bold text-[#1F2937] hover:bg-amber-100"><FileSpreadsheet size={16} />Экспорт баланса</button>
+              </div>
             </motion.div>
           )}
 
