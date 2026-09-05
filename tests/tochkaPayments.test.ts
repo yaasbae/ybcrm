@@ -2,10 +2,24 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  findAcceptedSbpPaymentByQr,
   findSbpStatementPayment,
   formatTochkaRefundAmount,
   getTochkaRefundAccount,
 } from '../src/lib/tochkaPayments.ts';
+
+test('finds the accepted SBP payment and its refund transaction id', () => {
+  const payment = findAcceptedSbpPaymentByQr([
+    { qrcId: 'OTHER', status: 'Accepted', refTransactionId: 'wrong' },
+    {
+      qrcId: 'AD20107UNSMRIBEV9F2B8G2TNLEBQP9D',
+      status: 'Accepted',
+      refTransactionId: '0036f5c9-8ac9-27ed-530d-4a248e4452c4',
+    },
+  ], 'AD20107UNSMRIBEV9F2B8G2TNLEBQP9D');
+
+  assert.equal(payment?.refTransactionId, '0036f5c9-8ac9-27ed-530d-4a248e4452c4');
+});
 
 test('formats the composite account id for the Tochka refund API', () => {
   assert.deepEqual(getTochkaRefundAccount('40802810220000613147/044525104'), {

@@ -4,6 +4,15 @@ export type TochkaStatementPaymentMatch = {
   bankTransactionId: string;
 };
 
+export type TochkaSbpPayment = {
+  qrcId?: string;
+  status?: string;
+  trxId?: string;
+  operationId?: string;
+  refTransactionId?: string;
+  [key: string]: any;
+};
+
 export const getTochkaRefundAccount = (accountId: string, configuredBankCode = '') => {
   const [accountCode = '', bankCodeFromAccount = ''] = String(accountId || '').trim().split('/');
   return {
@@ -15,6 +24,20 @@ export const getTochkaRefundAccount = (accountId: string, configuredBankCode = '
 export const formatTochkaRefundAmount = (amount: number) => (
   (Math.round(Number(amount || 0) * 100) / 100).toFixed(2)
 );
+
+export const findAcceptedSbpPaymentByQr = (
+  payments: TochkaSbpPayment[],
+  qrcId: string,
+) => {
+  const cleanQrcId = String(qrcId || '').trim().toLowerCase();
+  if (!cleanQrcId || !Array.isArray(payments)) return null;
+  const matching = payments.filter(payment => (
+    String(payment?.qrcId || '').trim().toLowerCase() === cleanQrcId
+  ));
+  return matching.find(payment => String(payment?.status || '').toLowerCase() === 'accepted')
+    || matching[0]
+    || null;
+};
 
 const operationAmount = (operation: any) => Number(
   operation?.Amount?.amount

@@ -20,7 +20,7 @@ export const isPrepaymentOrder = (order: PaymentOrder) => {
 
 export const isRefundOrCancelledOrder = (order: StatusOrder) => {
   const status = String(order.status || '').trim().toLowerCase();
-  return status.includes('возврат') || status.includes('отмена');
+  return status.includes('возврат') || status.includes('вернули платёж') || status.includes('отмена');
 };
 
 export const isOverdueOrder = (order: StatusOrder & { isOverdue?: unknown; isShipped?: unknown }) =>

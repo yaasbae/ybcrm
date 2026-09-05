@@ -41,6 +41,7 @@ import { normalizeTelegramPhone, telegramDelivery, telegramAuthError } from "./s
 import { normalizeBotSubscriberIds, validateBotBroadcastMessage } from "./src/lib/botBroadcast.ts";
 import { resolveOrderActions, type OrderAction } from "./src/lib/orderPermissionConfig.ts";
 import {
+  findAcceptedSbpPaymentByQr,
   findSbpStatementPayment,
   formatTochkaRefundAmount,
   getTochkaRefundAccount,
@@ -7868,6 +7869,7 @@ function normalizeTochkaList(data: any): any[] {
     data?.data?.statement?.transactions,
     data?.data?.statement?.operations,
     data?.Data?.payments,
+    data?.Data?.Payments,
     data?.Data?.operations,
     data?.Data?.paymentOperations,
     data?.data?.payments,
@@ -9102,6 +9104,23 @@ async function findTochkaSbpPaymentInStatement(
   return null;
 }
 
+async function findTochkaSbpPaymentByQr(
+  token: string,
+  customerCode: string,
+  qrcId: string,
+  paymentCreatedAt?: string,
+) {
+  if (!customerCode || !qrcId) return null;
+  const parsedCreated = new Date(paymentCreatedAt || Date.now());
+  const fromDate = formatFinanceDate(Number.isNaN(parsedCreated.getTime()) ? new Date() : parsedCreated);
+  const response = await axios.get(`${TOCHKA_API}/sbp/v1.0/get-sbp-payments`, {
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    params: { customer_code: customerCode, fromDate },
+    timeout: 20000,
+  });
+  return findAcceptedSbpPaymentByQr(normalizeTochkaList(response.data), qrcId);
+}
+
 // Сохранить JWT токен Точки
 app.post('/api/tochka/save-token', async (req, res) => {
   const { jwtToken, merchantId, accountId, legalId, paymentMode } = req.body;
@@ -9482,7 +9501,7 @@ app.post('/api/yandex-pay/refund-payment', async (req, res) => {
     };
     const patch = {
       ...scopedPatch,
-      status: 'Возврат',
+      status: 'Вернули платёж',
       refundAmount: previousRefundAmount + refundAmount,
       refundStatus,
       refundId,
@@ -9963,6 +9982,17 @@ app.post('/api/tochka/reconcile-payments', async (_req, res) => {
         }).catch(() => null)
       : null;
     const bankOperations = paymentsResponse ? normalizeTochkaList(paymentsResponse.data) : [];
+    const sbpPaymentsResponse = settings.customerCode
+      ? await axios.get(`${TOCHKA_API}/sbp/v1.0/get-sbp-payments`, {
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          params: {
+            customer_code: settings.customerCode,
+            fromDate: `${new Date().getFullYear()}-01-01`,
+          },
+          timeout: 20_000,
+        }).catch(() => null)
+      : null;
+    const sbpPayments = sbpPaymentsResponse ? normalizeTochkaList(sbpPaymentsResponse.data) : [];
     const results: any[] = [];
     for (const { id, data } of candidates) {
       const patch: Record<string, any> = { paymentAccountingVersion: 2 };
@@ -9979,9 +10009,14 @@ app.post('/api/tochka/reconcile-payments', async (_req, res) => {
           return (haystack.includes(orderMarker) || haystack.includes(cleanOrderMarker))
             && (!expectedAmount || Math.abs(amount - expectedAmount) < 1);
         });
-        const source = bankOperation || details?.data;
+        const sbpPayment = findAcceptedSbpPaymentByQr(sbpPayments, paymentId);
+        const source = bankOperation || sbpPayment || details?.data;
         if (!source) continue;
-        const status = getTochkaOperationStatus(bankOperation) || details?.paymentStatus || getTochkaOperationStatus(source) || 'found';
+        const status = getTochkaOperationStatus(bankOperation)
+          || getTochkaOperationStatus(sbpPayment)
+          || details?.paymentStatus
+          || getTochkaOperationStatus(source)
+          || 'found';
         const amount = normalizeTochkaAmount(getTochkaOperationAmount(source)) || expectedAmount;
         Object.assign(patch, buildTochkaPaymentFields({ isFinal }, paymentId, status, amount, source));
       }
@@ -10076,6 +10111,19 @@ app.post('/api/tochka/refund-payment', async (req, res) => {
       || findTochkaValueByKeys(paymentData, ['refTransactionId'])
       || '',
     ).trim();
+    if (!refTransactionId && customerCode) {
+      const sbpPayment = await findTochkaSbpPaymentByQr(
+        token,
+        customerCode,
+        qrcId,
+        String(order.paymentCreatedAt || order.date || ''),
+      ).catch(() => null);
+      if (sbpPayment) {
+        paymentData = sbpPayment;
+        trxId = String(sbpPayment.trxId || sbpPayment.operationId || trxId || '').trim();
+        refTransactionId = String(sbpPayment.refTransactionId || '').trim();
+      }
+    }
     if (!trxId && !refTransactionId && customerCode) {
       const statementMatch = await findTochkaSbpPaymentInStatement(
         token,
@@ -10166,7 +10214,7 @@ app.post('/api/tochka/refund-payment', async (req, res) => {
     };
     const refundFields = {
       ...scopedFields,
-      status: 'Возврат',
+      status: 'Вернули платёж',
       refundAmount: previousRefundAmount + refundAmount,
       refundStatus,
       refundId,

@@ -38,7 +38,10 @@ export const clientMatchesOrder = (client: ClientRecord, order: ClientRecord) =>
 
 export const isClientPurchaseOrder = (order: ClientRecord) => {
   const status = String(order.status || '').toLowerCase();
-  return !order.isBlogger && !status.includes('возврат') && !status.includes('отмена');
+  return !order.isBlogger
+    && !status.includes('возврат')
+    && !status.includes('вернули платёж')
+    && !status.includes('отмена');
 };
 
 export const getClientPurchaseSummary = (orders: ClientRecord[]) => {
