@@ -5,6 +5,7 @@ import {
   getInitialInvoiceAmount,
   getPlannedFinalPaymentAmount,
   isConfirmedPaymentStatus,
+  shouldOfferMainPaymentRefund,
 } from '../src/lib/orderPayments';
 
 test('recognizes the successful SBP QR status returned by Tochka', () => {
@@ -44,4 +45,28 @@ test('keeps the second half as a separate payment when the first invoice is alre
 
   assert.equal(getInitialInvoiceAmount(order), 6275);
   assert.equal(getPlannedFinalPaymentAmount(order), 6275);
+});
+
+test('offers a bank-verified refund when a manager marks an invoiced order for return', () => {
+  assert.equal(shouldOfferMainPaymentRefund({
+    revenue: 16900,
+    deliveryPrice: 650,
+    paymentAmount: 17550,
+    paymentUrl: 'https://qr.nspk.ru/example',
+    paymentStatus: 'Active',
+    status: 'Возврат',
+    invoiceType: 'full',
+  }), true);
+});
+
+test('does not offer a refund for an unpaid active QR on a normal order', () => {
+  assert.equal(shouldOfferMainPaymentRefund({
+    revenue: 16900,
+    deliveryPrice: 650,
+    paymentAmount: 17550,
+    paymentUrl: 'https://qr.nspk.ru/example',
+    paymentStatus: 'Active',
+    status: 'Новый',
+    invoiceType: 'full',
+  }), false);
 });

@@ -30,6 +30,7 @@ import {
   getOutstandingPaymentAmount,
   getPlannedFinalPaymentAmount,
   isConfirmedPaymentStatus,
+  shouldOfferMainPaymentRefund,
 } from '../../lib/orderPayments';
 import { motion, AnimatePresence } from 'motion/react';
 import { OrderData } from '../AnalyticsDashboard';
@@ -1085,6 +1086,7 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
       : 'Доплата не создана';
   const mainRefundState = String((order as any).mainRefundStatus || order.refundStatus || '');
   const mainRefunded = Boolean(mainRefundState) && !/fail|error/i.test(mainRefundState);
+  const showMainRefundAction = shouldOfferMainPaymentRefund(order);
   const finalRefunded = Boolean((order as any).finalRefundStatus) && !/fail|error/i.test(String((order as any).finalRefundStatus));
   const shareText = buildPaymentShareText(order, targetPaymentUrl, initialAmount, 'Счет на оплату', paymentProviderLabel);
   const finalShareText = finalPaymentUrl
@@ -1452,14 +1454,18 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
           )}
         </>
       )}
-      {mainPaymentPaid && !mainRefunded && (
+      {showMainRefundAction && !mainRefunded && (
         <button
           type="button"
           onClick={() => refundPayment('main')}
           disabled={refundLoading !== null}
           className="w-full rounded-md border border-red-200 bg-red-50 py-1.5 text-[8px] font-black text-red-600 transition-colors hover:bg-red-100 disabled:opacity-50"
         >
-          {refundLoading === 'main' ? 'Оформляем возврат…' : isYandexProvider ? `Вернуть Сплит ${formatCurrency(issuedMainAmount)}` : `Вернуть ${invoiceType === 'full' ? 'полную оплату' : 'предоплату'} ${formatCurrency(issuedMainAmount)}`}
+          {refundLoading === 'main'
+            ? 'Проверяем и оформляем возврат…'
+            : isYandexProvider
+              ? `Вернуть Сплит ${formatCurrency(issuedMainAmount)}`
+              : `${mainPaymentPaid ? 'Вернуть' : 'Проверить и вернуть'} ${invoiceType === 'full' ? 'полную оплату' : 'предоплату'} ${formatCurrency(issuedMainAmount)}`}
         </button>
       )}
       {mainRefunded && <p className="text-[8px] font-bold text-red-500">Возврат {invoiceType === 'full' ? 'полной оплаты' : 'предоплаты'} оформлен</p>}
@@ -3709,6 +3715,7 @@ const OrderCard = React.memo(({
       : 'Доплата не создана';
   const mobileMainRefundState = String((order as any).mainRefundStatus || order.refundStatus || '');
   const mobileMainRefunded = Boolean(mobileMainRefundState) && !/fail|error/i.test(mobileMainRefundState);
+  const showMobileMainRefundAction = shouldOfferMainPaymentRefund(order);
   const mobileFinalRefunded = Boolean((order as any).finalRefundStatus) && !/fail|error/i.test(String((order as any).finalRefundStatus));
   const mobilePaymentCreatedAtMs = new Date(String((order as any).paymentCreatedAt || '')).getTime();
   const canConfirmMobilePaymentManually = !isMobileYandexProvider && !mainPaymentPaid && Boolean(paymentUrl) && (
@@ -4499,14 +4506,18 @@ const OrderCard = React.memo(({
             {mobilePaymentError && (
               <p className="text-[9px] font-bold text-red-500">{mobilePaymentError}</p>
             )}
-            {mainPaymentPaid && !mobileMainRefunded && (
+            {showMobileMainRefundAction && !mobileMainRefunded && (
               <button
                 type="button"
                 onClick={() => refundMobilePayment('main')}
                 disabled={mobileRefundLoading !== null}
                 className="w-full rounded-lg border border-red-200 bg-red-50 py-2 text-[10px] font-bold text-red-600 disabled:opacity-60"
               >
-                {mobileRefundLoading === 'main' ? 'Оформляем возврат…' : isMobileYandexProvider ? `Вернуть Сплит ${formatCurrency(issuedMobileMainAmount)}` : `Вернуть ${invoiceType === 'full' ? 'полную оплату' : 'предоплату'} ${formatCurrency(issuedMobileMainAmount)}`}
+                {mobileRefundLoading === 'main'
+                  ? 'Проверяем и оформляем возврат…'
+                  : isMobileYandexProvider
+                    ? `Вернуть Сплит ${formatCurrency(issuedMobileMainAmount)}`
+                    : `${mainPaymentPaid ? 'Вернуть' : 'Проверить и вернуть'} ${invoiceType === 'full' ? 'полную оплату' : 'предоплату'} ${formatCurrency(issuedMobileMainAmount)}`}
               </button>
             )}
             {mobileMainRefunded && <p className="text-[9px] font-bold text-red-500">Возврат {invoiceType === 'full' ? 'полной оплаты' : 'предоплаты'} оформлен</p>}

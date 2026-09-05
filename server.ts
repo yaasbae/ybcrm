@@ -10012,19 +10012,29 @@ app.post('/api/tochka/refund-payment', async (req, res) => {
       String(settings.accountId),
       qrcId,
     ).catch(() => null);
-    const paymentData = qrDetails?.data || {};
-    const trxId = String(
+    let paymentData = qrDetails?.data || {};
+    let trxId = String(
       (target.isFinal ? order.finalPaymentTrxId : order.paymentTrxId)
       || findTochkaValueByKeys(paymentData, ['trxId', 'operationId'])
       || '',
     ).trim();
-    const refTransactionId = String(
+    let refTransactionId = String(
       (target.isFinal ? order.finalPaymentRefTransactionId : order.paymentRefTransactionId)
       || findTochkaValueByKeys(paymentData, ['refTransactionId'])
       || '',
     ).trim();
+    if (!trxId && !refTransactionId && customerCode) {
+      const paymentMarker = target.isFinal ? `${cleanOrderId}-final` : cleanOrderId;
+      const matchedOperation = await findTochkaOperation(token, String(customerCode), paymentMarker, refundAmount)
+        .catch(() => null);
+      if (matchedOperation) {
+        paymentData = matchedOperation;
+        trxId = String(findTochkaValueByKeys(matchedOperation, ['trxId', 'operationId', 'transactionId']) || '').trim();
+        refTransactionId = String(findTochkaValueByKeys(matchedOperation, ['refTransactionId']) || '').trim();
+      }
+    }
     if (!trxId && !refTransactionId) {
-      return res.status(409).json({ error: 'Точка ещё не вернула идентификатор оплаченной операции. Сначала нажмите «Проверить оплату».' });
+      return res.status(409).json({ error: 'Точка не нашла подтверждённую оплату по этому QR. Деньги не списаны. Проверьте поступление в банке и повторите возврат.' });
     }
 
     cleanOperationId = trxId || refTransactionId;

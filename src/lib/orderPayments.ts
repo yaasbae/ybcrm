@@ -14,6 +14,9 @@ export type PaymentAccountingOrder = {
   invoiceType?: 'prepayment' | 'full' | 'fitting';
   paymentType?: string;
   paymentAccountingVersion?: number;
+  status?: string;
+  refundStatus?: string;
+  mainRefundStatus?: string;
 };
 
 export const isConfirmedPaymentStatus = (status?: string) => {
@@ -66,3 +69,15 @@ export const getPlannedFinalPaymentAmount = (order: PaymentAccountingOrder) =>
 
 export const getOutstandingPaymentAmount = (order: PaymentAccountingOrder) =>
   Math.max(0, getOrderTotalAmount(order) - getConfirmedPaidAmount(order));
+
+export const shouldOfferMainPaymentRefund = (order: PaymentAccountingOrder) => {
+  const refundState = String(order.mainRefundStatus || order.refundStatus || '');
+  if (refundState && !/fail|error/i.test(refundState)) return false;
+  const hasBankInvoice = Boolean(order.paymentUrl || order.paymentId);
+  if (!hasBankInvoice) return false;
+  if (isConfirmedPaymentStatus(order.paymentStatus)) return true;
+  // A manager can explicitly move an order to refund/cancellation before the
+  // bank webhook is reconciled. The server still verifies the real transaction
+  // before any money is returned.
+  return /возврат|отмен/i.test(String(order.status || '')) && getInitialInvoiceAmount(order) > 0;
+};
