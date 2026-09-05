@@ -995,7 +995,7 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
                 <p className="mt-2 text-[24px] font-black leading-tight text-[#1F2937]">{formatCurrency(tochkaSummary?.operatingBalance ?? tochkaSummary?.totalBalance ?? 0)}</p>
               </div>
               <div className="rounded-[8px] border border-indigo-100 bg-indigo-50/70 p-4">
-                <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-indigo-500">Отложенные средства</p>
+                <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-indigo-500">Деньги в фондах</p>
                 <p className="mt-2 text-[24px] font-black leading-tight text-indigo-600">{formatCurrency(tochkaSummary?.reservedBalance || 0)}</p>
               </div>
               <div className="rounded-[8px] border border-emerald-100 bg-emerald-50/70 p-4">
@@ -1006,7 +1006,7 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
 
             <div className="mt-4 overflow-hidden rounded-[8px] border border-[#E6E9EF]">
               <div className="grid grid-cols-[1.1fr_0.7fr_0.8fr] bg-[#F6F7F9] px-4 py-3 text-[10px] font-bold uppercase tracking-[0.14em] text-[#9CA3AF]">
-                <span>Счет</span>
+                <span>Счёт / название в Точке</span>
                 <span>Статус</span>
                 <span className="text-right">Баланс</span>
               </div>

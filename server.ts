@@ -46,6 +46,7 @@ import {
   formatTochkaRefundAmount,
   getTochkaRefundAccount,
 } from "./src/lib/tochkaPayments.ts";
+import { getTochkaFundName } from "./src/lib/tochkaFunds.ts";
 
 const _require = createRequire(import.meta.url);
 const Database = _require("better-sqlite3");
@@ -10776,12 +10777,12 @@ app.get('/api/tochka/finance-summary', async (req, res) => {
     const accounts = accountsRaw.map((account: any) => {
       const accountId = String(account?.accountId || account?.AccountId || account?.id || '');
       const balances = balancesByAccount.get(accountId) || { openingAvailable: 0, closingAvailable: 0, expected: 0 };
-      const isReserved = String(accountId.split('/')[0] || '').replace(/\D/g, '').endsWith('4118');
+      const fundName = getTochkaFundName(accountId);
       return {
         accountId,
         maskedAccountId: maskAccountId(accountId),
-        label: isReserved ? 'Отложенные средства' : 'Операционный счёт',
-        role: isReserved ? 'reserved' : 'operating',
+        label: fundName || 'Операционный счёт',
+        role: fundName ? 'reserved' : 'operating',
         customerCode: account?.customerCode || account?.CustomerCode || '',
         status: account?.status || account?.Status || '',
         currency: account?.currency || account?.Currency || 'RUB',
