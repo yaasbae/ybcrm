@@ -4,6 +4,18 @@ export type TochkaStatementPaymentMatch = {
   bankTransactionId: string;
 };
 
+export const getTochkaRefundAccount = (accountId: string, configuredBankCode = '') => {
+  const [accountCode = '', bankCodeFromAccount = ''] = String(accountId || '').trim().split('/');
+  return {
+    accountCode: accountCode.trim(),
+    bankCode: String(configuredBankCode || bankCodeFromAccount || '').trim(),
+  };
+};
+
+export const formatTochkaRefundAmount = (amount: number) => (
+  (Math.round(Number(amount || 0) * 100) / 100).toFixed(2)
+);
+
 const operationAmount = (operation: any) => Number(
   operation?.Amount?.amount
   ?? operation?.Amount?.Amount

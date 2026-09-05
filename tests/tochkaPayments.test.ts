@@ -1,7 +1,19 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { findSbpStatementPayment } from '../src/lib/tochkaPayments.ts';
+import {
+  findSbpStatementPayment,
+  formatTochkaRefundAmount,
+  getTochkaRefundAccount,
+} from '../src/lib/tochkaPayments.ts';
+
+test('formats the composite account id for the Tochka refund API', () => {
+  assert.deepEqual(getTochkaRefundAccount('40802810220000613147/044525104'), {
+    accountCode: '40802810220000613147',
+    bankCode: '044525104',
+  });
+  assert.equal(formatTochkaRefundAmount(17550), '17550.00');
+});
 
 test('recovers the SBP trxId from statement rows for the exact QR payment', () => {
   const qrcId = 'AD20107UNSMRIBEV9F2B8G2TNLEBQP9D';

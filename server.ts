@@ -40,7 +40,11 @@ import type {
 import { normalizeTelegramPhone, telegramDelivery, telegramAuthError } from "./src/lib/telegramAuth.ts";
 import { normalizeBotSubscriberIds, validateBotBroadcastMessage } from "./src/lib/botBroadcast.ts";
 import { resolveOrderActions, type OrderAction } from "./src/lib/orderPermissionConfig.ts";
-import { findSbpStatementPayment } from "./src/lib/tochkaPayments.ts";
+import {
+  findSbpStatementPayment,
+  formatTochkaRefundAmount,
+  getTochkaRefundAccount,
+} from "./src/lib/tochkaPayments.ts";
 
 const _require = createRequire(import.meta.url);
 const Database = _require("better-sqlite3");
@@ -10101,6 +10105,10 @@ app.post('/api/tochka/refund-payment', async (req, res) => {
     }
 
     cleanOperationId = trxId || refTransactionId;
+    const refundAccount = getTochkaRefundAccount(accountId, String(settings.bankCode || ''));
+    if (!refundAccount.accountCode || !refundAccount.bankCode) {
+      return res.status(503).json({ error: 'В настройках Точки не удалось определить расчётный счёт или БИК' });
+    }
     console.log(`[tochka] refund start order=${cleanOrderId} qrc=${qrcId} transaction=${cleanOperationId} amount=${refundAmount}`);
     await writeTochkaLog({
       orderId: cleanOrderId,
@@ -10115,9 +10123,9 @@ app.post('/api/tochka/refund-payment', async (req, res) => {
       `${TOCHKA_API}/sbp/v1.0/refund`,
       {
         Data: {
-          bankCode: String(settings.bankCode || '044525104'),
-          accountCode: accountId,
-          amount: Math.round(refundAmount * 100) / 100,
+          bankCode: refundAccount.bankCode,
+          accountCode: refundAccount.accountCode,
+          amount: formatTochkaRefundAmount(refundAmount),
           qrcId,
           ...(refTransactionId ? { refTransactionId } : { trxId }),
           purpose: reason || `Возврат заказа ${cleanOrderId}`,
@@ -10203,7 +10211,7 @@ app.post('/api/tochka/refund-payment', async (req, res) => {
       details: errData ? JSON.stringify(errData).slice(0, 1000) : '',
       createdAt: new Date().toISOString(),
     }).catch(() => {});
-    res.status(e.response?.status || 500).json({ error: e.message, details: errData });
+    res.status(e.response?.status || 500).json({ error: getTochkaErrorMessage(e) || e.message, details: errData });
   }
 });
 
