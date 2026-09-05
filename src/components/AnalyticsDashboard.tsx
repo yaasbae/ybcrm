@@ -14,7 +14,7 @@ import {
 } from '../lib/orderFilters';
 import { matchesOrderSearch } from '../lib/orderSearch';
 import { normalizeOrderStatus } from '../lib/orderStatuses';
-import { getConfirmedPaidAmount, getOutstandingPaymentAmount } from '../lib/orderPayments';
+import { getConfirmedPaidAmount, getNewOrderPaymentAccounting, getOutstandingPaymentAmount } from '../lib/orderPayments';
 import { emitPushEvent } from '../lib/pushNotifications';
 import { logAuditEvent } from '../lib/auditLog';
 import { isClientPurchaseOrder, normalizeClientPhone } from '../lib/clientMerge';
@@ -553,6 +553,11 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
       : invoiceType === 'full'
         ? fullInvoiceAmount
         : fullInvoiceAmount * 0.5;
+    const initialPaymentAccounting = getNewOrderPaymentAccounting({
+      revenue: totalRevenue,
+      deliveryPrice: orderDraft.deliveryPrice || 0,
+      invoiceType,
+    });
 
     const orderDate = orderDraft.date || new Date();
     const bloggerName = String(orderDraft.blogger || '').trim();
@@ -562,9 +567,7 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
       date: orderDate,
       revenue: totalRevenue,
       deliveryPrice: orderDraft.deliveryPrice || 0,
-      paidAmount: orderDraft.paidAmount || invoiceAmount,
-      initialPaymentAmount: orderDraft.initialPaymentAmount || orderDraft.paidAmount || invoiceAmount,
-      paymentAccountingVersion: 2,
+      ...initialPaymentAccounting,
       clientPhone: normalizeClientPhone(orderDraft.clientPhone),
       clientName: orderDraft.clientName || '',
       clientInsta: orderDraft.clientInsta || '',

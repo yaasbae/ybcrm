@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   getCalculatedInitialInvoiceAmount,
   getInitialInvoiceAmount,
+  getNewOrderPaymentAccounting,
   getPlannedFinalPaymentAmount,
   isConfirmedPaymentStatus,
   shouldOfferMainPaymentRefund,
@@ -69,4 +70,16 @@ test('does not offer a refund for an unpaid active QR on a normal order', () => 
     status: 'Новый',
     invoiceType: 'full',
   }), false);
+});
+
+test('does not count a newly issued invoice as money already paid', () => {
+  assert.deepEqual(getNewOrderPaymentAccounting({
+    revenue: 16900,
+    deliveryPrice: 650,
+    invoiceType: 'full',
+  }), {
+    paidAmount: 0,
+    initialPaymentAmount: 17550,
+    paymentAccountingVersion: 2,
+  });
 });

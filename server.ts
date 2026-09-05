@@ -40,6 +40,7 @@ import type {
 import { normalizeTelegramPhone, telegramDelivery, telegramAuthError } from "./src/lib/telegramAuth.ts";
 import { normalizeBotSubscriberIds, validateBotBroadcastMessage } from "./src/lib/botBroadcast.ts";
 import { resolveOrderActions, type OrderAction } from "./src/lib/orderPermissionConfig.ts";
+import { findSbpStatementPayment } from "./src/lib/tochkaPayments.ts";
 
 const _require = createRequire(import.meta.url);
 const Database = _require("better-sqlite3");
@@ -9057,6 +9058,46 @@ async function findTochkaOperationId(token: string, customerCode: string, orderI
   return getTochkaOperationId(operation);
 }
 
+async function findTochkaSbpPaymentInStatement(
+  token: string,
+  customerCode: string,
+  accountId: string,
+  qrcId: string,
+  amount: number,
+  paymentCreatedAt?: string,
+) {
+  if (!customerCode || !accountId || !qrcId || amount <= 0) return null;
+  const parsedCreated = new Date(paymentCreatedAt || Date.now());
+  const start = Number.isNaN(parsedCreated.getTime()) ? new Date() : parsedCreated;
+  start.setDate(start.getDate() - 1);
+  const dateFrom = formatFinanceDate(start);
+  const dateTo = formatFinanceDate(new Date());
+  const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+  const response = await axios.post(`${TOCHKA_API}/open-banking/v1.0/statements`, {
+    Data: {
+      Statement: {
+        accountId,
+        customerCode,
+        startDateTime: dateFrom,
+        endDateTime: dateTo,
+      },
+    },
+  }, { headers, timeout: 20000 });
+  const statementId = getTochkaStatementId(response.data);
+  if (!statementId) return null;
+  const statementUrl = `${TOCHKA_API}/open-banking/v1.0/accounts/${encodeURIComponent(accountId)}/statements/${encodeURIComponent(statementId)}`;
+
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    if (attempt > 0) await wait(1500);
+    const statementResponse = await axios.get(statementUrl, { headers, timeout: 20000 });
+    const transactions = extractTochkaOperationRows(statementResponse.data);
+    const match = findSbpStatementPayment(transactions, qrcId, amount);
+    if (match) return match;
+    if (!/created|processing|pending/i.test(getTochkaStatementStatus(statementResponse.data))) break;
+  }
+  return null;
+}
+
 // Сохранить JWT токен Точки
 app.post('/api/tochka/save-token', async (req, res) => {
   const { jwtToken, merchantId, accountId, legalId, paymentMode } = req.body;
@@ -9983,7 +10024,7 @@ app.post('/api/tochka/refund-payment', async (req, res) => {
     const token = await getTochkaToken();
     if (!token) return res.status(400).json({ error: 'Токен Точки не настроен' });
     const settings = await readTochkaSettingsDoc('tochka_api');
-    const customerCode = settings?.customerCode;
+    let customerCode = String(settings?.customerCode || '');
     const orderSnapshot = await getOrderSnapshot(cleanOrderId);
     if (!orderSnapshotExists(orderSnapshot)) return res.status(404).json({ error: `Заказ ${cleanOrderId} не найден` });
     const order = orderSnapshot.data() || {};
@@ -10011,10 +10052,13 @@ app.post('/api/tochka/refund-payment', async (req, res) => {
     if (!settings?.merchantId || !settings?.accountId) {
       return res.status(503).json({ error: 'В настройках Точки не указаны merchantId или accountId' });
     }
+    const resolvedBankAccount = await resolveTochkaSbpAccount(token, customerCode, String(settings.accountId));
+    customerCode = resolvedBankAccount.customerCode || customerCode;
+    const accountId = resolvedBankAccount.accountId || String(settings.accountId);
     const qrDetails = await fetchTochkaQrById(
       token,
       String(settings.merchantId),
-      String(settings.accountId),
+      accountId,
       qrcId,
     ).catch(() => null);
     let paymentData = qrDetails?.data || {};
@@ -10028,6 +10072,20 @@ app.post('/api/tochka/refund-payment', async (req, res) => {
       || findTochkaValueByKeys(paymentData, ['refTransactionId'])
       || '',
     ).trim();
+    if (!trxId && !refTransactionId && customerCode) {
+      const statementMatch = await findTochkaSbpPaymentInStatement(
+        token,
+        customerCode,
+        accountId,
+        qrcId,
+        refundAmount,
+        String(order.paymentCreatedAt || order.date || ''),
+      ).catch(() => null);
+      if (statementMatch) {
+        paymentData = statementMatch.transaction;
+        trxId = statementMatch.trxId;
+      }
+    }
     if (!trxId && !refTransactionId && customerCode) {
       const paymentMarker = target.isFinal ? `${cleanOrderId}-final` : cleanOrderId;
       const matchedOperation = await findTochkaOperation(token, String(customerCode), paymentMarker, refundAmount)
@@ -10058,7 +10116,7 @@ app.post('/api/tochka/refund-payment', async (req, res) => {
       {
         Data: {
           bankCode: String(settings.bankCode || '044525104'),
-          accountCode: String(settings.accountId),
+          accountCode: accountId,
           amount: Math.round(refundAmount * 100) / 100,
           qrcId,
           ...(refTransactionId ? { refTransactionId } : { trxId }),

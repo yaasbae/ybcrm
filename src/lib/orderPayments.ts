@@ -38,6 +38,12 @@ export const getCalculatedInitialInvoiceAmount = (order: PaymentAccountingOrder)
   return invoiceType === 'full' ? total : total * 0.5;
 };
 
+export const getNewOrderPaymentAccounting = (order: PaymentAccountingOrder) => ({
+  paidAmount: 0,
+  initialPaymentAmount: getCalculatedInitialInvoiceAmount(order),
+  paymentAccountingVersion: 2,
+});
+
 export const getInitialInvoiceAmount = (order: PaymentAccountingOrder) => {
   const fixed = Number(order.paymentAmount) || Number(order.initialPaymentAmount) || 0;
   if (fixed > 0) return Math.min(getOrderTotalAmount(order), fixed);
