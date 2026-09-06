@@ -13,6 +13,7 @@ import { db, OperationType, handleFirestoreError, storage } from '../firebase';
 import { collection, onSnapshot, doc, setDoc, query, orderBy, getDoc, updateDoc } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { emitPushEvent } from '../lib/pushNotifications';
+import { notifyTelegramOrderCreated } from '../lib/orderTelegramNotification';
 import { formatClientPhone, normalizeClientPhone, normalizeClientPhoneInput } from '../lib/clientMerge';
 import { crmFetch } from '../lib/crmApi';
 import { useOrderPermissions } from '../lib/orderPermissions';
@@ -330,6 +331,7 @@ export const OrderForm: React.FC<OrderFormProps> = ({ onBack, initialClient }) =
         orderId: id,
         clientName,
       });
+      notifyTelegramOrderCreated(id);
 
       // Update CRM (contacts)
       if (normalizedPhone || clientName) {

@@ -13,6 +13,7 @@ import { cn } from '../lib/utils';
 import { db } from '../firebase';
 import { doc, getDoc, setDoc, collection, query, orderBy, limit, onSnapshot, getDocs, where, addDoc, deleteDoc, updateDoc } from 'firebase/firestore';
 import { emitPushEvent } from '../lib/pushNotifications';
+import { notifyTelegramOrderCreated } from '../lib/orderTelegramNotification';
 
 interface AISalesAgentProps {
   onBack?: () => void;
@@ -1237,6 +1238,7 @@ export const AISalesAgent: React.FC<AISalesAgentProps> = ({ onBack }) => {
                       orderId: createdOrder.id,
                       clientName: selectedContact.fullName || '',
                     });
+                    notifyTelegramOrderCreated(createdOrder.id);
                     setIsOrderModalOpen(false);
                     alert("Заказ успешно создан!");
                   } catch (e) {

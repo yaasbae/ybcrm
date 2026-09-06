@@ -22,6 +22,7 @@ import { getExchangeOrderId } from '../lib/orderExchange';
 import { resolveStoredOrderIdentity } from '../lib/orderRecords';
 import { getOrderActionForField, ORDER_ACTION_OPTIONS, useOrderPermissions, type OrderAction } from '../lib/orderPermissions';
 import { crmFetch } from '../lib/crmApi';
+import { notifyTelegramOrderCreated } from '../lib/orderTelegramNotification';
 import { db } from '../firebase';
 import { doc, onSnapshot, setDoc, collection, updateDoc, query, getDoc, runTransaction } from 'firebase/firestore';
 const AnalyticsTab = lazy(() => import('./tabs/AnalyticsTab').then(m => ({ default: m.AnalyticsTab })));
@@ -665,6 +666,7 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
           manager: orderToCreate.manager,
           amount: orderToCreate.revenue + orderToCreate.deliveryPrice,
         });
+        notifyTelegramOrderCreated(createdId);
       }
       setNewOrder({
         date: new Date(),

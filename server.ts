@@ -88,6 +88,7 @@ const GEMINI_TEXT_MODEL = process.env.GEMINI_TEXT_MODEL || "gemini-2.5-flash";
 const BROADCAST_MANAGER_BOT_URL = "https://t.me/YAASBAE_CLO_bot";
 const BROADCAST_MANAGER_BUTTON_TEXT = "Узнать подробности в бот";
 const DEFAULT_BROADCAST_DISPLAY_NAME = "YAASBAE Brand";
+const ORDER_TELEGRAM_CHAT_ID = String(process.env.ORDER_TELEGRAM_CHAT_ID || "-1002176316557").trim();
 let WEB_PUSH_PUBLIC_KEY = String(process.env.WEB_PUSH_PUBLIC_KEY || "").trim();
 let WEB_PUSH_PRIVATE_KEY = String(process.env.WEB_PUSH_PRIVATE_KEY || "").trim();
 const WEB_PUSH_SUBJECT = String(process.env.WEB_PUSH_SUBJECT || "https://ybcrm.ru").trim();
@@ -1502,6 +1503,157 @@ function mcpFindOrderDoc(id: string) {
   })();
 }
 
+function escapeTelegramHtml(value: unknown) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function telegramOrderMoney(value: unknown) {
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) return "0 ₽";
+  return `${new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 2 }).format(amount)} ₽`;
+}
+
+function telegramOrderValue(value: unknown, maxLength = 300) {
+  const text = String(value ?? "").trim();
+  return escapeTelegramHtml(text.length > maxLength ? `${text.slice(0, maxLength - 1)}…` : text);
+}
+
+function telegramOrderText(orderId: string, order: any) {
+  const items = Array.isArray(order?.items)
+    ? order.items.map((item: unknown) => String(item || "").trim()).filter(Boolean)
+    : String(order?.item || "").split(",").map((item: string) => item.trim()).filter(Boolean);
+  const colors = Array.isArray(order?.itemColors) ? order.itemColors : [];
+  const sizes = Array.isArray(order?.itemSizes) ? order.itemSizes : [];
+  const heights = Array.isArray(order?.itemHeights) ? order.itemHeights : [];
+  const productLines = items.map((item: string, index: number) => {
+    const variant = [colors[index], sizes[index], heights[index]].map(value => String(value || "").trim()).filter(Boolean);
+    return `${item}${variant.length ? ` — ${variant.join(" / ")}` : ""}`;
+  });
+  const revenue = Number(order?.revenue) || 0;
+  const deliveryPrice = Number(order?.deliveryPrice) || 0;
+  const total = revenue + deliveryPrice;
+  const invoiceType = String(order?.invoiceType || order?.paymentType || "").trim();
+  const invoiceLabel = invoiceType === "full"
+    ? "Полная оплата 100%"
+    : invoiceType === "prepayment"
+      ? "Предоплата 50%"
+      : invoiceType === "fitting"
+        ? "Примерка"
+        : invoiceType;
+  const isBlogger = order?.orderKind === "blogger" || order?.isBlogger === true;
+  const clientLabel = isBlogger ? "Блогер" : "Клиент";
+  const clientName = String(order?.clientName || order?.blogger || "—").trim() || "—";
+  const instagram = String(order?.clientInsta || "").trim();
+  const normalizedInstagram = instagram ? (instagram.startsWith("@") ? instagram : `@${instagram}`) : "";
+  const orderUrl = `${MCP_PUBLIC_BASE_URL}/orders?order=${encodeURIComponent(String(orderId).replace(/^#+/, ""))}`;
+  const lines = [
+    `🆕 <b>Новый заказ #${telegramOrderValue(String(orderId).replace(/^#+/, ""), 100)}</b>`,
+    `${clientLabel}: <b>${telegramOrderValue(clientName)}</b>`,
+    order?.clientPhone ? `Телефон: ${telegramOrderValue(order.clientPhone, 100)}` : "",
+    normalizedInstagram ? `Instagram: ${telegramOrderValue(normalizedInstagram, 150)}` : "",
+    productLines.length ? `Изделие: ${telegramOrderValue(productLines.join("; "), 1000)}` : "Изделие: —",
+    isBlogger ? "Тип: заказ блогеру (не учитывается в продажах)" : `Сумма: <b>${escapeTelegramHtml(telegramOrderMoney(total))}</b>`,
+    deliveryPrice || order?.deliveryMethod
+      ? `Доставка: ${telegramOrderValue([order?.deliveryMethod, telegramOrderMoney(deliveryPrice)].filter(Boolean).join(" · "), 400)}`
+      : "",
+    invoiceLabel && !isBlogger ? `Оплата: ${telegramOrderValue(invoiceLabel, 200)}` : "",
+    order?.source ? `Источник: ${telegramOrderValue(order.source, 200)}` : "",
+    order?.manager ? `Менеджер: ${telegramOrderValue(order.manager, 200)}` : "",
+    order?.status ? `Статус: ${telegramOrderValue(order.status, 200)}` : "",
+    `<a href="${escapeTelegramHtml(orderUrl)}">Открыть заказ в CRM</a>`,
+  ];
+  return lines.filter(Boolean).join("\n");
+}
+
+async function sendNewOrderToTelegram(orderId: string, actor: Record<string, unknown> = { type: "server" }) {
+  if (!adminDb) throw new Error("Серверная база не подключена");
+  const token = String(process.env.TG_BOT_TOKEN || "").trim();
+  if (!token) throw new Error("TG_BOT_TOKEN не настроен");
+  if (!ORDER_TELEGRAM_CHAT_ID) throw new Error("ORDER_TELEGRAM_CHAT_ID не настроен");
+
+  const orderSnapshot = await mcpFindOrderDoc(orderId);
+  if (!orderSnapshot?.exists) throw new Error(`Заказ ${orderId} не найден`);
+  const order = orderSnapshot.data() || {};
+  if (order.deleted === true || String(order.status || "").trim().toLowerCase() === "черновик") {
+    return { sent: false, skipped: true };
+  }
+
+  const notificationId = createHash("sha256").update(`order-created:${orderSnapshot.id}`).digest("hex");
+  const notificationRef = adminDb.collection("telegram_order_notifications").doc(notificationId);
+  const reservation = await adminDb.runTransaction(async (transaction: any) => {
+    const snapshot = await transaction.get(notificationRef);
+    const data = snapshot.exists ? snapshot.data() || {} : {};
+    if (data.status === "sent") return "already_sent";
+    const updatedAtMs = typeof data.updatedAt?.toMillis === "function"
+      ? data.updatedAt.toMillis()
+      : Date.parse(String(data.updatedAt || ""));
+    if (data.status === "sending" && Number.isFinite(updatedAtMs) && Date.now() - updatedAtMs < 5 * 60_000) {
+      return "in_progress";
+    }
+    transaction.set(notificationRef, {
+      orderId: String(order.orderId || orderSnapshot.id).replace(/^#+/, ""),
+      orderDocumentId: orderSnapshot.id,
+      chatId: ORDER_TELEGRAM_CHAT_ID,
+      status: "sending",
+      attempts: FieldValue.increment(1),
+      actor,
+      createdAt: snapshot.exists ? data.createdAt || FieldValue.serverTimestamp() : FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    }, { merge: true });
+    return "reserved";
+  });
+  if (reservation !== "reserved") return { sent: false, duplicate: true, status: reservation };
+
+  try {
+    const resolvedOrderId = String(order.orderId || orderSnapshot.id).replace(/^#+/, "");
+    const response = await axios.post(`https://api.telegram.org/bot${token}/sendMessage`, {
+      chat_id: ORDER_TELEGRAM_CHAT_ID,
+      text: telegramOrderText(resolvedOrderId, order),
+      parse_mode: "HTML",
+      disable_web_page_preview: true,
+    }, { timeout: 30_000 });
+    const messageId = String(response.data?.result?.message_id || "");
+    await notificationRef.set({
+      status: "sent",
+      messageId,
+      sentAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+      error: FieldValue.delete(),
+    }, { merge: true });
+    return { sent: true, messageId };
+  } catch (error: any) {
+    const message = String(error?.response?.data?.description || error?.message || "Ошибка Telegram").slice(0, 1000);
+    await notificationRef.set({
+      status: "failed",
+      error: message,
+      updatedAt: FieldValue.serverTimestamp(),
+    }, { merge: true }).catch(() => undefined);
+    throw new Error(message);
+  }
+}
+
+app.post("/api/telegram/order-created", async (req, res) => {
+  const user: any = await requireCrmUser(req, res);
+  if (!user) return;
+  const orderId = String(req.body?.orderId || "").replace(/^#+/, "").trim();
+  if (!orderId) return res.status(400).json({ error: "Не указан номер заказа" });
+  try {
+    const result = await sendNewOrderToTelegram(orderId, {
+      type: "crm_user",
+      uid: user.uid,
+      email: user.email || "",
+    });
+    res.json({ success: true, ...result });
+  } catch (error: any) {
+    console.warn("[telegram] order-created:", error?.message || error);
+    res.status(502).json({ error: error?.message || "Не удалось отправить заказ в Telegram" });
+  }
+});
+
 function mcpInvoiceAmount(revenue: number, deliveryPrice: number, invoiceType: string, explicitPaid: any) {
   if (explicitPaid !== undefined && explicitPaid !== null && explicitPaid !== "") return mcpToNumber(explicitPaid);
   const type = String(invoiceType || "").toLowerCase();
@@ -1639,10 +1791,14 @@ async function mcpToolResult(name: string, args: any) {
       metadata: { source: "mcp", tool: "orders.create" },
       actor: { type: "mcp" },
     });
-    await dispatchPushEvent("order_created", `order-created:${payload.orderId}`, {
-      orderId: payload.orderId,
-      clientName: payload.clientName,
-    }).catch(error => console.warn("[push] MCP order:", error?.message || error));
+    if (!before && String(payload.status || "").trim().toLowerCase() !== "черновик") {
+      await dispatchPushEvent("order_created", `order-created:${payload.orderId}`, {
+        orderId: payload.orderId,
+        clientName: payload.clientName,
+      }).catch(error => console.warn("[push] MCP order:", error?.message || error));
+      await sendNewOrderToTelegram(payload.orderId, { type: "mcp" })
+        .catch(error => console.warn("[telegram] MCP order:", error?.message || error));
+    }
     const created = await adminDb.collection("orders_new").doc(payload.orderId).get();
     return { ok: true, order: mcpNormalizeOrder(created.id, created.data()) };
   }
