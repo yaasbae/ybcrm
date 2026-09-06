@@ -47,6 +47,7 @@ import {
   getTochkaRefundAccount,
 } from "./src/lib/tochkaPayments.ts";
 import { getTochkaFundName } from "./src/lib/tochkaFunds.ts";
+import { getCalculatedInitialInvoiceAmount, getPlannedFinalPaymentAmount } from "./src/lib/orderPayments.ts";
 
 const _require = createRequire(import.meta.url);
 const Database = _require("better-sqlite3");
@@ -2112,6 +2113,9 @@ async function loadCdekCitiesIndex(token: string, baseUrl: string) {
               code: city.code,
               city: city.city,
               region: city.region || "",
+              sub_region: city.sub_region || "",
+              country: city.country || "",
+              country_code: city.country_code || "RU",
             },
           ]),
       ).values(),
@@ -2136,7 +2140,9 @@ function rankCdekCities(cities: any[], query: string) {
     .map(city => {
       const cityName = normalizeCdekCitySearch(city.city);
       const regionName = normalizeCdekCitySearch(city.region);
-      const searchable = `${cityName} ${regionName}`.trim();
+      const subRegionName = normalizeCdekCitySearch(city.sub_region);
+      const countryName = normalizeCdekCitySearch(city.country);
+      const searchable = `${cityName} ${subRegionName} ${regionName} ${countryName}`.trim();
       let score = Number.POSITIVE_INFINITY;
       if (cityName === normalizedQuery) score = 0;
       else if (cityName.startsWith(normalizedQuery)) score = 10 + (cityName.length - normalizedQuery.length);
@@ -9778,21 +9784,31 @@ app.post('/api/yandex-pay', handleYandexPayWebhook);
 app.post('/api/tochka/create-payment', async (req, res) => {
   if (!await requireCrmOrderAction(req, res, 'payments')) return;
   const { orderId, amount, description } = req.body;
-  const paymentAmount = Number(amount);
+  let paymentAmount = Number(amount);
   if (!orderId || !Number.isFinite(paymentAmount) || paymentAmount <= 0) return res.status(400).json({ error: 'Нужны orderId и amount больше 0' });
   if (!db && !adminDb) return res.status(503).json({ error: 'DB не подключена' });
   try {
     const paymentTarget = getTochkaPaymentTarget(String(orderId));
     const existingOrder = await getOrderSnapshot(paymentTarget.cleanOrderId).catch(() => null);
+    const existingOrderData = existingOrder?.data?.() || null;
+    if (existingOrderData) {
+      const expectedAmount = paymentTarget.isFinal
+        ? getPlannedFinalPaymentAmount(existingOrderData)
+        : getCalculatedInitialInvoiceAmount(existingOrderData);
+      if (expectedAmount > 0 && Math.abs(paymentAmount - expectedAmount) > 0.01) {
+        console.warn(`[tochka] corrected stale client amount order=${orderId} requested=${paymentAmount} expected=${expectedAmount}`);
+        paymentAmount = expectedAmount;
+      }
+    }
     const existingPaymentUrl = paymentTarget.isFinal
-      ? existingOrder?.data()?.finalPaymentUrl
-      : existingOrder?.data()?.paymentUrl;
+      ? existingOrderData?.finalPaymentUrl
+      : existingOrderData?.paymentUrl;
     const existingPaymentId = paymentTarget.isFinal
-      ? existingOrder?.data()?.finalPaymentId
-      : existingOrder?.data()?.paymentId;
+      ? existingOrderData?.finalPaymentId
+      : existingOrderData?.paymentId;
     const existingPaymentAmount = Number(paymentTarget.isFinal
-      ? existingOrder?.data()?.finalPaymentAmount
-      : existingOrder?.data()?.paymentAmount);
+      ? existingOrderData?.finalPaymentAmount
+      : existingOrderData?.paymentAmount);
     if (existingPaymentUrl && (!existingPaymentAmount || Math.abs(existingPaymentAmount - paymentAmount) < 0.01)) {
       return res.json({
         success: true,

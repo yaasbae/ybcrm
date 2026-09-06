@@ -35,6 +35,15 @@ test('uses the full order total for full payment', () => {
   }), 15550);
 });
 
+test('uses an explicit legacy full-payment choice over a stale prepayment invoice type', () => {
+  assert.equal(getCalculatedInitialInvoiceAmount({
+    revenue: 14900,
+    deliveryPrice: 650,
+    invoiceType: 'prepayment',
+    paymentType: 'Полная оплата 100%',
+  }), 15550);
+});
+
 test('keeps the second half as a separate payment when the first invoice is already issued', () => {
   const order = {
     revenue: 11900,

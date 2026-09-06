@@ -127,7 +127,10 @@ export interface OrderData {
   cdekUuid?: string;
   cdekNumber?: string;
   cdekStatus?: string;
+  cdekManualRequired?: boolean;
   cdekPayload?: {
+    manual?: boolean;
+    international?: boolean;
     deliveryType?: string;
     toCityCode?: string | number;
     toCity?: string;

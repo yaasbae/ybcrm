@@ -29,11 +29,13 @@ export const getOrderTotalAmount = (order: PaymentAccountingOrder) =>
 
 export const getCalculatedInitialInvoiceAmount = (order: PaymentAccountingOrder) => {
   const total = getOrderTotalAmount(order);
-  const invoiceType = order.invoiceType || (
-    /пример/i.test(String(order.paymentType || '')) ? 'fitting'
-      : /полн|100|сплит/i.test(String(order.paymentType || '')) ? 'full'
-        : 'prepayment'
-  );
+  const paymentType = String(order.paymentType || '');
+  // В старых заказах тип первого платежа сохранялся в paymentType. Если там
+  // явно указаны 100% или примерка, это важнее устаревшего invoiceType.
+  const legacyExplicitType = /пример/i.test(paymentType) ? 'fitting'
+    : /полн|100|сплит/i.test(paymentType) ? 'full'
+      : null;
+  const invoiceType = legacyExplicitType || order.invoiceType || 'prepayment';
   if (invoiceType === 'fitting') return Math.min(total, 2000);
   return invoiceType === 'full' ? total : total * 0.5;
 };

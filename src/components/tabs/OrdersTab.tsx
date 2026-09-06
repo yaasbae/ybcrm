@@ -48,11 +48,14 @@ const normalizeStatusOption = (status: string) => normalizeOrderStatus(status);
 
 const STATUS_OPTIONS: string[] = [...ORDER_STATUS_OPTIONS];
 const STATUS_ORDER = new Map(STATUS_OPTIONS.map((status, index) => [status, index]));
-const DELIVERY_OPTIONS = ['СДЭК до ПВЗ', 'СДЭК до двери', 'СДЭК', 'Почта РФ', 'Боксберри', 'Самовывоз', 'Курьер', 'DBS'];
+const MANUAL_INTERNATIONAL_CDEK = 'СДЭК международный (через ЛК)';
+const DELIVERY_OPTIONS = ['СДЭК до ПВЗ', 'СДЭК до двери', 'СДЭК', MANUAL_INTERNATIONAL_CDEK, 'Почта РФ', 'Боксберри', 'Самовывоз', 'Курьер', 'DBS'];
 const DEFAULT_MANAGERS = ['Менеджер 1', 'Менеджер 2', 'Собственник'];
 const SOURCE_OPTIONS = ['Instagram', 'WhatsApp', 'ТГ', 'Блогер', 'Контент', 'Сарафан', 'Повторный'];
 const PAYMENT_TYPE_OPTIONS = ['QR код', 'Сплитами', 'Долями', 'Наличкой', 'Наложенный СДЭК'];
 const INVOICE_PAYMENT_OPTIONS = ['Полная оплата 100%', 'Предоплата 50%', 'Оплата с примеркой'];
+const isManualInternationalCdek = (value?: string) => /сдэк/i.test(String(value || '')) && /международ/i.test(String(value || ''));
+const isAutomaticCdek = (value?: string) => /сдэк/i.test(String(value || '')) && !isManualInternationalCdek(value);
 const SplitMark = ({ className = '' }: { className?: string }) => (
   <span className={cn('relative inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center', className)} aria-hidden="true">
     <span className="absolute h-2.5 w-2.5 rounded-full bg-[#F43F5E]" />
@@ -132,6 +135,9 @@ type CdekCityOption = {
   code: number;
   city: string;
   region?: string;
+  sub_region?: string;
+  country?: string;
+  country_code?: string;
 };
 
 type CdekDeliveryPoint = {
@@ -152,6 +158,13 @@ const CDEK_TARIFFS = [
   { code: '138', label: 'Дверь → ПВЗ' },
   { code: '139', label: 'Дверь → дверь' },
 ];
+
+const getCdekCityLabel = (city: CdekCityOption) => {
+  const parts = [city.city, city.sub_region, city.region, city.country_code && city.country_code !== 'RU' ? city.country : '']
+    .map(value => String(value || '').trim())
+    .filter(Boolean);
+  return Array.from(new Set(parts)).join(', ');
+};
 
 const normalizeProductName = (value: string) => value.trim().toLowerCase();
 const shortCdekId = (value: string) => value ? `${value.slice(0, 8)}...${value.slice(-4)}` : '';
@@ -513,6 +526,9 @@ function isYandexSplitPayment(paymentType?: string): boolean {
 
 function getOperationalInvoiceType(order: Partial<OrderData>): 'prepayment' | 'full' | 'fitting' {
   if (isYandexSplitPayment(order.paymentType) || order.paymentProvider === 'yandex_split') return 'full';
+  const legacyPaymentType = String(order.paymentType || '');
+  if (/пример/i.test(legacyPaymentType)) return 'fitting';
+  if (/полн|100/i.test(legacyPaymentType)) return 'full';
   if (order.invoiceType === 'full' || order.invoiceType === 'prepayment' || order.invoiceType === 'fitting') return order.invoiceType;
   return getInvoiceTypeFromPaymentType(order.paymentType);
 }
@@ -1100,7 +1116,6 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
     const items = getOrderItems(order);
     const colors = getOrderItemColors(order);
     const sizes = getOrderItemSizes(order);
-    const heights = getOrderItemHeights(order);
     if (!String(order.orderId || '').trim()) missing.push('ID заказа');
     if (!String(order.clientName || '').trim()) missing.push('ФИО');
     if (getContactPhone({ phone: order.clientPhone }).length < 10) missing.push('телефон');
@@ -1111,9 +1126,10 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
     if (!items.length) missing.push('изделие');
     if (items.some((_, index) => !colors[index])) missing.push('цвет');
     if (items.some((_, index) => !sizes[index])) missing.push('размер');
-    if (items.some((_, index) => !heights[index])) missing.push('рост');
+    // Рост есть не у всех товарных категорий (например, у топов, футболок и худи).
+    // Пустое значение сохраняется как допустимая характеристика позиции.
     if ((Number(order.revenue) || 0) <= 0) missing.push('стоимость');
-    if (String(order.deliveryMethod || '').toLowerCase().includes('сдэк')) {
+    if (isAutomaticCdek(order.deliveryMethod)) {
       if (!String(order.clientCity || order.cdekPayload?.toCity || '').trim()) missing.push('город СДЭК');
       if (!String(order.clientAddress || order.cdekPayload?.deliveryPoint || order.cdekPayload?.toAddress || '').trim()) missing.push('адрес или ПВЗ');
     }
@@ -1658,7 +1674,7 @@ const CdekOrderBlock: React.FC<{
         const data = await res.json();
         if (!res.ok) throw new Error(getApiErrorMessage(data, 'СДЭК не вернул города'));
         const nextCities = Array.isArray(data) ? data.slice(0, 8) : [];
-        cdekCitiesCache.set(cacheKey, nextCities);
+        if (nextCities.length) cdekCitiesCache.set(cacheKey, nextCities);
         setCities(nextCities.slice(0, 6));
         if (Array.isArray(data) && data.length === 0) setError('СДЭК не нашел такой город');
       } catch (e: any) {
@@ -1693,7 +1709,7 @@ const CdekOrderBlock: React.FC<{
         const data = await res.json();
         if (!res.ok) throw new Error(getApiErrorMessage(data, 'СДЭК не вернул ПВЗ'));
         const nextPoints = Array.isArray(data) ? data : [];
-        cdekPointsCache.set(String(toCityCode), nextPoints);
+        if (nextPoints.length) cdekPointsCache.set(String(toCityCode), nextPoints);
         setPoints(nextPoints);
         if (Array.isArray(data) && data.length === 0) setError('В этом городе СДЭК не вернул ПВЗ');
       } catch (e: any) {
@@ -1716,7 +1732,7 @@ const CdekOrderBlock: React.FC<{
   }, [cities, cityQuery, toCityCode]);
 
   const selectCity = (city: CdekCityOption) => {
-    const cityLabel = `${city.city}${city.region ? `, ${city.region}` : ''}`;
+    const cityLabel = getCdekCityLabel(city);
     setToCityCode(String(city.code));
     setCityQuery(cityLabel);
     setDeliveryPoint('');
@@ -2203,7 +2219,7 @@ const CdekOrderBlock: React.FC<{
                   onClick={() => selectCity(city)}
                   className="w-full text-left px-3 py-2 text-[13px] font-bold text-zinc-700 hover:bg-zinc-50"
                 >
-                  {city.city}{city.region ? `, ${city.region}` : ''} <span className="text-zinc-300">#{city.code}</span>
+                  {getCdekCityLabel(city)} <span className="text-zinc-300">#{city.code}</span>
                 </button>
               ))}
             </div>
@@ -2960,7 +2976,7 @@ const OrderDetailView: React.FC<{
             <div className="grid gap-3">
               <label className="space-y-1.5"><span className="text-[11px] font-medium text-[#667085]">Способ доставки</span>{editSelect('deliveryMethod', order.deliveryMethod, DELIVERY_OPTIONS)}</label>
             </div>
-            {String(order.deliveryMethod || '').toLowerCase().includes('сдэк') && (
+            {isAutomaticCdek(order.deliveryMethod) && (
               <CdekOrderBlock order={order} updateOrderData={updateOrderData} productCatalog={productCatalog} mobile={mobile} />
             )}
           </div>
@@ -3417,7 +3433,7 @@ const OrderRow = React.memo(({
 
             <PaymentRowBlock order={order} updateOrderData={updateOrderData} />
 
-            {String(order.deliveryMethod || '').toLowerCase().includes('сдэк') && (
+            {isAutomaticCdek(order.deliveryMethod) && (
               <CdekOrderBlock order={order} updateOrderData={updateOrderData} productCatalog={productCatalog} mobile />
             )}
           </aside>
@@ -4653,7 +4669,7 @@ const OrderCard = React.memo(({
         {mobileRefundError && <p className="text-[9px] font-bold text-red-500">{mobileRefundError}</p>}
       </div>
 
-      {String(order.deliveryMethod || '').toLowerCase().includes('сдэк') && (
+      {isAutomaticCdek(order.deliveryMethod) && (
         <CdekOrderBlock order={order} updateOrderData={updateOrderData} productCatalog={productCatalog} mobile />
       )}
 
@@ -5056,7 +5072,8 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
     ).slice(0, 8);
   }, [contacts, phoneQuery]);
 
-  const isNewOrderCdek = String(newOrder.deliveryMethod || '').toLowerCase().includes('сдэк');
+  const isNewOrderCdek = isAutomaticCdek(newOrder.deliveryMethod);
+  const isNewOrderInternationalCdek = isManualInternationalCdek(newOrder.deliveryMethod);
   const isNewOrderBlogger = Boolean(newOrder.isBlogger) || newOrder.orderKind === 'blogger';
 
   const setNewOrderKind = (kind: 'customer' | 'blogger') => {
@@ -5097,7 +5114,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
         const payload = await response.json();
         if (!response.ok) throw new Error(getApiErrorMessage(payload, 'СДЭК не вернул города'));
         const next = Array.isArray(payload) ? payload.slice(0, 8) : [];
-        cdekCitiesCache.set(cacheKey, next);
+        if (next.length) cdekCitiesCache.set(cacheKey, next);
         setNewCdekCities(next.slice(0, 6));
       } catch (error: any) {
         setNewOrderFormError(error.message || 'Не удалось найти город СДЭК');
@@ -5126,7 +5143,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
         const payload = await response.json();
         if (!response.ok) throw new Error(getApiErrorMessage(payload, 'СДЭК не вернул ПВЗ'));
         const next = Array.isArray(payload) ? payload : [];
-        cdekPointsCache.set(newCdekCityCode, next);
+        if (next.length) cdekPointsCache.set(newCdekCityCode, next);
         setNewCdekPoints(next);
       })
       .catch((error: any) => {
@@ -5821,7 +5838,15 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
         length: newCdekLength,
         width: newCdekWidth,
         height: newCdekHeight,
-      } } : {}),
+      } } : isNewOrderInternationalCdek ? {
+        cdekManualRequired: true,
+        cdekPayload: {
+          manual: true,
+          international: true,
+          toCity: String(newOrder.clientCity || '').trim(),
+          toAddress: String(newOrder.clientAddress || '').trim(),
+        },
+      } : {}),
     };
   };
 
@@ -5840,7 +5865,6 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
       if (!String(item || '').trim()) missing.push(`изделие${position}`);
       if (!String(newOrderItemColors[index] || '').trim()) missing.push(`цвет${position}`);
       if (!String(newOrderItemSizes[index] || '').trim()) missing.push(`размер${position}`);
-      if (!String(newOrderItemHeights[index] || '').trim()) missing.push(`рост${position}`);
       if (!isNewOrderBlogger && (Number(newOrderItemPrices[index]) || 0) <= 0) missing.push(`цена${position}`);
     });
     if (isNewOrderBlogger && (Number(newOrder.deliveryPrice) || 0) <= 0) missing.push('стоимость доставки');
@@ -5855,7 +5879,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
     }
     return Array.from(new Set(missing));
   }, [
-    isNewOrderBlogger, isNewOrderCdek, newCdekCityCode, newCdekDeliveryType, newCdekPoint, newCdekWeight,
+    isNewOrderBlogger, isNewOrderCdek, isNewOrderInternationalCdek, newCdekCityCode, newCdekDeliveryType, newCdekPoint, newCdekWeight,
     newOrder, newOrderItemColors, newOrderItemCosts, newOrderItemHeights, newOrderItemPrices, newOrderItemSizes, newOrderItems,
   ]);
 
@@ -7310,7 +7334,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
             <div className="space-y-3">
               {renderNewOrderSelect('Способ доставки', newOrder.deliveryMethod || '', mergeOptions(handbookDeliveries, DELIVERY_OPTIONS), (value) => {
                 setNewOrder({...newOrder, deliveryMethod: value});
-                if (/сдэк/i.test(value)) {
+                if (isAutomaticCdek(value)) {
                   const door = /до двери/i.test(value);
                   setNewCdekDeliveryType(door ? 'door' : 'pvz');
                   setNewCdekTariffCode(door ? '139' : '138');
@@ -7374,7 +7398,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                             key={city.code}
                             type="button"
                             onMouseDown={() => {
-                              const label = `${city.city}${city.region ? `, ${city.region}` : ''}`;
+                              const label = getCdekCityLabel(city);
                               setNewCdekCityCode(String(city.code));
                               setNewCdekCityQuery(label);
                               setNewOrder(prev => ({ ...prev, clientCity: label }));
@@ -7382,7 +7406,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                             }}
                             className="block w-full px-3 py-2 text-left text-[12px] font-medium text-[#1F2937] hover:bg-[#F6F7F9]"
                           >
-                            {city.city}{city.region ? `, ${city.region}` : ''}
+                            {getCdekCityLabel(city)}
                           </button>
                         ))}
                       </div>
@@ -7493,6 +7517,11 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                       className={newOrderFieldClass}
                     />
                   </label>
+                  {isNewOrderInternationalCdek && (
+                    <p className="sm:col-span-2 rounded-[7px] border border-amber-200 bg-amber-50 px-3 py-2 text-[10px] font-medium leading-4 text-amber-800">
+                      Международную накладную оформите в личном кабинете СДЭК. CRM сохранит заказ и создаст выбранный счёт без блокировки.
+                    </p>
+                  )}
                 </div>
               )}
 
