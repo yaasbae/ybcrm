@@ -8,6 +8,7 @@ import {
   Settings2, ShoppingBag, Trash2, Upload,
 } from 'lucide-react';
 import { db, handleFirestoreError, OperationType, storage } from '../firebase';
+import { createStudioCutout } from '../lib/studioImage';
 
 type HeroSlide = {
   id: string;
@@ -142,10 +143,19 @@ function mergeSettings(value: Partial<StorefrontSettings>): StorefrontSettings {
   };
 }
 
-async function uploadStorefrontImage(file: File, slot: string) {
-  const compressed = await imageCompression(file, { maxSizeMB: 2, maxWidthOrHeight: 2400, useWebWorker: true, initialQuality: 0.9, fileType: 'image/jpeg' });
-  const target = ref(storage, `storefront/${slot.replace(/[^a-z0-9_-]/gi, '-')}_${Date.now()}.jpg`);
-  await uploadBytes(target, compressed, { contentType: 'image/jpeg' });
+async function uploadStorefrontImage(file: File, slot: string, removeBackground = false) {
+  const prepared = removeBackground ? await createStudioCutout(file) : file;
+  const compressed = await imageCompression(prepared, {
+    maxSizeMB: 2,
+    maxWidthOrHeight: 2200,
+    useWebWorker: true,
+    initialQuality: 0.88,
+    fileType: removeBackground ? 'image/webp' : 'image/jpeg',
+  });
+  const extension = removeBackground ? 'webp' : 'jpg';
+  const contentType = removeBackground ? 'image/webp' : 'image/jpeg';
+  const target = ref(storage, `storefront/${slot}_${Date.now()}.${extension}`);
+  await uploadBytes(target, compressed, { contentType });
   return getDownloadURL(target);
 }
 
@@ -192,9 +202,10 @@ export const StorefrontPage: React.FC = () => {
   }, error => { setLoading(false); setNotice('Не удалось загрузить настройки витрины'); console.error(error); }), []);
 
   const change = (updater: (current: StorefrontSettings) => StorefrontSettings) => { setSettings(updater); setDirty(true); };
-  const upload = async (file: File, slot: string, apply: (url: string) => void) => {
-    setUploading(slot); setNotice('');
-    try { apply(await uploadStorefrontImage(file, slot)); setDirty(true); }
+  const upload = async (file: File, slot: string, apply: (url: string) => void, removeBackground = false) => {
+    setUploading(slot);
+    setNotice('');
+    try { apply(await uploadStorefrontImage(file, slot, removeBackground)); setDirty(true); }
     catch (error) { setNotice('Не удалось загрузить изображение'); console.error(error); }
     finally { setUploading(null); }
   };
@@ -249,8 +260,8 @@ export const StorefrontPage: React.FC = () => {
         </>}
 
         {active === 'home' && <>
-          <Card title="Главный слайдер" description="Можно добавлять любое количество кадров, менять порядок удалением и добавлением, временно скрывать отдельные слайды." action={<button type="button" onClick={() => change(current => ({ ...current, heroItems: [...current.heroItems, { id: id(), imageUrl: '', eyebrow: 'New story', title: 'Название слайда', buttonLabel: 'Смотреть', buttonUrl: '/catalog', enabled: true }] }))} className="inline-flex h-9 items-center gap-1.5 rounded-xl bg-zinc-950 px-3 text-[10px] font-semibold text-white"><Plus size={13} /> Добавить</button>}>
-            <div className="space-y-4">{settings.heroItems.map((slide, index) => <div key={slide.id} className="grid gap-4 rounded-2xl border border-zinc-200 p-3 sm:p-4 xl:grid-cols-[210px_minmax(0,1fr)]"><ImageField value={slide.imageUrl} slot={`hero-${slide.id}`} uploading={uploading} ratio="aspect-[4/5]" onUpload={file => upload(file, `hero_${slide.id}`, imageUrl => change(current => ({ ...current, heroItems: current.heroItems.map(item => item.id === slide.id ? { ...item, imageUrl } : item) })))} onClear={() => change(current => ({ ...current, heroItems: current.heroItems.map(item => item.id === slide.id ? { ...item, imageUrl: '' } : item) }))} /><div className="space-y-3"><div className="flex items-center justify-between gap-3"><b className="text-xs text-zinc-500">Слайд {String(index + 1).padStart(2, '0')}</b><div className="flex items-center gap-3"><Toggle checked={slide.enabled} label={slide.enabled ? 'Показывается' : 'Скрыт'} onChange={enabled => change(current => ({ ...current, heroItems: current.heroItems.map(item => item.id === slide.id ? { ...item, enabled } : item) }))} /><button type="button" disabled={settings.heroItems.length < 2} onClick={() => change(current => ({ ...current, heroItems: current.heroItems.filter(item => item.id !== slide.id) }))} className="grid h-9 w-9 place-items-center rounded-xl text-zinc-400 transition hover:bg-red-50 hover:text-red-600 disabled:opacity-30"><Trash2 size={15} /></button></div></div><div className="grid gap-3 sm:grid-cols-2"><Field label="Надпись над заголовком" value={slide.eyebrow} onChange={eyebrow => change(current => ({ ...current, heroItems: current.heroItems.map(item => item.id === slide.id ? { ...item, eyebrow } : item) }))} /><Field label="Заголовок" value={slide.title} onChange={title => change(current => ({ ...current, heroItems: current.heroItems.map(item => item.id === slide.id ? { ...item, title } : item) }))} /><Field label="Текст кнопки" value={slide.buttonLabel} onChange={buttonLabel => change(current => ({ ...current, heroItems: current.heroItems.map(item => item.id === slide.id ? { ...item, buttonLabel } : item) }))} /><Field label="Ссылка кнопки" value={slide.buttonUrl} onChange={buttonUrl => change(current => ({ ...current, heroItems: current.heroItems.map(item => item.id === slide.id ? { ...item, buttonUrl } : item) }))} /></div></div></div>)}</div>
+          <Card title="Главный слайдер" description="Фон загруженной фотографии удаляется автоматически: модель появится прямо на белом фоне сайта. Можно добавлять, скрывать и заменять слайды." action={<button type="button" onClick={() => change(current => ({ ...current, heroItems: [...current.heroItems, { id: id(), imageUrl: '', eyebrow: 'New story', title: 'Название слайда', buttonLabel: 'Смотреть', buttonUrl: '/catalog', enabled: true }] }))} className="inline-flex h-9 items-center gap-1.5 rounded-xl bg-zinc-950 px-3 text-[10px] font-semibold text-white"><Plus size={13} /> Добавить</button>}>
+            <div className="space-y-4">{settings.heroItems.map((slide, index) => <div key={slide.id} className="grid gap-4 rounded-2xl border border-zinc-200 p-3 sm:p-4 xl:grid-cols-[210px_minmax(0,1fr)]"><ImageField value={slide.imageUrl} slot={`hero-${slide.id}`} uploading={uploading} ratio="aspect-[4/5]" onUpload={file => upload(file, `hero_${slide.id}`, imageUrl => change(current => ({ ...current, heroItems: current.heroItems.map(item => item.id === slide.id ? { ...item, imageUrl } : item) })), true)} onClear={() => change(current => ({ ...current, heroItems: current.heroItems.map(item => item.id === slide.id ? { ...item, imageUrl: '' } : item) }))} /><div className="space-y-3"><div className="flex items-center justify-between gap-3"><b className="text-xs text-zinc-500">Слайд {String(index + 1).padStart(2, '0')}</b><div className="flex items-center gap-3"><Toggle checked={slide.enabled} label={slide.enabled ? 'Показывается' : 'Скрыт'} onChange={enabled => change(current => ({ ...current, heroItems: current.heroItems.map(item => item.id === slide.id ? { ...item, enabled } : item) }))} /><button type="button" disabled={settings.heroItems.length < 2} onClick={() => change(current => ({ ...current, heroItems: current.heroItems.filter(item => item.id !== slide.id) }))} className="grid h-9 w-9 place-items-center rounded-xl text-zinc-400 transition hover:bg-red-50 hover:text-red-600 disabled:opacity-30"><Trash2 size={15} /></button></div></div><div className="grid gap-3 sm:grid-cols-2"><Field label="Надпись над заголовком" value={slide.eyebrow} onChange={eyebrow => change(current => ({ ...current, heroItems: current.heroItems.map(item => item.id === slide.id ? { ...item, eyebrow } : item) }))} /><Field label="Заголовок" value={slide.title} onChange={title => change(current => ({ ...current, heroItems: current.heroItems.map(item => item.id === slide.id ? { ...item, title } : item) }))} /><Field label="Текст кнопки" value={slide.buttonLabel} onChange={buttonLabel => change(current => ({ ...current, heroItems: current.heroItems.map(item => item.id === slide.id ? { ...item, buttonLabel } : item) }))} /><Field label="Ссылка кнопки" value={slide.buttonUrl} onChange={buttonUrl => change(current => ({ ...current, heroItems: current.heroItems.map(item => item.id === slide.id ? { ...item, buttonUrl } : item) }))} /></div></div></div>)}</div>
           </Card>
           <Card title="Блок «Нам доверяют»" description="Текст и фотографии сообщества или медийных лиц."><div className="grid gap-4 lg:grid-cols-2"><Field label="Метка" value={settings.lookbook.eyebrow} onChange={eyebrow => change(current => ({ ...current, lookbook: { ...current.lookbook, eyebrow } }))} /><Field label="Заголовок" value={settings.lookbook.title} onChange={title => change(current => ({ ...current, lookbook: { ...current.lookbook, title } }))} /><div className="lg:col-span-2"><Textarea label="Описание" rows={3} value={settings.lookbook.description} onChange={description => change(current => ({ ...current, lookbook: { ...current.lookbook, description } }))} /></div></div><div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-5">{settings.lookbook.images.map((imageUrl, index) => <ImageField key={`${imageUrl}-${index}`} value={imageUrl} slot={`lookbook-${index}`} uploading={uploading} ratio="aspect-[3/4]" onUpload={file => upload(file, `lookbook_${index}`, url => change(current => ({ ...current, lookbook: { ...current.lookbook, images: current.lookbook.images.map((item, i) => i === index ? url : item) } })))} onClear={() => change(current => ({ ...current, lookbook: { ...current.lookbook, images: current.lookbook.images.filter((_, i) => i !== index) } }))} />)}<label className="grid min-h-48 cursor-pointer place-items-center rounded-xl border border-dashed border-zinc-300 bg-zinc-50 text-center text-[11px] font-semibold text-zinc-500 transition hover:border-zinc-500"><span><Plus className="mx-auto mb-2" size={18} />Добавить фото</span><input className="sr-only" type="file" accept="image/*" onChange={event => { const file = event.target.files?.[0]; if (file) upload(file, `lookbook_${id()}`, url => change(current => ({ ...current, lookbook: { ...current.lookbook, images: [...current.lookbook.images, url] } }))); event.target.value = ''; }} /></label></div></Card>
           <Card title="Популярные товары" description="Сами товары и цены берутся из «Склада»."><div className="grid gap-4 sm:grid-cols-3"><Field label="Метка" value={settings.popular.eyebrow} onChange={eyebrow => change(current => ({ ...current, popular: { ...current.popular, eyebrow } }))} /><Field label="Заголовок" value={settings.popular.title} onChange={title => change(current => ({ ...current, popular: { ...current.popular, title } }))} /><Field label="Текст ссылки" value={settings.popular.linkLabel} onChange={linkLabel => change(current => ({ ...current, popular: { ...current.popular, linkLabel } }))} /></div></Card>

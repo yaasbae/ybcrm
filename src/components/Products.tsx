@@ -20,6 +20,7 @@ import {
   getPrimaryComposition,
   type ProductMaterial,
 } from '../lib/productMaterials';
+import { createStudioCutout } from '../lib/studioImage';
 
 interface ProductItem {
   id: string;
@@ -199,7 +200,7 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
     return () => unsubscribe();
   }, []);
 
-  type PhotoUploadStatus = 'uploading' | 'done' | 'error';
+  type PhotoUploadStatus = 'processing' | 'uploading' | 'done' | 'error';
   const [pendingProductId, setPendingProductId] = useState<string | null>(null);
   const [photoUploadStatus, setPhotoUploadStatus] = useState<Record<number, PhotoUploadStatus>>({});
   const [isAdding, setIsAdding] = useState(false);
@@ -245,7 +246,7 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
   const handleAddProduct = async () => {
     if (!newProduct.name) return;
 
-    const stillUploading = Object.values(photoUploadStatus).some(s => s === 'uploading');
+    const stillUploading = Object.values(photoUploadStatus).some(s => s === 'processing' || s === 'uploading');
     if (stillUploading) {
       setError('Подождите, фото ещё загружаются...');
       return;
@@ -532,15 +533,15 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
     for (const file of filesToProcess) {
       const thisIndex = currentIndex++;
       try {
-        const options = {
+        setPhotoUploadStatus(prev => ({ ...prev, [thisIndex]: 'processing' }));
+        const studioFile = await createStudioCutout(file, 1920);
+        const compressedFile = await imageCompression(studioFile, {
           maxSizeMB: 2.0,
           maxWidthOrHeight: 1920,
           useWebWorker: true,
-          initialQuality: 0.85,
-          fileType: 'image/jpeg' as const
-        };
-
-        const compressedFile = await imageCompression(file, options);
+          initialQuality: 0.9,
+          fileType: 'image/webp' as const
+        });
 
         const reader = new FileReader();
         reader.onloadend = async () => {
@@ -556,8 +557,8 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
           // Фоновая загрузка в Firebase Storage
           try {
             const blob = await fetch(base64).then(r => r.blob());
-            const storageRef = ref(storage, `products/${pendingProductId}/photo_${thisIndex}_${Date.now()}.jpg`);
-            await uploadBytes(storageRef, blob, { contentType: 'image/jpeg' });
+            const storageRef = ref(storage, `products/${pendingProductId}/photo_${thisIndex}_${Date.now()}.webp`);
+            await uploadBytes(storageRef, blob, { contentType: 'image/webp' });
             const url = await getDownloadURL(storageRef);
 
             // Заменяем base64 на Storage URL
@@ -644,7 +645,7 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
 
     const inputClass = "h-11 min-w-0 w-full max-w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-medium text-slate-800 outline-none transition focus:border-[#7D7DE6] focus:ring-2 focus:ring-[#7D7DE6]/10";
     const labelClass = "mb-1.5 block text-[10px] font-bold uppercase tracking-[0.12em] text-slate-400";
-    const hasUploadingPhotos = Object.values(photoUploadStatus).some(status => status === 'uploading');
+    const hasUploadingPhotos = Object.values(photoUploadStatus).some(status => status === 'processing' || status === 'uploading');
 
     return (
       <motion.div
@@ -1068,12 +1069,12 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
                             <img
                               src={photo}
                               alt={`Preview ${index}`}
-                              className={cn("w-full h-full object-cover transition-opacity", status === 'uploading' ? "opacity-50" : "opacity-100")}
+                              className={cn("w-full h-full object-contain transition-opacity", status === 'uploading' || status === 'processing' ? "opacity-50" : "opacity-100")}
                               referrerPolicy="no-referrer"
                             />
-                            {status === 'uploading' && (
+                            {(status === 'uploading' || status === 'processing') && (
                               <div className="absolute inset-0 flex items-center justify-center bg-black/10">
-                                <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                                <div className="flex flex-col items-center gap-1 text-[8px] font-bold uppercase text-slate-600"><div className="w-5 h-5 border-2 border-slate-500 border-t-transparent rounded-full animate-spin" />{status === 'processing' ? 'Удаляем фон' : 'Загрузка'}</div>
                               </div>
                             )}
                             {status === 'error' && (
@@ -1596,7 +1597,7 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
                     Отмена
                   </button>
                   {(() => {
-                    const hasUploadingPhotos = Object.values(photoUploadStatus).some(s => s === 'uploading');
+                    const hasUploadingPhotos = Object.values(photoUploadStatus).some(s => s === 'processing' || s === 'uploading');
                     return (
                       <button
                         onClick={handleAddProduct}
