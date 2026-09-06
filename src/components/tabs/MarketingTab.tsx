@@ -1,6 +1,6 @@
 import React, { useMemo, useState, useEffect } from 'react';
 import {
-  Calendar, Search, Plus, Trash2, CheckCircle, Image, Video, Users
+  Calendar, Search, Plus, Trash2, CheckCircle, Image, Video, Users, Truck, Clock3, ArrowDown
 } from 'lucide-react';
 import { formatCurrency, cn } from '../../lib/utils';
 import { db } from '../../firebase';
@@ -26,6 +26,7 @@ type BloggerCalendarEvent = {
   postType: BloggerPostType;
   note: string;
   done: boolean;
+  orderId?: string;
 };
 
 type BloggerPerformance = {
@@ -74,6 +75,7 @@ export const MarketingTab: React.FC<MarketingTabProps> = ({
     bloggerId: YAASBAE_BLOGGERS[0]?.id || '',
     postType: 'Фото' as BloggerPostType,
     note: '',
+    orderId: undefined as string | undefined,
   });
 
   useEffect(() => {
@@ -147,8 +149,54 @@ export const MarketingTab: React.FC<MarketingTabProps> = ({
       if (!key || options.some((item) => normalizeBloggerName(item.name) === key)) return;
       options.push({ id: `handbook-${key}`, name });
     });
+    data.forEach((order) => {
+      const name = String(order.blogger || (order.isBlogger ? order.clientName : '') || '').trim();
+      const key = normalizeBloggerName(name);
+      if (!key || options.some((item) => normalizeBloggerName(item.name) === key)) return;
+      options.push({ id: `order-${key}`, name });
+    });
     return options;
-  }, [handbookBloggers, manualBloggers]);
+  }, [data, handbookBloggers, manualBloggers]);
+
+  const bloggerOrders = useMemo(() => {
+    return data
+      .filter(order => order.orderKind
+        ? order.orderKind === 'blogger'
+        : Boolean(order.isBlogger) || String(order.source || '').toLowerCase().includes('блогер'))
+      .filter(order => {
+        const status = String(order.status || '').toLowerCase();
+        return !status.includes('возврат') && !status.includes('вернули платёж') && !status.includes('отмена');
+      })
+      .map(order => {
+        const bloggerName = String(order.blogger || order.clientName || '').trim() || 'Блогер не указан';
+        const scheduledEvent = calendarEvents.find(event => (
+          event.orderId === order.orderId
+          || (!event.orderId && normalizeBloggerName(event.bloggerName) === normalizeBloggerName(bloggerName))
+        ));
+        const status = String(order.status || 'Новый');
+        const received = ['получен', 'доставлен'].includes(status.trim().toLowerCase());
+        return { order, bloggerName, scheduledEvent, received };
+      })
+      .sort((a, b) => {
+        if (a.received !== b.received) return a.received ? 1 : -1;
+        if (Boolean(a.scheduledEvent) !== Boolean(b.scheduledEvent)) return a.scheduledEvent ? 1 : -1;
+        return b.order.date.getTime() - a.order.date.getTime();
+      });
+  }, [calendarEvents, data]);
+
+  const scheduleBloggerOrder = (order: OrderData, bloggerName: string) => {
+    const blogger = allBloggerOptions.find(item => normalizeBloggerName(item.name) === normalizeBloggerName(bloggerName));
+    const today = new Date();
+    const todayKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+    setCalendarDraft(prev => ({
+      ...prev,
+      date: todayKey.startsWith(selectedMonth) ? todayKey : `${selectedMonth}-01`,
+      bloggerId: blogger?.id || prev.bloggerId,
+      note: String(order.item || '').trim(),
+      orderId: order.orderId,
+    }));
+    document.getElementById('blogger-calendar')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
 
   const addCalendarEvent = async () => {
     const blogger = allBloggerOptions.find((item) => item.id === calendarDraft.bloggerId);
@@ -164,11 +212,12 @@ export const MarketingTab: React.FC<MarketingTabProps> = ({
         postType: calendarDraft.postType,
         note: calendarDraft.note.trim(),
         done: false,
+        orderId: calendarDraft.orderId,
       },
     ].sort((a, b) => a.date.localeCompare(b.date));
 
     await saveCalendarEvents(nextEvents);
-    setCalendarDraft((prev) => ({ ...prev, note: '' }));
+    setCalendarDraft((prev) => ({ ...prev, note: '', orderId: undefined }));
   };
 
   const updateCalendarEvent = async (id: string, updates: Partial<BloggerCalendarEvent>) => {
@@ -323,13 +372,73 @@ export const MarketingTab: React.FC<MarketingTabProps> = ({
   return (
     <div className="space-y-4">
       <div className="tg-card overflow-hidden">
+        <div className="flex flex-col gap-3 border-b border-zinc-100 p-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-center gap-3">
+            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-violet-100 text-violet-700">
+              <Truck className="h-4 w-4" />
+            </div>
+            <div>
+              <h3 className="text-[12px] font-black uppercase tracking-[0.22em] text-zinc-900">Заказы и будущие отметки</h3>
+              <p className="text-[9px] font-bold uppercase tracking-widest text-zinc-400">Блогеры, которым отправили товар · получение · план публикации</p>
+            </div>
+          </div>
+          <div className="flex gap-2 text-[10px] font-black uppercase tracking-widest">
+            <span className="rounded-lg bg-amber-50 px-3 py-2 text-amber-700">Едут: {bloggerOrders.filter(item => !item.received).length}</span>
+            <span className="rounded-lg bg-violet-50 px-3 py-2 text-violet-700">Без даты: {bloggerOrders.filter(item => item.received && !item.scheduledEvent).length}</span>
+          </div>
+        </div>
+        <div className="divide-y divide-zinc-100">
+          {bloggerOrders.slice(0, 100).map(({ order, bloggerName, received, scheduledEvent }) => (
+            <div key={order.orderId} className="grid gap-3 p-4 md:grid-cols-[100px_minmax(180px,1fr)_minmax(180px,1fr)_160px_170px] md:items-center">
+              <div>
+                <p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">Заказ</p>
+                <p className="mt-1 text-[12px] font-black text-zinc-900">#{order.orderId}</p>
+              </div>
+              <div className="min-w-0">
+                <p className="truncate text-[12px] font-black text-zinc-900">{bloggerName}</p>
+                <p className="mt-1 truncate text-[10px] font-semibold text-zinc-400">{order.clientInsta ? `@${String(order.clientInsta).replace(/^@/, '')}` : order.clientPhone || 'Контакт не указан'}</p>
+              </div>
+              <div className="min-w-0">
+                <p className="truncate text-[11px] font-bold text-zinc-700">{order.item || 'Изделие не указано'}</p>
+                <p className="mt-1 text-[9px] font-semibold text-zinc-400">Доставка {formatCurrency(Number(order.deliveryPrice) || 0)} · {order.manager || 'менеджер не указан'}</p>
+              </div>
+              <span className={cn(
+                'inline-flex w-fit items-center gap-1.5 rounded-lg px-2.5 py-2 text-[9px] font-black uppercase tracking-wider',
+                received ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'
+              )}>
+                {received ? <CheckCircle className="h-3.5 w-3.5" /> : <Clock3 className="h-3.5 w-3.5" />}
+                {received ? 'Товар получен' : order.status || 'Ожидает товар'}
+              </span>
+              {scheduledEvent ? (
+                <div className="rounded-lg border border-violet-100 bg-violet-50 px-3 py-2">
+                  <p className="text-[9px] font-black uppercase tracking-widest text-violet-700">Отметка {scheduledEvent.date}</p>
+                  <p className="mt-1 text-[9px] font-semibold text-violet-500">{scheduledEvent.postType}{scheduledEvent.done ? ' · выполнено' : ''}</p>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => scheduleBloggerOrder(order, bloggerName)}
+                  className="inline-flex h-9 items-center justify-center gap-2 rounded-lg bg-zinc-900 px-3 text-[9px] font-black uppercase tracking-widest text-white hover:bg-black"
+                >
+                  Назначить дату <ArrowDown className="h-3.5 w-3.5" />
+                </button>
+              )}
+            </div>
+          ))}
+          {!bloggerOrders.length && (
+            <div className="p-8 text-center text-[11px] font-semibold text-zinc-400">Блогерские заказы появятся здесь сразу после создания в разделе «Заказы».</div>
+          )}
+        </div>
+      </div>
+
+      <div className="tg-card overflow-hidden">
         <div className="p-4 border-b border-zinc-100 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
           <div className="flex items-center gap-3">
             <div className="w-9 h-9 rounded-xl bg-zinc-900 text-white flex items-center justify-center shadow-sm">
               <Users className="w-4 h-4" />
             </div>
             <div>
-              <h3 className="text-[12px] font-black text-zinc-900 uppercase tracking-[0.22em]">Рейтинг блогеров</h3>
+              <h3 className="text-[12px] font-black text-zinc-900 uppercase tracking-[0.22em]">Рейтинг и база блогеров</h3>
               <p className="text-[9px] text-zinc-400 font-bold uppercase tracking-widest">
                 {YAASBAE_BLOGGERS.length} из Excel · сортировка по сумме заказов в CRM
               </p>
@@ -479,7 +588,7 @@ export const MarketingTab: React.FC<MarketingTabProps> = ({
         </div>
       </div>
 
-      <div className="tg-card overflow-hidden">
+      <div id="blogger-calendar" className="tg-card scroll-mt-4 overflow-hidden">
         <div className="p-4 border-b border-zinc-100 flex flex-col xl:flex-row xl:items-center justify-between gap-4">
           <div className="flex items-center gap-3">
             <div className="w-9 h-9 rounded-xl bg-purple-100 text-purple-700 flex items-center justify-center">

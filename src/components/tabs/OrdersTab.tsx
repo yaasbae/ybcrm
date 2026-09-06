@@ -69,6 +69,7 @@ const SHIFT_TARGET_CONTACTS = 100;
 const SHIFT_BASE_PAY = 1000;
 const SHIFT_START_TIME = '09:00';
 const SHIFT_END_TIME = '22:00';
+const BLOGGER_MANAGER_BONUS = 500;
 const OWNER_INFO_EMAIL = 'ndtiger86@gmail.com';
 const RAW_COLOR_INDEX = 1;
 const RAW_SIZE_INDEX = 8;
@@ -5056,7 +5057,26 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
   }, [contacts, phoneQuery]);
 
   const isNewOrderCdek = String(newOrder.deliveryMethod || '').toLowerCase().includes('сдэк');
-  const isNewOrderBlogger = String(newOrder.source || '').toLowerCase().includes('блогер');
+  const isNewOrderBlogger = Boolean(newOrder.isBlogger) || newOrder.orderKind === 'blogger';
+
+  const setNewOrderKind = (kind: 'customer' | 'blogger') => {
+    const bloggerMode = kind === 'blogger';
+    setNewOrder(prev => ({
+      ...prev,
+      orderKind: kind,
+      isBlogger: bloggerMode,
+      source: bloggerMode ? 'Блогер' : (String(prev.source || '').toLowerCase().includes('блогер') ? '' : prev.source),
+      blogger: bloggerMode ? (prev.blogger || prev.clientName || '') : '',
+      paymentType: bloggerMode ? '' : (prev.paymentType || 'QR код'),
+      invoiceType: bloggerMode ? 'full' : (prev.invoiceType || 'prepayment'),
+      paidAmount: bloggerMode ? 0 : prev.paidAmount,
+    }));
+    if (bloggerMode) {
+      setNewOrderItemPrices(prev => prev.map(() => 0));
+      setNewOrderItemCosts(prev => prev.map(() => 0));
+    }
+    setNewOrderFormError('');
+  };
 
   useEffect(() => {
     const value = newCdekCityQuery.trim();
@@ -5147,6 +5167,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
       clientInsta: getContactInsta(client),
       clientCity: getContactCity(client),
       clientAddress: getContactAddress(client),
+      ...(isNewOrderBlogger ? { blogger: contactName } : {}),
     });
     setClientQuery(contactName);
     setPhoneQuery(contactPhone);
@@ -5726,6 +5747,8 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
       source: '',
       deliveryMethod: '',
       status: 'Новый',
+      orderKind: 'customer',
+      isBlogger: false,
       rawRow,
     });
     setNewOrderItems(['']);
@@ -5756,9 +5779,8 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
     setCreatedShareText('');
   };
 
-  const buildNewOrderSnapshot = (status = 'Новый') => {
+  const buildNewOrderSnapshot = (status = 'Новый'): Partial<OrderData> => {
     const itemPricesTotal = getItemPricesTotal(newOrderItemPrices);
-    const bloggerProductCost = getItemPricesTotal(newOrderItemCosts);
     const invoiceType = newOrder.invoiceType || getInvoiceTypeFromPaymentType(newOrder.paymentType);
     const deliveryPrice = Number(newOrder.deliveryPrice) || 0;
     const cdekAddress = newCdekDeliveryType === 'pvz' ? newCdekPointQuery : String(newOrder.clientAddress || '').trim();
@@ -5769,16 +5791,19 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
       items: newOrderItems.map(item => item.trim()).filter(Boolean),
       itemPrices: newOrderItems.map((item, index) => item.trim() ? (isNewOrderBlogger ? 0 : (Number(newOrderItemPrices[index]) || 0)) : 0).filter((_, index) => Boolean(newOrderItems[index]?.trim())),
       retailItemPrices: newOrderItems.map((item, index) => item.trim() ? (Number(newOrderItemPrices[index]) || 0) : 0).filter((_, index) => Boolean(newOrderItems[index]?.trim())),
-      itemCosts: newOrderItems.map((item, index) => item.trim() ? (Number(newOrderItemCosts[index]) || 0) : 0).filter((_, index) => Boolean(newOrderItems[index]?.trim())),
+      itemCosts: newOrderItems.map((item, index) => item.trim() ? (isNewOrderBlogger ? 0 : (Number(newOrderItemCosts[index]) || 0)) : 0).filter((_, index) => Boolean(newOrderItems[index]?.trim())),
       itemColors: newOrderItems.map((item, index) => item.trim() ? String(newOrderItemColors[index] || '').trim() : '').filter((_, index) => Boolean(newOrderItems[index]?.trim())),
       itemSizes: newOrderItems.map((item, index) => item.trim() ? String(newOrderItemSizes[index] || '').trim() : '').filter((_, index) => Boolean(newOrderItems[index]?.trim())),
       itemHeights: newOrderItems.map((item, index) => item.trim() ? String(newOrderItemHeights[index] || '').trim() : '').filter((_, index) => Boolean(newOrderItems[index]?.trim())),
       item: joinOrderItems(newOrderItems),
       revenue: isNewOrderBlogger ? 0 : itemPricesTotal,
       isBlogger: isNewOrderBlogger,
-      bloggerProductCost: isNewOrderBlogger ? bloggerProductCost : 0,
+      orderKind: isNewOrderBlogger ? 'blogger' : 'customer',
+      blogger: isNewOrderBlogger ? String(newOrder.clientName || '').trim() : String(newOrder.blogger || '').trim(),
+      bloggerProductCost: 0,
       bloggerDeliveryCost: isNewOrderBlogger ? deliveryPrice : 0,
-      bloggerTotalCost: isNewOrderBlogger ? bloggerProductCost + deliveryPrice : 0,
+      bloggerTotalCost: isNewOrderBlogger ? deliveryPrice : 0,
+      bloggerManagerBonus: isNewOrderBlogger ? BLOGGER_MANAGER_BONUS : 0,
       invoiceType,
       paymentType: newOrder.paymentType || 'QR код',
       paidAmount: isNewOrderBlogger ? 0 : getInvoiceAmount({ revenue: itemPricesTotal, deliveryPrice, invoiceType }),
@@ -5803,23 +5828,22 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
   const newOrderMissingFields = useMemo(() => {
     const missing: string[] = [];
     if (!String(newOrder.orderId || '').trim()) missing.push('ID заказа');
-    if (!String(newOrder.clientName || '').trim()) missing.push('ФИО клиента');
+    if (!String(newOrder.clientName || '').trim()) missing.push(isNewOrderBlogger ? 'имя блогера' : 'ФИО клиента');
     if (getContactPhone({ phone: newOrder.clientPhone }).length < 10) missing.push('телефон');
     if (!String(newOrder.manager || '').trim()) missing.push('менеджер');
     if (!String(newOrder.source || '').trim()) missing.push('источник');
     if (!String(newOrder.deliveryMethod || '').trim()) missing.push('доставка');
     if (!isNewOrderBlogger && !String(newOrder.paymentType || '').trim()) missing.push('тип оплаты');
-    if (String(newOrder.source || '').toLowerCase().includes('блогер') && !String(newOrder.blogger || '').trim()) missing.push('блогер');
+    if (!isNewOrderBlogger && String(newOrder.source || '').toLowerCase().includes('блогер') && !String(newOrder.blogger || '').trim()) missing.push('блогер-источник');
     newOrderItems.forEach((item, index) => {
       const position = newOrderItems.length > 1 ? ` (позиция ${index + 1})` : '';
       if (!String(item || '').trim()) missing.push(`изделие${position}`);
       if (!String(newOrderItemColors[index] || '').trim()) missing.push(`цвет${position}`);
       if (!String(newOrderItemSizes[index] || '').trim()) missing.push(`размер${position}`);
       if (!String(newOrderItemHeights[index] || '').trim()) missing.push(`рост${position}`);
-      if (isNewOrderBlogger) {
-        if ((Number(newOrderItemCosts[index]) || 0) <= 0) missing.push(`себестоимость${position}`);
-      } else if ((Number(newOrderItemPrices[index]) || 0) <= 0) missing.push(`цена${position}`);
+      if (!isNewOrderBlogger && (Number(newOrderItemPrices[index]) || 0) <= 0) missing.push(`цена${position}`);
     });
+    if (isNewOrderBlogger && (Number(newOrder.deliveryPrice) || 0) <= 0) missing.push('стоимость доставки');
     if (isNewOrderCdek) {
       if (!newCdekCityCode) missing.push('город СДЭК из подсказки');
       if (newCdekDeliveryType === 'pvz' && !newCdekPoint) missing.push('ПВЗ СДЭК');
@@ -6969,7 +6993,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
           <div className="min-w-0">
             <h3 className="text-[16px] font-medium leading-[22px] text-[#1F2937]">Новый заказ</h3>
             <p className="text-[11px] font-medium leading-[14px] text-[#9CA3AF]">
-              Клиент → изделие → доставка и оплата
+              {isNewOrderBlogger ? 'Блогер → изделие → обязательная доставка' : 'Клиент → изделие → доставка и оплата'}
             </p>
           </div>
           <ChevronRight className={cn("ml-auto h-4 w-4 shrink-0 text-[#9CA3AF] transition-transform", newOrderFormOpen && "rotate-90")} />
@@ -6980,8 +7004,25 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
             <div className="mb-3 flex min-w-0 items-center gap-3">
               <div className="grid h-7 w-7 shrink-0 place-items-center rounded-[8px] bg-[#7D7DE6]/12 text-[13px] font-medium text-[#7D7DE6]">1</div>
               <div className="min-w-0">
-                <h4 className="text-[14px] font-medium leading-5 text-[#1F2937]">Клиент и заказ</h4>
+                <h4 className="text-[14px] font-medium leading-5 text-[#1F2937]">{isNewOrderBlogger ? 'Блогер и заказ' : 'Клиент и заказ'}</h4>
                 <p className="text-[11px] font-medium leading-[14px] text-[#9CA3AF]">Основная информация</p>
+              </div>
+              <div className="ml-auto inline-flex rounded-[7px] border border-[#E6E9EF] bg-[#F6F7F9] p-0.5">
+                {(['customer', 'blogger'] as const).map(kind => (
+                  <button
+                    key={kind}
+                    type="button"
+                    onClick={() => setNewOrderKind(kind)}
+                    className={cn(
+                      'h-7 rounded-[5px] px-2.5 text-[10px] font-semibold transition-colors',
+                      (kind === 'blogger') === isNewOrderBlogger
+                        ? 'bg-white text-[#1F2937] shadow-sm'
+                        : 'text-[#9CA3AF] hover:text-[#667085]'
+                    )}
+                  >
+                    {kind === 'blogger' ? 'Блогер' : 'Клиент'}
+                  </button>
+                ))}
               </div>
             </div>
             <div className="min-w-0 space-y-3">
@@ -7008,17 +7049,17 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
 
               <div className="min-w-0">
                 <label className={newOrderLabelClass}>
-                  <Users className="h-4 w-4" /> Клиент
+                  {isNewOrderBlogger ? <Star className="h-4 w-4" /> : <Users className="h-4 w-4" />} {isNewOrderBlogger ? 'Блогер' : 'Клиент'}
                 </label>
                 <div className="space-y-3">
                   <div className="relative" ref={suggestionsRef}>
                     <input
                       type="text"
-                      placeholder="ФИО клиента"
+                      placeholder={isNewOrderBlogger ? 'ФИО или название блогера' : 'ФИО клиента'}
                       value={clientQuery || newOrder.clientName || ''}
                       onChange={(e) => {
                         setClientQuery(e.target.value);
-                        setNewOrder({...newOrder, clientName: e.target.value});
+                        setNewOrder({...newOrder, clientName: e.target.value, ...(isNewOrderBlogger ? { blogger: e.target.value } : {})});
                         setShowSuggestions(true);
                       }}
                       onFocus={() => setShowSuggestions(true)}
@@ -7096,7 +7137,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                     <Instagram className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#9CA3AF]" />
                     <input
                       type="text"
-                      placeholder="Instagram клиента (необязательно)"
+                      placeholder={isNewOrderBlogger ? 'Instagram блогера' : 'Instagram клиента (необязательно)'}
                       value={newOrder.clientInsta || ''}
                       onChange={(e) => setNewOrder({...newOrder, clientInsta: e.target.value})}
                       onPaste={(e) => {
@@ -7120,24 +7161,33 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                       </a>
                     )}
                   </label>
-                  {String(newOrder.source || '').toLowerCase().includes('блогер') && <div className="relative">
-                    <input
-                      type="text"
-                      list="blogger-list"
-                      placeholder="ФИО блогера"
-                      value={newOrder.blogger || ''}
-                      onChange={(e) => setNewOrder({...newOrder, blogger: e.target.value})}
-                      className={newOrderFieldClass}
-                      autoComplete="off"
-                    />
-                    <Star className="pointer-events-none absolute right-4 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-300" />
-                  </div>}
                 </div>
               </div>
 
-              <div className="min-w-0 space-y-3">
+              <div className={cn("min-w-0 space-y-3", isNewOrderBlogger && "hidden")}>
                 {renderNewOrderSelect('Источник', newOrder.source || '', mergeOptions(handbookSources, SOURCE_OPTIONS), (v) => setNewOrder({...newOrder, source: v}), 'Источник')}
               </div>
+
+              {!isNewOrderBlogger && String(newOrder.source || '').toLowerCase().includes('блогер') && (
+                <label className="block">
+                  <span className={newOrderLabelClass}><Star className="h-4 w-4" /> Блогер-источник</span>
+                  <input
+                    type="text"
+                    list="blogger-list"
+                    placeholder="Кто привёл клиента"
+                    value={newOrder.blogger || ''}
+                    onChange={(event) => setNewOrder({...newOrder, blogger: event.target.value})}
+                    className={newOrderFieldClass}
+                    autoComplete="off"
+                  />
+                </label>
+              )}
+
+              {isNewOrderBlogger && (
+                <div className="rounded-[8px] border border-violet-100 bg-violet-50/60 px-3 py-2.5 text-[11px] font-medium leading-5 text-violet-700">
+                  Это маркетинговый заказ: цена изделия не нужна, в продажи он не попадёт. После создания менеджеру начислится {formatCurrency(BLOGGER_MANAGER_BONUS)}.
+                </div>
+              )}
 
               <div className="min-w-0 space-y-3">
                 {renderNewOrderSelect('Менеджер', newOrder.manager || '', mergeOptions(handbookManagers, DEFAULT_MANAGERS), (v) => setNewOrder({...newOrder, manager: v}), 'Менеджер')}
@@ -7150,8 +7200,8 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                 </div>
                 <div className="grid grid-cols-3 gap-2">
                   <div className="rounded-[8px] border border-[#E6E9EF] bg-[#F6F7F9] p-2.5">
-                    <p className="text-[8px] font-medium uppercase tracking-[0.1em] text-[#9CA3AF]">{isNewOrderBlogger ? 'Себестоимость изделий' : 'Изделия'}</p>
-                    <p className="mt-1.5 text-[14px] font-medium tabular-nums text-[#1F2937]">{Number(isNewOrderBlogger ? getItemPricesTotal(newOrderItemCosts) : newOrder.revenue || 0).toLocaleString('ru-RU')} ₽</p>
+                    <p className="text-[8px] font-medium uppercase tracking-[0.1em] text-[#9CA3AF]">{isNewOrderBlogger ? 'Изделие' : 'Изделия'}</p>
+                    <p className="mt-1.5 text-[14px] font-medium tabular-nums text-[#1F2937]">{isNewOrderBlogger ? 'Без цены' : `${Number(newOrder.revenue || 0).toLocaleString('ru-RU')} ₽`}</p>
                   </div>
                   <label className="rounded-[8px] border border-[#E6E9EF] bg-[#F6F7F9] p-2.5">
                     <span className="text-[8px] font-medium uppercase tracking-[0.1em] text-[#9CA3AF]">Доставка</span>
@@ -7167,8 +7217,8 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                     </span>
                   </label>
                   <div className="rounded-[8px] border border-emerald-100 bg-emerald-50/70 p-2.5">
-                    <p className="text-[8px] font-medium uppercase tracking-[0.1em] text-[#2EBA7F]">{isNewOrderBlogger ? 'Затраты на блогера' : 'К оплате'}</p>
-                    <p className="mt-1.5 text-[14px] font-medium tabular-nums text-[#2EBA7F]">{Number(isNewOrderBlogger ? getItemPricesTotal(newOrderItemCosts) + (Number(newOrder.deliveryPrice) || 0) : newOrder.paidAmount || 0).toLocaleString('ru-RU')} ₽</p>
+                    <p className="text-[8px] font-medium uppercase tracking-[0.1em] text-[#2EBA7F]">{isNewOrderBlogger ? 'Расход доставки' : 'К оплате'}</p>
+                    <p className="mt-1.5 text-[14px] font-medium tabular-nums text-[#2EBA7F]">{Number(isNewOrderBlogger ? Number(newOrder.deliveryPrice) || 0 : newOrder.paidAmount || 0).toLocaleString('ru-RU')} ₽</p>
                   </div>
                 </div>
               </div>
@@ -7204,21 +7254,21 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                     {renderNewOrderSelect('Рост', newOrderItemHeights[index] || '', handbookHeights, (v) => updateNewOrderItemHeight(index, v), 'Рост')}
                   </div>
                   <div className="mt-3 flex min-w-0 items-end gap-2">
+                    {!isNewOrderBlogger && (
                     <label className="block min-w-0 flex-1">
-                      <span className={newOrderLabelClass}>{isNewOrderBlogger ? 'Себестоимость' : 'Цена'}</span>
+                      <span className={newOrderLabelClass}>Цена</span>
                       <span className="relative block min-w-0">
                         <span className="absolute left-4 top-1/2 -translate-y-1/2 text-[13px] font-black text-zinc-300">₽</span>
                         <input
                           type="number"
-                          placeholder={isNewOrderBlogger ? 'Себестоимость изделия' : 'Цена изделия'}
-                          value={(isNewOrderBlogger ? newOrderItemCosts[index] : newOrderItemPrices[index]) || ''}
-                          onChange={(e) => isNewOrderBlogger
-                            ? updateNewOrderItemCost(index, parseFloat(e.target.value) || 0)
-                            : updateNewOrderItemPrice(index, parseFloat(e.target.value) || 0)}
+                          placeholder="Цена изделия"
+                          value={newOrderItemPrices[index] || ''}
+                          onChange={(e) => updateNewOrderItemPrice(index, parseFloat(e.target.value) || 0)}
                           className={cn(newOrderFieldClass, "pl-10 text-right")}
                         />
                       </span>
                     </label>
+                    )}
                     {newOrderItems.length > 1 && (
                       <button
                         type="button"

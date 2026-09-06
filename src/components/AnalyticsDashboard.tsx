@@ -69,6 +69,8 @@ export interface OrderData {
   bloggerProductCost?: number;
   bloggerDeliveryCost?: number;
   bloggerTotalCost?: number;
+  bloggerManagerBonus?: number;
+  orderKind?: 'customer' | 'blogger';
   itemColors?: string[];
   itemSizes?: string[];
   itemHeights?: string[];
@@ -281,6 +283,8 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
     label: '',
     manager: '',
     blogger: '',
+    orderKind: 'customer',
+    isBlogger: false,
     rawRow: Array(30).fill('')
   });
 
@@ -553,15 +557,16 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
       : invoiceType === 'full'
         ? fullInvoiceAmount
         : fullInvoiceAmount * 0.5;
-    const initialPaymentAccounting = getNewOrderPaymentAccounting({
-      revenue: totalRevenue,
-      deliveryPrice: orderDraft.deliveryPrice || 0,
-      invoiceType,
-    });
-
     const orderDate = orderDraft.date || new Date();
     const bloggerName = String(orderDraft.blogger || '').trim();
-    const isBloggerOrder = Boolean(bloggerName) || String(orderDraft.source || '').toLowerCase().includes('блогер');
+    const isBloggerOrder = orderDraft.orderKind === 'blogger' || Boolean(orderDraft.isBlogger);
+    const initialPaymentAccounting = isBloggerOrder
+      ? { paidAmount: 0, initialPaymentAmount: 0, paymentAccountingVersion: 2 }
+      : getNewOrderPaymentAccounting({
+          revenue: totalRevenue,
+          deliveryPrice: orderDraft.deliveryPrice || 0,
+          invoiceType,
+        });
     const orderToCreate: OrderData = {
       orderId: orderDraft.orderId || '',
       date: orderDate,
@@ -578,6 +583,8 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
       item: orderDraft.item || newOrderItemText,
       items: newOrderItems,
       itemPrices: newOrderItemPrices,
+      retailItemPrices: Array.isArray(orderDraft.retailItemPrices) ? orderDraft.retailItemPrices : newOrderItemPrices,
+      itemCosts: Array.isArray(orderDraft.itemCosts) ? orderDraft.itemCosts : [],
       itemColors: newOrderItemColors,
       itemSizes: newOrderItemSizes,
       itemHeights: newOrderItemHeights,
@@ -598,6 +605,11 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
       label: orderDraft.label || '',
       manager: orderDraft.manager || '',
       blogger: bloggerName,
+      orderKind: isBloggerOrder ? 'blogger' : 'customer',
+      bloggerProductCost: isBloggerOrder ? Number(orderDraft.bloggerProductCost) || 0 : 0,
+      bloggerDeliveryCost: isBloggerOrder ? Number(orderDraft.bloggerDeliveryCost) || Number(orderDraft.deliveryPrice) || 0 : 0,
+      bloggerTotalCost: isBloggerOrder ? Number(orderDraft.bloggerTotalCost) || Number(orderDraft.deliveryPrice) || 0 : 0,
+      bloggerManagerBonus: isBloggerOrder ? Number(orderDraft.bloggerManagerBonus) || 500 : 0,
       ...(orderDraft.cdekPayload ? { cdekPayload: orderDraft.cdekPayload } : {}),
       isFirebase: true
     };
@@ -679,6 +691,8 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
         label: '',
         manager: '',
         blogger: '',
+        orderKind: 'customer',
+        isBlogger: false,
         rawRow: Array(30).fill('')
       });
       return createdId;

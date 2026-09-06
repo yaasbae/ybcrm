@@ -43,6 +43,7 @@ interface PayrollPerson {
   percentBase: number;
   linkedManager: string;
   bonus: number;
+  bloggerBonus?: number;
   paid: number;
   note: string;
 }
@@ -53,6 +54,8 @@ interface PayrollOrder {
   date: Date | null;
   revenue: number;
   status: string;
+  isBlogger: boolean;
+  bloggerManagerBonus: number;
 }
 
 interface PayrollManagerContact {
@@ -236,7 +239,7 @@ const calculateAccrued = (person: PayrollPerson) => {
   const shiftPart = person.shiftRate * person.shifts;
   const piecePart = person.pieceAmount;
   const percentPart = person.percentBase * (person.percentRate / 100);
-  return Math.max(salaryPart + hourlyPart + shiftPart + piecePart + percentPart + person.bonus, 0);
+  return Math.max(salaryPart + hourlyPart + shiftPart + piecePart + percentPart + person.bonus + (person.bloggerBonus || 0), 0);
 };
 
 const describeFormula = (person: PayrollPerson) => {
@@ -258,6 +261,9 @@ const describeFormula = (person: PayrollPerson) => {
   }
   if (person.bonus > 0) {
     parts.push(`премия ${formatCurrency(person.bonus)}`);
+  }
+  if ((person.bloggerBonus || 0) > 0) {
+    parts.push(`блогеры ${formatCurrency(person.bloggerBonus || 0)}`);
   }
   return parts.length ? parts.join(' + ') : 'Заполни ставку, часы, смены, сдельную сумму или процент.';
 };
@@ -293,6 +299,10 @@ export const PayrollPage: React.FC<PayrollPageProps> = ({ onBack }) => {
             date: parseOrderDate(data.date),
             revenue: numberValue(data.revenue ?? data.totalPrice ?? data.amount ?? 0),
             status: String(data.status || ''),
+            isBlogger: data.orderKind
+              ? data.orderKind === 'blogger'
+              : Boolean(data.isBlogger) || String(data.source || '').toLowerCase().includes('блогер'),
+            bloggerManagerBonus: numberValue(data.bloggerManagerBonus || 500),
           };
         });
         setOrders(nextOrders);
@@ -355,15 +365,23 @@ export const PayrollPage: React.FC<PayrollPageProps> = ({ onBack }) => {
   const activePerson = people.find(person => person.id === activeId) || people[0];
 
   const managerStats = useMemo(() => {
-    return MANAGER_LINKS.reduce<Record<string, { orders: number; revenue: number }>>((acc, manager) => {
+    return MANAGER_LINKS.reduce<Record<string, { orders: number; revenue: number; bloggerOrders: number; bloggerBonus: number }>>((acc, manager) => {
       const managerOrders = orders.filter(order => (
         order.manager === manager &&
         toMonthKey(order.date) === monthKey &&
         isPayrollSaleOrder(order)
       ));
+      const bloggerOrders = orders.filter(order => {
+        return order.manager === manager
+          && toMonthKey(order.date) === monthKey
+          && order.isBlogger
+          && order.status.toLowerCase() !== 'черновик';
+      });
       acc[manager] = {
         orders: managerOrders.length,
         revenue: managerOrders.reduce((sum, order) => sum + order.revenue, 0),
+        bloggerOrders: bloggerOrders.length,
+        bloggerBonus: bloggerOrders.reduce((sum, order) => sum + (order.bloggerManagerBonus || 500), 0),
       };
       return acc;
     }, {});
@@ -398,6 +416,7 @@ export const PayrollPage: React.FC<PayrollPageProps> = ({ onBack }) => {
     return {
       ...person,
       percentBase: managerStats[person.linkedManager]?.revenue || 0,
+      bloggerBonus: managerStats[person.linkedManager]?.bloggerBonus || 0,
       shifts: shiftStat?.creditedShifts ?? person.shifts,
       shiftRate: shiftStat ? SHIFT_BASE_PAY : person.shiftRate,
     };
@@ -542,7 +561,7 @@ export const PayrollPage: React.FC<PayrollPageProps> = ({ onBack }) => {
 
         <div className="mb-6 grid gap-4 md:grid-cols-2">
           {MANAGER_LINKS.map(manager => {
-            const stat = managerStats[manager] || { orders: 0, revenue: 0 };
+            const stat = managerStats[manager] || { orders: 0, revenue: 0, bloggerOrders: 0, bloggerBonus: 0 };
             const shiftStat = managerShiftStats[manager] || { creditedShifts: 0, contacts: 0, accrued: 0 };
             return (
               <div key={manager} className="rounded-[10px] border border-[#E6E9EF] bg-white p-5 shadow-[0_12px_32px_rgba(31,41,55,0.04)]">
@@ -553,10 +572,11 @@ export const PayrollPage: React.FC<PayrollPageProps> = ({ onBack }) => {
                   </div>
                   <p className="text-right text-[24px] font-semibold text-emerald-600">{formatCurrency(stat.revenue)}</p>
                 </div>
-                <div className="mt-4 grid gap-2 border-t border-[#F1F3F6] pt-3 text-[12px] font-medium text-[#6B7280] sm:grid-cols-3">
+                <div className="mt-4 grid gap-2 border-t border-[#F1F3F6] pt-3 text-[12px] font-medium text-[#6B7280] sm:grid-cols-4">
                   <span>{ordersLoading ? 'Загружаю заказы...' : `${stat.orders} заказов`}</span>
                   <span>{shiftStat.contacts} касаний базы</span>
                   <span className="text-emerald-600">{shiftStat.creditedShifts} смен · {formatCurrency(shiftStat.accrued)}</span>
+                  <span className="text-violet-600">{stat.bloggerOrders} блогеров · {formatCurrency(stat.bloggerBonus)}</span>
                 </div>
               </div>
             );
