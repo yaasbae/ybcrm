@@ -106,6 +106,29 @@ const FINANCE_OWNER_EMAIL = 'ndtiger86@gmail.com';
 const TOCHKA_EXPENSE_CATEGORY_OVERRIDES_STORAGE_KEY = 'ybcrm:tochka-expense-category-overrides';
 const TOCHKA_CUSTOM_EXPENSE_CATEGORIES_STORAGE_KEY = 'ybcrm:tochka-custom-expense-categories';
 
+const manualReturnOperations = [
+  { date: new Date(2026, 0, 26), amount: 17900 },
+  { date: new Date(2026, 0, 26), amount: 15000 },
+  { date: new Date(2026, 0, 13), amount: 5900 },
+  { date: new Date(2026, 2, 31), amount: 13550 },
+  { date: new Date(2026, 2, 11), amount: 11250 },
+  { date: new Date(2026, 2, 6), amount: 11900 },
+  { date: new Date(2026, 2, 6), amount: 10000 },
+  { date: new Date(2026, 3, 29), amount: 8450 },
+  { date: new Date(2026, 3, 20), amount: 11900 },
+  { date: new Date(2026, 3, 15), amount: 11900 },
+  { date: new Date(2026, 3, 13), amount: 10900 },
+  { date: new Date(2026, 3, 13), amount: 10000 },
+  { date: new Date(2026, 3, 2), amount: 17250 },
+  { date: new Date(2026, 4, 27), amount: 16250 },
+  { date: new Date(2026, 4, 22), amount: 9950 },
+  { date: new Date(2026, 4, 15), amount: 20550 },
+  { date: new Date(2026, 4, 12), amount: 6000 },
+  { date: new Date(2026, 4, 12), amount: 4400 },
+  { date: new Date(2026, 4, 11), amount: 15600 },
+  { date: new Date(2026, 4, 9), amount: 18900 },
+];
+
 const normalizeDate = (value: any): Date => {
   const date = parseFinanceDate(value);
   return date.getTime() > 0 ? date : new Date();
@@ -388,6 +411,10 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
       month.delivery += delivery;
     });
 
+    manualReturnOperations.forEach(operation => {
+      ensureMonth(operation.date).returns += operation.amount;
+    });
+
     expenses.filter(expense => expense.status !== 'planned' && expense.paid !== false).forEach(expense => {
       ensureMonth(expense.date).expense += Number(expense.amount) || 0;
     });
@@ -474,8 +501,8 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
   const selectedSalesAmount = Number.isFinite(Number(bankBreakdown?.salesAmount))
     ? Number(bankBreakdown?.salesAmount)
     : selectedFinancialStats.planned;
-  const selectedOutstanding = Number.isFinite(Number(bankBreakdown?.remainingFromSelectedMonth))
-    ? Number(bankBreakdown?.remainingFromSelectedMonth)
+  const selectedOutstanding = Number.isFinite(Number(bankBreakdown?.remainingForSelectedOrders))
+    ? Number(bankBreakdown?.remainingForSelectedOrders)
     : selectedFinancialStats.owed;
   const currentBankBalance = Number(tochkaSummary?.operatingBalance ?? tochkaSummary?.totalBalance ?? 0) || 0;
   const managementReport = useMemo(() => buildFinanceReport({
@@ -674,9 +701,6 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
   const startOfToday = new Date();
   startOfToday.setHours(0, 0, 0, 0);
   const plannedForCalendarMonth = plannedExpenses.filter(expense => expense.date.getMonth() === calendarMonth && expense.date.getFullYear() === calendarYear);
-  const upcomingPlannedForMonth = [...plannedForCalendarMonth]
-    .sort((a, b) => a.date.getTime() - b.date.getTime())
-    .slice(0, 5);
   const actualForCalendarMonth = actualManualExpenses.filter(expense => expense.date.getMonth() === calendarMonth && expense.date.getFullYear() === calendarYear);
   const plannedMonthTotal = plannedForCalendarMonth.reduce((sum, expense) => sum + (Number(expense.amount) || 0), 0);
   const actualMonthTotal = actualForCalendarMonth.reduce((sum, expense) => sum + (Number(expense.amount) || 0), 0);
@@ -900,7 +924,7 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
             <div className="rounded-[8px] border border-orange-100 bg-orange-50 px-4 py-3">
               <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-orange-500">К доплате сейчас</p>
               <p className="mt-1 text-[18px] font-black text-orange-600">{formatCurrency(selectedOutstanding)}</p>
-              <p className="mt-1 text-[11px] font-semibold text-orange-500">только заказы выбранного месяца</p>
+              <p className="mt-1 text-[11px] font-semibold text-orange-500">включая недоплаты прошлых месяцев</p>
             </div>
             <div className="rounded-[8px] border border-[#E6E9EF] bg-[#F6F7F9] px-4 py-3">
               <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-[#6B7280]">Результат месяца</p>
@@ -950,7 +974,7 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
               {[
                 ['Оплаты заказов этого месяца', bankBreakdown?.currentMonthOrderReceipts || 0, 'text-emerald-600'],
                 ['Доплаты за прошлые месяцы', bankBreakdown?.priorMonthDopayments || 0, 'text-indigo-600'],
-                ['Поступления без найденного заказа CRM', bankBreakdown?.unmatchedIncome || 0, 'text-[#1F2937]'],
+                ['Прочие / не сопоставленные поступления', bankBreakdown?.unmatchedIncome || 0, 'text-[#1F2937]'],
                 ['Осталось получить по продажам месяца', selectedOutstanding, 'text-orange-500'],
               ].map(([label, value, tone]) => (
                 <div key={String(label)} className="flex items-center justify-between gap-4 rounded-[8px] border border-[#E6E9EF] bg-[#F6F7F9] px-3 py-3">
@@ -995,7 +1019,7 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
                 <p className="mt-2 text-[24px] font-black leading-tight text-[#1F2937]">{formatCurrency(tochkaSummary?.operatingBalance ?? tochkaSummary?.totalBalance ?? 0)}</p>
               </div>
               <div className="rounded-[8px] border border-indigo-100 bg-indigo-50/70 p-4">
-                <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-indigo-500">Деньги в фондах</p>
+                <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-indigo-500">Отложенные средства</p>
                 <p className="mt-2 text-[24px] font-black leading-tight text-indigo-600">{formatCurrency(tochkaSummary?.reservedBalance || 0)}</p>
               </div>
               <div className="rounded-[8px] border border-emerald-100 bg-emerald-50/70 p-4">
@@ -1006,7 +1030,7 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
 
             <div className="mt-4 overflow-hidden rounded-[8px] border border-[#E6E9EF]">
               <div className="grid grid-cols-[1.1fr_0.7fr_0.8fr] bg-[#F6F7F9] px-4 py-3 text-[10px] font-bold uppercase tracking-[0.14em] text-[#9CA3AF]">
-                <span>Счёт / название в Точке</span>
+                <span>Счет</span>
                 <span>Статус</span>
                 <span className="text-right">Баланс</span>
               </div>
@@ -1315,9 +1339,9 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
                   {[
                     { number: '01', label: 'Продажи', value: managementReport.pnl.revenue, detail: `${selectedFinancialStats.sales} заказов за период`, source: 'CRM', tone: 'text-[#1F2937]', badge: 'bg-[#EEF0F4] text-[#1F2937]', icon: ReceiptText },
                     { number: '02', label: 'Получено', value: managementReport.cashFlow.income, detail: 'реальные зачисления', source: 'Точка Банк', tone: 'text-emerald-600', badge: 'bg-emerald-50 text-emerald-700', icon: Landmark },
-                    { number: '03', label: 'К доплате', value: selectedOutstanding, detail: 'только по заказам выбранного месяца', source: 'CRM', tone: 'text-amber-600', badge: 'bg-amber-50 text-amber-700', icon: Link2 },
-                    { number: '04', label: 'Списано', value: managementReport.cashFlow.expenses + managementReport.cashFlow.refunds, detail: 'расходы и возвраты по выписке', source: 'Точка Банк', tone: 'text-red-500', badge: 'bg-red-50 text-red-600', icon: CreditCard },
-                    { number: '05', label: 'Прибыль месяца', value: managementReport.pnl.netProfit, detail: 'продажи − возвраты − себестоимость − расходы', source: 'P&L', tone: managementReport.pnl.netProfit >= 0 ? 'text-emerald-600' : 'text-red-500', badge: managementReport.pnl.netProfit >= 0 ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-600', icon: TrendingUp },
+                    { number: '03', label: 'К доплате', value: managementReport.balance.receivables, detail: 'долги клиентов', source: 'CRM ↔ Банк', tone: 'text-amber-600', badge: 'bg-amber-50 text-amber-700', icon: Link2 },
+                    { number: '04', label: 'Расходы', value: managementReport.cashFlow.expenses + managementReport.cashFlow.refunds, detail: 'списания и возвраты', source: 'Точка Банк', tone: 'text-red-500', badge: 'bg-red-50 text-red-600', icon: CreditCard },
+                    { number: '05', label: 'Чистая прибыль', value: managementReport.pnl.netProfit, detail: 'после себестоимости', source: 'P&L', tone: managementReport.pnl.netProfit >= 0 ? 'text-emerald-600' : 'text-red-500', badge: managementReport.pnl.netProfit >= 0 ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-600', icon: TrendingUp },
                     { number: '06', label: 'На счетах', value: managementReport.balance.cash, detail: 'остаток на сегодня', source: 'Точка Банк', tone: managementReport.balance.cash >= 0 ? 'text-indigo-600' : 'text-red-500', badge: 'bg-indigo-50 text-indigo-700', icon: Wallet },
                   ].map((step, index) => (
                     <div key={step.label} className="relative border-b border-[#E6E9EF] p-5 last:border-b-0 lg:border-b-0 lg:border-r lg:last:border-r-0">
@@ -1354,35 +1378,6 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
                     <p className={cn('mt-1 text-[18px] font-black', managementReport.reconciliation.rate >= 0.9 ? 'text-emerald-600' : 'text-amber-600')}>{Math.round(managementReport.reconciliation.rate * 100)}%</p>
                     <p className="mt-1 inline-flex items-center gap-1 text-[10px] font-bold text-[#6B7280]">Открыть несверенные <ChevronRight size={12} /></p>
                   </button>
-                </div>
-              </div>
-
-              <div className="overflow-hidden rounded-[12px] border border-[#E6E9EF] bg-white shadow-[0_8px_22px_rgba(31,41,55,0.03)]">
-                <div className="flex flex-col gap-3 border-b border-[#E6E9EF] px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
-                  <div>
-                    <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-amber-600">Календарь на главной</p>
-                    <h3 className="mt-1 text-[18px] font-semibold text-[#1F2937]">Ближайшие платежи месяца</h3>
-                    <p className="mt-1 text-[11px] font-semibold text-[#6B7280]">План: {formatCurrency(plannedMonthTotal)} · просрочено: {formatCurrency(overduePlannedTotal)}</p>
-                  </div>
-                  <div className="flex gap-2">
-                    <button type="button" onClick={() => openExpenseModal('planned')} className="inline-flex h-10 items-center justify-center gap-2 rounded-[8px] bg-amber-600 px-4 text-[11px] font-bold text-white hover:bg-amber-700"><Plus size={15} />Запланировать</button>
-                    <button type="button" onClick={() => setActiveTab('calendar')} className="inline-flex h-10 items-center justify-center gap-2 rounded-[8px] border border-[#E6E9EF] px-4 text-[11px] font-bold text-[#1F2937] hover:bg-[#F6F7F9]">Весь календарь <ChevronRight size={14} /></button>
-                  </div>
-                </div>
-                <div className="grid grid-cols-1 divide-y divide-[#E6E9EF] sm:grid-cols-5 sm:divide-x sm:divide-y-0">
-                  {upcomingPlannedForMonth.map(expense => {
-                    const isOverdue = expense.date.getTime() < startOfToday.getTime();
-                    return (
-                      <div key={expense.id} className={cn('min-h-[112px] p-4', isOverdue && 'bg-red-50/60')}>
-                        <p className={cn('text-[10px] font-black uppercase tracking-[0.12em]', isOverdue ? 'text-red-600' : 'text-amber-600')}>{expense.date.toLocaleDateString('ru-RU', { day: '2-digit', month: 'short' })}</p>
-                        <p className="mt-2 truncate text-[12px] font-bold text-[#1F2937]" title={expense.description}>{expense.description}</p>
-                        <p className={cn('mt-2 text-[15px] font-black', isOverdue ? 'text-red-600' : 'text-[#1F2937]')}>{formatCurrency(expense.amount)}</p>
-                      </div>
-                    );
-                  })}
-                  {!upcomingPlannedForMonth.length && (
-                    <div className="p-5 text-[12px] font-semibold text-[#6B7280] sm:col-span-5">На выбранный месяц платежей пока нет. Нажмите «Запланировать».</div>
-                  )}
                 </div>
               </div>
 
@@ -1470,67 +1465,17 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({ onBack, user
           )}
 
           {activeTab === 'balance' && (
-            <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="space-y-3">
-              <div className="rounded-[12px] border border-indigo-200 bg-indigo-50/60 p-5">
-                <div className="flex items-start gap-3">
-                  <div className="mt-0.5 rounded-[8px] bg-white p-2 text-indigo-600 shadow-sm"><Scale size={18} /></div>
-                  <div>
-                    <p className="text-[10px] font-black uppercase tracking-[0.16em] text-indigo-600">Как читать этот отчёт</p>
-                    <h3 className="mt-1 text-[19px] font-semibold text-[#1F2937]">Баланс — это снимок того, что есть у бизнеса и кому принадлежат эти деньги</h3>
-                    <p className="mt-2 max-w-4xl text-[12px] font-medium leading-5 text-[#6B7280]">Слева показано, что сейчас есть у бизнеса. Справа — что из этого мы должны поставщикам или клиентам, а что остаётся бизнесу. Это расчёт CRM по имеющимся данным, а не официальный бухгалтерский баланс.</p>
-                  </div>
+            <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="grid grid-cols-1 gap-3 xl:grid-cols-2">
+              {[
+                { title: 'Активы', total: managementReport.balance.assets, rows: [['Деньги на счетах', managementReport.balance.cash], ['Дебиторская задолженность', managementReport.balance.receivables], ['Запасы по себестоимости', managementReport.balance.inventory]], tone: 'text-emerald-600' },
+                { title: 'Обязательства и капитал', total: managementReport.balance.liabilities + managementReport.balance.equity, rows: [['Кредиторская задолженность', managementReport.balance.payables], ['Авансы клиентов', managementReport.balance.customerAdvances], ['Расчётный капитал', managementReport.balance.equity]], tone: 'text-indigo-600' },
+              ].map(column => (
+                <div key={column.title} className="overflow-hidden rounded-[10px] border border-[#E6E9EF] bg-white shadow-[0_8px_22px_rgba(31,41,55,0.03)]">
+                  <div className="flex items-center justify-between border-b border-[#E6E9EF] px-5 py-4"><h3 className="text-[13px] font-bold uppercase tracking-[0.16em] text-[#1F2937]">{column.title}</h3><span className={cn('text-[18px] font-black', column.tone)}>{formatCurrency(column.total)}</span></div>
+                  <div className="divide-y divide-[#E6E9EF]">{column.rows.map(([label, value]) => <div key={String(label)} className="flex items-center justify-between px-5 py-4"><span className="text-[13px] font-semibold text-[#6B7280]">{label}</span><span className="text-[14px] font-black text-[#1F2937]">{formatCurrency(Number(value))}</span></div>)}</div>
                 </div>
-              </div>
-
-              <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
-                {[
-                  {
-                    title: 'Что есть у бизнеса',
-                    accountingTitle: 'Активы',
-                    total: managementReport.balance.assets,
-                    formula: 'деньги + долги клиентов + остатки товаров',
-                    rows: [
-                      { label: 'Деньги на счетах', value: managementReport.balance.cash, description: 'Фактические текущие остатки всех счетов Точка Банка, включая отложенные средства.', source: 'Источник: Точка Банк' },
-                      { label: 'Клиенты должны нам', accounting: 'Дебиторская задолженность', value: managementReport.balance.receivables, description: 'Неоплаченная часть заказов выбранного периода.', source: 'Формула: стоимость активных заказов − подтверждённые оплаты' },
-                      { label: 'Товары на складе', accounting: 'Запасы по себестоимости', value: managementReport.balance.inventory, description: 'Сколько нам стоили товары, которые сейчас числятся в остатках. Это не цена их будущей продажи.', source: 'Формула: остаток товара × себестоимость из карточки' },
-                    ],
-                    tone: 'text-emerald-600',
-                  },
-                  {
-                    title: 'Что мы должны и что остаётся',
-                    accountingTitle: 'Обязательства и расчётный капитал',
-                    total: managementReport.balance.liabilities + managementReport.balance.equity,
-                    formula: 'долги бизнеса + авансы клиентов + расчётный остаток',
-                    rows: [
-                      { label: 'Мы должны оплатить', accounting: 'Кредиторская задолженность', value: managementReport.balance.payables, description: 'Запланированные, но ещё не отмеченные оплаченными расходы выбранного периода.', source: 'Источник: платёжный календарь' },
-                      { label: 'Получили аванс от клиентов', accounting: 'Авансы клиентов', value: managementReport.balance.customerAdvances, description: 'Клиент уже заплатил, но заказ ещё новый или находится в производстве. До выполнения заказа эти деньги считаются нашим обязательством.', source: 'Источник: подтверждённые оплаты заказов' },
-                      { label: 'Остаётся бизнесу по расчёту', accounting: 'Расчётный капитал', value: managementReport.balance.equity, description: 'Технический остаток, который уравнивает две стороны отчёта. Это не прибыль и не сумма, которую можно вывести.', source: 'Формула: активы − наши долги − авансы клиентов' },
-                    ],
-                    tone: 'text-indigo-600',
-                  },
-                ].map(column => (
-                  <div key={column.title} className="overflow-hidden rounded-[10px] border border-[#E6E9EF] bg-white shadow-[0_8px_22px_rgba(31,41,55,0.03)]">
-                    <div className="border-b border-[#E6E9EF] px-5 py-4">
-                      <div className="flex items-start justify-between gap-4">
-                        <div><h3 className="text-[13px] font-bold uppercase tracking-[0.12em] text-[#1F2937]">{column.title}</h3><p className="mt-1 text-[10px] font-semibold text-[#9CA3AF]">Бухгалтерское название: {column.accountingTitle}</p></div>
-                        <span className={cn('whitespace-nowrap text-[18px] font-black', column.tone)}>{formatCurrency(column.total)}</span>
-                      </div>
-                      <p className="mt-3 rounded-[7px] bg-[#F6F7F9] px-3 py-2 text-[11px] font-semibold text-[#6B7280]">Итого = {column.formula}</p>
-                    </div>
-                    <div className="divide-y divide-[#E6E9EF]">{column.rows.map(row => (
-                      <div key={row.label} className="px-5 py-4">
-                        <div className="flex items-start justify-between gap-4"><div><p className="text-[13px] font-bold text-[#1F2937]">{row.label}</p>{row.accounting && <p className="mt-0.5 text-[10px] font-semibold text-[#9CA3AF]">В отчётности: {row.accounting}</p>}</div><span className="whitespace-nowrap text-[14px] font-black text-[#1F2937]">{formatCurrency(Number(row.value))}</span></div>
-                        <p className="mt-2 text-[11px] font-medium leading-4 text-[#6B7280]">{row.description}</p>
-                        <p className="mt-1 text-[10px] font-bold text-indigo-600">{row.source}</p>
-                      </div>
-                    ))}</div>
-                  </div>
-                ))}
-              </div>
-              <div className="flex flex-col gap-2 rounded-[10px] border border-amber-200 bg-amber-50 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
-                <p className="text-[11px] font-semibold leading-4 text-amber-900"><strong>Важно:</strong> если оплаты банка ещё не связаны с заказами, строка «Клиенты должны нам» может быть завышена. Сначала проверьте вкладку «Сверка оплат».</p>
-                <button type="button" onClick={() => exportFinanceCsv('balance')} className="inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-[8px] border border-amber-300 bg-white px-3 text-[12px] font-bold text-[#1F2937] hover:bg-amber-100"><FileSpreadsheet size={16} />Экспорт баланса</button>
-              </div>
+              ))}
+              <div className="xl:col-span-2 flex justify-end"><button type="button" onClick={() => exportFinanceCsv('balance')} className="inline-flex h-10 items-center gap-2 rounded-[8px] border border-[#E6E9EF] bg-white px-3 text-[12px] font-bold text-[#1F2937] hover:bg-[#F6F7F9]"><FileSpreadsheet size={16} />Экспорт баланса</button></div>
             </motion.div>
           )}
 
