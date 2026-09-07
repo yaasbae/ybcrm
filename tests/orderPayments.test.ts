@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   getCalculatedInitialInvoiceAmount,
+  getEffectiveInvoiceType,
   getInitialInvoiceAmount,
   getNewOrderPaymentAccounting,
   getPlannedFinalPaymentAmount,
@@ -55,6 +56,20 @@ test('keeps the second half as a separate payment when the first invoice is alre
 
   assert.equal(getInitialInvoiceAmount(order), 6275);
   assert.equal(getPlannedFinalPaymentAmount(order), 6275);
+  assert.equal(getEffectiveInvoiceType(order), 'prepayment');
+});
+
+test('uses bank-issued amounts over a stale legacy full-payment label', () => {
+  assert.equal(getEffectiveInvoiceType({
+    revenue: 11900,
+    deliveryPrice: 650,
+    invoiceType: 'full',
+    paymentType: 'Полная оплата',
+    paymentAmount: 6275,
+    paymentUrl: 'https://example.test/prepayment',
+    finalPaymentAmount: 6275,
+    finalPaymentUrl: 'https://example.test/final',
+  }), 'prepayment');
 });
 
 test('offers a bank-verified refund when a manager marks an invoiced order for return', () => {

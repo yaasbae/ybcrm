@@ -25,6 +25,7 @@ import { isReceivedOrderStatus, normalizeOrderStatus, ORDER_STATUS_OPTIONS } fro
 import {
   getCalculatedInitialInvoiceAmount,
   getConfirmedPaidAmount,
+  getEffectiveInvoiceType,
   getInitialInvoiceAmount,
   getOrderTotalAmount,
   getOutstandingPaymentAmount,
@@ -525,12 +526,8 @@ function isYandexSplitPayment(paymentType?: string): boolean {
 }
 
 function getOperationalInvoiceType(order: Partial<OrderData>): 'prepayment' | 'full' | 'fitting' {
-  if (isYandexSplitPayment(order.paymentType) || order.paymentProvider === 'yandex_split') return 'full';
-  const legacyPaymentType = String(order.paymentType || '');
-  if (/пример/i.test(legacyPaymentType)) return 'fitting';
-  if (/полн|100/i.test(legacyPaymentType)) return 'full';
-  if (order.invoiceType === 'full' || order.invoiceType === 'prepayment' || order.invoiceType === 'fitting') return order.invoiceType;
-  return getInvoiceTypeFromPaymentType(order.paymentType);
+  if (order.paymentProvider === 'yandex_split') return 'full';
+  return getEffectiveInvoiceType(order);
 }
 
 function getPaymentMethodLabel(order: Partial<OrderData>): string {
@@ -1439,7 +1436,7 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
         </button>
       )}
       {error && <p className="mt-1 text-[8px] font-bold text-red-500">{error}</p>}
-      {paymentUrl && (
+      {paymentUrl && !mainPaymentPaid && (
         <>
           <button
             onClick={() => shareOrder(shareText, targetPaymentUrl).catch(() => navigator.clipboard.writeText(shareText))}
@@ -1499,7 +1496,7 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
             <RefreshCcw size={8} className={refreshingFinal ? 'animate-spin' : ''} />
             Проверить доплату
           </button>
-          {finalPaymentUrl ? (
+          {finalPaymentUrl && !finalPaymentPaid ? (
             <div className="mt-1 space-y-1">
               <button
                 onClick={() => shareOrder(finalShareText, finalPaymentUrl).catch(() => navigator.clipboard.writeText(finalShareText))}
@@ -1527,7 +1524,7 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
                 </div>
               )}
             </div>
-          ) : (
+          ) : !finalPaymentUrl ? (
             <button
               onClick={handleCreateFinal}
               disabled={finalLoading || invoiceMissingFields.length > 0 || !mainPaymentPaid}
@@ -1536,7 +1533,7 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
               {finalLoading ? <RefreshCcw size={8} className="animate-spin" /> : <QrCodeIcon size={8} />}
               {finalLoading ? 'Создаём...' : `Создать доплату ${formatCurrency(finalAmount)}`}
             </button>
-          )}
+          ) : null}
           {finalError && <p className="mt-1 text-[8px] font-bold text-red-500">{finalError}</p>}
           {isRefundOwner && finalPaymentPaid && !finalRefunded && (
             <button
@@ -2627,8 +2624,9 @@ const OrderDetailView: React.FC<{
   const revenue = Number(order.revenue) || getItemPricesTotal(prices);
   const deliveryPrice = Number(order.deliveryPrice) || 0;
   const invoiceType = getOperationalInvoiceType(order);
-  const invoiceAmount = getInvoiceAmount({ revenue, deliveryPrice, invoiceType });
-  const dueAmount = getOrderPaymentDue({ ...order, revenue, paidAmount: invoiceAmount });
+  const orderTotal = getOrderTotalAmount({ ...order, revenue, deliveryPrice });
+  const confirmedPaidAmount = getConfirmedPaidAmount({ ...order, revenue, deliveryPrice });
+  const outstandingAmount = getOutstandingPaymentAmount({ ...order, revenue, deliveryPrice });
   const saved = order.cdekPayload || {};
   const tariffCode = String(saved.tariffCode || '138');
   const tariff = CDEK_TARIFFS.find(item => item.code === tariffCode)?.label || 'Дверь → ПВЗ';
@@ -2949,7 +2947,9 @@ const OrderDetailView: React.FC<{
               <div className="flex items-center justify-between gap-3 text-[13px]"><span className="text-[#667085]">Цена товара</span><b className="font-semibold text-[#111827]">{formatCurrency(revenue)}</b></div>
               <div className="mt-3 flex items-center justify-between gap-3 text-[13px]"><span className="text-[#667085]">Доставка</span>{editing ? <div className="w-32">{editField('deliveryPrice', deliveryPrice, 'Доставка', 'number')}</div> : <b className="font-semibold text-[#111827]">{formatCurrency(deliveryPrice)}</b>}</div>
               <div className="my-4 h-px bg-[#E6E9EF]" />
-              <div className="flex items-center justify-between text-[17px] font-semibold text-[#5638F4]"><span>К оплате</span><span>{formatCurrency(dueAmount || invoiceAmount)}</span></div>
+              <div className="flex items-center justify-between text-[15px] font-semibold text-[#111827]"><span>Итого</span><span>{formatCurrency(orderTotal)}</span></div>
+              <div className="mt-3 flex items-center justify-between text-[13px]"><span className="text-[#667085]">Оплачено</span><b className="font-semibold text-emerald-600">{formatCurrency(confirmedPaidAmount)}</b></div>
+              <div className="mt-3 flex items-center justify-between text-[17px] font-semibold text-[#5638F4]"><span>Осталось</span><span>{formatCurrency(outstandingAmount)}</span></div>
             </div>
             <dl className={cn(
               'grid grid-cols-[92px_minmax(0,1fr)] content-start gap-y-2 text-[12px]',

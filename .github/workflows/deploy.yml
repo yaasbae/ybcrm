@@ -19,6 +19,7 @@ jobs:
 
       - name: Deploy
         run: |
+          RELEASE_NOTES_B64="$(git log -1 --pretty=%B | base64 | tr -d '\n')"
           gcloud run deploy ybcrm \
             --source . \
             --region europe-west1 \
@@ -27,5 +28,5 @@ jobs:
             --max-instances 3 \
             --concurrency 80 \
             --cpu-throttling \
-            --update-env-vars WEBHOOK_URL=https://ybcrm.ru,SERVER_URL=https://ybcrm.ru \
+            --update-env-vars WEBHOOK_URL=https://ybcrm.ru,SERVER_URL=https://ybcrm.ru,ORDER_TELEGRAM_THREAD_ID=1244,RELEASE_TELEGRAM_THREAD_ID=12750,RELEASE_COMMIT_SHA=${GITHUB_SHA},RELEASE_NOTES_B64=${RELEASE_NOTES_B64} \
             --quiet

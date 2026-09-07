@@ -27,6 +27,21 @@ export const isConfirmedPaymentStatus = (status?: string) => {
 export const getOrderTotalAmount = (order: PaymentAccountingOrder) =>
   Math.max(0, (Number(order.revenue) || 0) + (Number(order.deliveryPrice) || 0));
 
+export const getEffectiveInvoiceType = (order: PaymentAccountingOrder): 'prepayment' | 'full' | 'fitting' => {
+  const paymentType = String(order.paymentType || '');
+  if (/сплит/i.test(paymentType)) return 'full';
+  const total = getOrderTotalAmount(order);
+  const issuedAmount = Number(order.paymentAmount) || Number(order.initialPaymentAmount) || 0;
+  const hasIssuedInvoice = Boolean(order.paymentUrl || order.paymentId || issuedAmount > 0);
+  if (hasIssuedInvoice && issuedAmount > 0 && total > 0 && issuedAmount < total) {
+    return /пример/i.test(paymentType) || order.invoiceType === 'fitting' ? 'fitting' : 'prepayment';
+  }
+  if (hasIssuedInvoice && issuedAmount >= total && total > 0) return 'full';
+  if (/пример/i.test(paymentType)) return 'fitting';
+  if (/полн|100/i.test(paymentType)) return 'full';
+  return order.invoiceType || 'prepayment';
+};
+
 export const getCalculatedInitialInvoiceAmount = (order: PaymentAccountingOrder) => {
   const total = getOrderTotalAmount(order);
   const paymentType = String(order.paymentType || '');

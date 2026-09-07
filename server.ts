@@ -90,6 +90,11 @@ const BROADCAST_MANAGER_BOT_URL = "https://t.me/YAASBAE_CLO_bot";
 const BROADCAST_MANAGER_BUTTON_TEXT = "Узнать подробности в бот";
 const DEFAULT_BROADCAST_DISPLAY_NAME = "YAASBAE Brand";
 const ORDER_TELEGRAM_CHAT_ID = String(process.env.ORDER_TELEGRAM_CHAT_ID || "-1002176316557").trim();
+const ORDER_TELEGRAM_THREAD_ID = Number(process.env.ORDER_TELEGRAM_THREAD_ID || 1244);
+const RELEASE_TELEGRAM_CHAT_ID = String(process.env.RELEASE_TELEGRAM_CHAT_ID || ORDER_TELEGRAM_CHAT_ID).trim();
+const RELEASE_TELEGRAM_THREAD_ID = Number(process.env.RELEASE_TELEGRAM_THREAD_ID || 12750);
+const RELEASE_COMMIT_SHA = String(process.env.RELEASE_COMMIT_SHA || "").trim();
+const RELEASE_NOTES_B64 = String(process.env.RELEASE_NOTES_B64 || "").trim();
 let WEB_PUSH_PUBLIC_KEY = String(process.env.WEB_PUSH_PUBLIC_KEY || "").trim();
 let WEB_PUSH_PRIVATE_KEY = String(process.env.WEB_PUSH_PRIVATE_KEY || "").trim();
 const WEB_PUSH_SUBJECT = String(process.env.WEB_PUSH_SUBJECT || "https://ybcrm.ru").trim();
@@ -1599,6 +1604,7 @@ async function sendNewOrderToTelegram(orderId: string, actor: Record<string, unk
       orderId: String(order.orderId || orderSnapshot.id).replace(/^#+/, ""),
       orderDocumentId: orderSnapshot.id,
       chatId: ORDER_TELEGRAM_CHAT_ID,
+      threadId: ORDER_TELEGRAM_THREAD_ID,
       status: "sending",
       attempts: FieldValue.increment(1),
       actor,
@@ -1613,6 +1619,7 @@ async function sendNewOrderToTelegram(orderId: string, actor: Record<string, unk
     const resolvedOrderId = String(order.orderId || orderSnapshot.id).replace(/^#+/, "");
     const response = await axios.post(`https://api.telegram.org/bot${token}/sendMessage`, {
       chat_id: ORDER_TELEGRAM_CHAT_ID,
+      message_thread_id: ORDER_TELEGRAM_THREAD_ID,
       text: telegramOrderText(resolvedOrderId, order),
       parse_mode: "HTML",
       disable_web_page_preview: true,
@@ -1634,6 +1641,53 @@ async function sendNewOrderToTelegram(orderId: string, actor: Record<string, unk
       updatedAt: FieldValue.serverTimestamp(),
     }, { merge: true }).catch(() => undefined);
     throw new Error(message);
+  }
+}
+
+async function sendReleaseNotification() {
+  const token = String(process.env.TG_BOT_TOKEN || "").trim();
+  if (!adminDb || !token || !RELEASE_TELEGRAM_CHAT_ID || !RELEASE_COMMIT_SHA || !RELEASE_NOTES_B64) return;
+  let notes = "";
+  try {
+    notes = Buffer.from(RELEASE_NOTES_B64, "base64").toString("utf8").trim();
+  } catch {
+    return;
+  }
+  if (!notes) return;
+  const notificationId = createHash("sha256").update(`release:${RELEASE_COMMIT_SHA}`).digest("hex");
+  const ref = adminDb.collection("telegram_release_notifications").doc(notificationId);
+  const reserved = await adminDb.runTransaction(async (transaction: any) => {
+    const snapshot = await transaction.get(ref);
+    if (snapshot.exists && snapshot.data()?.status === "sent") return false;
+    transaction.set(ref, {
+      commit: RELEASE_COMMIT_SHA,
+      chatId: RELEASE_TELEGRAM_CHAT_ID,
+      threadId: RELEASE_TELEGRAM_THREAD_ID,
+      status: "sending",
+      updatedAt: FieldValue.serverTimestamp(),
+    }, { merge: true });
+    return true;
+  });
+  if (!reserved) return;
+  try {
+    const response = await axios.post(`https://api.telegram.org/bot${token}/sendMessage`, {
+      chat_id: RELEASE_TELEGRAM_CHAT_ID,
+      message_thread_id: RELEASE_TELEGRAM_THREAD_ID,
+      text: `🛠 <b>Обновление CRM опубликовано</b>\n\n${escapeTelegramHtml(notes).slice(0, 3500)}\n\n<a href="https://ybcrm.ru">Открыть CRM</a>`,
+      parse_mode: "HTML",
+      disable_web_page_preview: true,
+    }, { timeout: 30_000 });
+    await ref.set({
+      status: "sent",
+      messageId: String(response.data?.result?.message_id || ""),
+      sentAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+      error: FieldValue.delete(),
+    }, { merge: true });
+  } catch (error: any) {
+    const message = String(error?.response?.data?.description || error?.message || "Ошибка Telegram").slice(0, 1000);
+    await ref.set({ status: "failed", error: message, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+    console.warn("[telegram] release:", message);
   }
 }
 
@@ -3347,11 +3401,26 @@ app.get("/api/orders/:orderId/document.pdf", async (req, res) => {
     );
 
     if (shouldIncludeCdekWaybill) {
-      const cdekResult = await createCdekWaybillPdf(
-        String(order.cdekUuid || ""),
-        String(order.cdekPrintUuid || ""),
-        orderId,
-      );
+      let cdekResult: Awaited<ReturnType<typeof createCdekWaybillPdf>>;
+      try {
+        cdekResult = await createCdekWaybillPdf(
+          String(order.cdekUuid || ""),
+          String(order.cdekPrintUuid || ""),
+          orderId,
+        );
+      } catch (cdekError: any) {
+        // A missing/rejected CDEK waybill must not block the CRM order form.
+        console.warn(`[orders] CDEK waybill unavailable for ${orderId}:`, cdekError?.message || cdekError);
+        const coverPage = pdfDocument.addPage([595.28, 841.89]);
+        coverPage.drawImage(coverImage, { x: 0, y: 0, width: 595.28, height: 841.89 });
+        const bytes = await pdfDocument.save();
+        const safeOrderId = orderId.replace(/[^a-zA-Z0-9_-]/g, "-");
+        res.setHeader("X-YBCRM-CDEK-Warning", "waybill-unavailable");
+        res.setHeader("Content-Type", "application/pdf");
+        res.setHeader("Content-Disposition", `inline; filename="YAASBAE-order-${safeOrderId}.pdf"`);
+        res.setHeader("Cache-Control", "private, no-store");
+        return res.send(Buffer.from(bytes));
+      }
       const printPatch = stripUndefined({
         cdekUuid: cdekResult.orderUuid,
         cdekNumber: cdekResult.cdekNumber || undefined,
@@ -10058,8 +10127,9 @@ app.get('/api/tochka/find-payment', async (req, res) => {
     }
 
     if (!operation) {
-      operation = await findTochkaOperation(token, customerCode, target.paymentLinkId, amount)
-        || (target.isFinal ? await findTochkaOperation(token, customerCode, target.cleanOrderId, amount) : null);
+      // Do not match the final half against the main order marker: equal
+      // instalments would otherwise allow one payment to be counted twice.
+      operation = await findTochkaOperation(token, customerCode, target.paymentLinkId, amount);
       operationId = getTochkaOperationId(operation);
     }
     if (!operation || !operationId) {
@@ -12791,6 +12861,7 @@ async function startServer() {
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
     console.log("App Version: 1.3");
+    setTimeout(() => void sendReleaseNotification(), 1_000);
   });
 }
 
