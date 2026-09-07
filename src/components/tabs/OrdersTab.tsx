@@ -2370,6 +2370,9 @@ const OrderSummaryRow = React.memo(({
   const orderItemSewn = getOrderItemSewn(order);
   const paidAmount = Number(order.paidAmount) || 0;
   const deliveryAmount = Number(order.deliveryPrice) || 0;
+  const confirmedPaidAmount = getConfirmedPaidAmount(order);
+  const outstandingAmount = getOutstandingPaymentAmount(order);
+  const fullyPaid = confirmedPaidAmount > 0 && outstandingAmount === 0;
   const deadlineDate = addBusinessDays(order.date, 7);
   const invoiceType = getOperationalInvoiceType(order);
   const invoiceTone = paidAmount <= 0
@@ -2377,7 +2380,9 @@ const OrderSummaryRow = React.memo(({
     : invoiceType === 'full'
       ? 'text-emerald-600'
       : 'text-orange-500';
-  const invoiceLabel = invoiceType === 'full'
+  const invoiceLabel = fullyPaid
+    ? 'оплата'
+    : invoiceType === 'full'
     ? 'оплата'
     : invoiceType === 'fitting'
       ? 'примерка'
@@ -2481,7 +2486,7 @@ const OrderSummaryRow = React.memo(({
           доставка {formatCurrency(deliveryAmount)}
         </p>
         <p className={cn("mt-1.5 text-[12px] font-black tabular-nums", invoiceTone)}>
-          {invoiceLabel} {formatCurrency(paidAmount)}
+          {invoiceLabel} {formatCurrency(fullyPaid ? confirmedPaidAmount : paidAmount)}
         </p>
       </td>
       <td className="px-4 py-5 align-top">
