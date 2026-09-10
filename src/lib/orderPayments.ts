@@ -76,9 +76,12 @@ export const hasBankPaymentTracking = (order: PaymentAccountingOrder) => Boolean
 );
 
 export const getConfirmedPaidAmount = (order: PaymentAccountingOrder) => {
+  const legacyFulfilledPayment = /отгруж|достав|получ|вручен/i.test(String(order.status || ''))
+    ? Number(order.paidAmount) || 0
+    : 0;
   const main = isConfirmedPaymentStatus(order.paymentStatus)
     ? Number(order.paymentAmount) || Number(order.initialPaymentAmount) || Number(order.paidAmount) || 0
-    : 0;
+    : legacyFulfilledPayment;
   const final = isConfirmedPaymentStatus(order.finalPaymentStatus)
     ? Number(order.finalPaymentAmount) || 0
     : 0;

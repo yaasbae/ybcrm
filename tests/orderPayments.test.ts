@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   getCalculatedInitialInvoiceAmount,
+  getConfirmedPaidAmount,
   getEffectiveInvoiceType,
   getInitialInvoiceAmount,
   getNewOrderPaymentAccounting,
@@ -106,4 +107,17 @@ test('does not count a newly issued invoice as money already paid', () => {
     initialPaymentAmount: 17550,
     paymentAccountingVersion: 2,
   });
+});
+
+test('keeps a recorded payment for a fulfilled legacy order with a stale active link', () => {
+  assert.equal(getConfirmedPaidAmount({
+    revenue: 19_900,
+    deliveryPrice: 650,
+    status: 'Отгружен',
+    paymentStatus: 'Active',
+    paymentId: 'legacy-qr',
+    paymentAmount: 10_275,
+    paidAmount: 20_550,
+    paymentAccountingVersion: 2,
+  }), 20_550);
 });

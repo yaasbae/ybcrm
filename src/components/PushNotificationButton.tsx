@@ -21,11 +21,9 @@ export function PushNotificationButton() {
   }, []);
 
   useEffect(() => {
-    const sync = () => Promise.allSettled([
-      fetch('/api/tochka/reconcile-payments', { method: 'POST' }),
-      fetch('/api/cdek/sync-statuses', { method: 'POST' }),
-      fetch('/api/push/run-reminders', { method: 'POST' }),
-    ]);
+    // Payment and CDEK reconciliation belongs to the orders screen. Running it
+    // here as well made every open CRM tab start the same two heavy jobs twice.
+    const sync = () => fetch('/api/push/run-reminders', { method: 'POST' }).catch(() => null);
     void sync();
     const timer = window.setInterval(sync, 10 * 60 * 1000);
     return () => window.clearInterval(timer);

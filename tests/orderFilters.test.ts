@@ -14,3 +14,15 @@ test('shows only active orders with an outstanding prepayment balance', () => {
   assert.equal(isPrepaymentOrder({ ...base, finalPaymentAmount: 6275, finalPaymentStatus: 'Accepted', status: 'Упакован' }), false);
   assert.equal(isPrepaymentOrder({ ...base, status: 'Отгружен' }), false);
 });
+
+test('recognizes a legacy order as prepayment from the issued half invoice', () => {
+  assert.equal(isPrepaymentOrder({
+    invoiceType: 'full',
+    paymentType: 'Полная оплата',
+    revenue: 11_900,
+    deliveryPrice: 650,
+    paymentAmount: 6_275,
+    paymentStatus: 'Accepted',
+    status: 'Упакован',
+  }), true);
+});

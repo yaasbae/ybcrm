@@ -1,3 +1,5 @@
+import { getEffectiveInvoiceType, type PaymentAccountingOrder } from './orderPayments';
+
 export const PREPAYMENT_FILTER_VALUE = '__prepayment__';
 export const OVERDUE_FILTER_VALUE = '__overdue__';
 export const REFUND_OR_CANCELLED_FILTER_VALUE = '__refund_or_cancelled__';
@@ -21,9 +23,7 @@ type StatusOrder = {
 };
 
 export const isPrepaymentOrder = (order: PaymentOrder) => {
-  const invoiceType = String(order.invoiceType || '').trim().toLowerCase();
-  const paymentType = String(order.paymentType || '').trim().toLowerCase();
-  if (invoiceType !== 'prepayment' && !paymentType.includes('предоплат')) return false;
+  if (getEffectiveInvoiceType(order as PaymentAccountingOrder) !== 'prepayment') return false;
   const status = String(order.status || '').trim().toLowerCase();
   if (/отгруж|достав|получ|возврат|вернули платёж|отмен/.test(status)) return false;
   const isPaid = (value: unknown) => /paid|approved|accepted|completed|succeeded|success|done|captured|confirmed/.test(String(value || '').toLowerCase());

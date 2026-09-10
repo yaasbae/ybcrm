@@ -951,8 +951,7 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
     const uniqueClients = clientMap.size;
     const isSalesOrder = (o: OrderData) => {
       if (o.isBlogger) return false;
-      const status = String(o.status || '').toLowerCase();
-      return (Number(o.revenue) || 0) > 0 && !status.includes('возврат') && !status.includes('отмена');
+      return (Number(o.revenue) || 0) > 0 && !isRefundOrCancelledOrder(o);
     };
     const salesOrders = uniqueOrders.filter(isSalesOrder);
     const manualReturnAmount = manualReturnOperations.reduce((sum, item) => sum + item.amount, 0);
@@ -982,8 +981,9 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
         paidAmount: 0, salesCount: 0, dueExtra: 0, delivery: 0
       };
       salesByPeriod[key].count += 1;
-      const isReturn = o.status?.toLowerCase().includes('возврат');
-      const isCancelled = o.status?.toLowerCase().includes('отмена');
+      const normalizedOrderStatus = String(o.status || '').toLowerCase();
+      const isReturn = normalizedOrderStatus.includes('возврат') || normalizedOrderStatus.includes('вернули платёж');
+      const isCancelled = normalizedOrderStatus.includes('отмена');
       if (isReturn || isCancelled) salesByPeriod[key].returns += 1;
       if (isReturn || isCancelled) {
         salesByPeriod[key].orderReturnsAmount = (salesByPeriod[key].orderReturnsAmount || 0)
@@ -1084,8 +1084,7 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
       const paid = getConfirmedPaidAmount(order);
       const delivery = Number(order.deliveryPrice) || 0;
       dayRow.orders += 1;
-      const status = String(order.status || '').toLowerCase();
-      if (status.includes('возврат') || status.includes('отмена')) {
+      if (isRefundOrCancelledOrder(order)) {
         dayRow.returnsAmount += Number(order.refundAmount) || paid || revenue;
         return;
       }

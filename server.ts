@@ -3097,7 +3097,16 @@ app.get("/api/cdek/order/:uuid", async (req, res) => {
   }
 });
 
+let cdekStatusSyncInProgress = false;
+let lastCdekStatusSyncAt = 0;
+
 app.post("/api/cdek/sync-statuses", async (_req, res) => {
+  const now = Date.now();
+  if (cdekStatusSyncInProgress || now - lastCdekStatusSyncAt < 60_000) {
+    return res.json({ success: true, skipped: true, reason: cdekStatusSyncInProgress ? "already-running" : "cooldown" });
+  }
+  cdekStatusSyncInProgress = true;
+  lastCdekStatusSyncAt = now;
   try {
     if (!adminDb && !db) return res.status(503).json({ error: "DB не подключена" });
     const token = await getCdekToken();
@@ -3115,6 +3124,7 @@ app.post("/api/cdek/sync-statuses", async (_req, res) => {
     const candidates = allOrders
       .filter(({ data }) => {
         if (!String(data?.cdekUuid || "").trim()) return false;
+        if (/invalid|deleted|removed/i.test(String(data?.cdekStatus || ""))) return false;
         if (/доставлен|получен|вручен|возврат|отмен/i.test(String(data?.status || ""))) return false;
         const lastChecked = Date.parse(String(data?.cdekLastCheckedAt || "")) || 0;
         return lastChecked < staleBefore;
@@ -3151,6 +3161,13 @@ app.post("/api/cdek/sync-statuses", async (_req, res) => {
           }
           return { orderId: id, cdekStatus, status: crmPatch.status || data.status, delivered: crmPatch.status === "Получен" };
         } catch (error: any) {
+          const cdekState = String(error?.response?.data?.requests?.[0]?.state || "").toUpperCase();
+          if (cdekState === "INVALID") {
+            await persistOrderPatch(id, {
+              cdekStatus: "INVALID",
+              cdekLastCheckedAt: new Date().toISOString(),
+            }).catch(() => undefined);
+          }
           console.warn(`[cdek] status sync failed order=${id}:`, error?.response?.data || error?.message || error);
           return null;
         }
@@ -3168,6 +3185,8 @@ app.post("/api/cdek/sync-statuses", async (_req, res) => {
     const details = error.response?.data || error.message;
     console.error("[cdek] statuses sync error:", details);
     res.status(error.response?.status || 500).json({ error: "Не удалось синхронизировать статусы СДЭК", details });
+  } finally {
+    cdekStatusSyncInProgress = false;
   }
 });
 
@@ -10246,8 +10265,17 @@ app.post('/api/tochka/confirm-payment', async (req, res) => {
 
 // Фоновая сверка выставленных счетов. Webhook остается основным способом,
 // а этот маршрут закрывает пропущенные уведомления банка.
+let tochkaReconcileInProgress = false;
+let lastTochkaReconcileAt = 0;
+
 app.post('/api/tochka/reconcile-payments', async (_req, res) => {
   if (!adminDb && !db) return res.status(503).json({ error: 'DB не подключена' });
+  const now = Date.now();
+  if (tochkaReconcileInProgress || now - lastTochkaReconcileAt < 60_000) {
+    return res.json({ success: true, skipped: true, reason: tochkaReconcileInProgress ? 'already-running' : 'cooldown' });
+  }
+  tochkaReconcileInProgress = true;
+  lastTochkaReconcileAt = now;
   try {
     const token = await getTochkaToken();
     const settings = await readTochkaSettingsDoc('tochka_api');
@@ -10312,6 +10340,12 @@ app.post('/api/tochka/reconcile-payments', async (_req, res) => {
         const amount = normalizeTochkaAmount(getTochkaOperationAmount(source)) || expectedAmount;
         Object.assign(patch, buildTochkaPaymentFields({ isFinal }, paymentId, status, amount, source));
       }
+      const total = Math.max(0, (Number(data.revenue) || 0) + (Number(data.deliveryPrice) || 0));
+      const issuedMainAmount = Number(patch.paymentAmount || data.paymentAmount || data.initialPaymentAmount) || 0;
+      if (data.finalPaymentId && total > 0 && issuedMainAmount > 0 && issuedMainAmount < total) {
+        patch.invoiceType = 'prepayment';
+        if (/полн|100/i.test(String(data.paymentType || ''))) patch.paymentType = 'QR код';
+      }
       if (Object.keys(patch).length > 1) {
         await persistOrderPatch(id, patch);
         if (isTochkaPaidStatus(patch.paymentStatus) && !isTochkaPaidStatus(data.paymentStatus)) {
@@ -10374,6 +10408,8 @@ app.post('/api/tochka/reconcile-payments', async (_req, res) => {
     });
   } catch (e: any) {
     res.status(e.response?.status || 500).json({ error: e.message, details: e.response?.data });
+  } finally {
+    tochkaReconcileInProgress = false;
   }
 });
 
