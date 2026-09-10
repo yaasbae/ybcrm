@@ -10290,6 +10290,28 @@ app.post('/api/tochka/reconcile-payments', async (_req, res) => {
       const snapshot = await getDocs(collection(db, 'orders_new'));
       snapshot.docs.forEach((item: any) => orders.push({ id: item.id, data: item.data() }));
     }
+    // Старые заказы могли остаться помеченными как «полная оплата», хотя в
+    // Точке уже существуют два отдельных платежа. Нормализуем их независимо
+    // от статуса платежей: полностью оплаченные записи иначе не попадали в
+    // список кандидатов на банковскую сверку и навсегда сохраняли неверный тип.
+    const normalizedPaymentPlans: string[] = [];
+    for (const { id, data } of orders) {
+      const total = Math.max(0, (Number(data?.revenue) || 0) + (Number(data?.deliveryPrice) || 0));
+      const issuedMainAmount = Number(data?.paymentAmount || data?.initialPaymentAmount) || 0;
+      const hasStaleFullPaymentLabel = data?.invoiceType !== 'prepayment'
+        || /полн|100/i.test(String(data?.paymentType || ''));
+      if (!data?.finalPaymentId || total <= 0 || issuedMainAmount <= 0 || issuedMainAmount >= total || !hasStaleFullPaymentLabel) {
+        continue;
+      }
+      const normalizationPatch: Record<string, any> = {
+        invoiceType: 'prepayment',
+        paymentAccountingVersion: 2,
+      };
+      if (/полн|100/i.test(String(data?.paymentType || ''))) normalizationPatch.paymentType = 'QR код';
+      await persistOrderPatch(id, normalizationPatch);
+      Object.assign(data, normalizationPatch);
+      normalizedPaymentPlans.push(id);
+    }
     const candidates = orders.filter(({ data }) => (
       (data?.paymentId && !isTochkaPaidStatus(data?.paymentStatus)) ||
       (data?.finalPaymentId && !isTochkaPaidStatus(data?.finalPaymentStatus))
@@ -10405,6 +10427,7 @@ app.post('/api/tochka/reconcile-payments', async (_req, res) => {
       refundChecked: refundCandidates.length,
       refundUpdated: refundResults.length,
       refundResults,
+      normalizedPaymentPlans,
     });
   } catch (e: any) {
     res.status(e.response?.status || 500).json({ error: e.message, details: e.response?.data });
