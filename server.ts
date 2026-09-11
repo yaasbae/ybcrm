@@ -38,12 +38,14 @@ import type {
   WebAuthnCredential,
 } from "@simplewebauthn/server";
 import { normalizeTelegramPhone, telegramDelivery, telegramAuthError } from "./src/lib/telegramAuth.ts";
+import { isReservedTelegramServiceTopic } from "./src/lib/telegramServiceTopics.ts";
 import { normalizeBotSubscriberIds, validateBotBroadcastMessage } from "./src/lib/botBroadcast.ts";
 import { resolveOrderActions, type OrderAction } from "./src/lib/orderPermissionConfig.ts";
 import {
   findAcceptedSbpPaymentByQr,
   findSbpStatementPayment,
   formatTochkaRefundAmount,
+  getTochkaWebhookPaymentStatus,
   getTochkaRefundAccount,
 } from "./src/lib/tochkaPayments.ts";
 import { getTochkaFundName } from "./src/lib/tochkaFunds.ts";
@@ -1641,6 +1643,161 @@ async function sendNewOrderToTelegram(orderId: string, actor: Record<string, unk
       updatedAt: FieldValue.serverTimestamp(),
     }, { merge: true }).catch(() => undefined);
     throw new Error(message);
+  }
+}
+
+function escapePaymentCardText(value: unknown) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+async function buildTelegramPaymentCard(input: {
+  orderId: string;
+  amount: number;
+  clientName: string;
+  manager: string;
+  paymentLabel: string;
+  paidAt: string;
+}) {
+  const svg = `
+    <svg width="1200" height="760" viewBox="0 0 1200 760" xmlns="http://www.w3.org/2000/svg">
+      <rect width="1200" height="760" rx="52" fill="#F5F7F6"/>
+      <rect x="54" y="54" width="1092" height="652" rx="42" fill="#FFFFFF"/>
+      <circle cx="150" cy="156" r="58" fill="#DDF8EA"/>
+      <path d="M122 157l18 19 40-45" fill="none" stroke="#159A63" stroke-width="17" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="238" y="143" font-family="Arial, sans-serif" font-size="34" font-weight="700" fill="#159A63">ПОДТВЕРЖДЕНО ТОЧКА БАНКОМ</text>
+      <text x="238" y="191" font-family="Arial, sans-serif" font-size="28" fill="#66706B">Платёж поступил в CRM</text>
+      <text x="88" y="300" font-family="Arial, sans-serif" font-size="30" fill="#7B827E">Заказ</text>
+      <text x="1110" y="300" text-anchor="end" font-family="Arial, sans-serif" font-size="38" font-weight="700" fill="#161A18">#${escapePaymentCardText(input.orderId)}</text>
+      <line x1="88" y1="334" x2="1112" y2="334" stroke="#E8ECEA" stroke-width="2"/>
+      <text x="88" y="405" font-family="Arial, sans-serif" font-size="30" fill="#7B827E">Сумма</text>
+      <text x="1110" y="405" text-anchor="end" font-family="Arial, sans-serif" font-size="48" font-weight="700" fill="#159A63">${escapePaymentCardText(telegramOrderMoney(input.amount))}</text>
+      <text x="88" y="492" font-family="Arial, sans-serif" font-size="30" fill="#7B827E">Тип</text>
+      <text x="1110" y="492" text-anchor="end" font-family="Arial, sans-serif" font-size="30" font-weight="700" fill="#161A18">${escapePaymentCardText(input.paymentLabel)}</text>
+      <text x="88" y="574" font-family="Arial, sans-serif" font-size="30" fill="#7B827E">Клиент</text>
+      <text x="1110" y="574" text-anchor="end" font-family="Arial, sans-serif" font-size="30" font-weight="700" fill="#161A18">${escapePaymentCardText(input.clientName || "—")}</text>
+      <text x="88" y="647" font-family="Arial, sans-serif" font-size="26" fill="#7B827E">${escapePaymentCardText(input.manager || "Менеджер не указан")}</text>
+      <text x="1110" y="647" text-anchor="end" font-family="Arial, sans-serif" font-size="26" fill="#7B827E">${escapePaymentCardText(input.paidAt)}</text>
+    </svg>`;
+  return sharp(Buffer.from(svg)).png().toBuffer();
+}
+
+async function sendPaymentReceivedToTelegram(input: {
+  orderId: string;
+  order: any;
+  amount: number;
+  paymentId: string;
+  isFinal: boolean;
+  fullyPaid: boolean;
+}) {
+  const token = String(process.env.TG_BOT_TOKEN || "").trim();
+  const manager = String(input.order?.manager || input.order?.managerName || "").trim();
+  const managerCreated = Boolean(manager || input.order?.managerId || input.order?.managerEmail);
+  if (!adminDb || !token || !ORDER_TELEGRAM_CHAT_ID || !managerCreated || input.amount <= 0) {
+    return { sent: false, skipped: true };
+  }
+
+  const cleanOrderId = String(input.order?.orderId || input.orderId).replace(/^#+/, "").trim();
+  const eventKey = input.paymentId || `${input.isFinal ? "final" : "main"}:${input.amount}`;
+  const notificationId = createHash("sha256")
+    .update(`order-payment:${cleanOrderId}:${input.isFinal ? "final" : "main"}:${eventKey}`)
+    .digest("hex");
+  const notificationRef = adminDb.collection("telegram_payment_notifications").doc(notificationId);
+  const reserved = await adminDb.runTransaction(async (transaction: any) => {
+    const snapshot = await transaction.get(notificationRef);
+    const data = snapshot.exists ? snapshot.data() || {} : {};
+    const updatedAtMs = typeof data.updatedAt?.toMillis === "function"
+      ? data.updatedAt.toMillis()
+      : Date.parse(String(data.updatedAt || ""));
+    if (data.status === "sent") return false;
+    if (data.status === "sending" && Number.isFinite(updatedAtMs) && Date.now() - updatedAtMs < 5 * 60_000) return false;
+    transaction.set(notificationRef, {
+      orderId: cleanOrderId,
+      paymentId: eventKey,
+      kind: input.isFinal ? "final" : "main",
+      amount: input.amount,
+      status: "sending",
+      attempts: FieldValue.increment(1),
+      updatedAt: FieldValue.serverTimestamp(),
+    }, { merge: true });
+    return true;
+  });
+  if (!reserved) return { sent: false, duplicate: true };
+
+  const paymentLabel = input.fullyPaid
+    ? "Полная оплата"
+    : input.isFinal
+      ? "Доплата"
+      : "Предоплата";
+  const paidAt = new Intl.DateTimeFormat("ru-RU", {
+    timeZone: "Europe/Moscow",
+    dateStyle: "short",
+    timeStyle: "short",
+  }).format(new Date());
+  const caption = [
+    `✅ <b>Оплата заказа #${escapeTelegramHtml(cleanOrderId)}</b>`,
+    `Сумма: <b>${escapeTelegramHtml(telegramOrderMoney(input.amount))}</b>`,
+    `Тип: ${escapeTelegramHtml(paymentLabel)}`,
+    input.order?.clientName ? `Клиент: ${escapeTelegramHtml(input.order.clientName)}` : "",
+    manager ? `Менеджер: ${escapeTelegramHtml(manager)}` : "",
+    "Источник: Точка Банк",
+  ].filter(Boolean).join("\n");
+
+  try {
+    const orderDocumentId = String(input.order?.id || input.orderId);
+    const orderNotificationId = createHash("sha256").update(`order-created:${orderDocumentId}`).digest("hex");
+    const orderNotification = await adminDb.collection("telegram_order_notifications").doc(orderNotificationId).get().catch(() => null);
+    const replyMessageId = Number(orderNotification?.data()?.messageId || 0);
+    let response: any;
+    try {
+      const image = await buildTelegramPaymentCard({
+        orderId: cleanOrderId,
+        amount: input.amount,
+        clientName: String(input.order?.clientName || "—").slice(0, 38),
+        manager: manager.slice(0, 42),
+        paymentLabel,
+        paidAt,
+      });
+      const { default: FormData } = await import("form-data");
+      const form = new FormData();
+      form.append("chat_id", ORDER_TELEGRAM_CHAT_ID);
+      form.append("message_thread_id", String(ORDER_TELEGRAM_THREAD_ID));
+      form.append("caption", caption);
+      form.append("parse_mode", "HTML");
+      if (replyMessageId > 0) form.append("reply_parameters", JSON.stringify({ message_id: replyMessageId }));
+      form.append("photo", image, { filename: `order-${cleanOrderId}-payment.png`, contentType: "image/png" });
+      response = await axios.post(`https://api.telegram.org/bot${token}/sendPhoto`, form, {
+        headers: form.getHeaders(),
+        timeout: 30_000,
+      });
+    } catch (imageError: any) {
+      console.warn("[telegram] payment image fallback:", imageError?.response?.data?.description || imageError?.message || imageError);
+      response = await axios.post(`https://api.telegram.org/bot${token}/sendMessage`, {
+        chat_id: ORDER_TELEGRAM_CHAT_ID,
+        message_thread_id: ORDER_TELEGRAM_THREAD_ID,
+        text: caption,
+        parse_mode: "HTML",
+        ...(replyMessageId > 0 ? { reply_parameters: { message_id: replyMessageId } } : {}),
+      }, { timeout: 30_000 });
+    }
+    const messageId = String(response.data?.result?.message_id || "");
+    await notificationRef.set({
+      status: "sent",
+      messageId,
+      sentAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+      error: FieldValue.delete(),
+    }, { merge: true });
+    return { sent: true, messageId };
+  } catch (error: any) {
+    const message = String(error?.response?.data?.description || error?.message || "Ошибка Telegram").slice(0, 1000);
+    await notificationRef.set({ status: "failed", error: message, updatedAt: FieldValue.serverTimestamp() }, { merge: true }).catch(() => undefined);
+    console.warn("[telegram] payment:", message);
+    return { sent: false, error: message };
   }
 }
 
@@ -10210,6 +10367,16 @@ app.get('/api/tochka/find-payment', async (req, res) => {
     );
 
     await persistOrderPatch(target.cleanOrderId, paymentFields);
+    if (isTochkaPaidStatus(paymentStatus) && !isTochkaPaidStatus(target.isFinal ? orderData.finalPaymentStatus : orderData.paymentStatus)) {
+      await sendPaymentReceivedToTelegram({
+        orderId: target.cleanOrderId,
+        order: { ...orderData, ...paymentFields, id: orderSnapshot?.id || target.cleanOrderId },
+        amount: paymentAmount,
+        paymentId: operationId,
+        isFinal: target.isFinal,
+        fullyPaid: paymentFields.invoiceType === 'full',
+      });
+    }
     await writeTochkaLog({
       orderId,
       paymentId: operationId,
@@ -10431,6 +10598,14 @@ app.post('/api/tochka/reconcile-payments', async (_req, res) => {
             clientName: data.clientName,
             amount: Number(patch.paymentAmount || data.paymentAmount || 0),
           }).catch(() => null);
+          await sendPaymentReceivedToTelegram({
+            orderId: id,
+            order: { ...data, ...patch, id },
+            amount: Number(patch.paymentAmount || data.paymentAmount || 0),
+            paymentId: String(data.paymentId || ''),
+            isFinal: false,
+            fullyPaid: patch.invoiceType === 'full',
+          });
         }
         if (isTochkaPaidStatus(patch.finalPaymentStatus) && !isTochkaPaidStatus(data.finalPaymentStatus)) {
           await dispatchPushEvent('payment_received', `payment-reconcile:${id}:${data.finalPaymentId}`, {
@@ -10438,6 +10613,14 @@ app.post('/api/tochka/reconcile-payments', async (_req, res) => {
             clientName: data.clientName,
             amount: Number(patch.finalPaymentAmount || data.finalPaymentAmount || 0),
           }).catch(() => null);
+          await sendPaymentReceivedToTelegram({
+            orderId: id,
+            order: { ...data, ...patch, id },
+            amount: Number(patch.finalPaymentAmount || data.finalPaymentAmount || 0),
+            paymentId: String(data.finalPaymentId || ''),
+            isFinal: true,
+            fullyPaid: patch.invoiceType === 'full',
+          });
         }
         results.push({ orderId: id, paymentStatus: patch.paymentStatus, finalPaymentStatus: patch.finalPaymentStatus });
       }
@@ -10761,7 +10944,7 @@ app.post('/api/tochka/webhook', async (req, res) => {
     console.log('[tochka] webhook:', JSON.stringify(body).slice(0, 200));
     // Найти заказ по operationId и обновить статус
     if ((adminDb || db) && (body.operationId || body.paymentLinkId)) {
-      const status = ['Paid', 'paid', 'APPROVED'].includes(body.status) ? 'paid' : body.status;
+      const status = getTochkaWebhookPaymentStatus(body);
       if (body.paymentLinkId) {
         const target = getTochkaPaymentTarget(body.paymentLinkId);
         const orderSnapshot = await getOrderSnapshot(target.cleanOrderId).catch(() => null);
@@ -10772,6 +10955,14 @@ app.post('/api/tochka/webhook', async (req, res) => {
         );
         await persistOrderPatch(target.cleanOrderId, patch);
         if (isTochkaPaidStatus(status)) {
+          void sendPaymentReceivedToTelegram({
+            orderId: target.cleanOrderId,
+            order: { ...orderData, ...patch, id: orderSnapshot?.id || target.cleanOrderId },
+            amount: normalizeTochkaAmount(body.amount),
+            paymentId: String(body.operationId || body.qrcId || body.paymentLinkId || ''),
+            isFinal: target.isFinal,
+            fullyPaid: patch.invoiceType === 'full',
+          });
           await dispatchPushEvent('payment_received', `payment:${body.operationId || body.paymentLinkId}`, {
             orderId: target.cleanOrderId,
             amount: normalizeTochkaAmount(body.amount),
@@ -10779,17 +10970,35 @@ app.post('/api/tochka/webhook', async (req, res) => {
         }
       }
       if (body.operationId) {
-        const updateMatches = async (field: 'paymentId' | 'finalPaymentId', isFinal: boolean) => {
+        const updateMatches = async (
+          field: 'paymentId' | 'finalPaymentId' | 'paymentQrcId' | 'finalPaymentQrcId',
+          isFinal: boolean,
+          lookupValue: string,
+        ) => {
           const patch = buildTochkaPaymentFields(
             { isFinal },
-            body.operationId,
+            lookupValue,
             status,
             normalizeTochkaAmount(body.amount),
             body,
           );
           if (adminDb) {
-            const snap = await adminDb.collection('orders_new').where(field, '==', body.operationId).get();
-            await Promise.all(snap.docs.map((d: any) => d.ref.set(normalizeCompletedPaymentPatch(d.data(), patch), { merge: true })));
+            const snap = await adminDb.collection('orders_new').where(field, '==', lookupValue).get();
+            await Promise.all(snap.docs.map(async (d: any) => {
+              const orderData = d.data();
+              const normalizedPatch = normalizeCompletedPaymentPatch(orderData, patch);
+              await d.ref.set(normalizedPatch, { merge: true });
+              if (isTochkaPaidStatus(status) && !isTochkaPaidStatus(isFinal ? orderData.finalPaymentStatus : orderData.paymentStatus)) {
+                void sendPaymentReceivedToTelegram({
+                  orderId: d.id,
+                  order: { ...orderData, ...normalizedPatch, id: d.id },
+                  amount: normalizeTochkaAmount(body.amount),
+                  paymentId: String(body.operationId || ''),
+                  isFinal,
+                  fullyPaid: normalizedPatch.invoiceType === 'full',
+                });
+              }
+            }));
             if (isTochkaPaidStatus(status)) {
               await Promise.all(snap.docs.map((d: any) => dispatchPushEvent('payment_received', `payment:${body.operationId}:${d.id}`, {
                 orderId: d.id,
@@ -10800,12 +11009,18 @@ app.post('/api/tochka/webhook', async (req, res) => {
             return snap.size;
           }
           if (!db) return 0;
-          const snap = await getDocs(query(collection(db, 'orders_new'), where(field, '==', body.operationId)));
+          const snap = await getDocs(query(collection(db, 'orders_new'), where(field, '==', lookupValue)));
           await Promise.all(snap.docs.map((d: any) => updateDoc(d.ref, normalizeCompletedPaymentPatch(d.data(), patch))));
           return snap.size;
         };
-        await updateMatches('paymentId', false);
-        await updateMatches('finalPaymentId', true);
+        await updateMatches('paymentId', false, body.operationId);
+        await updateMatches('finalPaymentId', true, body.operationId);
+        if (body.qrcId) {
+          await updateMatches('paymentId', false, body.qrcId);
+          await updateMatches('finalPaymentId', true, body.qrcId);
+          await updateMatches('paymentQrcId', false, body.qrcId);
+          await updateMatches('finalPaymentQrcId', true, body.qrcId);
+        }
       }
     }
     res.json({ success: true });
@@ -11978,15 +12193,19 @@ function startTelegramBot() {
   };
 
   const handleManagerReply = async (ctx: any): Promise<boolean> => {
-    if (!isManagerChat(ctx)) return false;
     const message = ctx.message as any;
     const messageThreadId = Number(message?.message_thread_id || 0);
-    if (messageThreadId === ORDER_TELEGRAM_THREAD_ID || messageThreadId === RELEASE_TELEGRAM_THREAD_ID) {
+    const chatId = String(ctx.chat?.id || "");
+    if (isReservedTelegramServiceTopic(chatId, messageThreadId, [
+      { chatId: ORDER_TELEGRAM_CHAT_ID, threadId: ORDER_TELEGRAM_THREAD_ID },
+      { chatId: RELEASE_TELEGRAM_CHAT_ID, threadId: RELEASE_TELEGRAM_THREAD_ID },
+    ])) {
       // These forum topics are reserved for automatic order/release notifications.
       // Consume manager messages here so they are not mistaken for client bot input
       // by the generic text/photo handlers registered below.
       return true;
     }
+    if (!isManagerChat(ctx)) return false;
     const text = message?.text || "";
     if (text.startsWith("/")) return false;
 

@@ -6,6 +6,7 @@ import {
   findSbpStatementPayment,
   formatTochkaRefundAmount,
   getTochkaRefundAccount,
+  getTochkaWebhookPaymentStatus,
 } from '../src/lib/tochkaPayments.ts';
 
 test('finds the accepted SBP payment and its refund transaction id', () => {
@@ -59,4 +60,15 @@ test('does not match another QR or another amount', () => {
     description: 'Зачисление по QR коду ID OTHER',
     Amount: { amount: 17550 },
   }], 'EXPECTED', 17550), null);
+});
+
+test('treats a successful incoming SBP webhook without a status field as paid', () => {
+  assert.equal(getTochkaWebhookPaymentStatus({
+    webhookType: 'incomingSbpPayment',
+    operationId: 'A22001100263820100000533E625FCB3',
+    qrcId: 'AS10006DPRTEFPFS9HJ9SQSDVRHJD3L',
+    amount: '16535.00',
+  }), 'paid');
+  assert.equal(getTochkaWebhookPaymentStatus({ status: 'APPROVED' }), 'paid');
+  assert.equal(getTochkaWebhookPaymentStatus({ webhookType: 'unknown' }), '');
 });

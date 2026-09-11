@@ -39,6 +39,16 @@ export const findAcceptedSbpPaymentByQr = (
     || null;
 };
 
+export const getTochkaWebhookPaymentStatus = (body: any) => {
+  const explicitStatus = body?.status || body?.paymentStatus || body?.operation?.status;
+  if (explicitStatus) {
+    return ['Paid', 'paid', 'APPROVED'].includes(String(explicitStatus)) ? 'paid' : String(explicitStatus);
+  }
+  const webhookType = String(body?.webhookType || '').trim();
+  if (['incomingSbpPayment', 'incomingSbpB2BPayment', 'incomingPayment'].includes(webhookType)) return 'paid';
+  return '';
+};
+
 const operationAmount = (operation: any) => Number(
   operation?.Amount?.amount
   ?? operation?.Amount?.Amount
