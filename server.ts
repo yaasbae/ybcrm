@@ -94,6 +94,7 @@ const ORDER_TELEGRAM_THREAD_ID = Number(process.env.ORDER_TELEGRAM_THREAD_ID || 
 const RELEASE_TELEGRAM_CHAT_ID = String(process.env.RELEASE_TELEGRAM_CHAT_ID || ORDER_TELEGRAM_CHAT_ID).trim();
 const RELEASE_TELEGRAM_THREAD_ID = Number(process.env.RELEASE_TELEGRAM_THREAD_ID || 12750);
 const RELEASE_COMMIT_SHA = String(process.env.RELEASE_COMMIT_SHA || "").trim();
+const RELEASE_NOTES_B64 = String(process.env.RELEASE_NOTES_B64 || "").trim();
 let WEB_PUSH_PUBLIC_KEY = String(process.env.WEB_PUSH_PUBLIC_KEY || "").trim();
 let WEB_PUSH_PRIVATE_KEY = String(process.env.WEB_PUSH_PRIVATE_KEY || "").trim();
 const WEB_PUSH_SUBJECT = String(process.env.WEB_PUSH_SUBJECT || "https://ybcrm.ru").trim();
@@ -1670,11 +1671,22 @@ async function sendReleaseNotification() {
   });
   if (!reserved) return;
   const shortCommit = RELEASE_COMMIT_SHA.slice(0, 7);
+  let releaseNotes = "";
+  try {
+    const decoded = Buffer.from(RELEASE_NOTES_B64, "base64").toString("utf8").trim();
+    const [, ...bodyLines] = decoded.split(/\r?\n/);
+    releaseNotes = bodyLines.join("\n").trim() || decoded;
+  } catch {
+    releaseNotes = "";
+  }
+  const details = releaseNotes
+    ? `\n\n<b>Что изменилось:</b>\n${escapeTelegramHtml(releaseNotes.slice(0, 3000))}`
+    : "";
   try {
     const response = await axios.post(`https://api.telegram.org/bot${token}/sendMessage`, {
       chat_id: RELEASE_TELEGRAM_CHAT_ID,
       message_thread_id: RELEASE_TELEGRAM_THREAD_ID,
-      text: `🛠 <b>Обновление CRM опубликовано</b>\n\nНовая версия CRM успешно загружена и доступна для работы.\n\nВерсия: <code>${escapeTelegramHtml(shortCommit)}</code>\n<a href="https://ybcrm.ru">Открыть CRM</a>`,
+      text: `🛠 <b>Обновление CRM опубликовано</b>${details}\n\nВерсия: <code>${escapeTelegramHtml(shortCommit)}</code>\n<a href="https://ybcrm.ru">Открыть CRM</a>`,
       parse_mode: "HTML",
       disable_web_page_preview: true,
     }, { timeout: 30_000 });
