@@ -31,6 +31,7 @@ import {
   getOutstandingPaymentAmount,
   getPlannedFinalPaymentAmount,
   isConfirmedPaymentStatus,
+  isFullyPaidOrder,
   shouldOfferMainPaymentRefund,
 } from '../../lib/orderPayments';
 import { motion, AnimatePresence } from 'motion/react';
@@ -1067,6 +1068,8 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
   const mainPaymentPaid = isPaidTochkaStatus(order.paymentStatus || '');
   const finalPaymentPaid = isPaidTochkaStatus(order.finalPaymentStatus || '');
   const orderTotal = getOrderTotalAmount(order);
+  const confirmedPaidAmount = getConfirmedPaidAmount(order);
+  const fullyPaid = isFullyPaidOrder(order);
   const initialAmount = hasIssuedMainInvoice(order)
     ? getInitialInvoiceAmount(order)
     : isYandexProvider ? orderTotal : getCalculatedInitialInvoiceAmount({ ...order, invoiceType });
@@ -1082,15 +1085,20 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
     && Boolean(paymentUrl)
     && (manualConfirmationRequired || paymentStatusWindowExpired);
   const finalAmount = getOrderFinalPaymentAmount(order);
-  const showFinalPayment = !isYandexProvider && finalAmount > 0;
+  const hasInstallments = issuedMainAmount > 0 && issuedMainAmount < orderTotal && finalAmount > 0;
+  const showFinalPayment = !isYandexProvider && finalAmount > 0 && !fullyPaid;
   const mainPaymentLabel = isYandexProvider
     ? 'Яндекс Сплит'
+    : fullyPaid
+      ? 'Полная оплата 100%'
     : invoiceType === 'full'
       ? 'Полная оплата 100%'
       : invoiceType === 'fitting'
         ? 'Оплата с примеркой'
         : 'Предоплата 50%';
-  const mainPaymentStatusText = mainPaymentPaid
+  const mainPaymentStatusText = fullyPaid
+    ? `Полная оплата ${formatCurrency(confirmedPaidAmount)} получена`
+    : mainPaymentPaid
     ? `${mainPaymentLabel} оплачена`
     : paymentUrl
       ? `${mainPaymentLabel} ожидает оплаты`
@@ -1181,6 +1189,8 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
         if (data.paymentId) updateOrderData(order.orderId, 'paymentId', data.paymentId);
         if (data.paymentPaidAt) updateOrderData(order.orderId, 'paymentPaidAt', data.paymentPaidAt);
       }
+      if (data.invoiceType) updateOrderData(order.orderId, 'invoiceType', data.invoiceType);
+      if (Number(data.paidAmount) > 0) updateOrderData(order.orderId, 'paidAmount', Number(data.paidAmount));
     } catch (e: any) {
       if (e?.status === 409 || e?.manualConfirmationAllowed) setManualConfirmationRequired(true);
       if (isFinal) setFinalError(e.message || `Оплата в ${paymentProviderLabel} не найдена`);
@@ -1417,7 +1427,7 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
 
   return (
     <div className="mt-1.5 space-y-1">
-      {paymentStatusBadge(mainPaymentStatusText, mainPaymentPaid, 'main')}
+      {paymentStatusBadge(mainPaymentStatusText, fullyPaid || mainPaymentPaid, 'main')}
       <button
         onClick={() => refreshPayment('main')}
         disabled={refreshingMain}
@@ -1481,10 +1491,21 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
             ? 'Проверяем и оформляем возврат…'
             : isYandexProvider
               ? `Вернуть Сплит ${formatCurrency(issuedMainAmount)}`
-              : `${mainPaymentPaid ? 'Вернуть' : 'Проверить и вернуть'} ${invoiceType === 'full' ? 'полную оплату' : 'предоплату'} ${formatCurrency(issuedMainAmount)}`}
+              : `${mainPaymentPaid ? 'Вернуть' : 'Проверить и вернуть'} ${hasInstallments ? 'предоплату' : invoiceType === 'full' ? 'полную оплату' : 'предоплату'} ${formatCurrency(issuedMainAmount)}`}
         </button>
       )}
-      {mainRefunded && <p className="text-[8px] font-bold text-red-500">Возврат {invoiceType === 'full' ? 'полной оплаты' : 'предоплаты'} оформлен</p>}
+      {mainRefunded && <p className="text-[8px] font-bold text-red-500">Возврат {hasInstallments ? 'предоплаты' : invoiceType === 'full' ? 'полной оплаты' : 'предоплаты'} оформлен</p>}
+      {isRefundOwner && fullyPaid && finalPaymentPaid && !finalRefunded && (
+        <button
+          type="button"
+          onClick={() => refundPayment('final')}
+          disabled={refundLoading !== null}
+          className="w-full rounded-md border border-red-200 bg-red-50 py-1.5 text-[8px] font-black text-red-600 transition-colors hover:bg-red-100 disabled:opacity-50"
+        >
+          {refundLoading === 'final' ? 'Оформляем возврат…' : `Вернуть вторую часть ${formatCurrency(finalAmount)}`}
+        </button>
+      )}
+      {fullyPaid && finalRefunded && <p className="text-[8px] font-bold text-red-500">Возврат второй части оформлен</p>}
       {showFinalPayment && (
         <div className="border-t border-zinc-100 pt-1.5">
           {paymentStatusBadge(finalPaymentStatusText, finalPaymentPaid, 'final')}
@@ -2375,13 +2396,13 @@ const OrderSummaryRow = React.memo(({
   const fullyPaid = confirmedPaidAmount > 0 && outstandingAmount === 0;
   const deadlineDate = addBusinessDays(order.date, 7);
   const invoiceType = getOperationalInvoiceType(order);
-  const invoiceTone = paidAmount <= 0
+  const invoiceTone = confirmedPaidAmount > 0
+    ? 'text-emerald-600'
+    : paidAmount <= 0
     ? 'text-zinc-300'
-    : invoiceType === 'full'
-      ? 'text-emerald-600'
-      : 'text-orange-500';
-  const invoiceLabel = fullyPaid
-    ? 'оплата'
+    : 'text-orange-500';
+  const invoiceLabel = confirmedPaidAmount > 0
+    ? 'оплачено'
     : invoiceType === 'full'
     ? 'оплата'
     : invoiceType === 'fitting'
@@ -2486,8 +2507,11 @@ const OrderSummaryRow = React.memo(({
           доставка {formatCurrency(deliveryAmount)}
         </p>
         <p className={cn("mt-1.5 text-[12px] font-black tabular-nums", invoiceTone)}>
-          {invoiceLabel} {formatCurrency(fullyPaid ? confirmedPaidAmount : paidAmount)}
+          {invoiceLabel} {formatCurrency(confirmedPaidAmount > 0 ? confirmedPaidAmount : paidAmount)}
         </p>
+        {!fullyPaid && confirmedPaidAmount > 0 && outstandingAmount > 0 && (
+          <p className="mt-1 text-[11px] font-black tabular-nums text-orange-500">доплата {formatCurrency(outstandingAmount)}</p>
+        )}
       </td>
       <td className="px-4 py-5 align-top">
         <div className="min-w-[360px] max-w-[440px] space-y-1.5">
@@ -2560,7 +2584,7 @@ const OrderSummaryRow = React.memo(({
         </p>
         <p className={cn(
           "mt-2 text-[12px] font-bold tabular-nums",
-          order.isOverdue && !order.isShipped ? "text-red-500" : "text-zinc-400"
+          isOverdueOrder(order) ? "text-red-500" : "text-zinc-400"
         )}>
           до {deadlineDate.toLocaleDateString('ru-RU')}
         </p>
@@ -3299,7 +3323,7 @@ const OrderRow = React.memo(({
   return (
     <tr className={cn(
       "group border-b border-zinc-100 bg-white transition-colors",
-      order.isOverdue && !order.isShipped && "bg-red-50/20"
+      isOverdueOrder(order) && "bg-red-50/20"
     )}>
       <td colSpan={9} className="px-0 py-0">
         <div className="grid min-w-[1240px] grid-cols-[360px_minmax(880px,1fr)] items-stretch border border-[#E6E9EF] bg-white">
@@ -3585,7 +3609,7 @@ const OrderRow = React.memo(({
                   <span className="block truncate text-[10px] font-medium uppercase tracking-[0.14em] leading-[14px] text-[#9CA3AF]">Срок</span>
                   <span className={cn(
                     "mt-2 block border-b border-[#E6E9EF] pb-2 text-[18px] font-medium tabular-nums",
-                    order.isOverdue && !order.isShipped
+                    isOverdueOrder(order)
                       ? "text-red-600"
                       : order.isShipped
                         ? "text-zinc-400"
@@ -3713,6 +3737,9 @@ const OrderCard = React.memo(({
   ].filter(Boolean).join('\n');
   const invoiceType = getOperationalInvoiceType(order);
   const mobileOrderTotal = getOrderTotalAmount({ ...order, revenue: liveRevenue });
+  const mobileConfirmedPaidAmount = getConfirmedPaidAmount({ ...order, revenue: liveRevenue });
+  const mobileOutstandingAmount = getOutstandingPaymentAmount({ ...order, revenue: liveRevenue });
+  const mobileFullyPaid = mobileOrderTotal > 0 && mobileConfirmedPaidAmount >= mobileOrderTotal;
   const plannedInitialAmount = isMobileYandexProvider
     ? mobileOrderTotal
     : getCalculatedInitialInvoiceAmount({ ...order, revenue: liveRevenue, invoiceType });
@@ -3725,10 +3752,13 @@ const OrderCard = React.memo(({
   const finalPaymentAmount = mobileFinalPaymentUrl && Number(order.finalPaymentAmount) > 0
     ? Number(order.finalPaymentAmount)
     : Math.max(0, mobileOrderTotal - issuedMobileMainAmount);
-  const showFinalPayment = !isMobileYandexProvider && finalPaymentAmount > 0;
+  const hasMobileInstallments = issuedMobileMainAmount > 0 && issuedMobileMainAmount < mobileOrderTotal && finalPaymentAmount > 0;
+  const showFinalPayment = !isMobileYandexProvider && finalPaymentAmount > 0 && !mobileFullyPaid;
   const mainPaymentPaid = isPaidTochkaStatus(order.paymentStatus || '');
   const finalPaymentPaid = isPaidTochkaStatus(order.finalPaymentStatus || '');
-  const mainPaymentStatusText = mainPaymentPaid
+  const mainPaymentStatusText = mobileFullyPaid
+    ? `Полная оплата ${formatCurrency(mobileConfirmedPaidAmount)} получена`
+    : mainPaymentPaid
     ? `${isMobileYandexProvider ? 'Яндекс Сплит' : getInvoicePaymentLabel(invoiceType)} оплачена`
     : paymentUrl
       ? `${isMobileYandexProvider ? 'Яндекс Сплит' : getInvoicePaymentLabel(invoiceType)} ожидает оплаты`
@@ -3749,12 +3779,14 @@ const OrderCard = React.memo(({
   );
   const shareText = paymentUrl ? buildPaymentShareText(order, paymentUrl, issuedMobileMainAmount, invoiceType === 'full' ? 'Счет на полную оплату' : 'Счет на предоплату', mobilePaymentProviderLabel) : '';
   const finalShareText = mobileFinalPaymentUrl ? buildPaymentShareText(order, mobileFinalPaymentUrl, finalPaymentAmount, 'Счет на доплату') : '';
-  const invoiceTone = liveInvoiceAmount <= 0
+  const invoiceTone = mobileConfirmedPaidAmount > 0
+    ? 'text-emerald-600'
+    : liveInvoiceAmount <= 0
     ? 'text-zinc-300'
-    : isMobileYandexProvider
-      ? 'text-emerald-600'
-      : 'text-orange-500';
-  const invoiceLabel = isMobileYandexProvider ? 'оплата Сплит' : getInvoicePaymentLabel(invoiceType).toLowerCase();
+    : 'text-orange-500';
+  const invoiceLabel = mobileConfirmedPaidAmount > 0
+    ? 'оплачено'
+    : isMobileYandexProvider ? 'оплата Сплит' : getInvoicePaymentLabel(invoiceType).toLowerCase();
   useEffect(() => {
     setEditItems(orderItems.length ? orderItems : ['']);
     setEditItemPrices(orderItemPrices.length ? orderItemPrices : [0]);
@@ -4046,6 +4078,8 @@ const OrderCard = React.memo(({
         if (data.paymentId) updateOrderData(order.orderId, 'paymentId', data.paymentId);
         if (data.paymentPaidAt) updateOrderData(order.orderId, 'paymentPaidAt', data.paymentPaidAt);
       }
+      if (data.invoiceType) updateOrderData(order.orderId, 'invoiceType', data.invoiceType);
+      if (Number(data.paidAmount) > 0) updateOrderData(order.orderId, 'paidAmount', Number(data.paidAmount));
     } catch (e: any) {
       if (e?.status === 409 || e?.manualConfirmationAllowed) setMobileManualConfirmationRequired(true);
       if (isFinal) setMobileFinalPaymentError(e.message || 'Оплата в Точке не найдена');
@@ -4229,7 +4263,10 @@ const OrderCard = React.memo(({
             <div className="text-right">
               <p className="text-[12px] font-black text-zinc-950">{formatCurrency(order.revenue || 0)}</p>
               <p className="mt-1 text-[10px] font-bold text-zinc-400">доставка {formatCurrency(order.deliveryPrice || 0)}</p>
-              <p className={cn("mt-1 text-[11px] font-black", invoiceTone)}>{invoiceLabel} {formatCurrency(liveInvoiceAmount)}</p>
+              <p className={cn("mt-1 text-[11px] font-black", invoiceTone)}>{invoiceLabel} {formatCurrency(mobileConfirmedPaidAmount > 0 ? mobileConfirmedPaidAmount : liveInvoiceAmount)}</p>
+              {!mobileFullyPaid && mobileConfirmedPaidAmount > 0 && mobileOutstandingAmount > 0 && (
+                <p className="mt-1 text-[10px] font-black text-orange-500">доплата {formatCurrency(mobileOutstandingAmount)}</p>
+              )}
             </div>
           </div>
           <div className="space-y-1">
@@ -4296,7 +4333,7 @@ const OrderCard = React.memo(({
           )}
           <div className="flex items-center justify-between">
             <p className="text-[10px] font-semibold text-zinc-400">старт {order.date.toLocaleDateString('ru-RU')}</p>
-            <p className={cn("text-[10px] font-black", order.isOverdue && !order.isShipped ? "text-red-500" : "text-zinc-500")}>
+            <p className={cn("text-[10px] font-black", isOverdueOrder(order) ? "text-red-500" : "text-zinc-500")}>
               до {deadlineDate.toLocaleDateString('ru-RU')}
             </p>
           </div>
@@ -4463,17 +4500,17 @@ const OrderCard = React.memo(({
         </div>
         <div className={cn(
           "min-w-0 rounded-lg border p-2",
-          isMobileYandexProvider ? "bg-emerald-50 border-emerald-100" : "bg-orange-50 border-orange-100"
+          mobileConfirmedPaidAmount > 0 ? "bg-emerald-50 border-emerald-100" : "bg-orange-50 border-orange-100"
         )}>
           <p className={cn(
             "truncate text-[7px] font-bold uppercase",
-            isMobileYandexProvider ? "text-emerald-500" : "text-orange-500"
+            mobileConfirmedPaidAmount > 0 ? "text-emerald-500" : "text-orange-500"
           )}>{invoiceLabel}</p>
-          <p className={cn("truncate text-[11px] font-black", invoiceTone)}>{formatCurrency(liveInvoiceAmount)}</p>
+          <p className={cn("truncate text-[11px] font-black", invoiceTone)}>{formatCurrency(mobileConfirmedPaidAmount > 0 ? mobileConfirmedPaidAmount : liveInvoiceAmount)}</p>
         </div>
         <div className="min-w-0 rounded-lg bg-blue-50 border border-blue-100 p-2">
           <p className="text-[7px] font-bold text-blue-500 uppercase">К оплате</p>
-          <p className="truncate text-[11px] font-black text-blue-700">{formatCurrency(dueAmount)}</p>
+          <p className="truncate text-[11px] font-black text-blue-700">{formatCurrency(mobileOutstandingAmount)}</p>
         </div>
       </div>
 
@@ -4542,10 +4579,21 @@ const OrderCard = React.memo(({
                   ? 'Проверяем и оформляем возврат…'
                   : isMobileYandexProvider
                     ? `Вернуть Сплит ${formatCurrency(issuedMobileMainAmount)}`
-                    : `${mainPaymentPaid ? 'Вернуть' : 'Проверить и вернуть'} ${invoiceType === 'full' ? 'полную оплату' : 'предоплату'} ${formatCurrency(issuedMobileMainAmount)}`}
+                    : `${mainPaymentPaid ? 'Вернуть' : 'Проверить и вернуть'} ${hasMobileInstallments ? 'предоплату' : invoiceType === 'full' ? 'полную оплату' : 'предоплату'} ${formatCurrency(issuedMobileMainAmount)}`}
               </button>
             )}
-            {mobileMainRefunded && <p className="text-[9px] font-bold text-red-500">Возврат {invoiceType === 'full' ? 'полной оплаты' : 'предоплаты'} оформлен</p>}
+            {mobileMainRefunded && <p className="text-[9px] font-bold text-red-500">Возврат {hasMobileInstallments ? 'предоплаты' : invoiceType === 'full' ? 'полной оплаты' : 'предоплаты'} оформлен</p>}
+            {isRefundOwner && mobileFullyPaid && finalPaymentPaid && !mobileFinalRefunded && (
+              <button
+                type="button"
+                onClick={() => refundMobilePayment('final')}
+                disabled={mobileRefundLoading !== null}
+                className="w-full rounded-lg border border-red-200 bg-red-50 py-2 text-[10px] font-bold text-red-600 disabled:opacity-60"
+              >
+                {mobileRefundLoading === 'final' ? 'Оформляем возврат…' : `Вернуть вторую часть ${formatCurrency(finalPaymentAmount)}`}
+              </button>
+            )}
+            {mobileFullyPaid && mobileFinalRefunded && <p className="text-[9px] font-bold text-red-500">Возврат второй части оформлен</p>}
             <button
               onClick={() => setShowMobileQr(v => !v)}
               className="w-full py-2 rounded-lg bg-[#6B4DFF] border border-[#6B4DFF] text-[10px] font-bold text-white"

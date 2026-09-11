@@ -1203,10 +1203,13 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
     return stats.uniqueOrders
       .slice()
       .sort((a: OrderData, b: OrderData) => {
+        const exchangeDifference = Number(/обмен/i.test(String(b.status || ''))) - Number(/обмен/i.test(String(a.status || '')));
+        if (exchangeDifference) return exchangeDifference;
+        const pinDifference = Number(Boolean(b.isPinned)) - Number(Boolean(a.isPinned));
+        if (pinDifference) return pinDifference;
         const activityDifference = (b.activityAt?.getTime() || 0) - (a.activityAt?.getTime() || 0);
         if (activityDifference) return activityDifference;
-        const pinDifference = Number(Boolean(b.isPinned)) - Number(Boolean(a.isPinned));
-        return pinDifference || b.date.getTime() - a.date.getTime();
+        return b.date.getTime() - a.date.getTime();
       })
       .filter((o: OrderData) => {
         const matchesMonth = hasSearch || ordersFilterMonth === -1 || o.month === ordersFilterMonth;

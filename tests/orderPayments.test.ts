@@ -7,7 +7,9 @@ import {
   getInitialInvoiceAmount,
   getNewOrderPaymentAccounting,
   getPlannedFinalPaymentAmount,
+  getOutstandingPaymentAmount,
   isConfirmedPaymentStatus,
+  isFullyPaidOrder,
   shouldOfferMainPaymentRefund,
 } from '../src/lib/orderPayments';
 
@@ -71,6 +73,40 @@ test('uses bank-issued amounts over a stale legacy full-payment label', () => {
     finalPaymentAmount: 6275,
     finalPaymentUrl: 'https://example.test/final',
   }), 'prepayment');
+});
+
+test('turns a confirmed prepayment plus confirmed final payment into full payment', () => {
+  const order = {
+    revenue: 10_000,
+    invoiceType: 'prepayment' as const,
+    paymentAmount: 5_000,
+    paymentStatus: 'Accepted',
+    finalPaymentAmount: 5_000,
+    finalPaymentStatus: 'Accepted',
+    paymentAccountingVersion: 2,
+  };
+
+  assert.equal(getConfirmedPaidAmount(order), 10_000);
+  assert.equal(getOutstandingPaymentAmount(order), 0);
+  assert.equal(getEffectiveInvoiceType(order), 'full');
+  assert.equal(isFullyPaidOrder(order), true);
+});
+
+test('keeps the final amount outstanding until Tochka confirms it', () => {
+  const order = {
+    revenue: 10_000,
+    invoiceType: 'prepayment' as const,
+    paymentAmount: 5_000,
+    paymentStatus: 'Accepted',
+    finalPaymentAmount: 5_000,
+    finalPaymentStatus: 'Active',
+    paymentAccountingVersion: 2,
+  };
+
+  assert.equal(getConfirmedPaidAmount(order), 5_000);
+  assert.equal(getOutstandingPaymentAmount(order), 5_000);
+  assert.equal(getEffectiveInvoiceType(order), 'prepayment');
+  assert.equal(isFullyPaidOrder(order), false);
 });
 
 test('offers a bank-verified refund when a manager marks an invoiced order for return', () => {

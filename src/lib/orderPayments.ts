@@ -31,6 +31,13 @@ export const getEffectiveInvoiceType = (order: PaymentAccountingOrder): 'prepaym
   const paymentType = String(order.paymentType || '');
   if (/сплит/i.test(paymentType)) return 'full';
   const total = getOrderTotalAmount(order);
+  const confirmedMain = isConfirmedPaymentStatus(order.paymentStatus)
+    ? Number(order.paymentAmount) || Number(order.initialPaymentAmount) || Number(order.paidAmount) || 0
+    : 0;
+  const confirmedFinal = isConfirmedPaymentStatus(order.finalPaymentStatus)
+    ? Number(order.finalPaymentAmount) || 0
+    : 0;
+  if (total > 0 && confirmedMain + confirmedFinal >= total) return 'full';
   const issuedAmount = Number(order.paymentAmount) || Number(order.initialPaymentAmount) || 0;
   const hasIssuedInvoice = Boolean(order.paymentUrl || order.paymentId || issuedAmount > 0);
   if (hasIssuedInvoice && issuedAmount > 0 && total > 0 && issuedAmount < total) {
@@ -95,6 +102,11 @@ export const getPlannedFinalPaymentAmount = (order: PaymentAccountingOrder) =>
 
 export const getOutstandingPaymentAmount = (order: PaymentAccountingOrder) =>
   Math.max(0, getOrderTotalAmount(order) - getConfirmedPaidAmount(order));
+
+export const isFullyPaidOrder = (order: PaymentAccountingOrder) => {
+  const total = getOrderTotalAmount(order);
+  return total > 0 && getConfirmedPaidAmount(order) >= total;
+};
 
 export const shouldOfferMainPaymentRefund = (order: PaymentAccountingOrder) => {
   const refundState = String(order.mainRefundStatus || order.refundStatus || '');

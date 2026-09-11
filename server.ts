@@ -94,7 +94,6 @@ const ORDER_TELEGRAM_THREAD_ID = Number(process.env.ORDER_TELEGRAM_THREAD_ID || 
 const RELEASE_TELEGRAM_CHAT_ID = String(process.env.RELEASE_TELEGRAM_CHAT_ID || ORDER_TELEGRAM_CHAT_ID).trim();
 const RELEASE_TELEGRAM_THREAD_ID = Number(process.env.RELEASE_TELEGRAM_THREAD_ID || 12750);
 const RELEASE_COMMIT_SHA = String(process.env.RELEASE_COMMIT_SHA || "").trim();
-const RELEASE_NOTES_B64 = String(process.env.RELEASE_NOTES_B64 || "").trim();
 let WEB_PUSH_PUBLIC_KEY = String(process.env.WEB_PUSH_PUBLIC_KEY || "").trim();
 let WEB_PUSH_PRIVATE_KEY = String(process.env.WEB_PUSH_PRIVATE_KEY || "").trim();
 const WEB_PUSH_SUBJECT = String(process.env.WEB_PUSH_SUBJECT || "https://ybcrm.ru").trim();
@@ -1126,11 +1125,11 @@ app.post("/api/push/run-reminders", async (req, res) => {
   for (const item of snap.docs) {
     const data: any = item.data();
     const status = String(data.status || "");
-    if (/доставлен|получен|вручен|возврат|отмен/i.test(status)) continue;
+    if (/доставлен|получен|вручен|возврат|вернул|отмен/i.test(status)) continue;
     const total = Number(data.revenue || 0) + Number(data.deliveryPrice || 0);
-    const paid = Number(data.paidAmount || 0) + Number(data.finalPaymentAmount || 0);
+    const paid = getFinanceOrderPaidAmount(data);
     const balance = Math.max(0, total - paid);
-    if (balance > 0 && /предоплат|prepaid/i.test(`${data.paymentType || ""} ${data.paymentStatus || ""}`)) {
+    if (balance > 0 && isTochkaPaidStatus(data.paymentStatus) && /предоплат|prepaid/i.test(`${data.invoiceType || ""} ${data.paymentType || ""}`)) {
       const result = await dispatchPushEvent("payment_due", `payment-due:${item.id}:${dateKey}`, { orderId: item.id, clientName: data.clientName, amount: balance });
       if (!result.duplicate) due += 1;
     }
@@ -1646,34 +1645,36 @@ async function sendNewOrderToTelegram(orderId: string, actor: Record<string, unk
 
 async function sendReleaseNotification() {
   const token = String(process.env.TG_BOT_TOKEN || "").trim();
-  if (!adminDb || !token || !RELEASE_TELEGRAM_CHAT_ID || !RELEASE_COMMIT_SHA || !RELEASE_NOTES_B64) return;
-  let notes = "";
-  try {
-    notes = Buffer.from(RELEASE_NOTES_B64, "base64").toString("utf8").trim();
-  } catch {
-    return;
-  }
-  if (!notes) return;
+  if (!adminDb || !token || !RELEASE_TELEGRAM_CHAT_ID || !RELEASE_COMMIT_SHA) return;
   const notificationId = createHash("sha256").update(`release:${RELEASE_COMMIT_SHA}`).digest("hex");
   const ref = adminDb.collection("telegram_release_notifications").doc(notificationId);
   const reserved = await adminDb.runTransaction(async (transaction: any) => {
     const snapshot = await transaction.get(ref);
-    if (snapshot.exists && snapshot.data()?.status === "sent") return false;
+    const data = snapshot.exists ? snapshot.data() || {} : {};
+    const updatedAtMs = typeof data.updatedAt?.toMillis === "function"
+      ? data.updatedAt.toMillis()
+      : Date.parse(String(data.updatedAt || ""));
+    if (data.status === "sent") return false;
+    if (data.status === "sending" && Number.isFinite(updatedAtMs) && Date.now() - updatedAtMs < 5 * 60_000) {
+      return false;
+    }
     transaction.set(ref, {
       commit: RELEASE_COMMIT_SHA,
       chatId: RELEASE_TELEGRAM_CHAT_ID,
       threadId: RELEASE_TELEGRAM_THREAD_ID,
       status: "sending",
+      attempts: FieldValue.increment(1),
       updatedAt: FieldValue.serverTimestamp(),
     }, { merge: true });
     return true;
   });
   if (!reserved) return;
+  const shortCommit = RELEASE_COMMIT_SHA.slice(0, 7);
   try {
     const response = await axios.post(`https://api.telegram.org/bot${token}/sendMessage`, {
       chat_id: RELEASE_TELEGRAM_CHAT_ID,
       message_thread_id: RELEASE_TELEGRAM_THREAD_ID,
-      text: `🛠 <b>Обновление CRM опубликовано</b>\n\n${escapeTelegramHtml(notes).slice(0, 3500)}\n\n<a href="https://ybcrm.ru">Открыть CRM</a>`,
+      text: `🛠 <b>Обновление CRM опубликовано</b>\n\nНовая версия CRM успешно загружена и доступна для работы.\n\nВерсия: <code>${escapeTelegramHtml(shortCommit)}</code>\n<a href="https://ybcrm.ru">Открыть CRM</a>`,
       parse_mode: "HTML",
       disable_web_page_preview: true,
     }, { timeout: 30_000 });
@@ -8575,7 +8576,10 @@ function getFinanceOrderTotal(order: any) {
 
 function isFinanceActiveOrder(order: any) {
   const status = String(order?.status || '').toLowerCase();
-  return getFinanceOrderTotal(order) > 0 && !status.includes('возврат') && !status.includes('отмена');
+  return getFinanceOrderTotal(order) > 0
+    && !status.includes('возврат')
+    && !status.includes('вернул')
+    && !status.includes('отмена');
 }
 
 function getTochkaText(...values: any[]) {
@@ -9314,6 +9318,37 @@ function buildTochkaPaymentFields(target: { isFinal: boolean }, paymentId: strin
     ...(paymentAmount > 0 ? { initialPaymentAmount: paymentAmount } : {}),
     ...(isPaid ? { paymentPaidAt: paidAt } : {}),
   };
+}
+
+function normalizeCompletedPaymentPatch(order: any, patch: Record<string, any>) {
+  const merged = { ...(order || {}), ...patch };
+  const total = Math.max(0, (Number(merged.revenue) || 0) + (Number(merged.deliveryPrice) || 0));
+  const mainPaid = isTochkaPaidStatus(merged.paymentStatus)
+    ? Number(merged.paymentAmount || merged.initialPaymentAmount || merged.paidAmount) || 0
+    : 0;
+  const finalPaid = isTochkaPaidStatus(merged.finalPaymentStatus)
+    ? Number(merged.finalPaymentAmount) || 0
+    : 0;
+  const confirmedPaid = Math.min(total, Math.max(0, mainPaid + finalPaid));
+  const issuedMainAmount = Number(merged.paymentAmount || merged.initialPaymentAmount) || 0;
+
+  if (total > 0 && confirmedPaid >= total) {
+    return {
+      ...patch,
+      invoiceType: 'full',
+      paidAmount: total,
+      paymentAccountingVersion: 2,
+    };
+  }
+  if (merged.finalPaymentId && total > 0 && issuedMainAmount > 0 && issuedMainAmount < total) {
+    return {
+      ...patch,
+      invoiceType: 'prepayment',
+      ...(confirmedPaid > 0 ? { paidAmount: confirmedPaid } : {}),
+      paymentAccountingVersion: 2,
+    };
+  }
+  return patch;
 }
 
 async function findTochkaOperation(token: string, customerCode: string, orderId: string, amount?: number) {
@@ -10157,7 +10192,10 @@ app.get('/api/tochka/find-payment', async (req, res) => {
 
     const paymentAmount = normalizeTochkaAmount(getTochkaOperationAmount(operation)) || amount || 0;
     const paymentStatus = getTochkaOperationStatus(operation) || 'found';
-    const paymentFields = buildTochkaPaymentFields(target, operationId, paymentStatus, paymentAmount, operation);
+    const paymentFields = normalizeCompletedPaymentPatch(
+      orderData,
+      buildTochkaPaymentFields(target, operationId, paymentStatus, paymentAmount, operation),
+    );
 
     await persistOrderPatch(target.cleanOrderId, paymentFields);
     await writeTochkaLog({
@@ -10176,6 +10214,9 @@ app.get('/api/tochka/find-payment', async (req, res) => {
       paymentStatus,
       paymentAmount,
       paymentPaidAt: isTochkaPaidStatus(paymentStatus) ? new Date().toISOString() : undefined,
+      invoiceType: paymentFields.invoiceType,
+      paidAmount: paymentFields.paidAmount,
+      fullyPaid: paymentFields.invoiceType === 'full' && Number(paymentFields.paidAmount) >= Math.max(0, (Number(orderData.revenue) || 0) + (Number(orderData.deliveryPrice) || 0)),
       data: operation,
     });
   } catch (e: any) {
@@ -10227,7 +10268,7 @@ app.post('/api/tochka/confirm-payment', async (req, res) => {
     if (paymentAmount <= 0) return res.status(400).json({ error: 'Сумма оплаты не определена' });
 
     const confirmedAt = new Date().toISOString();
-    const patch = target.isFinal
+    const rawPatch = target.isFinal
       ? {
           finalPaymentStatus: 'manual_confirmed',
           finalPaymentPaidAt: confirmedAt,
@@ -10241,6 +10282,7 @@ app.post('/api/tochka/confirm-payment', async (req, res) => {
           initialPaymentAmount: paymentAmount,
           paymentAccountingVersion: 2,
         };
+    const patch = normalizeCompletedPaymentPatch(orderData, rawPatch);
     await persistOrderPatch(target.cleanOrderId, patch);
     await writeAuditLog({
       action: target.isFinal ? 'final_payment_manually_confirmed' : 'payment_manually_confirmed',
@@ -10256,6 +10298,9 @@ app.post('/api/tochka/confirm-payment', async (req, res) => {
       paymentStatus: 'manual_confirmed',
       paymentPaidAt: confirmedAt,
       paymentAmount,
+      invoiceType: patch.invoiceType,
+      paidAmount: patch.paidAmount,
+      fullyPaid: patch.invoiceType === 'full',
     });
   } catch (e: any) {
     console.error('[tochka] manual payment confirmation:', e?.message || e);
@@ -10290,23 +10335,20 @@ app.post('/api/tochka/reconcile-payments', async (_req, res) => {
       const snapshot = await getDocs(collection(db, 'orders_new'));
       snapshot.docs.forEach((item: any) => orders.push({ id: item.id, data: item.data() }));
     }
-    // Старые заказы могли остаться помеченными как «полная оплата», хотя в
-    // Точке уже существуют два отдельных платежа. Нормализуем их независимо
-    // от статуса платежей: полностью оплаченные записи иначе не попадали в
-    // список кандидатов на банковскую сверку и навсегда сохраняли неверный тип.
+    // A second invoice means prepayment only while part of the total is still
+    // outstanding. Once both bank operations are confirmed, collapse the plan
+    // into one completed full payment even if the order is no longer a reconcile candidate.
     const normalizedPaymentPlans: string[] = [];
     for (const { id, data } of orders) {
       const total = Math.max(0, (Number(data?.revenue) || 0) + (Number(data?.deliveryPrice) || 0));
       const issuedMainAmount = Number(data?.paymentAmount || data?.initialPaymentAmount) || 0;
-      const hasStaleFullPaymentLabel = data?.invoiceType !== 'prepayment'
-        || /полн|100/i.test(String(data?.paymentType || ''));
-      if (!data?.finalPaymentId || total <= 0 || issuedMainAmount <= 0 || issuedMainAmount >= total || !hasStaleFullPaymentLabel) {
+      if (!data?.finalPaymentId || total <= 0 || issuedMainAmount <= 0 || issuedMainAmount >= total) {
         continue;
       }
-      const normalizationPatch: Record<string, any> = {
+      const normalizationPatch = normalizeCompletedPaymentPatch(data, {
         invoiceType: 'prepayment',
         paymentAccountingVersion: 2,
-      };
+      });
       if (/полн|100/i.test(String(data?.paymentType || ''))) normalizationPatch.paymentType = 'QR код';
       await persistOrderPatch(id, normalizationPatch);
       Object.assign(data, normalizationPatch);
@@ -10365,7 +10407,8 @@ app.post('/api/tochka/reconcile-payments', async (_req, res) => {
       const total = Math.max(0, (Number(data.revenue) || 0) + (Number(data.deliveryPrice) || 0));
       const issuedMainAmount = Number(patch.paymentAmount || data.paymentAmount || data.initialPaymentAmount) || 0;
       if (data.finalPaymentId && total > 0 && issuedMainAmount > 0 && issuedMainAmount < total) {
-        patch.invoiceType = 'prepayment';
+        const normalizedPatch = normalizeCompletedPaymentPatch(data, patch);
+        Object.assign(patch, normalizedPatch);
         if (/полн|100/i.test(String(data.paymentType || ''))) patch.paymentType = 'QR код';
       }
       if (Object.keys(patch).length > 1) {
@@ -10709,7 +10752,12 @@ app.post('/api/tochka/webhook', async (req, res) => {
       const status = ['Paid', 'paid', 'APPROVED'].includes(body.status) ? 'paid' : body.status;
       if (body.paymentLinkId) {
         const target = getTochkaPaymentTarget(body.paymentLinkId);
-        const patch = buildTochkaPaymentFields(target, body.qrcId || body.operationId || '', status, normalizeTochkaAmount(body.amount), body);
+        const orderSnapshot = await getOrderSnapshot(target.cleanOrderId).catch(() => null);
+        const orderData = orderSnapshot?.data?.() || {};
+        const patch = normalizeCompletedPaymentPatch(
+          orderData,
+          buildTochkaPaymentFields(target, body.qrcId || body.operationId || '', status, normalizeTochkaAmount(body.amount), body),
+        );
         await persistOrderPatch(target.cleanOrderId, patch);
         if (isTochkaPaidStatus(status)) {
           await dispatchPushEvent('payment_received', `payment:${body.operationId || body.paymentLinkId}`, {
@@ -10729,7 +10777,7 @@ app.post('/api/tochka/webhook', async (req, res) => {
           );
           if (adminDb) {
             const snap = await adminDb.collection('orders_new').where(field, '==', body.operationId).get();
-            await Promise.all(snap.docs.map((d: any) => d.ref.set(patch, { merge: true })));
+            await Promise.all(snap.docs.map((d: any) => d.ref.set(normalizeCompletedPaymentPatch(d.data(), patch), { merge: true })));
             if (isTochkaPaidStatus(status)) {
               await Promise.all(snap.docs.map((d: any) => dispatchPushEvent('payment_received', `payment:${body.operationId}:${d.id}`, {
                 orderId: d.id,
@@ -10741,7 +10789,7 @@ app.post('/api/tochka/webhook', async (req, res) => {
           }
           if (!db) return 0;
           const snap = await getDocs(query(collection(db, 'orders_new'), where(field, '==', body.operationId)));
-          await Promise.all(snap.docs.map((d: any) => updateDoc(d.ref, patch)));
+          await Promise.all(snap.docs.map((d: any) => updateDoc(d.ref, normalizeCompletedPaymentPatch(d.data(), patch))));
           return snap.size;
         };
         await updateMatches('paymentId', false);
@@ -11920,6 +11968,13 @@ function startTelegramBot() {
   const handleManagerReply = async (ctx: any): Promise<boolean> => {
     if (!isManagerChat(ctx)) return false;
     const message = ctx.message as any;
+    const messageThreadId = Number(message?.message_thread_id || 0);
+    if (messageThreadId === ORDER_TELEGRAM_THREAD_ID || messageThreadId === RELEASE_TELEGRAM_THREAD_ID) {
+      // These forum topics are reserved for automatic order/release notifications.
+      // Consume manager messages here so they are not mistaken for client bot input
+      // by the generic text/photo handlers registered below.
+      return true;
+    }
     const text = message?.text || "";
     if (text.startsWith("/")) return false;
 
