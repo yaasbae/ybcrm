@@ -20,6 +20,23 @@ export const formatClientPhone = (value: unknown) => {
   return phone ? `+${phone}` : '';
 };
 
+export const normalizeInstagramUsername = (value: unknown) => {
+  let clean = String(value || '').trim();
+  if (!clean) return '';
+  clean = clean.replace(/^@/, '');
+  if (/instagram\.com/i.test(clean)) {
+    clean = clean.replace(/^https?:\/\//i, '').replace(/^www\./i, '');
+    clean = clean.replace(/^instagram\.com\//i, '');
+  }
+  const username = clean.split(/[/?#]/)[0].replace(/^@/, '').trim();
+  return /^[a-z0-9._]{1,30}$/i.test(username) ? username : '';
+};
+
+export const getInstagramProfileUrl = (value: unknown) => {
+  const username = normalizeInstagramUsername(value);
+  return username ? `https://www.instagram.com/${encodeURIComponent(username)}/` : '';
+};
+
 const normalizeClientName = (value: unknown) => String(value || '')
   .trim()
   .toLowerCase()

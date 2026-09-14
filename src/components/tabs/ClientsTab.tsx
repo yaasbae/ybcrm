@@ -13,11 +13,13 @@ import { OrderData } from '../AnalyticsDashboard';
 import {
   clientMatchesOrder,
   formatClientPhone,
+  getInstagramProfileUrl,
   getClientPurchaseSummary,
   getPurchaseAfterContactSummary,
   mergeOrderClientsWithContacts,
   normalizeClientPhone,
   normalizeClientPhoneInput,
+  normalizeInstagramUsername,
   sortClientsBySales,
 } from '../../lib/clientMerge';
 import { managerNameForEmail } from '../../lib/managerIdentity';
@@ -519,10 +521,7 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
     await batch.commit();
   };
 
-  const openInstagram = (client: any) => {
-    const username = String(client.insta || '').replace(/^@/, '').trim();
-    if (!username) return;
-    window.open(`https://instagram.com/${encodeURIComponent(username)}`, '_blank', 'noopener,noreferrer');
+  const trackInstagramOpen = (client: any) => {
     if (!client.lastContactAt) {
       void saveQuickContact(client, 'в работе', 'Менеджер открыл Instagram клиента').catch(console.error);
     }
@@ -1149,20 +1148,22 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
                           </td>
                           <td className="px-4 py-4">
                             <div className="space-y-1">
-                              {client.insta ? (
-                                <button
-                                  type="button"
+                              {getInstagramProfileUrl(client.insta) ? (
+                                <a
+                                  href={getInstagramProfileUrl(client.insta)}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
                                   onClick={(e) => {
                                     e.stopPropagation();
-                                    openInstagram(client);
+                                    trackInstagramOpen(client);
                                   }}
                                   className="inline-flex min-h-9 max-w-full items-center gap-1.5 truncate rounded-[8px] bg-[#7D7DE6]/10 px-2.5 text-[13px] font-semibold text-[#6868D8] transition hover:bg-[#7D7DE6]/15"
                                 >
                                   <Instagram size={14} />
                                   <span>Написать</span>
-                                  <span className="max-w-[92px] truncate font-medium opacity-80">@{client.insta.replace('@', '')}</span>
+                                  <span className="max-w-[92px] truncate font-medium opacity-80">@{normalizeInstagramUsername(client.insta)}</span>
                                   <ExternalLink size={12} />
-                                </button>
+                                </a>
                               ) : (
                                 <span className="text-[13px] text-[#CBD5E1]">Instagram не указан</span>
                               )}
@@ -1329,14 +1330,16 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
                         <p className="shrink-0 text-right text-[16px] font-semibold text-[#2EBA7F]">{formatCurrency(client.totalSpent ?? client.total ?? 0)}</p>
                       </div>
                       <div className="mt-3 grid grid-cols-2 gap-2" onClick={e => e.stopPropagation()}>
-                        {client.insta ? (
-                          <button
-                            type="button"
-                            onClick={() => openInstagram(client)}
+                        {getInstagramProfileUrl(client.insta) ? (
+                          <a
+                            href={getInstagramProfileUrl(client.insta)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            onClick={() => trackInstagramOpen(client)}
                             className="inline-flex h-12 items-center justify-center gap-2 rounded-[8px] bg-[#7D7DE6] px-3 text-[13px] font-semibold text-white shadow-[0_8px_18px_rgba(125,125,230,0.18)]"
                           >
                             <Instagram size={17} /> Написать
-                          </button>
+                          </a>
                         ) : (
                           <button
                             type="button"
@@ -1798,12 +1801,16 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
                               type="text"
                               value={localLoyaltyDetails.insta || selectedLoyaltyClient.insta || ''}
                               onChange={(e) => setLocalLoyaltyDetails({ ...localLoyaltyDetails, insta: e.target.value })}
+                              onBlur={() => setLocalLoyaltyDetails({
+                                ...localLoyaltyDetails,
+                                insta: normalizeInstagramUsername(localLoyaltyDetails.insta || selectedLoyaltyClient.insta),
+                              })}
                               className="tg-input pl-8 py-2"
                               placeholder="@username"
                             />
-                            {(localLoyaltyDetails.insta || selectedLoyaltyClient.insta) && (
+                            {getInstagramProfileUrl(localLoyaltyDetails.insta || selectedLoyaltyClient.insta) && (
                               <a
-                                href={`https://instagram.com/${(localLoyaltyDetails.insta || selectedLoyaltyClient.insta).replace('@', '')}`}
+                                href={getInstagramProfileUrl(localLoyaltyDetails.insta || selectedLoyaltyClient.insta)}
                                 target="_blank"
                                 rel="noopener noreferrer"
                                 className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 hover:bg-zinc-100 rounded text-zinc-400 hover:text-zinc-900 transition-colors"

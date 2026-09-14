@@ -4,13 +4,22 @@ import test from 'node:test';
 import {
   clientMatchesOrder,
   formatClientPhone,
+  getInstagramProfileUrl,
   getClientPurchaseSummary,
   getPurchaseAfterContactSummary,
   mergeOrderClientsWithContacts,
   normalizeClientPhone,
   normalizeClientPhoneInput,
+  normalizeInstagramUsername,
   sortClientsBySales,
 } from '../src/lib/clientMerge';
+
+test('builds a working Instagram profile link from usernames and legacy URLs', () => {
+  assert.equal(normalizeInstagramUsername('@yaasbae'), 'yaasbae');
+  assert.equal(normalizeInstagramUsername('https://www.instagram.com/yaasbae/?hl=ru'), 'yaasbae');
+  assert.equal(getInstagramProfileUrl('instagram.com/yaasbae/'), 'https://www.instagram.com/yaasbae/');
+  assert.equal(getInstagramProfileUrl('невалидная ссылка'), '');
+});
 
 test('normalizes Russian phone numbers to one client key', () => {
   assert.equal(normalizeClientPhone('8 (987) 212-12-46'), '79872121246');

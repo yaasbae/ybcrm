@@ -39,7 +39,7 @@ import { OrderData } from '../AnalyticsDashboard';
 import { auth, db } from '../../firebase';
 import { collection, doc, getDoc, getDocs, limit, onSnapshot, orderBy, query, setDoc } from 'firebase/firestore';
 import { emitPushEvent } from '../../lib/pushNotifications';
-import { formatClientPhone, normalizeClientPhone, normalizeClientPhoneInput } from '../../lib/clientMerge';
+import { formatClientPhone, getInstagramProfileUrl, normalizeClientPhone, normalizeClientPhoneInput, normalizeInstagramUsername } from '../../lib/clientMerge';
 import { managerNameForEmail } from '../../lib/managerIdentity';
 import { onAuthStateChanged } from 'firebase/auth';
 import { logAuditEvent } from '../../lib/auditLog';
@@ -173,20 +173,6 @@ const shortCdekId = (value: string) => value ? `${value.slice(0, 8)}...${value.s
 const getTodayDateKey = () => {
   const date = new Date();
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-};
-const normalizeInstagramUsername = (value: unknown) => {
-  let clean = String(value || '').trim();
-  if (!clean) return '';
-  clean = clean.replace(/^@/, '');
-  if (/instagram\.com/i.test(clean)) {
-    clean = clean.replace(/^https?:\/\//i, '').replace(/^www\./i, '');
-    clean = clean.replace(/^instagram\.com\//i, '');
-  }
-  return clean.split(/[/?#]/)[0].replace(/^@/, '').trim();
-};
-const getInstagramProfileUrl = (value: unknown) => {
-  const username = normalizeInstagramUsername(value);
-  return username ? `https://www.instagram.com/${encodeURIComponent(username)}/` : '';
 };
 const getContactName = (contact: any) => String(contact?.fullName || contact?.name || contact?.clientName || '').trim();
 const getContactPhone = (contact: any) => normalizeClientPhone(contact?.phone || contact?.userId || contact?.clientPhone);
