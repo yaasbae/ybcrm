@@ -23,6 +23,8 @@ import {
 } from '../../lib/orderFilters';
 import { isReceivedOrderStatus, normalizeOrderStatus, ORDER_STATUS_OPTIONS } from '../../lib/orderStatuses';
 import {
+  canAttemptFinalPayment,
+  getCreatedPaymentAmount,
   getCalculatedInitialInvoiceAmount,
   getConfirmedPaidAmount,
   getEffectiveInvoiceType,
@@ -1052,6 +1054,7 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
   const paymentProviderLabel = isYandexProvider ? 'Яндекс Сплит' : 'СБП';
   const invoiceType = getOperationalInvoiceType(order);
   const mainPaymentPaid = isPaidTochkaStatus(order.paymentStatus || '');
+  const canCreateOrVerifyFinalPayment = canAttemptFinalPayment(order);
   const finalPaymentPaid = isPaidTochkaStatus(order.finalPaymentStatus || '');
   const orderTotal = getOrderTotalAmount(order);
   const confirmedPaidAmount = getConfirmedPaidAmount(order);
@@ -1140,9 +1143,43 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
     </div>
   );
 
-  const refreshPayment = async (kind: 'main' | 'final') => {
+  const requestPaymentStatus = async (kind: 'main' | 'final') => {
     const isFinal = kind === 'final';
     const amount = isFinal ? finalAmount : (Number(order.paymentAmount) || initialAmount);
+    const query = new URLSearchParams({
+      orderId: isFinal ? `${order.orderId}-final` : order.orderId,
+      kind,
+    });
+    if (amount > 0) query.set('amount', String(amount));
+    const res = await crmFetch(`${getPaymentFindEndpoint(order.paymentType)}?${query.toString()}`);
+    const data = await res.json();
+    if (!res.ok) {
+      const paymentError: any = new Error(data.error || `Оплата в ${paymentProviderLabel} не найдена`);
+      paymentError.status = res.status;
+      paymentError.manualConfirmationAllowed = data.manualConfirmationAllowed === true;
+      throw paymentError;
+    }
+    return { data, amount };
+  };
+
+  const applyPaymentStatus = (kind: 'main' | 'final', data: any, amount: number) => {
+    if (kind === 'final') {
+      updateOrderData(order.orderId, 'finalPaymentStatus', data.paymentStatus || 'found');
+      updateOrderData(order.orderId, 'finalPaymentAmount', data.paymentAmount || amount);
+      if (data.paymentId) updateOrderData(order.orderId, 'finalPaymentId', data.paymentId);
+      if (data.paymentPaidAt) updateOrderData(order.orderId, 'finalPaymentPaidAt', data.paymentPaidAt);
+    } else {
+      updateOrderData(order.orderId, 'paymentStatus', data.paymentStatus || 'found');
+      updateOrderData(order.orderId, 'paymentAmount', data.paymentAmount || amount);
+      if (data.paymentId) updateOrderData(order.orderId, 'paymentId', data.paymentId);
+      if (data.paymentPaidAt) updateOrderData(order.orderId, 'paymentPaidAt', data.paymentPaidAt);
+    }
+    if (data.invoiceType) updateOrderData(order.orderId, 'invoiceType', data.invoiceType);
+    if (Number(data.paidAmount) > 0) updateOrderData(order.orderId, 'paidAmount', Number(data.paidAmount));
+  };
+
+  const refreshPayment = async (kind: 'main' | 'final') => {
+    const isFinal = kind === 'final';
     if (isFinal) {
       setRefreshingFinal(true);
       setFinalError('');
@@ -1151,32 +1188,8 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
       setError('');
     }
     try {
-      const query = new URLSearchParams({
-        orderId: isFinal ? `${order.orderId}-final` : order.orderId,
-        kind,
-      });
-      if (amount > 0) query.set('amount', String(amount));
-      const res = await crmFetch(`${getPaymentFindEndpoint(order.paymentType)}?${query.toString()}`);
-      const data = await res.json();
-      if (!res.ok) {
-        const paymentError: any = new Error(data.error || `Оплата в ${paymentProviderLabel} не найдена`);
-        paymentError.status = res.status;
-        paymentError.manualConfirmationAllowed = data.manualConfirmationAllowed === true;
-        throw paymentError;
-      }
-      if (isFinal) {
-        updateOrderData(order.orderId, 'finalPaymentStatus', data.paymentStatus || 'found');
-        updateOrderData(order.orderId, 'finalPaymentAmount', data.paymentAmount || amount);
-        if (data.paymentId) updateOrderData(order.orderId, 'finalPaymentId', data.paymentId);
-        if (data.paymentPaidAt) updateOrderData(order.orderId, 'finalPaymentPaidAt', data.paymentPaidAt);
-      } else {
-        updateOrderData(order.orderId, 'paymentStatus', data.paymentStatus || 'found');
-        updateOrderData(order.orderId, 'paymentAmount', data.paymentAmount || amount);
-        if (data.paymentId) updateOrderData(order.orderId, 'paymentId', data.paymentId);
-        if (data.paymentPaidAt) updateOrderData(order.orderId, 'paymentPaidAt', data.paymentPaidAt);
-      }
-      if (data.invoiceType) updateOrderData(order.orderId, 'invoiceType', data.invoiceType);
-      if (Number(data.paidAmount) > 0) updateOrderData(order.orderId, 'paidAmount', Number(data.paidAmount));
+      const { data, amount } = await requestPaymentStatus(kind);
+      applyPaymentStatus(kind, data, amount);
     } catch (e: any) {
       if (e?.status === 409 || e?.manualConfirmationAllowed) setManualConfirmationRequired(true);
       if (isFinal) setFinalError(e.message || `Оплата в ${paymentProviderLabel} не найдена`);
@@ -1236,10 +1249,11 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Не удалось создать счёт');
       if (data.paymentUrl) {
+        const createdPaymentAmount = getCreatedPaymentAmount(data, amount);
         setPaymentUrl(data.paymentUrl);
         updateOrderData(order.orderId, 'paymentUrl', data.paymentUrl);
-        updateOrderData(order.orderId, 'paymentAmount', amount);
-        updateOrderData(order.orderId, 'initialPaymentAmount', amount);
+        updateOrderData(order.orderId, 'paymentAmount', createdPaymentAmount);
+        updateOrderData(order.orderId, 'initialPaymentAmount', createdPaymentAmount);
         updateOrderData(order.orderId, 'paymentAccountingVersion', 2);
         updateOrderData(order.orderId, 'paymentStatus', 'pending');
         if (data.paymentId) updateOrderData(order.orderId, 'paymentId', data.paymentId);
@@ -1296,7 +1310,14 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
     setFinalError('');
     try {
       if (invoiceMissingFields.length) throw new Error(`Заполните: ${invoiceMissingFields.join(', ')}`);
-      if (!mainPaymentPaid) throw new Error('Сначала дождитесь подтверждения первой оплаты');
+      if (!mainPaymentPaid) {
+        setRefreshingMain(true);
+        const { data, amount } = await requestPaymentStatus('main');
+        applyPaymentStatus('main', data, amount);
+        if (!isPaidTochkaStatus(data.paymentStatus || '')) {
+          throw new Error('Точка пока не подтвердила предоплату');
+        }
+      }
       if (finalAmount <= 0) throw new Error('Сумма доплаты 0 ₽');
       const res = await crmFetch(getPaymentCreateEndpoint(order.paymentType), {
         method: 'POST',
@@ -1310,17 +1331,22 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Не удалось создать счёт на доплату');
       if (data.paymentUrl) {
+        const createdPaymentAmount = getCreatedPaymentAmount(data, finalAmount);
         setFinalPaymentUrl(data.paymentUrl);
         updateOrderData(order.orderId, 'finalPaymentUrl', data.paymentUrl);
-        updateOrderData(order.orderId, 'finalPaymentAmount', finalAmount);
+        updateOrderData(order.orderId, 'finalPaymentAmount', createdPaymentAmount);
         updateOrderData(order.orderId, 'finalPaymentStatus', 'pending');
         if (data.paymentId) updateOrderData(order.orderId, 'finalPaymentId', data.paymentId);
         if (data.provider) updateOrderData(order.orderId, 'finalPaymentProvider', data.provider);
       }
     } catch (e: any) {
+      if (e?.status === 409 || e?.manualConfirmationAllowed) setManualConfirmationRequired(true);
       setFinalError(e.message || 'Не удалось создать счёт на доплату');
     }
-    finally { setFinalLoading(false); }
+    finally {
+      setRefreshingMain(false);
+      setFinalLoading(false);
+    }
   };
 
   const refundPayment = async (kind: 'main' | 'final') => {
@@ -1362,7 +1388,7 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
     setFinalPaymentUrl(order.finalPaymentUrl || null);
   }, [order.finalPaymentUrl]);
 
-  if (!paymentUrl && !mainPaymentPaid) {
+  if (!canCreateOrVerifyFinalPayment) {
     return (
       <div className="mt-1.5 space-y-1.5">
         {paymentStatusBadge(mainPaymentStatusText, false, 'main')}
@@ -1534,11 +1560,14 @@ const PaymentRowBlock: React.FC<{ order: OrderData; updateOrderData: (id: string
           ) : !finalPaymentUrl ? (
             <button
               onClick={handleCreateFinal}
-              disabled={finalLoading || invoiceMissingFields.length > 0 || !mainPaymentPaid}
+              disabled={finalLoading || refreshingMain || invoiceMissingFields.length > 0}
+              title={!mainPaymentPaid ? 'CRM сначала проверит предоплату в Точке, затем создаст доплату' : 'Создать счёт на доплату'}
               className="w-full text-[8px] font-black py-1 rounded-md border border-orange-200 bg-orange-50 text-orange-600 hover:bg-orange-500 hover:text-white hover:border-orange-500 transition-all flex items-center justify-center gap-1 disabled:opacity-50"
             >
               {finalLoading ? <RefreshCcw size={8} className="animate-spin" /> : <QrCodeIcon size={8} />}
-              {finalLoading ? 'Создаём...' : `Создать доплату ${formatCurrency(finalAmount)}`}
+              {finalLoading
+                ? (!mainPaymentPaid ? 'Проверяем предоплату…' : 'Создаём...')
+                : `${!mainPaymentPaid ? 'Проверить и создать доплату' : 'Создать доплату'} ${formatCurrency(finalAmount)}`}
             </button>
           ) : null}
           {finalError && <p className="mt-1 text-[8px] font-bold text-red-500">{finalError}</p>}
@@ -3939,11 +3968,12 @@ const OrderCard = React.memo(({
       if (!res.ok) throw new Error(data.error || 'Не удалось создать счёт');
       if (!data.paymentUrl) throw new Error(`${mobilePaymentProviderLabel} не вернул ссылку оплаты`);
 
+      const createdPaymentAmount = getCreatedPaymentAmount(data, amount);
       setMobilePaymentUrl(data.paymentUrl);
       setShowMobileQr(true);
       updateOrderData(order.orderId, 'paymentUrl', data.paymentUrl);
-      updateOrderData(order.orderId, 'paymentAmount', amount);
-      updateOrderData(order.orderId, 'initialPaymentAmount', amount);
+      updateOrderData(order.orderId, 'paymentAmount', createdPaymentAmount);
+      updateOrderData(order.orderId, 'initialPaymentAmount', createdPaymentAmount);
       updateOrderData(order.orderId, 'paymentAccountingVersion', 2);
       if (data.paymentId) updateOrderData(order.orderId, 'paymentId', data.paymentId);
       if (data.provider) updateOrderData(order.orderId, 'paymentProvider', data.provider);
@@ -4015,10 +4045,11 @@ const OrderCard = React.memo(({
       if (!res.ok) throw new Error(data.error || 'Не удалось создать счёт на доплату');
       if (!data.paymentUrl) throw new Error(`${mobilePaymentProviderLabel} не вернул ссылку оплаты`);
 
+      const createdPaymentAmount = getCreatedPaymentAmount(data, finalPaymentAmount);
       setMobileFinalPaymentUrl(data.paymentUrl);
       setShowMobileFinalQr(true);
       updateOrderData(order.orderId, 'finalPaymentUrl', data.paymentUrl);
-      updateOrderData(order.orderId, 'finalPaymentAmount', finalPaymentAmount);
+      updateOrderData(order.orderId, 'finalPaymentAmount', createdPaymentAmount);
       updateOrderData(order.orderId, 'finalPaymentStatus', 'pending');
       if (data.paymentId) updateOrderData(order.orderId, 'finalPaymentId', data.paymentId);
       if (data.provider) updateOrderData(order.orderId, 'finalPaymentProvider', data.provider);
@@ -6050,10 +6081,11 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Не удалось создать счёт');
         if (data.paymentUrl) {
+          const createdPaymentAmount = getCreatedPaymentAmount(data, amount);
           generatedPaymentUrl = data.paymentUrl;
           setCreatedPaymentUrl(data.paymentUrl);
           setCreatedShareText(buildOrderShareText({ ...orderSnapshot, orderId }, data.paymentUrl));
-          updateOrderData(orderId, 'paymentAmount', amount);
+          updateOrderData(orderId, 'paymentAmount', createdPaymentAmount);
           if (data.paymentId) updateOrderData(orderId, 'paymentId', data.paymentId);
         }
       } catch (e: any) {
@@ -8002,9 +8034,10 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                     const data = await res.json();
                     if (!res.ok) throw new Error(data.error || 'Не удалось создать счёт');
                     if (data.paymentUrl) {
+                      const createdPaymentAmount = getCreatedPaymentAmount(data, amount);
                       setCreatedPaymentUrl(data.paymentUrl);
                       setCreatedShareText(buildOrderShareText({ ...orderSnapshot, orderId }, data.paymentUrl));
-                      updateOrderData(orderId, 'paymentAmount', amount);
+                      updateOrderData(orderId, 'paymentAmount', createdPaymentAmount);
                       if (data.paymentId) updateOrderData(orderId, 'paymentId', data.paymentId);
                     }
                   } catch (e: any) {

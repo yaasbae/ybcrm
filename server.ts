@@ -49,7 +49,7 @@ import {
   getTochkaRefundAccount,
 } from "./src/lib/tochkaPayments.ts";
 import { getTochkaFundName } from "./src/lib/tochkaFunds.ts";
-import { getCalculatedInitialInvoiceAmount, getPlannedFinalPaymentAmount } from "./src/lib/orderPayments.ts";
+import { getCalculatedInitialInvoiceAmount, getPlannedFinalPaymentAmount, getStablePaymentStatus, isConfirmedPaymentStatus } from "./src/lib/orderPayments.ts";
 
 const _require = createRequire(import.meta.url);
 const Database = _require("better-sqlite3");
@@ -9424,8 +9424,7 @@ function findFinanceOrderForOperation(operation: any, orders: any[]) {
 }
 
 function isTochkaPaidStatus(status: any) {
-  const normalized = String(status || '').toLowerCase();
-  return ['paid', 'approved', 'accepted', 'completed', 'succeeded', 'success', 'done'].some(item => normalized.includes(item));
+  return isConfirmedPaymentStatus(String(status || ''));
 }
 
 function isRefundCompletedStatus(status: any) {
@@ -9490,7 +9489,14 @@ function buildTochkaPaymentFields(target: { isFinal: boolean }, paymentId: strin
 }
 
 function normalizeCompletedPaymentPatch(order: any, patch: Record<string, any>) {
-  const merged = { ...(order || {}), ...patch };
+  const stablePatch = { ...patch };
+  if (Object.prototype.hasOwnProperty.call(stablePatch, 'paymentStatus')) {
+    stablePatch.paymentStatus = getStablePaymentStatus(order?.paymentStatus, stablePatch.paymentStatus);
+  }
+  if (Object.prototype.hasOwnProperty.call(stablePatch, 'finalPaymentStatus')) {
+    stablePatch.finalPaymentStatus = getStablePaymentStatus(order?.finalPaymentStatus, stablePatch.finalPaymentStatus);
+  }
+  const merged = { ...(order || {}), ...stablePatch };
   const total = Math.max(0, (Number(merged.revenue) || 0) + (Number(merged.deliveryPrice) || 0));
   const mainPaid = isTochkaPaidStatus(merged.paymentStatus)
     ? Number(merged.paymentAmount || merged.initialPaymentAmount || merged.paidAmount) || 0
@@ -9503,7 +9509,7 @@ function normalizeCompletedPaymentPatch(order: any, patch: Record<string, any>) 
 
   if (total > 0 && confirmedPaid >= total) {
     return {
-      ...patch,
+      ...stablePatch,
       invoiceType: 'full',
       paidAmount: total,
       paymentAccountingVersion: 2,
@@ -9511,13 +9517,13 @@ function normalizeCompletedPaymentPatch(order: any, patch: Record<string, any>) 
   }
   if (merged.finalPaymentId && total > 0 && issuedMainAmount > 0 && issuedMainAmount < total) {
     return {
-      ...patch,
+      ...stablePatch,
       invoiceType: 'prepayment',
       ...(confirmedPaid > 0 ? { paidAmount: confirmedPaid } : {}),
       paymentAccountingVersion: 2,
     };
   }
-  return patch;
+  return stablePatch;
 }
 
 async function findTochkaOperation(token: string, customerCode: string, orderId: string, amount?: number) {
@@ -9846,7 +9852,7 @@ app.post('/api/yandex-pay/create-payment', async (req, res) => {
     const existingUrl = target.isFinal ? order.finalPaymentUrl : order.paymentUrl;
     const existingAmount = Number(target.isFinal ? order.finalPaymentAmount : order.paymentAmount);
     if (existingProvider === 'yandex_split' && existingUrl && Math.abs(existingAmount - paymentAmount) < 0.01) {
-      return res.json({ success: true, existing: true, paymentUrl: existingUrl, paymentId: target.isFinal ? order.finalPaymentId : order.paymentId, provider: 'yandex_split' });
+      return res.json({ success: true, existing: true, paymentUrl: existingUrl, paymentId: target.isFinal ? order.finalPaymentId : order.paymentId, paymentAmount: existingAmount || paymentAmount, provider: 'yandex_split' });
     }
     const yandexOrderId = getYandexPayOrderId(String(orderId));
     const requestId = randomBytes(16).toString('hex');
@@ -9892,7 +9898,7 @@ app.post('/api/yandex-pay/create-payment', async (req, res) => {
       paymentAccountingVersion: 2,
     };
     await persistOrderPatch(target.cleanOrderId, patch);
-    res.json({ success: true, paymentUrl, paymentId: yandexOrderId, provider: 'yandex_split' });
+    res.json({ success: true, paymentUrl, paymentId: yandexOrderId, paymentAmount, provider: 'yandex_split' });
   } catch (error: any) {
     const details = error?.response?.data || error?.message;
     console.error('[yandex-pay] create-payment:', details);
@@ -10107,6 +10113,7 @@ app.post('/api/tochka/create-payment', async (req, res) => {
         existing: true,
         paymentUrl: existingPaymentUrl,
         paymentId: existingPaymentId || '',
+        paymentAmount: existingPaymentAmount || paymentAmount,
       });
     }
     const token = await getTochkaToken();
@@ -10293,7 +10300,7 @@ app.post('/api/tochka/create-payment', async (req, res) => {
       createdAt: new Date().toISOString(),
     }).catch(() => {});
 
-    res.json({ success: true, paymentUrl, paymentId, data: paymentData });
+    res.json({ success: true, paymentUrl, paymentId, paymentAmount, data: paymentData });
   } catch (e: any) {
     const errData = e.response?.data;
     console.error('[tochka] create-payment error:', errData || e.message);
@@ -10349,6 +10356,19 @@ app.get('/api/tochka/find-payment', async (req, res) => {
       }
     }
 
+    if (storedPaymentId && !isTochkaPaidStatus(getTochkaOperationStatus(operation))) {
+      const sbpPayment = await findTochkaSbpPaymentByQr(
+        token,
+        customerCode,
+        storedPaymentId,
+        String((target.isFinal ? orderData.finalPaymentCreatedAt : orderData.paymentCreatedAt) || orderData.date || ''),
+      ).catch(() => null);
+      if (sbpPayment && isTochkaPaidStatus(getTochkaOperationStatus(sbpPayment))) {
+        operation = sbpPayment;
+        operationId = storedPaymentId;
+      }
+    }
+
     if (!operation) {
       // Do not match the final half against the main order marker: equal
       // instalments would otherwise allow one payment to be counted twice.
@@ -10365,6 +10385,9 @@ app.get('/api/tochka/find-payment', async (req, res) => {
       orderData,
       buildTochkaPaymentFields(target, operationId, paymentStatus, paymentAmount, operation),
     );
+    const effectivePaymentStatus = String(
+      target.isFinal ? paymentFields.finalPaymentStatus : paymentFields.paymentStatus,
+    ) || paymentStatus;
 
     await persistOrderPatch(target.cleanOrderId, paymentFields);
     if (isTochkaPaidStatus(paymentStatus) && !isTochkaPaidStatus(target.isFinal ? orderData.finalPaymentStatus : orderData.paymentStatus)) {
@@ -10390,9 +10413,9 @@ app.get('/api/tochka/find-payment', async (req, res) => {
       success: true,
       kind: target.isFinal ? 'final' : 'main',
       paymentId: operationId,
-      paymentStatus,
+      paymentStatus: effectivePaymentStatus,
       paymentAmount,
-      paymentPaidAt: isTochkaPaidStatus(paymentStatus) ? new Date().toISOString() : undefined,
+      paymentPaidAt: isTochkaPaidStatus(effectivePaymentStatus) ? new Date().toISOString() : undefined,
       invoiceType: paymentFields.invoiceType,
       paidAmount: paymentFields.paidAmount,
       fullyPaid: paymentFields.invoiceType === 'full' && Number(paymentFields.paidAmount) >= Math.max(0, (Number(orderData.revenue) || 0) + (Number(orderData.deliveryPrice) || 0)),
@@ -10585,9 +10608,8 @@ app.post('/api/tochka/reconcile-payments', async (_req, res) => {
       }
       const total = Math.max(0, (Number(data.revenue) || 0) + (Number(data.deliveryPrice) || 0));
       const issuedMainAmount = Number(patch.paymentAmount || data.paymentAmount || data.initialPaymentAmount) || 0;
+      Object.assign(patch, normalizeCompletedPaymentPatch(data, patch));
       if (data.finalPaymentId && total > 0 && issuedMainAmount > 0 && issuedMainAmount < total) {
-        const normalizedPatch = normalizeCompletedPaymentPatch(data, patch);
-        Object.assign(patch, normalizedPatch);
         if (/полн|100/i.test(String(data.paymentType || ''))) patch.paymentType = 'QR код';
       }
       if (Object.keys(patch).length > 1) {

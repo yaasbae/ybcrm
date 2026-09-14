@@ -24,6 +24,22 @@ export const isConfirmedPaymentStatus = (status?: string) => {
   return ['paid', 'approved', 'accepted', 'completed', 'succeeded', 'success', 'done', 'captured', 'confirmed'].some(value => normalized.includes(value));
 };
 
+export const getStablePaymentStatus = (storedStatus?: string, incomingStatus?: string) => {
+  if (isConfirmedPaymentStatus(storedStatus) && !isConfirmedPaymentStatus(incomingStatus)) {
+    return String(storedStatus);
+  }
+  return String(incomingStatus || storedStatus || '');
+};
+
+export const canAttemptFinalPayment = (order: PaymentAccountingOrder) => (
+  isConfirmedPaymentStatus(order.paymentStatus) || Boolean(order.paymentUrl || order.paymentId)
+);
+
+export const getCreatedPaymentAmount = (response: unknown, requestedAmount: number) => {
+  const responseAmount = Number((response as { paymentAmount?: unknown } | null)?.paymentAmount);
+  return Number.isFinite(responseAmount) && responseAmount > 0 ? responseAmount : requestedAmount;
+};
+
 export const getOrderTotalAmount = (order: PaymentAccountingOrder) =>
   Math.max(0, (Number(order.revenue) || 0) + (Number(order.deliveryPrice) || 0));
 
@@ -46,6 +62,7 @@ export const getEffectiveInvoiceType = (order: PaymentAccountingOrder): 'prepaym
   if (hasIssuedInvoice && issuedAmount >= total && total > 0) return 'full';
   if (/пример/i.test(paymentType)) return 'fitting';
   if (/полн|100/i.test(paymentType)) return 'full';
+  if (/предоплат|prepay|(^|\D)50\s*%?(\D|$)/i.test(paymentType)) return 'prepayment';
   return order.invoiceType || 'prepayment';
 };
 
@@ -53,10 +70,11 @@ export const getCalculatedInitialInvoiceAmount = (order: PaymentAccountingOrder)
   const total = getOrderTotalAmount(order);
   const paymentType = String(order.paymentType || '');
   // В старых заказах тип первого платежа сохранялся в paymentType. Если там
-  // явно указаны 100% или примерка, это важнее устаревшего invoiceType.
+  // явно указаны 100%, 50% или примерка, это важнее устаревшего invoiceType.
   const legacyExplicitType = /пример/i.test(paymentType) ? 'fitting'
     : /полн|100|сплит/i.test(paymentType) ? 'full'
-      : null;
+      : /предоплат|prepay|(^|\D)50\s*%?(\D|$)/i.test(paymentType) ? 'prepayment'
+        : null;
   const invoiceType = legacyExplicitType || order.invoiceType || 'prepayment';
   if (invoiceType === 'fitting') return Math.min(total, 2000);
   return invoiceType === 'full' ? total : total * 0.5;

@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  canAttemptFinalPayment,
+  getStablePaymentStatus,
+  getCreatedPaymentAmount,
   getCalculatedInitialInvoiceAmount,
   getConfirmedPaidAmount,
   getEffectiveInvoiceType,
@@ -13,8 +16,26 @@ import {
   shouldOfferMainPaymentRefund,
 } from '../src/lib/orderPayments';
 
+test('keeps the amount actually created by the payment server', () => {
+  assert.equal(getCreatedPaymentAmount({ paymentAmount: 10_775 }, 21_550), 10_775);
+  assert.equal(getCreatedPaymentAmount({}, 10_775), 10_775);
+});
+
 test('recognizes the successful SBP QR status returned by Tochka', () => {
   assert.equal(isConfirmedPaymentStatus('Accepted'), true);
+});
+
+test('does not downgrade a confirmed payment to the technical QR status', () => {
+  assert.equal(getStablePaymentStatus('Accepted', 'Active'), 'Accepted');
+  assert.equal(getStablePaymentStatus('manual_confirmed', 'pending'), 'manual_confirmed');
+  assert.equal(getStablePaymentStatus('pending', 'Accepted'), 'Accepted');
+});
+
+test('allows the final-payment button to verify an issued prepayment automatically', () => {
+  assert.equal(canAttemptFinalPayment({ paymentId: 'main-qr', paymentStatus: 'Active' }), true);
+  assert.equal(canAttemptFinalPayment({ paymentUrl: 'https://example.test/main', paymentStatus: 'pending' }), true);
+  assert.equal(canAttemptFinalPayment({ paymentStatus: 'Accepted' }), true);
+  assert.equal(canAttemptFinalPayment({ paymentStatus: 'pending' }), false);
 });
 
 test('does not create a second payment when the issued first invoice already covers the total', () => {
@@ -46,6 +67,18 @@ test('uses an explicit legacy full-payment choice over a stale prepayment invoic
     invoiceType: 'prepayment',
     paymentType: 'Полная оплата 100%',
   }), 15550);
+});
+
+test('uses an explicit 50% prepayment choice over a stale full-payment flag', () => {
+  const order = {
+    revenue: 20_900,
+    deliveryPrice: 650,
+    paymentType: 'Предоплата 50%',
+    invoiceType: 'full' as const,
+  };
+
+  assert.equal(getEffectiveInvoiceType(order), 'prepayment');
+  assert.equal(getCalculatedInitialInvoiceAmount(order), 10_775);
 });
 
 test('keeps the second half as a separate payment when the first invoice is already issued', () => {
