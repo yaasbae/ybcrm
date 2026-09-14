@@ -19,6 +19,7 @@ import { emitPushEvent } from '../lib/pushNotifications';
 import { logAuditEvent } from '../lib/auditLog';
 import { isClientPurchaseOrder, normalizeClientPhone } from '../lib/clientMerge';
 import { getExchangeOrderId } from '../lib/orderExchange';
+import { getOrderCreationMode } from '../lib/orderCreation';
 import { resolveStoredOrderIdentity } from '../lib/orderRecords';
 import { getOrderActionForField, ORDER_ACTION_OPTIONS, useOrderPermissions, type OrderAction } from '../lib/orderPermissions';
 import { crmFetch } from '../lib/crmApi';
@@ -629,12 +630,15 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
         updatedAt: now,
         deleted: false,
       };
-      await runTransaction(db, async transaction => {
+      const replacedDeletedOrder = await runTransaction(db, async transaction => {
         const existing = await transaction.get(orderRef);
-        if (existing.exists()) {
+        const existingData = existing.exists() ? existing.data() : null;
+        const creationMode = getOrderCreationMode(existingData);
+        if (creationMode === 'conflict') {
           throw new Error(`Заказ № ${orderToCreate.orderId} уже существует. Укажите новый номер — существующий заказ не изменён.`);
         }
         transaction.set(orderRef, savedOrder);
+        return creationMode === 'reuse_deleted' ? existingData : null;
       });
       const normalizedPhone = normalizeClientPhone(orderToCreate.clientPhone);
       const contactId = normalizedPhone || `order-${orderToCreate.orderId}`;
@@ -657,9 +661,12 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
         action: 'order_created',
         entityType: 'order',
         entityId: orderToCreate.orderId,
-        before: null,
+        before: replacedDeletedOrder,
         after: savedOrder,
-        metadata: { source: 'crm_order_form' },
+        metadata: {
+          source: 'crm_order_form',
+          reusedDeletedOrderId: Boolean(replacedDeletedOrder),
+        },
       });
       const createdId = orderToCreate.orderId;
       if (orderToCreate.status !== 'Черновик') {
