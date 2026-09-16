@@ -41,5 +41,5 @@ jobs:
             --cpu-throttling \
             --allow-unauthenticated \
             --update-env-vars NODE_ENV=production,WEBHOOK_URL=https://ybcrm.ru,SERVER_URL=https://ybcrm.ru,MCP_UPSTREAM_URL=https://ybcrm-mcp-wvb4x7sxeq-ew.a.run.app,ORDER_TELEGRAM_THREAD_ID=1244,RELEASE_TELEGRAM_THREAD_ID=12750,RELEASE_COMMIT_SHA=${GITHUB_SHA},RELEASE_NOTES_B64=${RELEASE_NOTES_B64} \
-            --set-secrets TG_BOT_TOKEN=ybcrm-tg-bot-token:latest,GEMINI_API_KEY=ybcrm-gemini-api-key:latest,FAL_API_KEY=ybcrm-fal-api-key:latest,CONTENT_BOT_TOKEN=ybcrm-content-bot-token:latest,TG_API_HASH=ybcrm-tg-api-hash:latest,INSTAGRAM_WEBHOOK_VERIFY_TOKEN=ybcrm-instagram-webhook-verify-token:latest \
+            --set-secrets TG_BOT_TOKEN=ybcrm-tg-bot-token:latest,GEMINI_API_KEY=ybcrm-gemini-api-key:latest,FAL_API_KEY=ybcrm-fal-api-key:latest,CONTENT_BOT_TOKEN=ybcrm-content-bot-token:latest,TG_API_HASH=ybcrm-tg-api-hash:latest,INSTAGRAM_WEBHOOK_VERIFY_TOKEN=ybcrm-instagram-webhook-verify-token:latest,AI_JOB_WORKER_SECRET=ybcrm-ai-job-worker-secret:latest \
             --quiet

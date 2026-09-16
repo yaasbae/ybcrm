@@ -12,6 +12,7 @@ import {
 
 type OwnerGuard = (req: Request, res: Response) => Promise<unknown | null>;
 type Executor = (payload: Record<string, unknown>) => Promise<unknown>;
+type QueueOptions = { workerSecret?: string; notifyDeadLetter?: (message: string) => Promise<void> };
 
 const JOBS = "ai_jobs";
 const CONTROL = "ai_runtime_control";
@@ -66,7 +67,7 @@ function withTimeout<T>(work: Promise<T>, timeoutMs: number): Promise<T> {
   ]);
 }
 
-export function installAiJobQueue(app: Express, db: Firestore, requireOwner: OwnerGuard) {
+export function installAiJobQueue(app: Express, db: Firestore, requireOwner: OwnerGuard, options: QueueOptions = {}) {
   const executors: Partial<Record<AiJobType, Executor>> = {
     "system.health_check": async () => ({ ok: true, checkedAt: new Date().toISOString() }),
   };
@@ -158,7 +159,9 @@ export function installAiJobQueue(app: Express, db: Firestore, requireOwner: Own
   });
 
   app.post("/api/ai-jobs/run", async (req, res) => {
-    if (!await owner(req, res, requireOwner)) return;
+    const bearer = String(req.headers.authorization || "").replace(/^Bearer\s+/i, "");
+    const internalWorker = Boolean(options.workerSecret && bearer === options.workerSecret);
+    if (!internalWorker && !await owner(req, res, requireOwner)) return;
     if (!await runtimeEnabled(db)) return res.status(423).json({ error: "AI kill switch выключен" });
     const workerId = `manual-${randomUUID()}`;
     const now = Timestamp.now();
@@ -197,6 +200,9 @@ export function installAiJobQueue(app: Express, db: Firestore, requireOwner: Own
           updatedAt: FieldValue.serverTimestamp(),
         });
         await writeAudit(db, { actor: workerId, tool: `ai_jobs.execute.${claimed.type}`, jobId: candidate.id, status: "error", result: { state: status, error: safeError(error) } });
+        if (status === "dead_letter" && options.notifyDeadLetter) {
+          await options.notifyDeadLetter(`AI-задание ${candidate.id.slice(0, 12)} (${claimed.type}) перешло в DLQ после ${claimed.attempts} попыток.`).catch(() => undefined);
+        }
         results.push({ id: candidate.id, status });
       }
     }

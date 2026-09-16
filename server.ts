@@ -290,6 +290,11 @@ app.use("/api", (req, res, next) => {
 
 function isPublicApiRequest(req: express.Request) {
   const path = req.path;
+  if (path === "/ai-jobs/run") {
+    const workerSecret = String(process.env.AI_JOB_WORKER_SECRET || "");
+    const bearer = String(req.headers.authorization || "").replace(/^Bearer\s+/i, "");
+    if (workerSecret && secretsEqual(bearer, workerSecret)) return true;
+  }
   if (path.startsWith("/passkeys/")) return true;
   if (path === "/ping") return true;
   if (req.method === "GET" && (path === "/products" || /^\/products\/[^/]+\/image$/.test(path))) return true;
@@ -8325,7 +8330,18 @@ async function requireFinanceOwner(req: any, res: any) {
 }
 
 if (adminDb) {
-  installAiJobQueue(app, adminDb, requireFinanceOwner);
+  installAiJobQueue(app, adminDb, requireFinanceOwner, {
+    workerSecret: String(process.env.AI_JOB_WORKER_SECRET || ""),
+    notifyDeadLetter: async message => {
+      const token = String(process.env.TG_BOT_TOKEN || "");
+      if (!token || !RELEASE_TELEGRAM_CHAT_ID) return;
+      await axios.post(`https://api.telegram.org/bot${token}/sendMessage`, {
+        chat_id: RELEASE_TELEGRAM_CHAT_ID,
+        message_thread_id: RELEASE_TELEGRAM_THREAD_ID || undefined,
+        text: `⚠️ YBCRM AI Queue\n${message}`,
+      }, { timeout: 10_000 });
+    },
+  });
 }
 
 async function requireRefundOwner(req: any, res: any) {
