@@ -47,9 +47,9 @@ export function errorHandler(error: unknown, _req: Request, res: Response, _next
     });
   }
 
-  const message = error instanceof Error ? error.message : "Unknown error";
+  console.error("[mcp] unhandled error", error instanceof Error ? error.message : "Unknown error");
   return res.status(500).json({
     error: "INTERNAL_ERROR",
-    message,
+    message: "Внутренняя ошибка сервиса",
   });
 }

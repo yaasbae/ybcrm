@@ -18,9 +18,11 @@ service cloud.firestore {
 
     function hasOrderAction(action) {
       return isAdmin() || (isAuthenticated() && (
-        !exists(accessProfilePath()) ||
-        !('allowedOrderActions' in get(accessProfilePath()).data) ||
-        (get(accessProfilePath()).data.active != false && get(accessProfilePath()).data.allowedOrderActions.hasAny([action]))
+        exists(accessProfilePath()) &&
+        get(accessProfilePath()).data.active == true &&
+        get(accessProfilePath()).data.orderActionsConfigured == true &&
+        ('allowedOrderActions' in get(accessProfilePath()).data) &&
+        get(accessProfilePath()).data.allowedOrderActions.hasAny([action])
       ));
     }
 
@@ -79,8 +81,7 @@ service cloud.firestore {
     // CRM action journal: order edits, soft deletes and integration actions.
     match /audit_logs/{document=**} {
       allow read: if isAdmin();
-      allow create: if isAuthenticated();
-      allow update, delete: if isAdmin();
+      allow write: if false;
     }
 
     // Expenses collection
@@ -116,18 +117,18 @@ service cloud.firestore {
 
     // Bot settings are saved through server API endpoints.
     match /settings/bot_config {
-      allow read: if true;
-      allow write: if true;
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
     }
 
     match /settings/bot_buttons {
-      allow read: if true;
-      allow write: if true;
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
     }
 
     match /settings/bot_manager_config {
-      allow read: if true;
-      allow write: if true;
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
     }
 
     // Other settings stay admin-only because they may contain integration config.
@@ -136,14 +137,27 @@ service cloud.firestore {
       allow write: if isAdmin();
     }
 
+    match /settings/marketingBloggers {
+      allow read, write: if isAuthenticated();
+    }
+
+    match /settings/manager_sales_plan {
+      allow read, write: if isAuthenticated();
+    }
+
+    match /settings/ai_config {
+      allow read, write: if isAdmin();
+    }
+
     match /settings/{document=**} {
-      allow read: if true;
+      allow read: if isAdmin();
       allow write: if isAdmin();
     }
 
     // AI Logs collection
     match /ai_logs/{document=**} {
-      allow read, write: if isAuthenticated();
+      allow read: if isAuthenticated();
+      allow write: if false;
     }
 
     // Contacts collection
@@ -174,64 +188,67 @@ service cloud.firestore {
     }
 
     match /settings/broadcast_config {
-      allow read: if true;
-      allow write: if true;
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
     }
 
     match /settings/no_telegram {
-      allow read: if true;
-      allow write: if true;
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
     }
 
     match /settings/stealth_sent {
-      allow read: if true;
-      allow write: if true;
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
     }
 
     match /settings/stealth_job {
-      allow read: if true;
-      allow write: if true;
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
     }
 
     match /settings/stealth_job_data {
-      allow read: if true;
-      allow write: if true;
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
     }
 
-    // Telegram bot data is written by the CRM server through Firebase client SDK,
-    // so these collections need explicit access outside browser auth.
+    // Telegram bot data is written by the CRM server through Admin SDK.
     match /costumes/{document=**} {
       allow read: if true;
-      allow write: if true;
+      allow write: if isAdmin();
     }
 
     match /bot_subscribers/{document=**} {
       allow read: if isAuthenticated();
-      allow write: if true;
+      allow write: if isAdmin();
     }
 
     match /bot_messages/{document=**} {
       allow read: if isAuthenticated();
-      allow write: if true;
-      allow update: if isAuthenticated();
+      allow write: if isAdmin();
     }
 
     match /tryon_usage/{document=**} {
-      allow read, write: if true;
+      allow read, write: if false;
     }
 
     match /tryon_states/{document=**} {
-      allow read, write: if true;
+      allow read, write: if false;
     }
 
     match /tryon_orders/{document=**} {
-      allow read, write: if true;
+      allow read, write: if false;
     }
 
     // Dialog Knowledge Base collection
     match /dialog_knowledge_base/{document=**} {
-      allow read: if true;
+      allow read: if isAuthenticated();
       allow write: if isAdmin();
+    }
+
+    // AI audit is server-only. Firebase Admin bypasses client rules.
+    match /ai_agent_audit_logs/{document=**} {
+      allow read, write: if false;
     }
 
     // References collection

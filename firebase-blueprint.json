@@ -59,7 +59,7 @@
     },
     "Contact": {
       "title": "Contact",
-      "description": "A customer profile from ManyChat interaction",
+      "description": "A customer profile from an AI sales interaction",
       "type": "object",
       "properties": {
         "userId": { "type": "string" },
@@ -188,7 +188,7 @@
     },
     "/contacts/{contactId}": {
       "schema": "Contact",
-      "description": "Collection of user contacts from ManyChat"
+      "description": "Collection of AI sales contacts"
     },
     "/ai_logs/{logId}": {
       "schema": "AILog",

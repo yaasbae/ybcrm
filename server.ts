@@ -25,7 +25,7 @@ import { GoogleGenAI, Modality } from "@google/genai";
 import sharp from "sharp";
 import { PDFDocument } from "pdf-lib";
 import webpush from "web-push";
-import { createRemoteJWKSet, jwtVerify } from "jose";
+import { createRemoteJWKSet, importJWK, jwtVerify } from "jose";
 import {
   generateAuthenticationOptions,
   generateRegistrationOptions,
@@ -79,14 +79,15 @@ function telethonSessionToStringSession(dcId: number, serverAddress: string, por
 dotenv.config();
 
 const app = express();
+app.set("trust proxy", 1);
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
 const MCP_PUBLIC_BASE_URL = (process.env.MCP_PUBLIC_BASE_URL || "https://ybcrm.ru").replace(/\/$/, "");
 const MCP_UPSTREAM_URL = String(process.env.MCP_UPSTREAM_URL || "").replace(/\/$/, "");
-const MCP_OAUTH_PIN = process.env.MCP_OAUTH_PIN || "ybcrm-mcp-2026-7f8c2a91d4e64bb8";
-const MCP_TOKEN_SECRET = process.env.CRM_JWT_SECRET || process.env.MCP_TOKEN_SECRET || "ybcrm-local-mcp-secret-2026-change-me";
+const MCP_OAUTH_PIN = String(process.env.MCP_OAUTH_PIN || "").trim();
+const MCP_TOKEN_SECRET = String(process.env.CRM_JWT_SECRET || process.env.MCP_TOKEN_SECRET || "").trim();
 
 const TG_API_ID = Number(process.env.TG_API_ID || 2040);
-const TG_API_HASH = process.env.TG_API_HASH || "b18441a1ff607e10a989891a5462e627";
+const TG_API_HASH = String(process.env.TG_API_HASH || "").trim();
 const GEMINI_TEXT_MODEL = process.env.GEMINI_TEXT_MODEL || "gemini-2.5-flash";
 const BROADCAST_MANAGER_BOT_URL = "https://t.me/YAASBAE_CLO_bot";
 const BROADCAST_MANAGER_BUTTON_TEXT = "Узнать подробности в бот";
@@ -100,6 +101,30 @@ const RELEASE_NOTES_B64 = String(process.env.RELEASE_NOTES_B64 || "").trim();
 let WEB_PUSH_PUBLIC_KEY = String(process.env.WEB_PUSH_PUBLIC_KEY || "").trim();
 let WEB_PUSH_PRIVATE_KEY = String(process.env.WEB_PUSH_PRIVATE_KEY || "").trim();
 const WEB_PUSH_SUBJECT = String(process.env.WEB_PUSH_SUBJECT || "https://ybcrm.ru").trim();
+const TOCHKA_WEBHOOK_PUBLIC_KEY_URL = "https://enter.tochka.com/doc/openapi/static/keys/public";
+let tochkaWebhookKeyCache: { key: Awaited<ReturnType<typeof importJWK>>; expiresAt: number } | null = null;
+
+function secretsEqual(actual: unknown, expected: unknown) {
+  const actualBuffer = Buffer.from(String(actual || ""));
+  const expectedBuffer = Buffer.from(String(expected || ""));
+  return actualBuffer.length > 0
+    && actualBuffer.length === expectedBuffer.length
+    && timingSafeEqual(actualBuffer, expectedBuffer);
+}
+
+async function getTochkaWebhookPublicKey() {
+  if (tochkaWebhookKeyCache && tochkaWebhookKeyCache.expiresAt > Date.now()) {
+    return tochkaWebhookKeyCache.key;
+  }
+  const configured = String(process.env.TOCHKA_WEBHOOK_PUBLIC_JWK || "").trim();
+  const jwk = configured
+    ? JSON.parse(configured)
+    : (await axios.get(TOCHKA_WEBHOOK_PUBLIC_KEY_URL, { timeout: 10_000 })).data;
+  if (!jwk || jwk.kty !== "RSA") throw new Error("Точка вернула некорректный публичный ключ");
+  const key = await importJWK(jwk, "RS256");
+  tochkaWebhookKeyCache = { key, expiresAt: Date.now() + 6 * 60 * 60 * 1000 };
+  return key;
+}
 
 if (WEB_PUSH_PUBLIC_KEY && WEB_PUSH_PRIVATE_KEY) {
   webpush.setVapidDetails(WEB_PUSH_SUBJECT, WEB_PUSH_PUBLIC_KEY, WEB_PUSH_PRIVATE_KEY);
@@ -182,7 +207,59 @@ try {
   console.error("Firebase init error:", e.message);
 }
 
-app.use(cors());
+// Server-owned configuration must use Admin SDK. The browser Firebase client
+// has no user session on the server and must not depend on permissive rules.
+async function getServerDocument(collectionName: string, documentId: string) {
+  if (adminDb) {
+    const snapshot = await adminDb.collection(collectionName).doc(documentId).get();
+    return {
+      id: snapshot.id,
+      exists: () => snapshot.exists,
+      data: () => snapshot.data(),
+      ref: snapshot.ref,
+    };
+  }
+  if (db) return getDoc(doc(db, collectionName, documentId));
+  throw new Error("Firebase не инициализирован");
+}
+
+async function setServerDocument(collectionName: string, documentId: string, data: any, options?: { merge?: boolean }) {
+  if (adminDb) {
+    const documentRef = adminDb.collection(collectionName).doc(documentId);
+    if (options?.merge) await documentRef.set(data, { merge: true });
+    else await documentRef.set(data);
+    return;
+  }
+  if (!db) throw new Error("Firebase не инициализирован");
+  await setDoc(doc(db, collectionName, documentId), data, options);
+}
+
+const allowedOrigins = new Set([
+  "https://ybcrm.ru",
+  "https://www.ybcrm.ru",
+  ...(process.env.NODE_ENV === "production" ? [] : ["http://localhost:3000", "http://localhost:5173"]),
+  ...String(process.env.CORS_ALLOWED_ORIGINS || "").split(",").map(value => value.trim()).filter(Boolean),
+]);
+app.use(cors({
+  origin(origin, callback) {
+    if (!origin || allowedOrigins.has(origin)) return callback(null, true);
+    const error = new Error("CORS origin is not allowed") as Error & { statusCode?: number };
+    error.statusCode = 403;
+    return callback(error);
+  },
+  allowedHeaders: ["Authorization", "Content-Type", "X-Requested-With", "X-Hub-Signature-256", "X-YBCRM-Webhook-Secret"],
+  methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+}));
+app.use((_req, res, next) => {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+  res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+  if (process.env.NODE_ENV === "production") {
+    res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+  }
+  next();
+});
 app.use(express.json({
   limit: '20mb',
   verify: (req: any, _res, buffer) => {
@@ -192,11 +269,72 @@ app.use(express.json({
 app.use(express.text({ type: ['text/*', 'application/jwt', 'application/octet-stream'], limit: '1mb' }));
 app.use(express.urlencoded({ extended: true, limit: '20mb' }));
 
+const apiRateWindows = new Map<string, { count: number; resetAt: number }>();
+app.use("/api", (req, res, next) => {
+  const now = Date.now();
+  const key = String(req.ip || req.socket.remoteAddress || "unknown");
+  const current = apiRateWindows.get(key);
+  const state = !current || current.resetAt <= now ? { count: 0, resetAt: now + 60_000 } : current;
+  state.count += 1;
+  apiRateWindows.set(key, state);
+  res.setHeader("RateLimit-Limit", "300");
+  res.setHeader("RateLimit-Remaining", String(Math.max(0, 300 - state.count)));
+  res.setHeader("RateLimit-Reset", String(Math.ceil(state.resetAt / 1000)));
+  if (state.count > 300) return res.status(429).json({ error: "Слишком много запросов. Повторите позже." });
+  if (apiRateWindows.size > 5000) {
+    for (const [candidate, window] of apiRateWindows) if (window.resetAt <= now) apiRateWindows.delete(candidate);
+  }
+  next();
+});
+
+function isPublicApiRequest(req: express.Request) {
+  const path = req.path;
+  if (path.startsWith("/passkeys/")) return true;
+  if (path === "/ping") return true;
+  if (req.method === "GET" && (path === "/products" || /^\/products\/[^/]+\/image$/.test(path))) return true;
+  if (/^\/site-chat\/conversations\/[^/]+\/messages$/.test(path)) return true;
+  if (path === "/instagram/webhook") return true;
+  if (path === "/tochka/webhook") return true;
+  if (path === "/yandex-pay" || path === "/yandex-pay/v1/webhook") return true;
+  return false;
+}
+
+function isOwnerOnlyApiRequest(req: express.Request) {
+  const path = req.path;
+  if (/^\/tochka\/(save-token|jwt-diagnostics|accounts-diagnostics|retailers)$/.test(path)) return true;
+  if (/^\/yandex-pay\/(status|save-settings|test)$/.test(path)) return true;
+  if (/^\/cdek\/(save-settings|diagnostics)$/.test(path)) return true;
+  if (/^\/instagram\/(save-app|save-token|oauth\/start|test|disconnect|diagnostics|subscriptions\/ensure)$/.test(path)) return true;
+  if (/^\/tg\/(auth|accounts|broadcast)(\/|$)/.test(path)) return true;
+  if (/^\/broadcast(?:-v2)?\//.test(path)) return true;
+  if (path === "/bot/broadcast" && req.method === "POST") return true;
+  if (/^\/content\/(publish\/|instagram-settings$)/.test(path)) return true;
+  if (path === "/social/publish") return true;
+  if (path === "/social/settings") return true;
+  if (/^\/bot\/(config|buttons|manager-config)$/.test(path) && req.method !== "GET") return true;
+  return false;
+}
+
+app.use("/api", async (req: any, res, next) => {
+  if (isPublicApiRequest(req)) return next();
+  if (isOwnerOnlyApiRequest(req)) {
+    const owner = await requireFinanceOwner(req, res);
+    if (!owner) return;
+    req.crmUser = owner;
+    return next();
+  }
+  const decoded = await requireCrmUser(req, res);
+  if (!decoded) return;
+  req.crmUser = decoded;
+  next();
+});
+
 function getRequestOrigin(req: express.Request) {
   return req.get("origin") || `${req.protocol || "https"}://${req.get("host") || "ybcrm.ru"}`;
 }
 
 function getWebAuthnRpId(req: express.Request) {
+  if (process.env.NODE_ENV === "production") return "ybcrm.ru";
   const host = (req.get("x-forwarded-host") || req.get("host") || "ybcrm.ru").split(":")[0];
   if (host === "localhost" || host === "127.0.0.1") return "localhost";
   if (host.endsWith("ybcrm.ru")) return "ybcrm.ru";
@@ -204,6 +342,7 @@ function getWebAuthnRpId(req: express.Request) {
 }
 
 function getExpectedOrigins(req: express.Request) {
+  if (process.env.NODE_ENV === "production") return ["https://ybcrm.ru", "https://www.ybcrm.ru"];
   const origin = getRequestOrigin(req);
   return Array.from(new Set([
     origin,
@@ -307,7 +446,7 @@ app.post("/api/passkeys/register/verify", async (req, res) => {
       expectedChallenge: challenge.challenge,
       expectedOrigin: getExpectedOrigins(req),
       expectedRPID: challenge.rpID || getWebAuthnRpId(req),
-      requireUserVerification: false,
+      requireUserVerification: true,
     });
     if (!verification.verified || !verification.registrationInfo) {
       return res.status(400).json({ error: "Face ID не подтверждён устройством" });
@@ -382,7 +521,7 @@ app.post("/api/passkeys/login/verify", async (req, res) => {
       expectedOrigin: getExpectedOrigins(req),
       expectedRPID: challenge.rpID || passkey.rpID || getWebAuthnRpId(req),
       credential,
-      requireUserVerification: false,
+      requireUserVerification: true,
     });
     if (!verification.verified) {
       return res.status(401).json({ error: "Face ID не прошёл проверку" });
@@ -549,11 +688,17 @@ async function requireCrmOrderAction(req: any, res: any, action: OrderAction) {
   if (email === 'ndtiger86@gmail.com') return decoded;
   try {
     const snap = await adminDb.collection('crm_access_profiles').doc(decoded.uid).get();
-    // Старые аккаунты до появления детальных прав продолжают работать как раньше.
-    if (!snap.exists) return decoded;
+    if (!snap.exists) {
+      res.status(403).json({ error: 'Для аккаунта не настроены права на заказы', code: 'order_profile_missing' });
+      return null;
+    }
     const profile = snap.data() || {};
-    if (profile.active === false) {
+    if (profile.active !== true) {
       res.status(403).json({ error: 'Аккаунт отключён владельцем CRM', code: 'account_disabled' });
+      return null;
+    }
+    if (profile.orderActionsConfigured !== true) {
+      res.status(403).json({ error: 'Владелец ещё не настроил права на заказы', code: 'order_permissions_missing' });
       return null;
     }
     const allowed = resolveOrderActions(profile.allowedOrderActions, profile.orderActionsConfigured);
@@ -1206,6 +1351,19 @@ app.use(async (req, res, next) => {
       message: "Отдельный MCP-сервис временно недоступен",
     });
   }
+});
+
+// Never fall back to the legacy in-process MCP implementation. The CRM stays
+// available when MCP is down, while AI access fails closed instead of exposing
+// the old write-capable tool set.
+app.use((req, res, next) => {
+  if (MCP_PROXY_PATHS.has(req.path)) {
+    return res.status(503).json({
+      error: "MCP_UNAVAILABLE",
+      message: "MCP временно недоступен. Основная CRM продолжает работать.",
+    });
+  }
+  next();
 });
 
 function mcpBaseUrl() {
@@ -2105,7 +2263,7 @@ app.post("/mcp", mcpAuth, async (req, res) => {
 });
 
 app.get("/api/ping", (req, res) => {
-  res.send("ybcrm-system 2.0 - Claude AI + ManyChat v8");
+  res.send("ybcrm-system 2.0");
 });
 
 async function readTgAccounts(): Promise<any[]> {
@@ -2118,7 +2276,7 @@ async function readTgAccounts(): Promise<any[]> {
     }
   }
   if (!db) return [];
-  const snap = await getDoc(doc(db, "settings", "tg_accounts"));
+  const snap = await getServerDocument("settings", "tg_accounts");
   return snap.exists() ? (snap.data().accounts || []) : [];
 }
 
@@ -2171,7 +2329,7 @@ async function saveTgAccounts(accounts: any[]): Promise<void> {
     console.warn("Firebase REST tg_accounts write fallback:", e.message);
   }
   if (!db) throw new Error("БД не подключена");
-  await setDoc(doc(db, "settings", "tg_accounts"), { accounts });
+  await setServerDocument("settings", "tg_accounts", { accounts });
 }
 
 async function upsertTgAccount(entry: any): Promise<void> {
@@ -2393,7 +2551,7 @@ async function getCdekSettings() {
     const snap = await adminDb.collection("settings").doc("cdek_api").get().catch(() => null);
     saved = snap?.exists ? snap.data() : {};
   } else if (db) {
-    const snap = await getDoc(doc(db, "settings", "cdek_api")).catch(() => null);
+    const snap = await getServerDocument("settings", "cdek_api").catch(() => null);
     saved = snap?.exists?.() ? snap.data() : {};
   }
   const isTest = typeof saved?.isTest === "boolean" ? saved.isTest : IS_TEST;
@@ -2477,7 +2635,7 @@ app.get("/api/cdek/status", async (_req, res) => {
 app.post("/api/cdek/save-settings", async (req, res) => {
   try {
     if (!db) return res.status(500).json({ error: "Firebase not configured" });
-    const currentSnap = await getDoc(doc(db, "settings", "cdek_api")).catch(() => null);
+    const currentSnap = await getServerDocument("settings", "cdek_api").catch(() => null);
     const current = currentSnap?.exists?.() ? currentSnap.data() : {};
     const {
       clientId,
@@ -2504,7 +2662,7 @@ app.post("/api/cdek/save-settings", async (req, res) => {
       updatedAt: new Date().toISOString(),
     };
 
-    await setDoc(doc(db, "settings", "cdek_api"), payload, { merge: true });
+    await setServerDocument("settings", "cdek_api", payload, { merge: true });
     cdekToken = null;
     tokenExpiry = 0;
     cdekTokenKey = null;
@@ -3701,8 +3859,11 @@ app.get("/api/products/:id/image", async (req, res) => {
   }
 });
 
-app.get("/api/chat/manychat", (req, res) => {
-  res.send("ManyChat API is active. Use POST request to communicate. Version: 1.1");
+app.get("/api/ai/status", (_req, res) => {
+  res.json({
+    geminiConfigured: Boolean(process.env.GEMINI_API_KEY),
+    anthropicConfigured: Boolean(process.env.ANTHROPIC_API_KEY),
+  });
 });
 
 // Simple in-memory rate limiter: max 20 requests per minute per user_id
@@ -3960,7 +4121,7 @@ app.get("/api/tg/auth/status", async (req, res) => {
     const accounts = (await readTgAccounts()).filter((a: any) => a.sessionString);
     // Fallback: old single session
     if (accounts.length === 0) {
-      const old = await getDoc(doc(db, "settings", "tg_session"));
+      const old = await getServerDocument("settings", "tg_session");
       if (old.exists() && old.data().sessionString) {
         accounts.push({ phone: old.data().phone, addedAt: old.data().savedAt, active: true });
       }
@@ -4115,8 +4276,8 @@ app.post("/api/tg/accounts/upload-session-file", async (req, res) => {
 
 app.get("/api/tg/broadcast/config", async (req, res) => {
   try {
-    if (!db) return res.json({});
-    const snap = await getDoc(doc(db, "settings", "broadcast_config"));
+    if (!db && !adminDb) return res.json({});
+    const snap = await getServerDocument("settings", "broadcast_config");
     res.json(snap.exists() ? snap.data() : {});
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -4126,7 +4287,7 @@ app.get("/api/tg/broadcast/config", async (req, res) => {
 app.post("/api/tg/broadcast/config", async (req, res) => {
   const { displayName } = req.body;
   try {
-    if (db) await setDoc(doc(db, "settings", "broadcast_config"), { displayName }, { merge: true });
+    if (db || adminDb) await setServerDocument("settings", "broadcast_config", { displayName }, { merge: true });
     res.json({ success: true });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -4335,9 +4496,9 @@ let tgCheckJob: { status: 'idle' | 'running' | 'done' | 'error'; total: number; 
 };
 
 async function runTgCheckJob(phones: string[]) {
-  if (!db) return;
+  if (!db && !adminDb) return;
   tgCheckJob = { status: 'running', total: phones.length, checked: 0, noTgFound: 0, startedAt: new Date().toISOString() };
-  await setDoc(doc(db, 'settings', 'tg_check_job'), { ...tgCheckJob }).catch(() => {});
+  await setServerDocument('settings', 'tg_check_job', { ...tgCheckJob }).catch(() => {});
   let client: TelegramClient | null = null;
   try {
     const accounts = (await readTgAccounts()).filter((a: any) => a.sessionString && a.active !== false);
@@ -4346,7 +4507,7 @@ async function runTgCheckJob(phones: string[]) {
     client = new TelegramClient(new StringSession(accounts[0].sessionString), TG_API_ID, TG_API_HASH, { connectionRetries: 3, ...buildProxyOpts(accounts[0]) });
     await client.connect();
 
-    const noTgSnap = await getDoc(doc(db, 'settings', 'no_telegram')).catch(() => null);
+    const noTgSnap = await getServerDocument('settings', 'no_telegram').catch(() => null);
     const existingNoTg: Array<{ phone: string; addedAt: string }> = noTgSnap?.exists() ? (noTgSnap.data().phones || []) : [];
     const existingSet = new Set(existingNoTg.map((p: any) => p.phone));
     const newNoTg: Array<{ phone: string; addedAt: string }> = [];
@@ -4379,9 +4540,9 @@ async function runTgCheckJob(phones: string[]) {
 
       // Сохраняем прогресс и накопленные номера каждые 50 проверок
       if ((i + 1) % 50 === 0 || i === phones.length - 1) {
-        await setDoc(doc(db, 'settings', 'tg_check_job'), { ...tgCheckJob }).catch(() => {});
+        await setServerDocument('settings', 'tg_check_job', { ...tgCheckJob }).catch(() => {});
         if (newNoTg.length > 0) {
-          await setDoc(doc(db, 'settings', 'no_telegram'), { phones: [...existingNoTg, ...newNoTg] }).catch(() => {});
+          await setServerDocument('settings', 'no_telegram', { phones: [...existingNoTg, ...newNoTg] }).catch(() => {});
         }
       }
       await new Promise(r => setTimeout(r, 300 + Math.random() * 200));
@@ -4389,13 +4550,13 @@ async function runTgCheckJob(phones: string[]) {
     await client.disconnect().catch(() => {});
     tgCheckJob.status = 'done';
     tgCheckJob.finishedAt = new Date().toISOString();
-    await setDoc(doc(db, 'settings', 'tg_check_job'), { ...tgCheckJob }).catch(() => {});
+    await setServerDocument('settings', 'tg_check_job', { ...tgCheckJob }).catch(() => {});
   } catch (e: any) {
     await client?.disconnect().catch(() => {});
     tgCheckJob.status = 'error';
     tgCheckJob.error = e.message;
     tgCheckJob.finishedAt = new Date().toISOString();
-    await setDoc(doc(db, 'settings', 'tg_check_job'), { ...tgCheckJob }).catch(() => {});
+    await setServerDocument('settings', 'tg_check_job', { ...tgCheckJob }).catch(() => {});
   }
 }
 
@@ -4408,13 +4569,6 @@ app.post('/api/ai/generate-variants', async (req, res) => {
 
   let geminiKey: string | null = process.env.GEMINI_API_KEY || null;
   let claudeKey: string | null = process.env.ANTHROPIC_API_KEY || null;
-  if (db) {
-    const cfg = await getDoc(doc(db, 'settings', 'ai_config')).catch(() => null);
-    if (cfg?.exists()) {
-      if (cfg.data().geminiKey) geminiKey = cfg.data().geminiKey;
-      if (cfg.data().claudeKey) claudeKey = cfg.data().claudeKey;
-    }
-  }
 
   const parseVariants = (text: string) => {
     const numbered = text.split('\n')
@@ -4463,7 +4617,7 @@ app.post('/api/ai/generate-variants', async (req, res) => {
       if (!variants.length) throw new Error('AI вернул пустой список вариантов');
       return res.json({ success: true, variants, engine: 'claude' });
     }
-    throw new Error('Нет API ключа — добавь Gemini или Claude ключ в Настройках рассылки');
+    throw new Error('AI API не настроен на сервере');
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -4488,8 +4642,8 @@ let stealthJob: {
 };
 
 const saveStealthProgress = async () => {
-  if (!db) return;
-  await setDoc(doc(db, 'settings', 'stealth_job'), { ...stealthJob, log: stealthJob.log.slice(-500) }).catch(() => {});
+  if (!db && !adminDb) return;
+  await setServerDocument('settings', 'stealth_job', { ...stealthJob, log: stealthJob.log.slice(-500) }).catch(() => {});
 };
 
 const MOSCOW_TZ = 'Europe/Moscow';
@@ -4544,7 +4698,7 @@ async function waitForBroadcastWindow(activeFromHour = 8, activeToHour = 21) {
 }
 
 async function runStealthBroadcast(phones: string[], messageVariants: string[], contactButton: boolean, imageFiles: Array<{base64:string;name:string}>, startFrom = 0, delayMinutes = 2, activeFromHour = 8, activeToHour = 21, displayName = "") {
-  if (!db) return;
+  if (!db && !adminDb) return;
 
   const MESSAGES_PER_ACCOUNT = 20;
   const CONTACT_LOOKUP_DELAY_MS = 2000;
@@ -4556,7 +4710,7 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
 
   if (startFrom === 0) {
     stealthJob = { status: 'running', total: phones.length, sent: 0, failed: 0, checked: 0, currentIndex: 0, currentAccount: '', delayMinutes: safeDelayMinutes, activeFromHour: safeActiveFromHour, activeToHour: safeActiveToHour, startedAt: new Date().toISOString(), stopRequested: false, log: [] };
-    await setDoc(doc(db, 'settings', 'stealth_job_data'), { phones, messageVariants, contactButton, imageFiles, delayMinutes: safeDelayMinutes, activeFromHour: safeActiveFromHour, activeToHour: safeActiveToHour, displayName: normalizeBroadcastDisplayName(displayName) }).catch((e) => {
+    await setServerDocument('settings', 'stealth_job_data', { phones, messageVariants, contactButton, imageFiles, delayMinutes: safeDelayMinutes, activeFromHour: safeActiveFromHour, activeToHour: safeActiveToHour, displayName: normalizeBroadcastDisplayName(displayName) }).catch((e) => {
       console.warn('[stealth] could not persist job data:', e?.message || e);
     });
   } else {
@@ -4574,17 +4728,17 @@ async function runStealthBroadcast(phones: string[], messageVariants: string[], 
   const accounts: any[] = (await readTgAccounts()).filter((a: any) => a.sessionString && a.active !== false);
   if (!accounts.length) { stealthJob.status = 'waiting_accounts'; await saveStealthProgress(); return; }
 
-  const configSnap = await getDoc(doc(db, 'settings', 'broadcast_config')).catch(() => null);
+  const configSnap = await getServerDocument('settings', 'broadcast_config').catch(() => null);
   const broadcastDisplayName = normalizeBroadcastDisplayName(displayName || (configSnap?.exists() ? configSnap.data()?.displayName : ""));
 
   // Загружаем no_telegram
-  const noTgSnap = await getDoc(doc(db, 'settings', 'no_telegram')).catch(() => null);
+  const noTgSnap = await getServerDocument('settings', 'no_telegram').catch(() => null);
   const savedNoTg: Array<{phone:string;addedAt:string}> = noTgSnap?.exists() ? (noTgSnap.data().phones || []) : [];
   const noTgSet = new Set(savedNoTg.map((p:any) => normalizeBroadcastPhone(p.phone)));
   const newNoTg: Array<{phone:string;addedAt:string}> = [];
 
   // Загружаем уже отправленные
-  const sentSnap = await getDoc(doc(db, 'settings', 'stealth_sent')).catch(() => null);
+  const sentSnap = await getServerDocument('settings', 'stealth_sent').catch(() => null);
   const ALWAYS_TESTABLE = new Set(['79196977790', '79991640290']);
   const savedSentArr: Array<any> = sentSnap?.exists() ? (sentSnap.data().phones || []) : [];
   const sentSet = new Set<string>();
@@ -4919,7 +5073,7 @@ app.post('/api/broadcast/stealth-start', async (req, res) => {
   const safeActiveFromHour = Number.isFinite(Number(activeFromHour)) ? Math.min(23, Math.max(0, Number(activeFromHour))) : 8;
   const safeActiveToHour = Number.isFinite(Number(activeToHour)) ? Math.min(24, Math.max(1, Number(activeToHour))) : 21;
   const safeDisplayName = normalizeBroadcastDisplayName(displayName);
-  if (db) await setDoc(doc(db, 'settings', 'broadcast_config'), { displayName: safeDisplayName }, { merge: true }).catch(() => {});
+  if (db || adminDb) await setServerDocument('settings', 'broadcast_config', { displayName: safeDisplayName }, { merge: true }).catch(() => {});
   runStealthBroadcast(phones, messageVariants, !!contactButton, images || [], 0, safeDelayMinutes, safeActiveFromHour, safeActiveToHour, safeDisplayName);
   res.json({ success: true, total: phones.length, delayMinutes: safeDelayMinutes, activeFromHour: safeActiveFromHour, activeToHour: safeActiveToHour });
 });
@@ -4928,8 +5082,8 @@ app.post('/api/broadcast/stealth-start', async (req, res) => {
 app.post('/api/broadcast/stealth-resume', async (req, res) => {
   if (['running', 'sleeping'].includes(stealthJob.status)) return res.status(400).json({ error: 'Рассылка уже идёт' });
   if (stealthJob.status !== 'waiting_accounts') return res.status(400).json({ error: 'Нет паузы для продолжения' });
-  if (!db) return res.status(500).json({ error: 'DB не подключена' });
-  const dataSnap = await getDoc(doc(db, 'settings', 'stealth_job_data')).catch(() => null);
+  if (!db && !adminDb) return res.status(500).json({ error: 'DB не подключена' });
+  const dataSnap = await getServerDocument('settings', 'stealth_job_data').catch(() => null);
   if (!dataSnap?.exists()) return res.status(400).json({ error: 'Данные задания не найдены' });
   const { phones, messageVariants, contactButton, imageFiles, delayMinutes, activeFromHour, activeToHour, displayName } = dataSnap.data() as any;
   const resumeFrom = stealthJob.currentIndex;
@@ -4954,7 +5108,7 @@ app.post('/api/broadcast/stealth-clear', async (_req, res) => {
 
 app.get('/api/broadcast/stealth-status', async (_req, res) => {
   if (stealthJob.status === 'idle' && db) {
-    const snap = await getDoc(doc(db, 'settings', 'stealth_job')).catch(() => null);
+    const snap = await getServerDocument('settings', 'stealth_job').catch(() => null);
     if (snap?.exists()) {
       const d = snap.data() as any;
       if (['waiting_accounts', 'sleeping', 'stopped'].includes(d.status)) {
@@ -5027,8 +5181,8 @@ let broadcastV2Job: {
 };
 
 const saveBroadcastV2Progress = async () => {
-  if (!db) return;
-  await setDoc(doc(db, 'settings', 'broadcast_v2_job'), {
+  if (!db && !adminDb) return;
+  await setServerDocument('settings', 'broadcast_v2_job', {
     ...broadcastV2Job,
     log: broadcastV2Job.log.slice(-800),
   }).catch(() => {});
@@ -5280,7 +5434,7 @@ async function runBroadcastV2(
   activeToHour: number,
   displayName: string
 ) {
-  if (!db) return;
+  if (!db && !adminDb) return;
   const accounts = (await readTgAccounts()).filter((a: any) => a.sessionString && a.active !== false).slice(0, maxAccounts);
   if (!accounts.length) {
     broadcastV2Job.status = 'waiting_accounts';
@@ -5344,7 +5498,7 @@ app.post('/api/broadcast-v2/start', async (req, res) => {
     accounts: [],
     log: [],
   };
-  await setDoc(doc(db, 'settings', 'broadcast_v2_data'), {
+  await setServerDocument('settings', 'broadcast_v2_data', {
     phones,
     messageVariants,
     imageFiles,
@@ -5395,7 +5549,7 @@ app.post('/api/broadcast-v2/clear', async (_req, res) => {
 
 app.get('/api/broadcast-v2/status', async (_req, res) => {
   if (broadcastV2Job.status === 'idle' && db) {
-    const snap = await getDoc(doc(db, 'settings', 'broadcast_v2_job')).catch(() => null);
+    const snap = await getServerDocument('settings', 'broadcast_v2_job').catch(() => null);
     if (snap?.exists()) {
       const d = snap.data() as any;
       if (['sleeping', 'stopped', 'done', 'waiting_accounts', 'error'].includes(d.status)) {
@@ -5421,7 +5575,7 @@ app.post('/api/broadcast/check-tg-start', async (req, res) => {
 app.get('/api/broadcast/check-tg-status', async (_req, res) => {
   // Если сервер перезапустился — читаем из Firestore
   if (tgCheckJob.status === 'idle' && db) {
-    const snap = await getDoc(doc(db, 'settings', 'tg_check_job')).catch(() => null);
+    const snap = await getServerDocument('settings', 'tg_check_job').catch(() => null);
     if (snap?.exists()) {
       const d = snap.data() as any;
       tgCheckJob = { status: d.status, total: d.total, checked: d.checked, noTgFound: d.noTgFound, startedAt: d.startedAt, finishedAt: d.finishedAt, error: d.error };
@@ -5450,7 +5604,7 @@ app.post("/api/broadcast/gramjs", async (req, res) => {
     // Load accounts
     let accounts: any[] = (await readTgAccounts()).filter((a: any) => a.sessionString && a.active !== false);
     if (accounts.length === 0) {
-      const old = await getDoc(doc(db, "settings", "tg_session"));
+      const old = await getServerDocument("settings", "tg_session");
       if (old.exists() && old.data().sessionString) {
         accounts = [{ phone: old.data().phone, sessionString: old.data().sessionString }];
       }
@@ -5639,7 +5793,7 @@ app.post("/api/broadcast/gramjs", async (req, res) => {
   }
 });
 
-app.post("/api/chat/manychat", async (req, res) => {
+app.post("/api/ai-sales/test", async (req, res) => {
   const { last_input, user_id } = req.body;
   const input = last_input || "Привет!";
   const uid = user_id || "test_user";
@@ -5652,14 +5806,20 @@ app.post("/api/chat/manychat", async (req, res) => {
   }
 
   try {
+    if (!adminDb) {
+      return res.status(503).json({
+        version: "v2",
+        content: { messages: [{ type: "text", text: "Ошибка: серверная база данных не подключена." }] },
+      });
+    }
     // Получить или создать контакт
-    const contactRef = doc(db, "contacts", uid);
+    const contactRef = adminDb.collection("contacts").doc(String(uid));
     try {
-      const contactSnap = await getDoc(contactRef);
+      const contactSnap = await contactRef.get();
 
-      if (!contactSnap.exists()) {
+      if (!contactSnap.exists) {
         const loyaltyCardId = `NDT-${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
-        await setDoc(contactRef, {
+        await contactRef.set({
           userId: uid,
           firstMessageAt: new Date().toISOString(),
           lastMessageAt: new Date().toISOString(),
@@ -5668,40 +5828,30 @@ app.post("/api/chat/manychat", async (req, res) => {
           lastMessage: input,
           loyaltyCardId: loyaltyCardId,
           totalSpent: 0,
-          currentDiscount: 5
+          currentDiscount: 5,
         });
       } else {
         const data = contactSnap.data();
         // Auto-assign loyalty card if missing for old contacts
         if (!data.loyaltyCardId) {
           const loyaltyCardId = `NDT-${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
-          await updateDoc(contactRef, { 
+          await contactRef.set({
             loyaltyCardId: loyaltyCardId,
             totalSpent: data.totalSpent || 0,
             currentDiscount: data.currentDiscount || 5
-          });
+          }, { merge: true });
         }
-        await updateDoc(contactRef, {
+        await contactRef.set({
           lastMessageAt: new Date().toISOString(),
           messagesCount: (data.messagesCount || 0) + 1,
           lastMessage: input
-        });
+        }, { merge: true });
       }
     } catch (e) {
       console.error("Contact operation failed:", e);
     }
 
-    console.log(`ManyChat Request from ${uid}: "${input}"`);
-
-    if (!db) {
-      return res.json({
-        version: "v2",
-        content: { messages: [{ type: "text", text: "Ошибка: База данных не подключена." }] }
-      });
-    }
-
     let systemPrompt = "Ты — профессиональный ИИ-продавец бренда YBCRM.";
-    let dbApiKey: string | null = null;
     let knowledgeBase = "";
     let catalogInfo = "";
     let examplesBlock = "";
@@ -5710,20 +5860,17 @@ app.post("/api/chat/manychat", async (req, res) => {
     let quickReplies: any[] = [];
 
     try {
-      const settingsDoc = await getDoc(doc(db, "settings", "ai_config"));
-      if (settingsDoc.exists()) {
+      const settingsDoc = await adminDb.collection("settings").doc("ai_config").get();
+      if (settingsDoc.exists) {
         const data = settingsDoc.data();
         if (data.aiPrompt)          systemPrompt  = data.aiPrompt;
         if (data.knowledgeBase)     knowledgeBase = data.knowledgeBase;
-        if (data.claudeKey)         dbApiKey      = data.claudeKey;
         if (data.accessToProducts !== undefined) accessToProducts = data.accessToProducts;
       }
 
       // Подгрузить базу знаний диалогов
       try {
-        const kbSnapshot = await getDocs(
-          query(collection(db, "dialog_knowledge_base"), where("active", "==", true))
-        );
+        const kbSnapshot = await adminDb.collection("dialog_knowledge_base").where("active", "==", true).get();
         if (!kbSnapshot.empty) {
           examplesBlock = "\n\nПРИМЕРЫ ХОРОШИХ ОТВЕТОВ (на которые стоит ориентироваться):\n";
           kbSnapshot.docs.forEach(d => {
@@ -5736,7 +5883,7 @@ app.post("/api/chat/manychat", async (req, res) => {
       }
 
       if (accessToProducts) {
-        const productsSnapshot = await getDocs(collection(db, "products"));
+        const productsSnapshot = await adminDb.collection("products").get();
         catalogInfo = "\n\nКАТАЛОГ ТОВАРОВ:\n";
         productsSnapshot.docs.forEach(d => {
           const p = d.data();
@@ -5791,10 +5938,7 @@ ${examplesBlock}
 ГЛАВНАЯ ИНСТРУКЦИЯ:
 ${systemPrompt}`;
 
-    console.log("Full System Prompt Length:", fullSystemPrompt.length);
-    console.log("Using systemPrompt from DB:", systemPrompt.slice(0, 50) + "...");
-
-    const apiKey = dbApiKey || process.env.ANTHROPIC_API_KEY;
+    const apiKey = process.env.ANTHROPIC_API_KEY;
     if (!apiKey) throw new Error("ANTHROPIC_API_KEY не задан");
 
     const anthropic = new Anthropic({ apiKey });
@@ -5834,16 +5978,16 @@ ${systemPrompt}`;
       productName = product?.name || null;
 
       if (productName) {
-        await updateDoc(contactRef, {
+        await contactRef.set({
           lastProduct: productName
-        }).catch(() => {});
+        }, { merge: true }).catch(() => {});
       }
 
       console.log(`Image tag found: "${productIdOrName}". Product found:`, !!product);
 
       // Add buttons if the product has multi-post links
       if (product?.posts && product.posts.length > 0) {
-        // ManyChat/Instagram support up to 3 buttons in a single message
+        // Instagram supports up to 3 buttons in a single message.
         const buttons = product.posts.slice(0, 3).map((p: any) => ({
           type: "url",
           caption: p.name.slice(0, 20),
@@ -5874,7 +6018,7 @@ ${systemPrompt}`;
 
     // Сохранить лог в базу
     try {
-      await addDoc(collection(db, "ai_logs"), {
+      await adminDb.collection("ai_logs").add({
         userId: uid,
         input: input,
         response: cleanText,
@@ -5907,36 +6051,36 @@ ${systemPrompt}`;
 
     if (imageUrl) responseData.photo_url = imageUrl;
 
-    console.log("ManyChat response:", JSON.stringify(responseData, null, 2));
-
     res.setHeader("Content-Type", "application/json");
     return res.status(200).send(JSON.stringify(responseData));
 
   } catch (error: any) {
-    console.error("API Error:", error);
+    console.error("[ai-sales] AI provider error:", error?.name || "provider_error");
     
     try {
-      await addDoc(collection(db, "ai_logs"), {
+      await adminDb?.collection("ai_logs").add({
         userId: uid,
-        input: input,
-        response: error.message,
         timestamp: new Date().toISOString(),
-        status: "error"
+        status: "error",
+        errorCode: "provider_error",
       });
     } catch {}
 
     return res.status(200).json({
       version: "v2",
       content: {
-        messages: [{ type: "text", text: "Ошибка ИИ: " + (error.message || "неизвестная ошибка") }]
+        messages: [{ type: "text", text: "ИИ временно недоступен. Попробуйте ещё раз позже." }]
       }
     });
   }
 });
 
 app.use((err: any, req: any, res: any, next: any) => {
-  console.error("Global error:", err);
-  res.status(500).json({ error: `Ошибка сервера: ${err.message}` });
+  const requestId = randomBytes(8).toString("hex");
+  console.error("Global error:", { requestId, path: req?.path || "", message: err?.message || "unknown" });
+  const status = Number(err?.statusCode || err?.status || 500);
+  if (status === 403) return res.status(403).json({ error: "Источник запроса не разрешён", requestId });
+  res.status(500).json({ error: "Внутренняя ошибка сервера", requestId });
 });
 
 // ─── Costume catalog API ─────────────────────────────────────────────────────
@@ -6068,7 +6212,7 @@ app.post("/api/bot/config", async (req, res) => {
   const { welcomeText } = req.body;
   if (welcomeText) {
     botCfg.welcomeText = welcomeText; // update in-memory immediately
-    if (db) await setDoc(doc(db, "settings", "bot_config"), { welcomeText }, { merge: true });
+    if (db || adminDb) await setServerDocument("settings", "bot_config", { welcomeText }, { merge: true });
   }
   res.json({ success: true });
 });
@@ -6082,7 +6226,7 @@ app.post("/api/bot/buttons", async (req, res) => {
   if (buttons) botCfg.buttons = cleanBotButtons(buttons);
   if (welcomeText !== undefined) botCfg.welcomeText = welcomeText;
   if (managerChatIds !== undefined) botCfg.managerChatIds = parseManagerChatIds(managerChatIds);
-  if (db) await setDoc(doc(db, "settings", "bot_buttons"), { buttons: botCfg.buttons, welcomeText: botCfg.welcomeText, managerChatIds: botCfg.managerChatIds }, { merge: true });
+  if (db || adminDb) await setServerDocument("settings", "bot_buttons", { buttons: botCfg.buttons, welcomeText: botCfg.welcomeText, managerChatIds: botCfg.managerChatIds }, { merge: true });
   res.json({ success: true });
 });
 
@@ -6093,7 +6237,7 @@ app.get("/api/bot/manager-config", async (_req, res) => {
 app.post("/api/bot/manager-config", async (req, res) => {
   const managerChatIds = parseManagerChatIds(req.body?.managerChatIds);
   botCfg.managerChatIds = managerChatIds;
-  if (db) await setDoc(doc(db, "settings", "bot_manager_config"), { managerChatIds }, { merge: true });
+  if (db || adminDb) await setServerDocument("settings", "bot_manager_config", { managerChatIds }, { merge: true });
   res.json({ success: true });
 });
 
@@ -6262,9 +6406,7 @@ app.post("/api/content/publish/:id", async (req, res) => {
     const item = snap.data() as any;
 
     // Get Instagram settings
-    const cfgSnap = adminDb
-      ? await adminDb.collection("settings").doc("instagram").get()
-      : await getDoc(doc(db, "settings", "instagram"));
+    const cfgSnap = await getServerDocument("settings", "instagram");
     const cfg = cfgSnap.exists() ? cfgSnap.data() : {};
     const accessToken = cfg.accessToken || process.env.INSTAGRAM_ACCESS_TOKEN;
     const igUserId = cfg.userId || process.env.INSTAGRAM_USER_ID;
@@ -6300,10 +6442,10 @@ app.post("/api/content/publish/:id", async (req, res) => {
 
 // Save Instagram settings
 app.post("/api/content/instagram-settings", async (req, res) => {
-  if (!db) return res.status(503).json({ error: "Firebase не инициализирован" });
+  if (!db && !adminDb) return res.status(503).json({ error: "Firebase не инициализирован" });
   const { accessToken, userId } = req.body;
   try {
-    await setDoc(doc(db, "settings", "instagram"), { accessToken, userId }, { merge: true });
+    await setServerDocument("settings", "instagram", { accessToken, userId }, { merge: true });
     res.json({ success: true });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
@@ -6333,7 +6475,7 @@ const INSTAGRAM_LOGIN_SCOPES = [
   "instagram_business_content_publish",
 ].join(",");
 const INSTAGRAM_GRAPH_BASE_URL = "https://graph.instagram.com";
-const INSTAGRAM_WEBHOOK_VERIFY_TOKEN = process.env.INSTAGRAM_WEBHOOK_VERIFY_TOKEN || "ybcrm-instagram-2026";
+const INSTAGRAM_WEBHOOK_VERIFY_TOKEN = String(process.env.INSTAGRAM_WEBHOOK_VERIFY_TOKEN || "").trim();
 
 function publicBaseUrl(req?: any) {
   const fromEnv = process.env.WEBHOOK_URL || process.env.SERVER_URL || process.env.PUBLIC_BASE_URL || MCP_PUBLIC_BASE_URL;
@@ -6375,7 +6517,7 @@ async function getInstagramGraphSettings() {
     return snap.exists ? snap.data() : {};
   }
   if (!db) return {};
-  const snap = await getDoc(doc(db, "settings", "instagram_graph"));
+  const snap = await getServerDocument("settings", "instagram_graph");
   return snap.exists() ? snap.data() : {};
 }
 
@@ -6385,7 +6527,7 @@ async function saveInstagramGraphSettings(data: any) {
     return;
   }
   if (!db) throw new Error("Firebase не инициализирован");
-  await setDoc(doc(db, "settings", "instagram_graph"), data, { merge: true });
+  await setServerDocument("settings", "instagram_graph", data, { merge: true });
 }
 
 async function saveInstagramContentSettings(data: any) {
@@ -6394,7 +6536,7 @@ async function saveInstagramContentSettings(data: any) {
     return;
   }
   if (!db) throw new Error("Firebase не инициализирован");
-  await setDoc(doc(db, "settings", "instagram"), data, { merge: true });
+  await setServerDocument("settings", "instagram", data, { merge: true });
 }
 
 function graphErrorMessage(error: any) {
@@ -7427,6 +7569,9 @@ app.get("/api/instagram/diagnostics", async (_req, res) => {
 });
 
 app.get("/api/instagram/webhook", (req, res) => {
+  if (!INSTAGRAM_WEBHOOK_VERIFY_TOKEN) {
+    return res.status(503).send("Instagram webhook is not configured");
+  }
   const mode = String(req.query["hub.mode"] || "");
   const token = String(req.query["hub.verify_token"] || "");
   const challenge = String(req.query["hub.challenge"] || "");
@@ -7440,15 +7585,15 @@ app.post("/api/instagram/webhook", async (req, res) => {
   try {
     const settings: any = await getInstagramGraphSettings();
     const signature = String(req.headers["x-hub-signature-256"] || "");
-    if (settings?.appSecret) {
-      const expected = `sha256=${createHmac("sha256", String(settings.appSecret))
-        .update((req as any).rawBody || Buffer.from(JSON.stringify(req.body || {})))
-        .digest("hex")}`;
-      const actualBuffer = Buffer.from(signature);
-      const expectedBuffer = Buffer.from(expected);
-      if (!signature || actualBuffer.length !== expectedBuffer.length || !timingSafeEqual(actualBuffer, expectedBuffer)) {
-        return res.sendStatus(403);
-      }
+    if (!settings?.appSecret) {
+      console.error("[instagram] webhook rejected: app secret is not configured");
+      return res.sendStatus(503);
+    }
+    const expected = `sha256=${createHmac("sha256", String(settings.appSecret))
+      .update((req as any).rawBody || Buffer.from(JSON.stringify(req.body || {})))
+      .digest("hex")}`;
+    if (!secretsEqual(signature, expected)) {
+      return res.sendStatus(403);
     }
     // Acknowledge Meta quickly. Duplicate event IDs are merged in Firestore.
     res.status(200).send("EVENT_RECEIVED");
@@ -7463,13 +7608,10 @@ app.post("/api/instagram/webhook", async (req, res) => {
       standby: entries.reduce((sum: number, entry: any) => sum + (Array.isArray(entry?.standby) ? entry.standby.length : 0), 0),
       changeFields: entries.flatMap((entry: any) => Array.isArray(entry?.changes) ? entry.changes.map((change: any) => String(change?.field || "")) : []),
     }));
-    // Full payload, so an event Meta delivers but CRM ignores can be identified
-    // from the logs instead of guessing at its shape.
-    console.info("[instagram] webhook payload", JSON.stringify(body).slice(0, 4000));
     for (const entry of entries) {
       const ownerId = String(entry?.id || "");
-      // Meta moves events into `standby` when another app (ManyChat and the like)
-      // is the primary receiver of the thread under the handover protocol.
+      // Meta moves events into `standby` when another app is the primary
+      // receiver of the thread under the handover protocol.
       const messaging = [
         ...(Array.isArray(entry?.messaging) ? entry.messaging : []),
         ...(Array.isArray(entry?.standby) ? entry.standby : []),
@@ -8216,7 +8358,7 @@ async function readTochkaSettingsDoc(id: string): Promise<any> {
     return snap.exists ? snap.data() : {};
   }
   if (!db) return {};
-  const snap = await getDoc(doc(db, 'settings', id)).catch(() => null);
+  const snap = await getServerDocument('settings', id).catch(() => null);
   return snap?.exists() ? snap.data() : {};
 }
 
@@ -8226,7 +8368,7 @@ async function writeTochkaSettingsDoc(id: string, payload: Record<string, any>) 
     return;
   }
   if (!db) throw new Error('DB не подключена');
-  await setDoc(doc(db, 'settings', id), payload, { merge: true });
+  await setServerDocument('settings', id, payload, { merge: true });
 }
 
 async function writeTochkaLog(payload: Record<string, any>) {
@@ -10515,7 +10657,8 @@ app.post('/api/tochka/confirm-payment', async (req, res) => {
 let tochkaReconcileInProgress = false;
 let lastTochkaReconcileAt = 0;
 
-app.post('/api/tochka/reconcile-payments', async (_req, res) => {
+app.post('/api/tochka/reconcile-payments', async (req, res) => {
+  if (!await requireCrmOrderAction(req, res, 'payments')) return;
   if (!adminDb && !db) return res.status(503).json({ error: 'DB не подключена' });
   const now = Date.now();
   if (tochkaReconcileInProgress || now - lastTochkaReconcileAt < 60_000) {
@@ -10958,12 +11101,22 @@ app.get('/api/tochka/retailers', async (_req, res) => {
 // Webhook — уведомление об оплате от Точки
 app.post('/api/tochka/webhook', async (req, res) => {
   try {
-    const body = typeof req.body === 'string'
-      ? JSON.parse(Buffer.from(req.body.split('.')[1] || '', 'base64').toString())
-      : req.body?.token
-        ? JSON.parse(Buffer.from(String(req.body.token).split('.')[1] || '', 'base64').toString())
-        : req.body;
-    console.log('[tochka] webhook:', JSON.stringify(body).slice(0, 200));
+    const token = typeof req.body === 'string' ? req.body.trim() : String(req.body?.token || '').trim();
+    if (!token) return res.status(400).json({ error: 'Ожидается подписанный JWT Точки' });
+    let body: any;
+    try {
+      const key = await getTochkaWebhookPublicKey();
+      const verified = await jwtVerify(token, key, { algorithms: ['RS256'] });
+      body = verified.payload;
+    } catch (verificationError: any) {
+      console.warn('[tochka] rejected webhook with invalid signature:', verificationError?.code || verificationError?.message);
+      return res.status(401).json({ error: 'Подпись банковского уведомления не прошла проверку' });
+    }
+    console.log('[tochka] verified webhook:', JSON.stringify({
+      operationId: body.operationId || '',
+      paymentLinkId: body.paymentLinkId || '',
+      eventType: body.eventType || body.type || '',
+    }));
     // Найти заказ по operationId и обновить статус
     if ((adminDb || db) && (body.operationId || body.paymentLinkId)) {
       const status = getTochkaWebhookPaymentStatus(body);
@@ -11047,7 +11200,8 @@ app.post('/api/tochka/webhook', async (req, res) => {
     }
     res.json({ success: true });
   } catch (e: any) {
-    res.status(500).json({ error: e.message });
+    console.error('[tochka] webhook processing error:', e?.message || e);
+    res.status(500).json({ error: 'Не удалось обработать банковское уведомление' });
   }
 });
 
@@ -11738,136 +11892,6 @@ app.get('/api/tochka/finance-summary', async (req, res) => {
   }
 });
 
-// ─── Chatwoot ───────────────────────────────────────────────────────────────
-// Связь карточки клиента в Chatwoot с его заказами из CRM.
-// Chatwoot шлёт вебхук (contact_created / conversation_created) → ищем клиента
-// в Firestore по телефону → пишем заказы обратно в Chatwoot через REST API.
-
-const CHATWOOT_BASE_URL = (process.env.CHATWOOT_BASE_URL || "").replace(/\/$/, "");
-const CHATWOOT_API_TOKEN = process.env.CHATWOOT_API_TOKEN || "";
-const CHATWOOT_ACCOUNT_ID = process.env.CHATWOOT_ACCOUNT_ID || "";
-const CHATWOOT_WEBHOOK_SECRET = process.env.CHATWOOT_WEBHOOK_SECRET || "";
-
-function chatwootApi(accountId: string) {
-  return axios.create({
-    baseURL: `${CHATWOOT_BASE_URL}/api/v1/accounts/${accountId}`,
-    headers: { api_access_token: CHATWOOT_API_TOKEN, "Content-Type": "application/json" },
-    timeout: 15000,
-  });
-}
-
-// Собрать сводку по клиенту из Firestore по нормализованному телефону
-async function buildChatwootClientSummary(phone: string) {
-  if (!db || !phone) return null;
-  const contactSnap = await getDoc(doc(db, "contacts", phone)).catch(() => null);
-  const ordersSnap = await getDocs(
-    query(collection(db, "orders_new"), where("clientPhone", "==", phone))
-  ).catch(() => null);
-
-  const contact = contactSnap?.exists() ? contactSnap.data() : null;
-  const orders = ordersSnap
-    ? ordersSnap.docs
-        .map(d => ({ orderId: d.id, ...(d.data() as any) }))
-        .sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")))
-    : [];
-
-  if (!contact && orders.length === 0) return null;
-
-  const attributes: Record<string, any> = {};
-  if (contact?.loyaltyCardId) attributes.loyalty_card = contact.loyaltyCardId;
-  if (contact?.totalSpent != null) attributes.total_spent = contact.totalSpent;
-  attributes.orders_count = contact?.ordersCount ?? orders.length;
-  if (contact?.currentDiscount != null) attributes.discount = contact.currentDiscount;
-  if (contact?.city) attributes.city = contact.city;
-
-  const lines: string[] = [];
-  lines.push(`🧾 Клиент из CRM${contact?.fullName ? `: ${contact.fullName}` : ""}`);
-  if (contact?.loyaltyCardId) lines.push(`Карта лояльности: ${contact.loyaltyCardId}`);
-  if (contact?.totalSpent != null) lines.push(`Всего потрачено: ${contact.totalSpent} ₽`);
-  if (orders.length) {
-    lines.push(`\nПоследние заказы (${orders.length}):`);
-    for (const o of orders.slice(0, 5)) {
-      const parts = [o.orderId, o.status, o.revenue != null ? `${o.revenue} ₽` : null, o.deliveryMethod, o.date]
-        .filter(Boolean)
-        .join(" · ");
-      lines.push(`• ${parts}`);
-    }
-  } else {
-    lines.push("\nЗаказов в CRM пока нет.");
-  }
-
-  return { attributes, note: lines.join("\n") };
-}
-
-// Извлечь телефон из разных форматов payload Chatwoot
-function extractChatwootPhone(payload: any): string {
-  const raw =
-    payload?.phone_number ||
-    payload?.sender?.phone_number ||
-    payload?.meta?.sender?.phone_number ||
-    payload?.contact?.phone_number ||
-    payload?.contact_inbox?.contact?.phone_number ||
-    "";
-  return normalizeBroadcastPhone(raw);
-}
-
-app.post("/api/chatwoot/webhook", async (req, res) => {
-  // Опциональная защита: Chatwoot не подписывает вебхуки, поэтому секрет
-  // передаём в query (?token=...) при настройке URL в Chatwoot.
-  if (CHATWOOT_WEBHOOK_SECRET && req.query.token !== CHATWOOT_WEBHOOK_SECRET) {
-    return res.status(401).json({ error: "unauthorized" });
-  }
-  // Сразу отвечаем Chatwoot — обогащение делаем асинхронно, чтобы не держать вебхук.
-  res.json({ success: true });
-
-  try {
-    const body = req.body || {};
-    const event = body.event;
-    if (event !== "contact_created" && event !== "conversation_created") return;
-    if (!CHATWOOT_BASE_URL || !CHATWOOT_API_TOKEN) {
-      console.warn("[chatwoot] webhook: CHATWOOT_BASE_URL/API_TOKEN не заданы — пропускаю");
-      return;
-    }
-
-    const accountId = String(CHATWOOT_ACCOUNT_ID || body.account?.id || body.account_id || "");
-    const phone = extractChatwootPhone(body);
-    console.log(`[chatwoot] webhook: event=${event} phone=${phone || "—"} account=${accountId || "—"}`);
-    if (!accountId || !phone) return;
-
-    const summary = await buildChatwootClientSummary(phone);
-    if (!summary) {
-      console.log(`[chatwoot] webhook: клиент ${phone} не найден в CRM`);
-      return;
-    }
-
-    const api = chatwootApi(accountId);
-
-    // Обновить атрибуты контакта (id есть и в contact, и в conversation событиях)
-    const contactId =
-      body.id && event === "contact_created"
-        ? body.id
-        : body.meta?.sender?.id || body.sender?.id || body.contact?.id;
-    if (contactId) {
-      await api
-        .put(`/contacts/${contactId}`, { custom_attributes: summary.attributes })
-        .catch((e: any) => console.error("[chatwoot] update contact:", e.response?.data || e.message));
-    }
-
-    // Для беседы — добавить приватную заметку со списком заказов
-    if (event === "conversation_created" && body.id) {
-      await api
-        .post(`/conversations/${body.id}/messages`, {
-          content: summary.note,
-          message_type: "outgoing",
-          private: true,
-        })
-        .catch((e: any) => console.error("[chatwoot] add note:", e.response?.data || e.message));
-    }
-  } catch (e: any) {
-    console.error("[chatwoot] webhook error:", e.message);
-  }
-});
-
 // ─── Telegram Bot ───────────────────────────────────────────────────────────
 
 const BOT_TOKEN = process.env.TG_BOT_TOKEN;
@@ -12064,16 +12088,16 @@ let botCfg: BotCfg = JSON.parse(JSON.stringify(DEFAULT_BOT_CFG));
 async function loadBotCfg() {
   if (!db) return;
   try {
-    const snap = await getDoc(doc(db, "settings", "bot_buttons"));
+    const snap = await getServerDocument("settings", "bot_buttons");
     if (snap.exists()) {
       const data = snap.data() as any;
       if (data.buttons) botCfg.buttons = cleanBotButtons(data.buttons);
       if (data.welcomeText) botCfg.welcomeText = data.welcomeText;
       if (data.managerChatIds) botCfg.managerChatIds = parseManagerChatIds(data.managerChatIds);
     }
-    const cfgSnap = await getDoc(doc(db, "settings", "bot_config"));
+    const cfgSnap = await getServerDocument("settings", "bot_config");
     if (cfgSnap.exists() && cfgSnap.data().welcomeText) botCfg.welcomeText = cfgSnap.data().welcomeText;
-    const managerSnap = await getDoc(doc(db, "settings", "bot_manager_config"));
+    const managerSnap = await getServerDocument("settings", "bot_manager_config");
     if (managerSnap.exists()) botCfg.managerChatIds = parseManagerChatIds((managerSnap.data() as any).managerChatIds);
   } catch {}
 }

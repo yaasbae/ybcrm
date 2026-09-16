@@ -14,16 +14,15 @@ export type OrderAction = typeof ORDER_ACTION_OPTIONS[number][0];
 export const ALL_ORDER_ACTIONS: OrderAction[] = ORDER_ACTION_OPTIONS.map(([value]) => value);
 
 export const normalizeOrderActions = (value: unknown): OrderAction[] => {
-  if (!Array.isArray(value)) return [...ALL_ORDER_ACTIONS];
+  if (!Array.isArray(value)) return [];
   const allowed = new Set<string>(ALL_ORDER_ACTIONS);
   return Array.from(new Set(value.map(String).filter(item => allowed.has(item)))) as OrderAction[];
 };
 
-// Detailed order permissions were added after the employee accounts already
-// existed. Only enforce a stored list after the owner has explicitly saved the
-// new controls; older profile documents must keep their previous full access.
+// Missing or unconfigured profiles are intentionally denied. Before deploying
+// this change, existing employees must receive an explicit active profile.
 export const resolveOrderActions = (value: unknown, configured: unknown): OrderAction[] => (
-  configured === true ? normalizeOrderActions(value) : [...ALL_ORDER_ACTIONS]
+  configured === true ? normalizeOrderActions(value) : []
 );
 
 export const getOrderActionForField = (field: string, value?: unknown): OrderAction => {

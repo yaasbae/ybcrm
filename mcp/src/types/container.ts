@@ -1,3 +1,6 @@
+import type { AiToolLayer } from "../ai-tools/tool-layer.js";
+import type { FirestoreAiAuditSink } from "../ai-tools/audit.js";
+import type { AgentReadService } from "../services/agent-read.service.js";
 import type { AnalyticsService } from "../services/analytics.service.js";
 import type { ClientsService } from "../services/clients.service.js";
 import type { ContentAnalyticsService } from "../services/content-analytics.service.js";
@@ -22,4 +25,7 @@ export interface Container {
   finance: FinanceService;
   tasks: TasksService;
   dashboard: DashboardService;
+  agentRead: AgentReadService;
+  aiAudit: FirestoreAiAuditSink;
+  aiTools: AiToolLayer;
 }

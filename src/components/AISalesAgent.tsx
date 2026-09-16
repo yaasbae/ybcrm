@@ -25,7 +25,6 @@ export const AISalesAgent: React.FC<AISalesAgentProps> = ({ onBack }) => {
     "Ты — профессиональный ИИ-продавец бренда премиальной одежды YBCRM. Твой стиль: уверенный, вежливый, вдохновляющий. Ты общаешься как эксперт в моде."
   );
   const [knowledgeBase, setKnowledgeBase] = useState("");
-  const [claudeKey, setClaudeKey] = useState("");
   const [accessToProducts, setAccessToProducts] = useState(true);
   const [collectContacts, setCollectContacts] = useState(true);
   const [products, setProducts] = useState<any[]>([]);
@@ -71,7 +70,6 @@ export const AISalesAgent: React.FC<AISalesAgentProps> = ({ onBack }) => {
           setPrompt(data.aiPrompt || prompt);
           setKnowledgeBase(data.knowledgeBase || "");
           setIsActive(data.isActive || false);
-          setClaudeKey(data.claudeKey || "");
           setAccessToProducts(data.accessToProducts !== undefined ? data.accessToProducts : true);
           setCollectContacts(data.collectContacts !== undefined ? data.collectContacts : true);
         }
@@ -148,7 +146,6 @@ export const AISalesAgent: React.FC<AISalesAgentProps> = ({ onBack }) => {
         aiPrompt: prompt,
         knowledgeBase: knowledgeBase,
         isActive: isActive,
-        claudeKey: claudeKey,
         accessToProducts: accessToProducts,
         collectContacts: collectContacts,
         updatedAt: new Date().toISOString()
@@ -167,7 +164,7 @@ export const AISalesAgent: React.FC<AISalesAgentProps> = ({ onBack }) => {
     setIsTesting(true);
     setTestResponse(null);
     try {
-      const response = await fetch('/api/chat/manychat', {
+      const response = await fetch('/api/ai-sales/test', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ last_input: testInput, user_id: 'test_dashboard' })
@@ -269,7 +266,7 @@ export const AISalesAgent: React.FC<AISalesAgentProps> = ({ onBack }) => {
               </div>
               ИИ-Продажник Claude
             </h1>
-            <p className="text-slate-500 mt-1 font-medium">Автоматизация продаж в Instagram Direct через ManyChat</p>
+            <p className="text-slate-500 mt-1 font-medium">Настройка и проверка AI-помощника по продажам</p>
           </div>
         </div>
         
@@ -396,17 +393,8 @@ export const AISalesAgent: React.FC<AISalesAgentProps> = ({ onBack }) => {
                       </div>
                     </div>
 
-                    <div>
-                      <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2 ml-1">
-                        API Ключ Anthropic
-                      </label>
-                      <input
-                        type="password"
-                        value={claudeKey}
-                        onChange={(e) => setClaudeKey(e.target.value)}
-                        placeholder="sk-ant-..."
-                        className="w-full bg-slate-50 border border-slate-100 rounded-2xl px-6 py-4 text-sm focus:outline-none focus:ring-4 focus:ring-slate-900/5 transition-all font-mono"
-                      />
+                    <div className="rounded-2xl border border-emerald-100 bg-emerald-50 px-5 py-4 text-xs text-emerald-800">
+                      API-ключ Anthropic хранится только на сервере в менеджере секретов и не показывается в браузере.
                     </div>
                   </div>
 
@@ -907,7 +895,7 @@ export const AISalesAgent: React.FC<AISalesAgentProps> = ({ onBack }) => {
                     )}
                   </div>
                   <p className="text-[10px] text-slate-400 italic text-center">
-                    Этот тест использует ваши текущие настройки и каталог. Он симулирует реальный запрос из ManyChat.
+                    Этот тест использует текущие настройки и каталог внутри CRM.
                   </p>
                 </div>
               )}
@@ -945,54 +933,6 @@ export const AISalesAgent: React.FC<AISalesAgentProps> = ({ onBack }) => {
             </div>
           </div>
 
-          {/* Integration Guide */}
-          <div className="bg-slate-900 text-white p-8 rounded-[2.5rem] shadow-xl shadow-slate-200 overflow-hidden relative">
-            <div className="absolute top-0 right-0 p-12 opacity-10 rotate-12">
-              <Instagram size={120} />
-            </div>
-            
-            <div className="relative z-10 space-y-6">
-              <div className="flex items-center gap-3">
-                <div className="p-2 bg-white/10 rounded-xl">
-                  <ShieldCheck size={20} className="text-blue-400" />
-                </div>
-                <h2 className="text-lg font-bold">Настройка ManyChat</h2>
-              </div>
-              
-              <div className="space-y-4">
-                <div className="flex items-start gap-4">
-                  <div className="w-6 h-6 rounded-full bg-blue-500 flex items-center justify-center text-[10px] font-bold shrink-0 mt-1">1</div>
-                  <p className="text-sm text-slate-300">Создайте блок <span className="text-white font-bold">External Request</span> в вашем ManyChat Flow.</p>
-                </div>
-                <div className="flex items-start gap-4">
-                  <div className="w-6 h-6 rounded-full bg-blue-500 flex items-center justify-center text-[10px] font-bold shrink-0 mt-1">2</div>
-                  <div className="space-y-2 flex-1">
-                    <p className="text-sm text-slate-300">Установите URL для POST запроса (используйте адрес из <span className="text-white font-bold">Publish</span>):</p>
-                    <div className="bg-black/40 p-3 rounded-xl font-mono text-[10px] text-blue-300 break-all border border-white/5 flex items-center justify-between gap-2">
-                      <span className="truncate">
-                        {window.location.origin.includes('ais-dev') ? 'https://ais-pre-...' : window.location.origin}/api/chat/manychat
-                      </span>
-                      <button 
-                        onClick={() => {
-                          const url = `${window.location.origin.includes('ais-dev') ? window.location.origin.replace('ais-dev', 'ais-pre') : window.location.origin}/api/chat/manychat`;
-                          navigator.clipboard.writeText(url);
-                          alert("Ссылка скопирована!");
-                        }}
-                        className="p-2 hover:bg-white/10 rounded-lg transition-colors shrink-0"
-                      >
-                        <Save size={14} />
-                      </button>
-                    </div>
-                    <p className="text-[10px] text-slate-500 italic">Адрес {window.location.origin.includes('ais-dev') ? 'ais-dev-...' : window.location.origin} работать в ManyChat не будет, так как он приватный.</p>
-                  </div>
-                </div>
-                <div className="flex items-start gap-4">
-                  <div className="w-6 h-6 rounded-full bg-blue-500 flex items-center justify-center text-[10px] font-bold shrink-0 mt-1">3</div>
-                  <p className="text-sm text-slate-300">Передайте <span className="text-white font-bold">last_input</span> и <span className="text-white font-bold">user_id</span> в теле запроса.</p>
-                </div>
-              </div>
-            </div>
-          </div>
         </div>
 
         {/* Sidebar / Logs */}

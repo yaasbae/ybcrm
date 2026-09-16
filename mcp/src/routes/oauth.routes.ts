@@ -3,6 +3,7 @@ import type { Request, Response } from "express";
 import { Router } from "express";
 import jwt from "jsonwebtoken";
 import type { Config } from "../utils/config.js";
+import { READ_ONLY_PERMISSIONS } from "../ai-tools/permissions.js";
 
 type AuthCodeRecord = {
   clientId: string;
@@ -15,6 +16,11 @@ type AuthCodeRecord = {
 
 function baseUrl(config: Config) {
   return config.mcpPublicBaseUrl.replace(/\/$/, "");
+}
+
+function isAllowedRedirectUri(config: Config, redirectUri: string): boolean {
+  const allowed = config.mcpOAuthRedirectUris || ["https://chatgpt.com/connector_platform_oauth_redirect"];
+  return allowed.includes(redirectUri);
 }
 
 function toArray(value: unknown): string[] {
@@ -35,13 +41,15 @@ function issueAccessToken(config: Config, scope: string) {
   return jwt.sign(
     {
       sub: "chatgpt",
-      role: "admin",
+      role: "ai_reader",
+      agent_id: "chatgpt",
       aud: "ybcrm-mcp",
       scope,
+      permissions: READ_ONLY_PERMISSIONS,
     },
     config.crmJwtSecret,
     {
-      expiresIn: "365d",
+      expiresIn: "8h",
       issuer: baseUrl(config),
     },
   );
@@ -122,7 +130,7 @@ export function createOAuthRouter(config: Config) {
       grant_types_supported: ["authorization_code"],
       code_challenge_methods_supported: ["S256", "plain"],
       token_endpoint_auth_methods_supported: ["none", "client_secret_post"],
-      scopes_supported: ["crm.read", "crm.write"],
+      scopes_supported: ["crm.read"],
       service_documentation: `${issuer}/docs`,
     });
   };
@@ -136,7 +144,7 @@ export function createOAuthRouter(config: Config) {
       resource: `${issuer}/mcp`,
       authorization_servers: [issuer],
       bearer_methods_supported: ["header"],
-      scopes_supported: ["crm.read", "crm.write"],
+      scopes_supported: ["crm.read"],
     });
   };
 
@@ -144,7 +152,11 @@ export function createOAuthRouter(config: Config) {
   router.get("/.well-known/oauth-protected-resource/mcp", protectedResource);
 
   router.post("/oauth/register", (req, res) => {
-    const redirectUris = toArray(req.body?.redirect_uris);
+    const redirectUris = toArray(req.body?.redirect_uris).filter((uri) => isAllowedRedirectUri(config, uri));
+    if (!redirectUris.length) {
+      res.status(400).json({ error: "invalid_redirect_uri" });
+      return;
+    }
     const clientId = `ybcrm_${randomBytes(12).toString("hex")}`;
     const issuedAt = Math.floor(Date.now() / 1000);
     res.status(201).json({
@@ -162,10 +174,15 @@ export function createOAuthRouter(config: Config) {
     const clientId = query.client_id;
     const redirectUri = query.redirect_uri;
     const state = query.state;
-    const scope = query.scope || "crm.read crm.write";
+    const requestedScopes = new Set(String(query.scope || "crm.read").split(/\s+/).filter(Boolean));
+    const scope = requestedScopes.has("crm.read") ? "crm.read" : "";
 
     if (!clientId || !redirectUri) {
       res.status(400).send(htmlPage("<h1>Не хватает данных</h1><p>ChatGPT не передал client_id или redirect_uri.</p>"));
+      return;
+    }
+    if (!isAllowedRedirectUri(config, redirectUri)) {
+      res.status(400).send(htmlPage("<h1>Адрес подключения запрещён</h1><p>Этот OAuth redirect URI не входит в разрешённый список.</p>"));
       return;
     }
 
@@ -232,7 +249,7 @@ export function createOAuthRouter(config: Config) {
     res.json({
       access_token: issueAccessToken(config, record.scope),
       token_type: "Bearer",
-      expires_in: 31_536_000,
+      expires_in: 28_800,
       scope: record.scope,
     });
   });
