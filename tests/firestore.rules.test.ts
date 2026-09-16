@@ -67,6 +67,7 @@ test('клиент не может подделать системные audit l
   await assertFails(setDoc(doc(employeeDb(), 'audit_logs', 'fake'), { action: 'payment' }));
   await assertFails(setDoc(doc(ownerDb(), 'audit_logs', 'fake'), { action: 'payment' }));
   await assertFails(setDoc(doc(ownerDb(), 'ai_agent_audit_logs', 'fake'), { tool: 'get_orders' }));
+  await assertFails(getDoc(doc(ownerDb(), 'ai_agent_audit_logs', 'fake')));
 });
 
 test('очередь AI и kill switch доступны только серверу', { skip: !hasEmulator }, async () => {

@@ -56,8 +56,8 @@ MCP, OpenAI API и внутренний scheduler должны вызывать 
 2. **Единые сервисы.** Вынести доменную логику из `server.ts` и React постепенно, начиная с orders/payments. Встроенную копию MCP перевести только в proxy, затем удалить после контролируемого переключения.
 3. **Нормализация source of truth.** Утвердить payment ledger, inventory movements, suppliers, employees/payroll и communications index. Только затем — миграции с preview, backup и rollback.
 4. **Production-grade identity.** Отдельные service accounts/agent identities, короткие токены, audience/issuer validation, token revocation и точные permissions вместо общего `crm.read`.
-5. **Approval service.** Подписанный approval request с hash аргументов, TTL, single use и владельцем подтверждения. Выполнение только через повторную серверную проверку.
-6. **Job infrastructure.** Cloud Tasks/Pub/Sub или эквивалент, Firestore job registry, idempotency keys, exponential retry, timeout, DLQ и уведомления.
+5. **Approval service.** Базовый gate реализован для job queue: hash аргументов, TTL, single use и владелец подтверждения. До write tools требуется добавить человекочитаемый preview конкретного бизнес-действия и повторную проверку permission непосредственно перед исполнением.
+6. **Job infrastructure.** Firestore job registry, idempotency keys, lease, exponential retry, timeout, DLQ, recovery, Telegram-уведомления и kill switch реализованы. Остаётся настроить внешний production scheduler и провести нагрузочный/аварийный pilot.
 7. **Ограниченные write tools.** По одному домену: сначала `tasks.write`, затем черновики сообщений. Каждый инструмент отдельно тестируется и включается feature flag-ом.
 8. **Финансовые действия.** Только prepare/preview. `finance.execute_payment`, налоги и возвраты остаются FORBIDDEN для автономного агента до отдельного решения владельца и банковского контроля.
 9. **Наблюдаемость.** Экран «Что сделали AI-агенты», алерты по denied/error/cost, retention policy и экспорт аудита.

@@ -9,7 +9,7 @@
     "deploy": "firebase deploy --only functions"
   },
   "engines": {
-    "node": "20"
+    "node": "22"
   },
   "dependencies": {
     "@simplewebauthn/server": "^13.3.2",

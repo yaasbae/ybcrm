@@ -1,5 +1,9 @@
 # Security audit YBCRM
 
+## Runtime Cloud Functions
+
+Конфигурация `functions/package.json` переведена с Node.js 20 на Node.js 22. Код компилируется с текущими версиями Firebase Functions/Admin; фактическое переключение runtime произойдёт только при контролируемом deploy Cloud Functions.
+
 Дата: 16 сентября 2026 года. Статический анализ, исправления и безопасное canary-внедрение в production.
 
 ## Итог
@@ -70,7 +74,7 @@ Production RP ID/origins зафиксированы на `ybcrm.ru`, а user ver
 
 - финансовые и производственные расчеты продублированы и имеют незафиксированную семантику;
 - payroll и некоторые финансовые настройки находятся в `localStorage`;
-- нет job queue/DLQ и гарантированного idempotency;
+- Реализована изолированная серверная очередь `ai_jobs`: idempotency, timeout, lease, bounded retry, DLQ, восстановление зависшего lease, kill switch и owner-only управление. До автономной эксплуатации остаётся настроить production scheduler и провести период наблюдения.
 - audit основной CRM best-effort и при ошибке записи молча продолжает действие;
 - коммуникации содержат PII, но нет общей retention/redaction policy;
 - deploy workflow теперь запускает lint, build и тесты до публикации, но GitHub branch protection всё ещё нужно контролировать отдельно;
