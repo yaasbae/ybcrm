@@ -97,7 +97,10 @@ export function installAiJobQueue(app: Express, db: Firestore, requireOwner: Own
     if (!await owner(req, res, requireOwner)) return;
     const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 50));
     const snap = await db.collection(JOBS).orderBy("createdAt", "desc").limit(limit).get();
-    res.json(snap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    res.json(snap.docs.map(doc => {
+      const { approvalNonce: _nonce, approvalArgumentsHash: _hash, ...safeData } = doc.data();
+      return { id: doc.id, ...safeData };
+    }));
   });
 
   app.get("/api/ai-jobs/audit", async (req, res) => {

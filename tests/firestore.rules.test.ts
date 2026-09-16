@@ -81,6 +81,8 @@ test('очередь AI и kill switch доступны только серве�
     await assertFails(setDoc(doc(database, 'ai_jobs', 'fake'), { status: 'succeeded' }));
     await assertFails(getDoc(doc(database, 'ai_runtime_control', 'global')));
     await assertFails(setDoc(doc(database, 'ai_runtime_control', 'global'), { enabled: true }));
+    await assertFails(getDoc(doc(database, 'ai_incidents', 'incident-1')));
+    await assertFails(setDoc(doc(database, 'ai_incidents', 'fake'), { status: 'new' }));
   }
 });
 

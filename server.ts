@@ -97,6 +97,8 @@ const ORDER_TELEGRAM_CHAT_ID = String(process.env.ORDER_TELEGRAM_CHAT_ID || "-10
 const ORDER_TELEGRAM_THREAD_ID = Number(process.env.ORDER_TELEGRAM_THREAD_ID || 1244);
 const RELEASE_TELEGRAM_CHAT_ID = String(process.env.RELEASE_TELEGRAM_CHAT_ID || ORDER_TELEGRAM_CHAT_ID).trim();
 const RELEASE_TELEGRAM_THREAD_ID = Number(process.env.RELEASE_TELEGRAM_THREAD_ID || 12750);
+const AI_INTAKE_TELEGRAM_CHAT_ID = String(process.env.AI_INTAKE_TELEGRAM_CHAT_ID || RELEASE_TELEGRAM_CHAT_ID).trim();
+const AI_INTAKE_TELEGRAM_THREAD_ID = Number(process.env.AI_INTAKE_TELEGRAM_THREAD_ID || 0);
 const RELEASE_COMMIT_SHA = String(process.env.RELEASE_COMMIT_SHA || "").trim();
 const RELEASE_NOTES_B64 = String(process.env.RELEASE_NOTES_B64 || "").trim();
 let WEB_PUSH_PUBLIC_KEY = String(process.env.WEB_PUSH_PUBLIC_KEY || "").trim();
@@ -12264,9 +12266,57 @@ function startTelegramBot() {
     const message = ctx.message as any;
     const messageThreadId = Number(message?.message_thread_id || 0);
     const chatId = String(ctx.chat?.id || "");
+    const isAiIntake = Boolean(
+      AI_INTAKE_TELEGRAM_THREAD_ID
+      && chatId === AI_INTAKE_TELEGRAM_CHAT_ID
+      && messageThreadId === AI_INTAKE_TELEGRAM_THREAD_ID
+    );
+    if (isAiIntake) {
+      const text = String(message?.text || message?.caption || "").trim();
+      if (!text || text.startsWith("/")) return true;
+      if (!adminDb) {
+        await ctx.reply("Не удалось зарегистрировать обращение: база временно недоступна.");
+        return true;
+      }
+      const incidentId = `${chatId.replace(/[^0-9-]/g, "")}_${Number(message.message_id || 0)}`;
+      await adminDb.collection("ai_incidents").doc(incidentId).set({
+        source: "telegram",
+        status: "new",
+        text: text.slice(0, 4_000),
+        telegram: {
+          chatId: chatId.slice(0, 100),
+          threadId: messageThreadId,
+          messageId: Number(message.message_id || 0),
+          senderId: String(ctx.from?.id || "").slice(0, 100),
+          senderName: [ctx.from?.first_name, ctx.from?.last_name].filter(Boolean).join(" ").slice(0, 200),
+          username: String(ctx.from?.username || "").slice(0, 100),
+        },
+        createdAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+      }, { merge: false });
+      await adminDb.collection("ai_agent_audit_logs").add({
+        agent_id: "telegram-intake",
+        user_id: String(ctx.from?.id || "telegram-user").slice(0, 200),
+        timestamp: new Date().toISOString(),
+        tool: "telegram.incident_intake",
+        arguments: { incidentId, messageLength: text.length },
+        reason: "Регистрация обращения менеджера без автоматического изменения CRM",
+        result: { status: "new" },
+        status: "success",
+        approval_required: false,
+        approval_by: null,
+        cost_tokens: null,
+        server_timestamp: FieldValue.serverTimestamp(),
+      });
+      await ctx.reply(`Обращение зарегистрировано: ${incidentId}\nAI пока только анализирует и ничего не меняет без разрешения.`);
+      return true;
+    }
     if (isReservedTelegramServiceTopic(chatId, messageThreadId, [
       { chatId: ORDER_TELEGRAM_CHAT_ID, threadId: ORDER_TELEGRAM_THREAD_ID },
       { chatId: RELEASE_TELEGRAM_CHAT_ID, threadId: RELEASE_TELEGRAM_THREAD_ID },
+      ...(AI_INTAKE_TELEGRAM_THREAD_ID
+        ? [{ chatId: AI_INTAKE_TELEGRAM_CHAT_ID, threadId: AI_INTAKE_TELEGRAM_THREAD_ID }]
+        : []),
     ])) {
       // These forum topics are reserved for automatic order/release notifications.
       // Consume manager messages here so they are not mistaken for client bot input

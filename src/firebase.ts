@@ -17,7 +17,9 @@ import { getStorage } from 'firebase/storage';
 import firebaseConfig from '../firebase-applet-config.json';
 
 // Initialize Firebase
-const app = initializeApp(firebaseConfig);
+const usesYbcrmDomain = typeof window !== 'undefined' && /(^|\.)ybcrm\.ru$/i.test(window.location.hostname);
+const appConfig = usesYbcrmDomain ? { ...firebaseConfig, authDomain: window.location.hostname } : firebaseConfig;
+const app = initializeApp(appConfig);
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 export const auth = getAuth(app);
 export const storage = getStorage(app);

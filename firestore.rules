@@ -260,6 +260,10 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    match /ai_incidents/{document=**} {
+      allow read, write: if false;
+    }
+
     // References collection
     match /references/{document=**} {
       allow read, write: if isAuthenticated();
