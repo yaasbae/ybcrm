@@ -12221,6 +12221,27 @@ function startTelegramBot() {
 
   const isManagerChat = (ctx: any) => getManagerChatIds().includes(String(ctx.chat?.id || ""));
 
+  let aiIntakeTopicCache: { chatId: string; threadId: number; enabled: boolean; expiresAt: number } | null = null;
+  const getAiIntakeTopic = async () => {
+    if (aiIntakeTopicCache && aiIntakeTopicCache.expiresAt > Date.now()) return aiIntakeTopicCache;
+    const fallback = {
+      chatId: AI_INTAKE_TELEGRAM_CHAT_ID,
+      threadId: AI_INTAKE_TELEGRAM_THREAD_ID,
+      enabled: Boolean(AI_INTAKE_TELEGRAM_THREAD_ID),
+      expiresAt: Date.now() + 60_000,
+    };
+    if (!adminDb) return fallback;
+    const snap = await adminDb.collection("settings").doc("ai_intake_telegram").get().catch(() => null);
+    const data = snap?.data();
+    aiIntakeTopicCache = data ? {
+      chatId: String(data.chatId || ""),
+      threadId: Number(data.threadId || 0),
+      enabled: data.enabled === true,
+      expiresAt: Date.now() + 60_000,
+    } : fallback;
+    return aiIntakeTopicCache;
+  };
+
   const formatClientName = (from: any) => {
     const name = [from?.first_name, from?.last_name].filter(Boolean).join(" ").trim();
     const username = from?.username ? `@${from.username}` : "";
@@ -12266,14 +12287,17 @@ function startTelegramBot() {
     const message = ctx.message as any;
     const messageThreadId = Number(message?.message_thread_id || 0);
     const chatId = String(ctx.chat?.id || "");
+    const aiIntakeTopic = await getAiIntakeTopic();
     const isAiIntake = Boolean(
-      AI_INTAKE_TELEGRAM_THREAD_ID
-      && chatId === AI_INTAKE_TELEGRAM_CHAT_ID
-      && messageThreadId === AI_INTAKE_TELEGRAM_THREAD_ID
+      aiIntakeTopic.enabled
+      && aiIntakeTopic.threadId
+      && chatId === aiIntakeTopic.chatId
+      && messageThreadId === aiIntakeTopic.threadId
     );
     if (isAiIntake) {
       const text = String(message?.text || message?.caption || "").trim();
-      if (!text || text.startsWith("/")) return true;
+      if (!text) return true;
+      if (text.startsWith("/")) return false;
       if (!adminDb) {
         await ctx.reply("Не удалось зарегистрировать обращение: база временно недоступна.");
         return true;
@@ -12314,8 +12338,8 @@ function startTelegramBot() {
     if (isReservedTelegramServiceTopic(chatId, messageThreadId, [
       { chatId: ORDER_TELEGRAM_CHAT_ID, threadId: ORDER_TELEGRAM_THREAD_ID },
       { chatId: RELEASE_TELEGRAM_CHAT_ID, threadId: RELEASE_TELEGRAM_THREAD_ID },
-      ...(AI_INTAKE_TELEGRAM_THREAD_ID
-        ? [{ chatId: AI_INTAKE_TELEGRAM_CHAT_ID, threadId: AI_INTAKE_TELEGRAM_THREAD_ID }]
+      ...(aiIntakeTopic.enabled && aiIntakeTopic.threadId
+        ? [{ chatId: aiIntakeTopic.chatId, threadId: aiIntakeTopic.threadId }]
         : []),
     ])) {
       // These forum topics are reserved for automatic order/release notifications.
@@ -12387,6 +12411,50 @@ function startTelegramBot() {
         ? "Этот чат подключен как менеджерский."
         : "Добавь chat_id на странице Бот -> Настройки, чтобы получать сообщения клиентов здесь."
     ].join("\n"));
+  });
+
+  bot.command("ai_intake_here", async (ctx: any) => {
+    if (!isManagerChat(ctx)) {
+      await ctx.reply("Настройка доступна только в подключённом менеджерском чате.");
+      return;
+    }
+    const threadId = Number(ctx.message?.message_thread_id || 0);
+    if (!threadId) {
+      await ctx.reply("Команду нужно отправить внутри отдельной темы Telegram-группы.");
+      return;
+    }
+    if (!adminDb) {
+      await ctx.reply("База временно недоступна, настройка не сохранена.");
+      return;
+    }
+    const chatId = String(ctx.chat?.id || "");
+    await adminDb.collection("settings").doc("ai_intake_telegram").set({
+      chatId,
+      threadId,
+      enabled: true,
+      updatedBy: String(ctx.from?.id || "telegram-manager").slice(0, 100),
+      updatedAt: FieldValue.serverTimestamp(),
+    }, { merge: true });
+    aiIntakeTopicCache = { chatId, threadId, enabled: true, expiresAt: Date.now() + 60_000 };
+    await ctx.reply("Эта тема подключена как AI-приёмная. Новые сообщения будут регистрироваться как обращения.");
+  });
+
+  bot.command("ai_intake_off", async (ctx: any) => {
+    if (!isManagerChat(ctx)) {
+      await ctx.reply("Настройка доступна только в подключённом менеджерском чате.");
+      return;
+    }
+    if (!adminDb) {
+      await ctx.reply("База временно недоступна, настройка не изменена.");
+      return;
+    }
+    await adminDb.collection("settings").doc("ai_intake_telegram").set({
+      enabled: false,
+      updatedBy: String(ctx.from?.id || "telegram-manager").slice(0, 100),
+      updatedAt: FieldValue.serverTimestamp(),
+    }, { merge: true });
+    aiIntakeTopicCache = { chatId: "", threadId: 0, enabled: false, expiresAt: Date.now() + 60_000 };
+    await ctx.reply("AI-приёмная отключена. Ранее зарегистрированные обращения сохранены.");
   });
 
   const saveSubscriber = async (ctx: any) => {
