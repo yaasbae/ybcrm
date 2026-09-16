@@ -25,6 +25,7 @@ const SocialHubPage = lazy(() => import("./components/SocialHubPage").then(m => 
 const StorefrontPage = lazy(() => import("./components/StorefrontPage").then(m => ({ default: m.StorefrontPage })));
 const OrderAuditPage = lazy(() => import("./components/OrderAuditPage").then(m => ({ default: m.OrderAuditPage })));
 const ProductionPage = lazy(() => import("./components/ProductionPage").then(m => ({ default: m.ProductionPage })));
+const AIJobsPage = lazy(() => import("./components/AIJobsPage"));
 import { auth, completeGoogleRedirectSignIn, getGoogleAuthErrorMessage, signInWithGoogle, signInWithEmail, signInWithPasskeyToken, logOut } from "./firebase";
 import { onAuthStateChanged, User as FirebaseUser } from "firebase/auth";
 import { isPasskeySupported, loginWithPasskey, registerPasskey } from "./lib/passkeys";
@@ -39,7 +40,7 @@ import { PushNotificationButton } from "./components/PushNotificationButton";
 import { SiteChatWidget } from "./components/SiteChatWidget";
 import { logAuditEvent } from "./lib/auditLog";
 
-type AppView = 'home' | 'calculator' | 'analytics' | 'orders' | 'clients' | 'marketing' | 'order-form' | 'products' | 'production' | 'storefront' | 'ai-agent' | 'public-product' | 'public-payment' | 'finance' | 'payroll' | 'handbook' | 'broadcast' | 'broadcast-v2' | 'bot' | 'content' | 'studio' | 'cdek' | 'integrations' | 'instagram' | 'social' | 'audit';
+type AppView = 'home' | 'calculator' | 'analytics' | 'orders' | 'clients' | 'marketing' | 'order-form' | 'products' | 'production' | 'storefront' | 'ai-agent' | 'ai-jobs' | 'public-product' | 'public-payment' | 'finance' | 'payroll' | 'handbook' | 'broadcast' | 'broadcast-v2' | 'bot' | 'content' | 'studio' | 'cdek' | 'integrations' | 'instagram' | 'social' | 'audit';
 
 const viewRoutes: Record<Exclude<AppView, 'public-product' | 'public-payment'>, string> = {
   home: '/',
@@ -53,6 +54,7 @@ const viewRoutes: Record<Exclude<AppView, 'public-product' | 'public-payment'>, 
   production: '/production',
   storefront: '/storefront',
   'ai-agent': '/ai-agent',
+  'ai-jobs': '/ai-jobs',
   finance: '/finance',
   payroll: '/payroll',
   handbook: '/handbook',
@@ -95,6 +97,7 @@ const VIEW_LABELS: Partial<Record<AppView, string>> = {
   'broadcast-v2': 'Рассылки 2',
   studio: 'Студия',
   'ai-agent': 'ИИ',
+  'ai-jobs': 'AI-задания',
   audit: 'Логи',
 };
 
@@ -661,6 +664,7 @@ export default function App() {
                 { id: 'orders',    label: 'Заказы',   icon: ShoppingBag },
                 { id: 'clients',   label: 'Клиент.',  icon: UserCircle },
                 ...(isOwner ? [{ id: 'audit', label: 'Админка', icon: FileClock }] : []),
+                ...(isOwner ? [{ id: 'ai-jobs', label: 'AI задачи', icon: Bot }] : []),
                 { id: 'marketing', label: 'Маркет.',  icon: Star },
                 { id: 'products',  label: 'Склад',    icon: Package },
                 { id: 'production', label: 'Произв.', icon: Factory },
@@ -785,6 +789,8 @@ export default function App() {
           {view === 'ai-agent' && (
             <AISalesAgent onBack={() => handleNavigate('home')} />
           )}
+
+          {view === 'ai-jobs' && <AIJobsPage />}
 
           {view === 'finance' && (
             <FinanceDashboard onBack={() => handleNavigate('home')} userEmail={user?.email || ''} />

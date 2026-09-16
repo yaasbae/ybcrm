@@ -15,6 +15,7 @@ type Executor = (payload: Record<string, unknown>) => Promise<unknown>;
 
 const JOBS = "ai_jobs";
 const CONTROL = "ai_runtime_control";
+const AUDIT = "ai_agent_audit_logs";
 const MAX_PAYLOAD_BYTES = 32_000;
 
 function safeError(error: unknown) {
@@ -28,6 +29,29 @@ function idFor(type: string, key: string) {
 async function runtimeEnabled(db: Firestore) {
   const snap = await db.collection(CONTROL).doc("global").get();
   return snap.exists && snap.data()?.enabled === true;
+}
+
+async function writeAudit(db: Firestore, input: {
+  actor: string;
+  tool: string;
+  jobId?: string;
+  status: "success" | "error" | "denied";
+  result?: Record<string, unknown>;
+}) {
+  await db.collection(AUDIT).add({
+    agent_id: "ai-job-system",
+    user_id: input.actor.slice(0, 200),
+    timestamp: new Date().toISOString(),
+    tool: input.tool.slice(0, 120),
+    arguments: input.jobId ? { jobId: input.jobId } : {},
+    reason: "AI background job lifecycle",
+    result: input.result || {},
+    status: input.status,
+    approval_required: input.tool.includes("approve"),
+    approval_by: input.tool.includes("approve") ? input.actor.slice(0, 200) : null,
+    cost_tokens: null,
+    server_timestamp: FieldValue.serverTimestamp(),
+  });
 }
 
 async function owner(req: Request, res: Response, guard: OwnerGuard) {
@@ -61,6 +85,7 @@ export function installAiJobQueue(app: Express, db: Firestore, requireOwner: Own
       updatedAt: FieldValue.serverTimestamp(),
       updatedBy: String(actor.email || actor.uid || "owner").slice(0, 200),
     }, { merge: true });
+    await writeAudit(db, { actor: String(actor.email || actor.uid || "owner"), tool: "ai_jobs.kill_switch", status: "success", result: { enabled } });
     res.json({ enabled });
   });
 
@@ -96,6 +121,10 @@ export function installAiJobQueue(app: Express, db: Firestore, requireOwner: Own
       });
       return { created: true, id: ref.id, status };
     });
+    await writeAudit(db, {
+      actor: String(actor.email || actor.uid || "owner"), tool: "ai_jobs.enqueue",
+      jobId: result.id, status: "success", result: { created: result.created, type, status: result.status },
+    });
     res.status(result.created ? 201 : 200).json(result);
   });
 
@@ -116,12 +145,15 @@ export function installAiJobQueue(app: Express, db: Firestore, requireOwner: Own
     });
     if (result === "missing") return res.status(404).json({ error: "Задание не найдено" });
     if (result === "invalid") return res.status(409).json({ error: "Задание нельзя подтвердить в текущем статусе" });
+    await writeAudit(db, { actor: String(actor.email || actor.uid || "owner"), tool: "ai_jobs.approve", jobId: ref.id, status: "success" });
     res.json({ id: ref.id, status: "queued" });
   });
 
   app.post("/api/ai-jobs/:id/cancel", async (req, res) => {
-    if (!await owner(req, res, requireOwner)) return;
+    const actor = await owner(req, res, requireOwner);
+    if (!actor) return;
     await db.collection(JOBS).doc(req.params.id).set({ status: "cancelled", updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+    await writeAudit(db, { actor: String(actor.email || actor.uid || "owner"), tool: "ai_jobs.cancel", jobId: req.params.id, status: "success" });
     res.json({ id: req.params.id, status: "cancelled" });
   });
 
@@ -155,6 +187,7 @@ export function installAiJobQueue(app: Express, db: Firestore, requireOwner: Own
         if (!executor) throw new Error("Для типа задания ещё нет безопасного исполнителя");
         const output = await withTimeout(executor(claimed.payload || {}), Number(claimed.timeoutMs || 30_000));
         await candidate.ref.update({ status: "succeeded", result: output, finishedAt: FieldValue.serverTimestamp(), leaseUntil: null, leasedBy: null, updatedAt: FieldValue.serverTimestamp() });
+        await writeAudit(db, { actor: workerId, tool: `ai_jobs.execute.${claimed.type}`, jobId: candidate.id, status: "success", result: { state: "succeeded" } });
         results.push({ id: candidate.id, status: "succeeded" });
       } catch (error) {
         const status = statusAfterFailure(claimed.attempts, Number(claimed.maxAttempts || 3));
@@ -163,6 +196,7 @@ export function installAiJobQueue(app: Express, db: Firestore, requireOwner: Own
           scheduledAt: Timestamp.fromMillis(Date.now() + retryDelayMs(claimed.attempts)),
           updatedAt: FieldValue.serverTimestamp(),
         });
+        await writeAudit(db, { actor: workerId, tool: `ai_jobs.execute.${claimed.type}`, jobId: candidate.id, status: "error", result: { state: status, error: safeError(error) } });
         results.push({ id: candidate.id, status });
       }
     }
