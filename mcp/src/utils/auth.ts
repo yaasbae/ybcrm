@@ -8,6 +8,9 @@ export interface AuthRequest extends Request {
     sub?: string;
     email?: string;
     role?: string;
+    scope?: string;
+    agent_id?: string;
+    permissions?: string[];
   };
 }
 
@@ -29,7 +32,11 @@ export function authMiddleware(config: Config) {
     }
 
     try {
-      const payload = jwt.verify(token, config.crmJwtSecret) as AuthRequest["user"];
+      const payload = jwt.verify(token, config.crmJwtSecret, {
+        algorithms: ["HS256"],
+        audience: "ybcrm-mcp",
+        issuer: publicBaseUrl,
+      }) as AuthRequest["user"];
       req.user = payload;
       return next();
     } catch {

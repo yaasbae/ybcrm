@@ -11,6 +11,8 @@ import { createApiRouter } from "../routes/api.routes.js";
 import { createOAuthRouter } from "../routes/oauth.routes.js";
 import { openApiDocument } from "../routes/openapi.js";
 import { createMcpServer } from "../tools/mcp.js";
+import { aiContextFromRequest } from "../ai-tools/context.js";
+import type { AuthRequest } from "../utils/auth.js";
 
 export function createApp(container: Container) {
   const app = express();
@@ -50,9 +52,9 @@ export function createApp(container: Container) {
     });
   });
 
-  app.post("/mcp", auth, async (req, res, next) => {
+  app.post("/mcp", auth, async (req: AuthRequest, res, next) => {
     try {
-      const server = createMcpServer(container);
+      const server = createMcpServer(container, aiContextFromRequest(req));
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: undefined,
       });

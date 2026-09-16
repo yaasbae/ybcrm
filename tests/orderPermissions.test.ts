@@ -3,15 +3,15 @@ import assert from 'node:assert/strict';
 
 import { ALL_ORDER_ACTIONS, getOrderActionForField, resolveOrderActions } from '../src/lib/orderPermissionConfig';
 
-test('keeps existing accounts compatible with every order action', () => {
+test('defines the complete order action catalog', () => {
   assert.deepEqual(ALL_ORDER_ACTIONS, [
     'create', 'edit', 'status', 'exchange', 'payments', 'refund', 'cdek', 'delete', 'export',
   ]);
 });
 
-test('does not enforce order permissions until the owner explicitly configures them', () => {
-  assert.deepEqual(resolveOrderActions(['create'], undefined), ALL_ORDER_ACTIONS);
-  assert.deepEqual(resolveOrderActions([], false), ALL_ORDER_ACTIONS);
+test('denies order actions until the owner explicitly configures them', () => {
+  assert.deepEqual(resolveOrderActions(['create'], undefined), []);
+  assert.deepEqual(resolveOrderActions([], false), []);
   assert.deepEqual(resolveOrderActions(['create', 'payments'], true), ['create', 'payments']);
 });
 

@@ -1,3 +1,6 @@
+import { FirestoreAiAuditSink } from "../ai-tools/audit.js";
+import { AiToolLayer } from "../ai-tools/tool-layer.js";
+import { AgentReadService } from "../services/agent-read.service.js";
 import { AnalyticsService } from "../services/analytics.service.js";
 import { ClientsService } from "../services/clients.service.js";
 import { ContentAnalyticsService } from "../services/content-analytics.service.js";
@@ -25,6 +28,9 @@ export function createContainer(): Container {
   const finance = new FinanceService(firebase, orders);
   const tasks = new TasksService(firebase);
   const dashboard = new DashboardService(orders, analytics, finance);
+  const agentRead = new AgentReadService(firebase, orders);
+  const aiAudit = new FirestoreAiAuditSink(firebase, logger);
+  const aiTools = new AiToolLayer({ clients, orders, analytics, agentRead, finance }, aiAudit);
 
   return {
     config,
@@ -38,5 +44,8 @@ export function createContainer(): Container {
     finance,
     tasks,
     dashboard,
+    agentRead,
+    aiAudit,
+    aiTools,
   };
 }

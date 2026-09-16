@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { motion } from 'motion/react';
 import {
   AlertCircle,
@@ -12,7 +12,6 @@ import {
   Instagram,
   KeyRound,
   Loader2,
-  MessageCircle,
   PlugZap,
   Save,
   Send,
@@ -237,15 +236,6 @@ export const IntegrationsPage: React.FC<Props> = ({ onNavigate }) => {
   const [savingInstagram, setSavingInstagram] = useState(false);
   const [checkingInstagram, setCheckingInstagram] = useState(false);
   const [geminiState, setGeminiState] = useState<ApiState>('checking');
-  const [geminiKey, setGeminiKey] = useState('');
-  const [geminiResult, setGeminiResult] = useState('');
-  const [savingGemini, setSavingGemini] = useState(false);
-
-  const chatwootState: ApiState = useMemo(() => {
-    const token = import.meta.env.VITE_CHATWOOT_WEBSITE_TOKEN;
-    const base = import.meta.env.VITE_CHATWOOT_BASE_URL;
-    return token && base ? 'connected' : 'missing';
-  }, []);
 
   const loadStatuses = async () => {
     setCloudBillingState('checking');
@@ -318,8 +308,9 @@ export const IntegrationsPage: React.FC<Props> = ({ onNavigate }) => {
       })
       .catch(() => setInstagramState('missing'));
 
-    getDoc(doc(db, 'settings', 'ai_config'))
-      .then(snap => setGeminiState(snap.exists() && snap.data()?.geminiKey ? 'connected' : 'missing'))
+    fetch('/api/ai/status')
+      .then(readApiJson)
+      .then(data => setGeminiState(data.geminiConfigured ? 'connected' : 'missing'))
       .catch(() => setGeminiState('missing'));
   };
 
@@ -492,22 +483,6 @@ export const IntegrationsPage: React.FC<Props> = ({ onNavigate }) => {
       setCdekResult(e.message || 'Ошибка сохранения СДЭК');
     } finally {
       setSavingCdek(false);
-    }
-  };
-
-  const saveGemini = async () => {
-    if (!geminiKey.trim()) return;
-    setSavingGemini(true);
-    setGeminiResult('');
-    try {
-      await setDoc(doc(db, 'settings', 'ai_config'), { geminiKey: geminiKey.trim() }, { merge: true });
-      setGeminiKey('');
-      setGeminiState('connected');
-      setGeminiResult('Gemini API ключ сохранен.');
-    } catch (e: any) {
-      setGeminiResult(e.message || 'Ошибка сохранения Gemini');
-    } finally {
-      setSavingGemini(false);
     }
   };
 
@@ -1046,28 +1021,6 @@ export const IntegrationsPage: React.FC<Props> = ({ onNavigate }) => {
         </ApiCard>
 
         <ApiCard
-          title="Chatwoot"
-          subtitle="Виджет чата и входящие сообщения клиентов."
-          icon={MessageCircle}
-          state={chatwootState}
-          accent="bg-[#2EBA7F]"
-        >
-          <div className="grid gap-3 sm:grid-cols-2">
-            <div className="rounded-[10px] border border-[#E6E9EF] bg-[#F6F7F9] p-4">
-              <p className={labelClass}>Base URL</p>
-              <p className="mt-2 truncate text-[13px] font-semibold text-[#1F2937]">{import.meta.env.VITE_CHATWOOT_BASE_URL || 'Не задан'}</p>
-            </div>
-            <div className="rounded-[10px] border border-[#E6E9EF] bg-[#F6F7F9] p-4">
-              <p className={labelClass}>Website token</p>
-              <p className="mt-2 text-[13px] font-semibold text-[#1F2937]">{import.meta.env.VITE_CHATWOOT_WEBSITE_TOKEN ? 'Задан в env' : 'Не задан'}</p>
-            </div>
-          </div>
-          <p className="mt-3 text-[12px] leading-5 text-[#6B7280]">
-            Токены Chatwoot лучше хранить в переменных окружения деплоя. Через браузер их не сохраняю специально.
-          </p>
-        </ApiCard>
-
-        <ApiCard
           title="Instagram Graph"
           subtitle="Подключение охватов, Reels и статистики Instagram к CRM."
           icon={Instagram}
@@ -1157,16 +1110,9 @@ export const IntegrationsPage: React.FC<Props> = ({ onNavigate }) => {
           state={geminiState}
           accent="bg-[#7D7DE6]"
         >
-          <div className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
-            <Field label="Gemini API Key">
-              <input value={geminiKey} onChange={e => setGeminiKey(e.target.value)} placeholder="AIzaSy..." type="password" className={inputClass} />
-            </Field>
-            <ActionButton onClick={saveGemini} disabled={savingGemini || !geminiKey.trim()} tone="blue">
-              {savingGemini ? <Loader2 className="h-4 w-4 animate-spin" /> : <KeyRound className="h-4 w-4" />}
-              Сохранить
-            </ActionButton>
-          </div>
-          {geminiResult && <p className={cn('mt-3 text-[12px] font-semibold', geminiResult.includes('Ошибка') ? 'text-[#F06B6B]' : 'text-[#2EBA7F]')}>{geminiResult}</p>}
+          <p className="rounded-2xl border border-[#E4E7EC] bg-[#F8F9FB] px-4 py-3 text-[12px] font-semibold text-[#667085]">
+            Ключ Gemini хранится только на сервере в менеджере секретов. В CRM показывается лишь состояние подключения.
+          </p>
         </ApiCard>
 
         <ApiCard

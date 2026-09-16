@@ -8,7 +8,7 @@ const ConfigSchema = z.object({
   port: z.coerce.number().int().positive().default(3100),
   mcpServerName: z.string().default("ybcrm-mcp"),
   mcpServerVersion: z.string().default("1.0.0"),
-  crmJwtSecret: z.string().min(16, "CRM_JWT_SECRET должен быть минимум 16 символов"),
+  crmJwtSecret: z.string().min(24, "CRM_JWT_SECRET должен быть минимум 24 символа"),
   firebaseProjectId: z.string().optional(),
   firebaseDatabaseId: z.string().default("production"),
   firebaseServiceAccountJson: z.string().optional(),
@@ -18,7 +18,15 @@ const ConfigSchema = z.object({
   metaGraphVersion: z.string().default("v23.0"),
   crmBaseUrl: z.string().url().default("https://ybcrm.ru"),
   mcpPublicBaseUrl: z.string().url().default("https://ybcrm.ru"),
-  mcpOAuthPin: z.string().min(4).optional(),
+  mcpOAuthPin: z.string().min(12).optional(),
+  mcpOAuthRedirectUris: z.array(z.string().url()).default(["https://chatgpt.com/connector_platform_oauth_redirect"]),
+}).superRefine((config, context) => {
+  if (config.nodeEnv === "production" && !config.mcpOAuthPin) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["mcpOAuthPin"], message: "MCP_OAUTH_PIN обязателен в production" });
+  }
+  if (config.nodeEnv === "production" && !config.firebaseProjectId) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["firebaseProjectId"], message: "FIREBASE_PROJECT_ID обязателен в production" });
+  }
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
@@ -40,6 +48,10 @@ export function loadConfig(): Config {
     crmBaseUrl: process.env.CRM_BASE_URL,
     mcpPublicBaseUrl: process.env.MCP_PUBLIC_BASE_URL,
     mcpOAuthPin: process.env.MCP_OAUTH_PIN,
+    mcpOAuthRedirectUris: String(process.env.MCP_OAUTH_REDIRECT_URIS || "https://chatgpt.com/connector_platform_oauth_redirect")
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean),
   });
 
   if (!parsed.success) {

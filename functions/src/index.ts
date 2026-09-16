@@ -279,8 +279,19 @@ async function findTochkaOperation(token: string, customerCode: string, orderId:
   ) || null;
 }
 
-function setCors(res: Response) {
-  res.set('Access-Control-Allow-Origin', '*');
+function setCors(req: Request, res: Response) {
+  const origin = String(req.get('origin') || '');
+  const allowed = new Set([
+    'https://ybcrm.ru',
+    'https://www.ybcrm.ru',
+    'http://localhost:3000',
+    'http://localhost:5173',
+    ...String(process.env.CORS_ALLOWED_ORIGINS || '').split(',').map(value => value.trim()).filter(Boolean),
+  ]);
+  if (origin && allowed.has(origin)) {
+    res.set('Access-Control-Allow-Origin', origin);
+    res.set('Vary', 'Origin');
+  }
   res.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.set('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 }
@@ -290,6 +301,7 @@ function getRequestOrigin(req: Request) {
 }
 
 function getWebAuthnRpId(req: Request) {
+  if (process.env.NODE_ENV === 'production' && !process.env.FUNCTIONS_EMULATOR) return 'ybcrm.ru';
   const host = (req.get('x-forwarded-host') || req.get('host') || 'ybcrm.ru').split(':')[0];
   if (host === 'localhost' || host === '127.0.0.1') return 'localhost';
   if (host.endsWith('ybcrm.ru')) return 'ybcrm.ru';
@@ -297,6 +309,9 @@ function getWebAuthnRpId(req: Request) {
 }
 
 function getExpectedOrigins(req: Request) {
+  if (process.env.NODE_ENV === 'production' && !process.env.FUNCTIONS_EMULATOR) {
+    return ['https://ybcrm.ru', 'https://www.ybcrm.ru'];
+  }
   const origin = getRequestOrigin(req);
   return Array.from(new Set([
     origin,
@@ -312,6 +327,46 @@ async function verifyFirebaseBearer(req: Request) {
   const token = header.startsWith('Bearer ') ? header.slice(7) : '';
   if (!token) throw new Error('Нет Firebase токена авторизации');
   return admin.auth().verifyIdToken(token);
+}
+
+const FINANCE_OWNER_EMAIL = String(process.env.FINANCE_OWNER_EMAIL || 'ndtiger86@gmail.com').trim().toLowerCase();
+
+async function requireAuthenticated(req: Request, res: Response) {
+  try {
+    return await verifyFirebaseBearer(req);
+  } catch {
+    res.status(401).json({ error: 'Нужен вход в CRM' });
+    return null;
+  }
+}
+
+async function requireOwner(req: Request, res: Response) {
+  const decoded = await requireAuthenticated(req, res);
+  if (!decoded) return null;
+  if (String(decoded.email || '').trim().toLowerCase() !== FINANCE_OWNER_EMAIL) {
+    res.status(403).json({ error: 'Действие доступно только владельцу CRM' });
+    return null;
+  }
+  return decoded;
+}
+
+async function requirePaymentPermission(req: Request, res: Response) {
+  const decoded = await requireAuthenticated(req, res);
+  if (!decoded) return null;
+  if (String(decoded.email || '').trim().toLowerCase() === FINANCE_OWNER_EMAIL) return decoded;
+  try {
+    const profile = await db.collection('crm_access_profiles').doc(decoded.uid).get();
+    const data = profile.data() as any;
+    if (!profile.exists || data?.active === false || data?.orderActionsConfigured !== true
+      || !Array.isArray(data?.allowedOrderActions) || !data.allowedOrderActions.includes('payments')) {
+      res.status(403).json({ error: 'Нет права работать с оплатами' });
+      return null;
+    }
+    return decoded;
+  } catch {
+    res.status(503).json({ error: 'Не удалось проверить права аккаунта' });
+    return null;
+  }
 }
 
 function passkeyChallengeRef(id: string) {
@@ -345,7 +400,7 @@ async function deleteExpiredPasskeyChallenges() {
 // ─── Passkeys / Face ID / Touch ID ─────────────────────────────────────────
 
 export const passkeyRegisterOptions = onRequest({ timeoutSeconds: 30 }, async (req: Request, res: Response) => {
-  setCors(res);
+  setCors(req, res);
   if (req.method === 'OPTIONS') { res.status(204).send(''); return; }
   if (req.method !== 'POST') { res.status(405).json({ error: 'Method not allowed' }); return; }
   try {
@@ -389,7 +444,7 @@ export const passkeyRegisterOptions = onRequest({ timeoutSeconds: 30 }, async (r
 });
 
 export const passkeyRegisterVerify = onRequest({ timeoutSeconds: 30 }, async (req: Request, res: Response) => {
-  setCors(res);
+  setCors(req, res);
   if (req.method === 'OPTIONS') { res.status(204).send(''); return; }
   if (req.method !== 'POST') { res.status(405).json({ error: 'Method not allowed' }); return; }
   try {
@@ -408,7 +463,7 @@ export const passkeyRegisterVerify = onRequest({ timeoutSeconds: 30 }, async (re
       expectedChallenge: challenge.challenge,
       expectedOrigin: getExpectedOrigins(req),
       expectedRPID: challenge.rpID || getWebAuthnRpId(req),
-      requireUserVerification: false,
+      requireUserVerification: true,
     });
     if (!verification.verified || !verification.registrationInfo) {
       res.status(400).json({ error: 'Face ID не подтверждён устройством' });
@@ -438,7 +493,7 @@ export const passkeyRegisterVerify = onRequest({ timeoutSeconds: 30 }, async (re
 });
 
 export const passkeyLoginOptions = onRequest({ timeoutSeconds: 30 }, async (req: Request, res: Response) => {
-  setCors(res);
+  setCors(req, res);
   if (req.method === 'OPTIONS') { res.status(204).send(''); return; }
   if (req.method !== 'POST') { res.status(405).json({ error: 'Method not allowed' }); return; }
   try {
@@ -463,7 +518,7 @@ export const passkeyLoginOptions = onRequest({ timeoutSeconds: 30 }, async (req:
 });
 
 export const passkeyLoginVerify = onRequest({ timeoutSeconds: 30 }, async (req: Request, res: Response) => {
-  setCors(res);
+  setCors(req, res);
   if (req.method === 'OPTIONS') { res.status(204).send(''); return; }
   if (req.method !== 'POST') { res.status(405).json({ error: 'Method not allowed' }); return; }
   try {
@@ -495,7 +550,7 @@ export const passkeyLoginVerify = onRequest({ timeoutSeconds: 30 }, async (req: 
       expectedOrigin: getExpectedOrigins(req),
       expectedRPID: challenge.rpID || passkey.rpID || getWebAuthnRpId(req),
       credential,
-      requireUserVerification: false,
+      requireUserVerification: true,
     });
     if (!verification.verified) {
       res.status(401).json({ error: 'Face ID не прошёл проверку' });
@@ -517,8 +572,9 @@ export const passkeyLoginVerify = onRequest({ timeoutSeconds: 30 }, async (req: 
 // ─── GET /api/tochka/status ──────────────────────────────────────────────────
 
 export const tochkaStatus = onRequest(async (req: Request, res: Response) => {
-  setCors(res);
+  setCors(req, res);
   if (req.method === 'OPTIONS') { res.status(204).send(''); return; }
+  if (!await requireAuthenticated(req, res)) return;
   try {
     const settings = await getTochkaSettings();
     res.json({ configured: !!(settings?.jwtToken) });
@@ -530,9 +586,10 @@ export const tochkaStatus = onRequest(async (req: Request, res: Response) => {
 // ─── POST /api/tochka/save-token ────────────────────────────────────────────
 
 export const tochkaSaveToken = onRequest(async (req: Request, res: Response) => {
-  setCors(res);
+  setCors(req, res);
   if (req.method === 'OPTIONS') { res.status(204).send(''); return; }
   if (req.method !== 'POST') { res.status(405).json({ error: 'Method not allowed' }); return; }
+  if (!await requireOwner(req, res)) return;
   const { jwtToken, merchantId, accountId, paymentMode } = req.body || {};
   try {
     const current = (await getTochkaSettings()) || {};
@@ -556,8 +613,9 @@ export const tochkaSaveToken = onRequest(async (req: Request, res: Response) => 
 // ─── Новый OAuth Точки. Старый JWT-ввод выше остается рабочим. ───────────────
 
 export const tochkaOAuthStatus = onRequest(async (req: Request, res: Response) => {
-  setCors(res);
+  setCors(req, res);
   if (req.method === 'OPTIONS') { res.status(204).send(''); return; }
+  if (!await requireOwner(req, res)) return;
   try {
     const oauth = await getTochkaOAuthSettings();
     const tokenSettings = await getTochkaSettings();
@@ -577,9 +635,10 @@ export const tochkaOAuthStatus = onRequest(async (req: Request, res: Response) =
 });
 
 export const tochkaOAuthSaveClient = onRequest(async (req: Request, res: Response) => {
-  setCors(res);
+  setCors(req, res);
   if (req.method === 'OPTIONS') { res.status(204).send(''); return; }
   if (req.method !== 'POST') { res.status(405).json({ error: 'Method not allowed' }); return; }
+  if (!await requireOwner(req, res)) return;
   try {
     const current = await getTochkaOAuthSettings();
     const clientId = String(req.body?.clientId || current.clientId || '').trim();
@@ -605,6 +664,7 @@ export const tochkaOAuthSaveClient = onRequest(async (req: Request, res: Respons
 
 export const tochkaOAuthStart = onRequest(async (req: Request, res: Response) => {
   if (req.method !== 'GET') { res.status(405).json({ error: 'Method not allowed' }); return; }
+  if (!await requireOwner(req, res)) return;
   try {
     const settings = await getTochkaOAuthSettings();
     if (!settings.clientId || !settings.clientSecret) {
@@ -687,9 +747,10 @@ export const tochkaOAuthCallback = onRequest({ timeoutSeconds: 30 }, async (req:
 // ─── POST /api/tochka/create-payment ────────────────────────────────────────
 
 export const tochkaCreatePayment = onRequest({ timeoutSeconds: 30 }, async (req: Request, res: Response) => {
-  setCors(res);
+  setCors(req, res);
   if (req.method === 'OPTIONS') { res.status(204).send(''); return; }
   if (req.method !== 'POST') { res.status(405).json({ error: 'Method not allowed' }); return; }
+  if (!await requirePaymentPermission(req, res)) return;
 
   const { orderId, amount, description } = req.body || {};
   const paymentAmount = Number(amount);
@@ -828,8 +889,9 @@ export const tochkaCreatePayment = onRequest({ timeoutSeconds: 30 }, async (req:
 // ─── GET /api/tochka/find-payment ───────────────────────────────────────────
 
 export const tochkaFindPayment = onRequest({ timeoutSeconds: 30 }, async (req: Request, res: Response) => {
-  setCors(res);
+  setCors(req, res);
   if (req.method === 'OPTIONS') { res.status(204).send(''); return; }
+  if (!await requirePaymentPermission(req, res)) return;
 
   const orderId = String(req.query.orderId || '').trim();
   const target = getTochkaPaymentTarget(orderId, req.query.kind as string);

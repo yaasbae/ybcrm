@@ -21,15 +21,27 @@ jobs:
 
       - uses: google-github-actions/setup-gcloud@v2
 
+      - name: Verify MCP
+        run: |
+          npm --prefix mcp ci
+          npm --prefix mcp run lint
+          npm --prefix mcp test
+          npm --prefix mcp run build
+
       - name: Deploy MCP
         id: deploy_mcp
+        env:
+          FIREBASE_PROJECT_ID: gen-lang-client-0267383721
         run: |
           gcloud run deploy ybcrm-mcp \
             --source mcp \
             --region europe-west1 \
             --project gen-lang-client-0565901030 \
             --allow-unauthenticated \
-            --update-env-vars NODE_ENV=production,FIREBASE_PROJECT_ID=gen-lang-client-0267383721,FIREBASE_DATABASE_ID=production,CRM_BASE_URL=https://ybcrm.ru,MCP_PUBLIC_BASE_URL=https://ybcrm.ru,MCP_OAUTH_PIN=ybcrm-mcp-2026-7f8c2a91d4e64bb8 \
+            --min-instances 1 \
+            --max-instances 3 \
+            --update-env-vars NODE_ENV=production,FIREBASE_PROJECT_ID=${FIREBASE_PROJECT_ID},FIREBASE_DATABASE_ID=production,CRM_BASE_URL=https://ybcrm.ru,MCP_PUBLIC_BASE_URL=https://ybcrm.ru,MCP_OAUTH_REDIRECT_URIS=https://chatgpt.com/connector_platform_oauth_redirect \
+            --set-secrets CRM_JWT_SECRET=ybcrm-mcp-jwt-secret:latest,MCP_OAUTH_PIN=ybcrm-mcp-oauth-pin:latest \
             --quiet
           MCP_URL="$(gcloud run services describe ybcrm-mcp --region europe-west1 --project gen-lang-client-0565901030 --format='value(status.url)')"
           echo "mcp_url=$MCP_URL" >> "$GITHUB_OUTPUT"
@@ -40,9 +52,12 @@ jobs:
             --source . \
             --region europe-west1 \
             --project gen-lang-client-0565901030 \
-            --min-instances 0 \
+            --min-instances 1 \
             --max-instances 3 \
+            --concurrency 80 \
+            --memory 1Gi \
             --cpu-throttling \
             --allow-unauthenticated \
-            --update-env-vars WEBHOOK_URL=https://ybcrm.ru,SERVER_URL=https://ybcrm.ru,MCP_UPSTREAM_URL=${{ steps.deploy_mcp.outputs.mcp_url }} \
+            --update-env-vars NODE_ENV=production,WEBHOOK_URL=https://ybcrm.ru,SERVER_URL=https://ybcrm.ru,MCP_UPSTREAM_URL=${{ steps.deploy_mcp.outputs.mcp_url }} \
+            --set-secrets TG_BOT_TOKEN=ybcrm-tg-bot-token:latest,GEMINI_API_KEY=ybcrm-gemini-api-key:latest,FAL_API_KEY=ybcrm-fal-api-key:latest,CONTENT_BOT_TOKEN=ybcrm-content-bot-token:latest,TG_API_HASH=ybcrm-tg-api-hash:latest,INSTAGRAM_WEBHOOK_VERIFY_TOKEN=ybcrm-instagram-webhook-verify-token:latest \
             --quiet

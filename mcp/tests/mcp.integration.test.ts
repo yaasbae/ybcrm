@@ -2,9 +2,11 @@ import { createHash } from "node:crypto";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
 import { createApp } from "../src/server/app.js";
+import { AiToolLayer } from "../src/ai-tools/tool-layer.js";
+import { MemoryAiAuditSink } from "../src/ai-tools/audit.js";
 
 function testContainer() {
-  return {
+  const container: any = {
     config: {
       nodeEnv: "test",
       port: 3100,
@@ -25,14 +27,28 @@ function testContainer() {
       updateStatus: async (id: string, status: string) => ({ orderId: id, status }),
       create: async (args: unknown) => ({ orderId: "MCP-1", args }),
     },
-    clients: { search: async (query: string) => ({ query, clients: [] }) },
+    clients: {
+      search: async (query: string) => ({ query, clients: [] }),
+      getById: async (id: string) => ({ id }),
+    },
     analytics: { sales: async () => ({ today: 0 }) },
     instagram: { stats: async () => ({ followers: 1 }) },
     contentAnalytics: { analytics: async () => ({ reels: [] }) },
     finance: { summary: async () => ({ revenue: 0 }) },
     tasks: { create: async (args: unknown) => ({ id: "task-1", ...(args as object) }) },
     dashboard: { get: async () => ({ ok: true }) },
-  } as any;
+    agentRead: {
+      payments: async () => ({ payments: [] }),
+      inventory: async () => ({ products: [] }),
+      production: async () => ({ entries: [] }),
+      tasks: async () => ({ tasks: [] }),
+      supplier: async (id: string) => ({ id, found: false }),
+      communications: async () => ({ communications: [] }),
+    },
+  };
+  container.aiAudit = new MemoryAiAuditSink();
+  container.aiTools = new AiToolLayer(container, container.aiAudit);
+  return container;
 }
 
 function rpcBody(response: request.Response) {
@@ -77,7 +93,7 @@ async function authorize(app: ReturnType<typeof createApp>) {
     .expect(200);
 
   expect(token.body.token_type).toBe("Bearer");
-  expect(token.body.scope).toBe("crm.read crm.write");
+  expect(token.body.scope).toBe("crm.read");
   return String(token.body.access_token);
 }
 
@@ -128,7 +144,11 @@ describe("MCP HTTP and OAuth integration", () => {
       .set(headers)
       .send({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} })
       .expect(200);
-    expect(rpcBody(tools).result.tools.map((tool: any) => tool.name)).toContain("orders.list");
+    const toolList = rpcBody(tools).result.tools;
+    expect(toolList.map((tool: any) => tool.name)).toContain("search_orders");
+    expect(toolList.map((tool: any) => tool.name)).not.toContain("orders.update");
+    expect(toolList.every((tool: any) => tool.annotations.readOnlyHint === false)).toBe(true);
+    expect(toolList.every((tool: any) => tool.annotations.destructiveHint === false)).toBe(true);
 
     const call = await request(app)
       .post("/mcp")
@@ -137,7 +157,7 @@ describe("MCP HTTP and OAuth integration", () => {
         jsonrpc: "2.0",
         id: 3,
         method: "tools/call",
-        params: { name: "orders.list", arguments: { page: 1 } },
+        params: { name: "search_orders", arguments: { page: 1 } },
       })
       .expect(200);
     expect(JSON.parse(rpcBody(call).result.content[0].text).orders[0].orderId).toBe("10000");
