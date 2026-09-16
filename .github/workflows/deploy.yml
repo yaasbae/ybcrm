@@ -20,10 +20,11 @@ jobs:
       - name: Verify application
         run: |
           npm ci
+          npm --prefix functions ci
+          npm --prefix mcp ci
           npm run lint
           npm run build
           npx tsx --test tests/*.test.ts
-          npm --prefix functions ci
           npm --prefix functions run build
 
       - name: Deploy
