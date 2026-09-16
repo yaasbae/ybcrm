@@ -50,6 +50,7 @@ import {
 } from "./src/lib/tochkaPayments.ts";
 import { getTochkaFundName } from "./src/lib/tochkaFunds.ts";
 import { getCalculatedInitialInvoiceAmount, getPlannedFinalPaymentAmount, getStablePaymentStatus, isConfirmedPaymentStatus } from "./src/lib/orderPayments.ts";
+import { installAiJobQueue } from "./src/server/aiJobQueue.ts";
 
 const _require = createRequire(import.meta.url);
 const Database = _require("better-sqlite3");
@@ -289,6 +290,11 @@ app.use("/api", (req, res, next) => {
 
 function isPublicApiRequest(req: express.Request) {
   const path = req.path;
+  if (path === "/ai-jobs/run") {
+    const workerSecret = String(process.env.AI_JOB_WORKER_SECRET || "");
+    const bearer = String(req.headers.authorization || "").replace(/^Bearer\s+/i, "");
+    if (workerSecret && secretsEqual(bearer, workerSecret)) return true;
+  }
   if (path.startsWith("/passkeys/")) return true;
   if (path === "/ping") return true;
   if (req.method === "GET" && (path === "/products" || /^\/products\/[^/]+\/image$/.test(path))) return true;
@@ -301,6 +307,7 @@ function isPublicApiRequest(req: express.Request) {
 
 function isOwnerOnlyApiRequest(req: express.Request) {
   const path = req.path;
+  if (/^\/ai-jobs(?:\/|$)/.test(path)) return true;
   if (/^\/tochka\/(save-token|jwt-diagnostics|accounts-diagnostics|retailers)$/.test(path)) return true;
   if (/^\/yandex-pay\/(status|save-settings|test)$/.test(path)) return true;
   if (/^\/cdek\/(save-settings|diagnostics)$/.test(path)) return true;
@@ -8320,6 +8327,21 @@ async function requireFinanceOwner(req: any, res: any) {
     res.status(401).json({ error: 'Сессия входа устарела. Войдите заново.' });
     return null;
   }
+}
+
+if (adminDb) {
+  installAiJobQueue(app, adminDb, requireFinanceOwner, {
+    workerSecret: String(process.env.AI_JOB_WORKER_SECRET || ""),
+    notifyDeadLetter: async message => {
+      const token = String(process.env.TG_BOT_TOKEN || "");
+      if (!token || !RELEASE_TELEGRAM_CHAT_ID) return;
+      await axios.post(`https://api.telegram.org/bot${token}/sendMessage`, {
+        chat_id: RELEASE_TELEGRAM_CHAT_ID,
+        message_thread_id: RELEASE_TELEGRAM_THREAD_ID || undefined,
+        text: `⚠️ YBCRM AI Queue\n${message}`,
+      }, { timeout: 10_000 });
+    },
+  });
 }
 
 async function requireRefundOwner(req: any, res: any) {

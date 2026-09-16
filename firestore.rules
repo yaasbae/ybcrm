@@ -251,6 +251,15 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // Persistent AI queue, approvals and kill switch are server-only.
+    match /ai_jobs/{document=**} {
+      allow read, write: if false;
+    }
+
+    match /ai_runtime_control/{document=**} {
+      allow read, write: if false;
+    }
+
     // References collection
     match /references/{document=**} {
       allow read, write: if isAuthenticated();
