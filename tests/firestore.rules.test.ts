@@ -69,6 +69,20 @@ test('клиент не может подделать системные audit l
   await assertFails(setDoc(doc(ownerDb(), 'ai_agent_audit_logs', 'fake'), { tool: 'get_orders' }));
 });
 
+test('очередь AI и kill switch доступны только серверу', { skip: !hasEmulator }, async () => {
+  await environment.withSecurityRulesDisabled(async context => {
+    await setDoc(doc(context.firestore(), 'ai_jobs', 'job-1'), { status: 'queued' });
+    await setDoc(doc(context.firestore(), 'ai_runtime_control', 'global'), { enabled: false });
+  });
+
+  for (const database of [employeeDb(), ownerDb()]) {
+    await assertFails(getDoc(doc(database, 'ai_jobs', 'job-1')));
+    await assertFails(setDoc(doc(database, 'ai_jobs', 'fake'), { status: 'succeeded' }));
+    await assertFails(getDoc(doc(database, 'ai_runtime_control', 'global')));
+    await assertFails(setDoc(doc(database, 'ai_runtime_control', 'global'), { enabled: true }));
+  }
+});
+
 test('операции с заказом запрещены без явно настроенного профиля', { skip: !hasEmulator }, async () => {
   await environment.withSecurityRulesDisabled(async context => {
     await setDoc(doc(context.firestore(), 'orders_new', 'order-1'), { paymentStatus: 'pending' });
