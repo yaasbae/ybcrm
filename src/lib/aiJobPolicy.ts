@@ -10,6 +10,7 @@ export type AiJobStatus =
 
 export const AI_JOB_POLICIES = {
   "system.health_check": { risk: "SAFE", timeoutMs: 10_000, maxAttempts: 3 },
+  "business.daily_digest": { risk: "SAFE", timeoutMs: 90_000, maxAttempts: 3 },
   "incident.triage": { risk: "SAFE", timeoutMs: 45_000, maxAttempts: 3 },
   "draft.task": { risk: "APPROVAL", timeoutMs: 30_000, maxAttempts: 3 },
   "draft.supplier_message": { risk: "APPROVAL", timeoutMs: 30_000, maxAttempts: 3 },

@@ -11,6 +11,13 @@ test("incident triage is safe and read-only by policy", () => {
   assert.equal(initialAiJobStatus(getAiJobPolicy("incident.triage")!.risk), "queued");
 });
 
+test("daily business digest is safe and read-only by policy", () => {
+  const policy = getAiJobPolicy("business.daily_digest");
+  assert.equal(policy?.risk, "SAFE");
+  assert.equal(policy?.timeoutMs, 90_000);
+  assert.equal(initialAiJobStatus(policy!.risk), "queued");
+});
+
 test("approval jobs do not enter the executable queue", () => {
   assert.equal(initialAiJobStatus("APPROVAL"), "awaiting_approval");
   assert.equal(canApproveJob("awaiting_approval"), true);
