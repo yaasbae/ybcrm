@@ -6,6 +6,11 @@ test("unknown job types fail closed", () => {
   assert.equal(getAiJobPolicy("orders.delete"), null);
 });
 
+test("incident triage is safe and read-only by policy", () => {
+  assert.equal(getAiJobPolicy("incident.triage")?.risk, "SAFE");
+  assert.equal(initialAiJobStatus(getAiJobPolicy("incident.triage")!.risk), "queued");
+});
+
 test("approval jobs do not enter the executable queue", () => {
   assert.equal(initialAiJobStatus("APPROVAL"), "awaiting_approval");
   assert.equal(canApproveJob("awaiting_approval"), true);

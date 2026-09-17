@@ -14,7 +14,11 @@ import {
 
 type OwnerGuard = (req: Request, res: Response) => Promise<unknown | null>;
 type Executor = (payload: Record<string, unknown>) => Promise<unknown>;
-type QueueOptions = { workerSecret?: string; notifyDeadLetter?: (message: string) => Promise<void> };
+type QueueOptions = {
+  workerSecret?: string;
+  notifyDeadLetter?: (message: string) => Promise<void>;
+  executors?: Partial<Record<AiJobType, Executor>>;
+};
 
 const JOBS = "ai_jobs";
 const CONTROL = "ai_runtime_control";
@@ -70,9 +74,48 @@ function withTimeout<T>(work: Promise<T>, timeoutMs: number): Promise<T> {
   ]);
 }
 
+export async function enqueueAiJob(db: Firestore, input: {
+  type: string;
+  idempotencyKey: string;
+  payload?: Record<string, unknown>;
+  createdBy: string;
+}) {
+  const type = String(input.type || "");
+  const idempotencyKey = String(input.idempotencyKey || "").trim();
+  const payload = input.payload && typeof input.payload === "object" ? input.payload : {};
+  const policy = getAiJobPolicy(type);
+  if (!policy) throw new Error("Неизвестный тип задания");
+  if (!idempotencyKey || idempotencyKey.length > 200) throw new Error("Нужен корректный idempotencyKey");
+  if (Buffer.byteLength(JSON.stringify(payload)) > MAX_PAYLOAD_BYTES) throw new Error("Слишком большой payload");
+  const ref = db.collection(JOBS).doc(idFor(type, idempotencyKey));
+  const result = await db.runTransaction(async transaction => {
+    const existing = await transaction.get(ref);
+    if (existing.exists) return { created: false, id: ref.id, status: existing.data()?.status };
+    const status = initialAiJobStatus(policy.risk);
+    transaction.create(ref, {
+      type, payload, status, risk: policy.risk, idempotencyKey,
+      attempts: 0, maxAttempts: policy.maxAttempts, timeoutMs: policy.timeoutMs,
+      scheduledAt: Timestamp.now(), leaseUntil: null, leasedBy: null,
+      createdAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp(),
+      createdBy: String(input.createdBy || "system").slice(0, 200),
+      approvalRequired: policy.risk === "APPROVAL", approvedAt: null, approvedBy: null,
+      approvalArgumentsHash: policy.risk === "APPROVAL" ? createApprovalHash(type, idempotencyKey, payload) : null,
+      approvalNonce: policy.risk === "APPROVAL" ? randomUUID() : null,
+      approvalExpiresAt: policy.risk === "APPROVAL" ? Timestamp.fromMillis(Date.now() + APPROVAL_TTL_MS) : null,
+    });
+    return { created: true, id: ref.id, status };
+  });
+  await writeAudit(db, {
+    actor: String(input.createdBy || "system"), tool: "ai_jobs.enqueue",
+    jobId: result.id, status: "success", result: { created: result.created, type, status: result.status },
+  });
+  return result;
+}
+
 export function installAiJobQueue(app: Express, db: Firestore, requireOwner: OwnerGuard, options: QueueOptions = {}) {
   const executors: Partial<Record<AiJobType, Executor>> = {
     "system.health_check": async () => ({ ok: true, checkedAt: new Date().toISOString() }),
+    ...options.executors,
   };
 
   app.get("/api/ai-jobs/runtime", async (req, res) => {
@@ -116,33 +159,17 @@ export function installAiJobQueue(app: Express, db: Firestore, requireOwner: Own
     const type = String(req.body?.type || "");
     const idempotencyKey = String(req.body?.idempotencyKey || "").trim();
     const payload = req.body?.payload && typeof req.body.payload === "object" ? req.body.payload : {};
-    const policy = getAiJobPolicy(type);
-    if (!policy) return res.status(400).json({ error: "Неизвестный тип задания" });
-    if (!idempotencyKey || idempotencyKey.length > 200) return res.status(400).json({ error: "Нужен idempotencyKey" });
-    if (Buffer.byteLength(JSON.stringify(payload)) > MAX_PAYLOAD_BYTES) return res.status(413).json({ error: "Слишком большой payload" });
-    const ref = db.collection(JOBS).doc(idFor(type, idempotencyKey));
-    const result = await db.runTransaction(async transaction => {
-      const existing = await transaction.get(ref);
-      if (existing.exists) return { created: false, id: ref.id, status: existing.data()?.status };
-      const status = initialAiJobStatus(policy.risk);
-      transaction.create(ref, {
-        type, payload, status, risk: policy.risk, idempotencyKey,
-        attempts: 0, maxAttempts: policy.maxAttempts, timeoutMs: policy.timeoutMs,
-        scheduledAt: Timestamp.now(), leaseUntil: null, leasedBy: null,
-        createdAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp(),
-        createdBy: String(actor.email || actor.uid || "owner").slice(0, 200),
-        approvalRequired: policy.risk === "APPROVAL", approvedAt: null, approvedBy: null,
-        approvalArgumentsHash: policy.risk === "APPROVAL" ? createApprovalHash(type, idempotencyKey, payload) : null,
-        approvalNonce: policy.risk === "APPROVAL" ? randomUUID() : null,
-        approvalExpiresAt: policy.risk === "APPROVAL" ? Timestamp.fromMillis(Date.now() + APPROVAL_TTL_MS) : null,
+    try {
+      const result = await enqueueAiJob(db, {
+        type, idempotencyKey, payload,
+        createdBy: String(actor.email || actor.uid || "owner"),
       });
-      return { created: true, id: ref.id, status };
-    });
-    await writeAudit(db, {
-      actor: String(actor.email || actor.uid || "owner"), tool: "ai_jobs.enqueue",
-      jobId: result.id, status: "success", result: { created: result.created, type, status: result.status },
-    });
-    res.status(result.created ? 201 : 200).json(result);
+      res.status(result.created ? 201 : 200).json(result);
+    } catch (error) {
+      const message = safeError(error);
+      const status = message.includes("payload") ? 413 : 400;
+      res.status(status).json({ error: message });
+    }
   });
 
   app.post("/api/ai-jobs/:id/approve", async (req, res) => {
