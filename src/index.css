@@ -15,6 +15,34 @@
   }
 }
 
+/* AI chat: keep Telegram-like composer clear of the iPhone home indicator. */
+.ai-chat-composer {
+  padding-bottom: calc(max(8px, env(safe-area-inset-bottom)) + 10px);
+}
+
+.ai-chat-composer[data-keyboard='true'] {
+  padding-bottom: 10px;
+}
+
+/* Override the legacy CRM form skin inside the transparent chat input. */
+.ybcrm-app #ai-chat-message,
+.ybcrm-app #ai-chat-message:focus {
+  appearance: none !important;
+  -webkit-appearance: none !important;
+  background: transparent !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  outline: 0 !important;
+}
+
+@media (min-width: 640px) {
+  .ai-chat-composer,
+  .ai-chat-composer[data-keyboard='true'] {
+    padding-bottom: 8px;
+  }
+}
+
 /* Orders — shadcnspace-inspired, scoped design layer */
 .yb-orders-space {
   --orders-primary: #6d5ce7;
