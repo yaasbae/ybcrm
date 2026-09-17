@@ -264,6 +264,10 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    match /ai_chat_threads/{document=**} {
+      allow read, write: if false;
+    }
+
     // References collection
     match /references/{document=**} {
       allow read, write: if isAuthenticated();
