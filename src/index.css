@@ -6,6 +6,15 @@
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
 }
 
+/* iOS Safari zooms the whole CRM when a focused field is smaller than 16px. */
+@media (max-width: 767px) {
+  input,
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
+}
+
 /* Orders — shadcnspace-inspired, scoped design layer */
 .yb-orders-space {
   --orders-primary: #6d5ce7;

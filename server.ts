@@ -259,7 +259,7 @@ app.use((_req, res, next) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("X-Frame-Options", "DENY");
   res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
-  res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+  res.setHeader("Permissions-Policy", "camera=(self), microphone=(self), geolocation=()");
   if (process.env.NODE_ENV === "production") {
     res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
   }
@@ -690,20 +690,56 @@ function maskChatToolResult(value: unknown) {
   return redactIncidentText(JSON.stringify(value)).slice(0, 24_000);
 }
 
-async function generateInternalChatText(input: string, maxOutputTokens: number) {
+async function generateInternalChatText(input: string, maxOutputTokens: number, imageDataUrl?: string) {
   const apiKey = String(process.env.OPENAI_API_KEY || "").trim();
   if (!apiKey) throw new Error("OPENAI_NOT_CONFIGURED");
   const response = await axios.post("https://api.openai.com/v1/responses", {
     model: String(process.env.OPENAI_CHAT_MODEL || "gpt-5").trim(),
-    input,
+    input: imageDataUrl ? [{ role: "user", content: [
+      { type: "input_text", text: input },
+      { type: "input_image", image_url: imageDataUrl, detail: "auto" },
+    ] }] : input,
     store: false,
     max_output_tokens: maxOutputTokens,
+    reasoning: { effort: "minimal" },
+    text: { verbosity: "low" },
   }, {
     headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
     timeout: 45_000,
   });
   const text = readOpenAiOutputText(response.data || {});
   if (!text) throw new Error("OPENAI_EMPTY_RESPONSE");
+  return text;
+}
+
+function parseChatAttachment(value: unknown) {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  const kind = raw.kind === "image" || raw.kind === "audio" ? raw.kind : null;
+  const mimeType = String(raw.mimeType || "").slice(0, 80);
+  const dataUrl = String(raw.dataUrl || "");
+  const name = String(raw.name || (kind === "audio" ? "Голосовое сообщение" : "Изображение")).slice(0, 120);
+  if (!kind || !dataUrl.startsWith(`data:${mimeType};base64,`) || dataUrl.length > 9_000_000) throw new Error("INVALID_ATTACHMENT");
+  if (kind === "image" && !["image/jpeg", "image/png", "image/webp", "image/gif"].includes(mimeType)) throw new Error("INVALID_ATTACHMENT");
+  if (kind === "audio" && !["audio/webm", "audio/mp4", "audio/mpeg", "audio/ogg", "audio/wav", "audio/x-m4a"].includes(mimeType)) throw new Error("INVALID_ATTACHMENT");
+  return { kind, mimeType, dataUrl, name, duration: Math.min(300, Math.max(0, Number(raw.duration || 0))) };
+}
+
+async function transcribeInternalChatAudio(attachment: { mimeType: string; dataUrl: string; name: string }) {
+  const apiKey = String(process.env.OPENAI_API_KEY || "").trim();
+  if (!apiKey) throw new Error("OPENAI_NOT_CONFIGURED");
+  const bytes = Buffer.from(attachment.dataUrl.split(",", 2)[1] || "", "base64");
+  const form = new FormData();
+  form.append("model", "gpt-4o-mini-transcribe");
+  form.append("language", "ru");
+  form.append("file", new Blob([bytes], { type: attachment.mimeType }), attachment.name || "voice.webm");
+  const response = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+    method: "POST", headers: { Authorization: `Bearer ${apiKey}` }, body: form,
+  });
+  if (!response.ok) throw new Error(`OPENAI_TRANSCRIPTION_${response.status}`);
+  const payload = await response.json() as { text?: unknown };
+  const text = String(payload.text || "").trim().slice(0, 2_000);
+  if (!text) throw new Error("OPENAI_EMPTY_TRANSCRIPTION");
   return text;
 }
 
@@ -722,9 +758,12 @@ app.post("/api/ai-chat/message", async (req, res) => {
   const user = await requireCrmUser(req, res);
   if (!user || !adminDb) return;
   if (!checkRateLimit(`ai-chat:${user.uid}`)) return res.status(429).json({ error: "Слишком много запросов. Подождите минуту." });
-  const message = String(req.body?.message || "").trim().slice(0, 2_000);
+  let message = String(req.body?.message || "").trim().slice(0, 2_000);
+  let attachment: ReturnType<typeof parseChatAttachment> = null;
+  try { attachment = parseChatAttachment(req.body?.attachment); }
+  catch { return res.status(400).json({ error: "Файл не поддерживается или слишком большой" }); }
   const requestedThreadId = String(req.body?.threadId || "").trim();
-  if (!message) return res.status(400).json({ error: "Напишите сообщение" });
+  if (!message && !attachment) return res.status(400).json({ error: "Напишите сообщение или добавьте файл" });
   if (requestedThreadId && !/^[a-zA-Z0-9_-]{1,100}$/.test(requestedThreadId)) return res.status(400).json({ error: "Некорректный идентификатор диалога" });
   if (!MCP_UPSTREAM_URL) return res.status(503).json({ error: "MCP временно недоступен" });
   const threadId = requestedThreadId || randomUUID();
@@ -742,7 +781,19 @@ app.post("/api/ai-chat/message", async (req, res) => {
     }).join("\n")
     : "";
   await threadRef.set({ userId: user.uid, userEmail: user.email || "", updatedAt: FieldValue.serverTimestamp(), createdAt: existing.exists ? existing.data()?.createdAt : FieldValue.serverTimestamp() }, { merge: true });
-  await threadRef.collection("messages").add({ role: "user", text: message, createdAt: FieldValue.serverTimestamp() });
+  if (attachment?.kind === "audio") {
+    try { message = await transcribeInternalChatAudio(attachment); }
+    catch (error: any) {
+      console.warn("[ai-chat] transcription failed", { userId: user.uid, stage: String(error?.message || "unknown").slice(0, 80) });
+      return res.status(503).json({ threadId, error: "Не удалось распознать голосовое сообщение. Попробуйте ещё раз." });
+    }
+  }
+  if (!message && attachment?.kind === "image") message = "Что изображено на фотографии?";
+  await threadRef.collection("messages").add({
+    role: "user", text: message,
+    attachment: attachment ? { kind: attachment.kind, name: attachment.name, mimeType: attachment.mimeType, duration: attachment.duration } : null,
+    createdAt: FieldValue.serverTimestamp(),
+  });
 
   try {
     const routingPrompt = [
@@ -753,7 +804,7 @@ app.post("/api/ai-chat/message", async (req, res) => {
       conversationContext ? `Предыдущий контекст:\n${conversationContext}` : "",
       `Запрос: ${message}`,
     ].join("\n");
-    const routeText = await generateInternalChatText(routingPrompt, 400);
+    const routeText = await generateInternalChatText(routingPrompt, 800, attachment?.kind === "image" ? attachment.dataUrl : undefined);
     const decision = parseAiJson(routeText) as { tool?: string; arguments?: Record<string, unknown>; reason?: string };
     const tool = INTERNAL_CHAT_TOOLS.includes(decision.tool as any) ? String(decision.tool) : "none";
     let toolResult: unknown = null;
@@ -773,11 +824,11 @@ app.post("/api/ai-chat/message", async (req, res) => {
       `Вопрос: ${message}`,
       tool === "none" ? "Инструмент не вызывался. Объясни возможности или попроси уточнение." : `Инструмент: ${tool}\nРезультат: ${maskChatToolResult(toolResult)}`,
     ].join("\n");
-    const answer = (await generateInternalChatText(answerPrompt, 1_000)).slice(0, 6_000);
+    const answer = (await generateInternalChatText(answerPrompt, 2_000, attachment?.kind === "image" ? attachment.dataUrl : undefined)).slice(0, 6_000);
     const messageRef = await threadRef.collection("messages").add({ role: "assistant", text: answer, tool: tool === "none" ? null : tool, createdAt: FieldValue.serverTimestamp() });
     res.json({ threadId, message: { id: messageRef.id, role: "assistant", text: answer, tool: tool === "none" ? null : tool } });
   } catch (error: any) {
-    console.warn("[ai-chat] request failed", { userId: user.uid, status: error?.response?.status || null, code: error?.code || null });
+    console.warn("[ai-chat] request failed", { userId: user.uid, status: error?.response?.status || null, code: error?.code || null, stage: String(error?.message || "unknown").slice(0, 80) });
     const safeMessage = error?.response?.status === 403
       ? "Для этого запроса недостаточно прав"
       : "AI-чат временно не смог получить данные. Попробуйте ещё раз.";
