@@ -4954,11 +4954,15 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
     let active = true;
     const syncCdekStatuses = async () => {
       try {
-        const response = await fetch('/api/cdek/sync-statuses', { method: 'POST' });
-        if (!response.ok || !active) return;
+        const response = await crmFetch('/api/cdek/sync-statuses', { method: 'POST' });
+        if (!response.ok) {
+          console.warn('Не удалось синхронизировать статусы СДЭК:', response.status);
+          return;
+        }
+        if (!active) return;
         await response.json();
-      } catch {
-        // Фоновая синхронизация не должна мешать работе страницы заказов.
+      } catch (error) {
+        console.warn('Не удалось синхронизировать статусы СДЭК:', error);
       }
     };
     syncCdekStatuses();

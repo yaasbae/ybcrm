@@ -50,6 +50,7 @@ import {
 } from "./src/lib/tochkaPayments.ts";
 import { getTochkaFundName } from "./src/lib/tochkaFunds.ts";
 import { getCalculatedInitialInvoiceAmount, getPlannedFinalPaymentAmount, getStablePaymentStatus, isConfirmedPaymentStatus } from "./src/lib/orderPayments.ts";
+import { getCdekCrmStatusPatch, getCdekStatusLabel, parseCdekOrderStatusWebhook } from "./src/lib/cdekStatus.ts";
 import { enqueueAiJob, installAiJobQueue } from "./src/server/aiJobQueue.ts";
 import { parseIncidentTriage, redactIncidentText } from "./src/lib/incidentTriage.ts";
 import { readOpenAiOutputText } from "./src/server/openAiResponses.ts";
@@ -304,6 +305,12 @@ function isPublicApiRequest(req: express.Request) {
   if (req.method === "GET" && (path === "/products" || /^\/products\/[^/]+\/image$/.test(path))) return true;
   if (/^\/site-chat\/conversations\/[^/]+\/messages$/.test(path)) return true;
   if (path === "/instagram/webhook") return true;
+  if (path === "/cdek/webhook") return true;
+  if (path === "/cdek/sync-statuses" && req.method === "POST") {
+    const workerSecret = String(process.env.AI_JOB_WORKER_SECRET || "");
+    const bearer = String(req.headers.authorization || "").replace(/^Bearer\s+/i, "");
+    if (workerSecret && secretsEqual(bearer, workerSecret)) return true;
+  }
   if (path === "/tochka/webhook") return true;
   if (path === "/yandex-pay" || path === "/yandex-pay/v1/webhook") return true;
   return false;
@@ -3026,63 +3033,6 @@ const getCdekEntityStatus = (entity: any, fallback = "PROCESSING") => {
   return String(latest?.code || entity?.status?.code || entity?.status || fallback).toUpperCase();
 };
 
-const getCdekCrmStatusPatch = (cdekStatus: string, currentStatus?: string) => {
-  const normalized = String(cdekStatus || "").toUpperCase();
-  const protectedStatus = /возврат|отмен/i.test(String(currentStatus || ""));
-  if (protectedStatus) return {};
-  if (normalized === "DELIVERED") {
-    return {
-      status: "Получен",
-      isShipped: true,
-      cdekDeliveredAt: new Date().toISOString(),
-    };
-  }
-  if (normalized === "RECEIVED_AT_SHIPMENT_WAREHOUSE") {
-    return {
-      status: "Принят СДЭК",
-      isShipped: true,
-      cdekAcceptedAt: new Date().toISOString(),
-    };
-  }
-  if (normalized === "READY_FOR_SHIPMENT_IN_SENDER_CITY") {
-    return { status: "Отгружен", isShipped: true };
-  }
-  if (normalized === "ACCEPTED_AT_PICK_UP_POINT") {
-    return { status: "Доставлен", isShipped: true };
-  }
-  if (
-    normalized.startsWith("SENT_") ||
-    normalized.startsWith("TAKEN_") ||
-    normalized.startsWith("ACCEPTED_IN_") ||
-    normalized.startsWith("ACCEPTED_AT_") ||
-    normalized === "IN_TRANSIT" ||
-    normalized.startsWith("RECEIVED_AT_")
-  ) {
-    return { status: "В пути", isShipped: true };
-  }
-  return {};
-};
-
-const getCdekStatusLabel = (status: string) => {
-  const normalized = String(status || "").toUpperCase();
-  const labels: Record<string, string> = {
-    CREATED: "Накладная создана",
-    ACCEPTED: "Заказ принят системой СДЭК",
-    RECEIVED_AT_SHIPMENT_WAREHOUSE: "Принят СДЭК",
-    READY_FOR_SHIPMENT_IN_SENDER_CITY: "Готов к отправке",
-    TAKEN_BY_TRANSPORTER_FROM_SENDER_CITY: "В пути из города отправителя",
-    SENT_TO_TRANSIT_CITY: "Отправлен в транзитный город",
-    ACCEPTED_IN_TRANSIT_CITY: "Прибыл в транзитный город",
-    ACCEPTED_AT_TRANSIT_WAREHOUSE: "Принят на транзитном складе",
-    SENT_TO_RECIPIENT_CITY: "Направлен в город получателя",
-    ACCEPTED_AT_RECIPIENT_CITY_WAREHOUSE: "Прибыл на склад города получателя",
-    ACCEPTED_AT_PICK_UP_POINT: "Готов к выдаче в ПВЗ",
-    ACCEPTED_BY_COURIER: "Передан курьеру",
-    DELIVERED: "Получен",
-  };
-  return labels[normalized] || normalized.replace(/_/g, " ");
-};
-
 const getCdekRequestError = (data: any) => {
   const requests = Array.isArray(data?.requests) ? data.requests : [];
   const invalidRequest = requests.find((request: any) =>
@@ -3138,6 +3088,154 @@ async function resolveCdekOrder(orderUuid: string, orderNumber: string, token: s
   const recovered = await findCdekOrderByNumber(orderNumber, token, baseUrl);
   return recovered ? { ...recovered, recovered: true } : null;
 }
+
+async function findOrderByCdekReference(input: {
+  uuid: string;
+  cdekNumber: string;
+  externalNumber: string;
+}) {
+  const referenceQueries: Array<[string, string]> = [
+    ["cdekUuid", input.uuid],
+    ["cdekNumber", input.cdekNumber],
+    ["cdekExternalNumber", input.externalNumber],
+  ].filter((entry): entry is [string, string] => Boolean(entry[1]));
+
+  for (const [field, value] of referenceQueries) {
+    if (adminDb) {
+      const snapshot = await adminDb.collection("orders_new").where(field, "==", value).limit(1).get();
+      if (!snapshot.empty) return snapshot.docs[0];
+    } else if (db) {
+      const snapshot = await getDocs(query(collection(db, "orders_new"), where(field, "==", value)));
+      if (!snapshot.empty) return snapshot.docs[0];
+    }
+  }
+
+  const cleanExternalNumber = input.externalNumber.replace(/-R\d+$/i, "").replace(/^#+/, "").trim();
+  for (const candidate of [cleanExternalNumber, cleanExternalNumber ? `#${cleanExternalNumber}` : ""]) {
+    if (!candidate) continue;
+    const snapshot = await getOrderSnapshot(candidate).catch(() => null);
+    const exists = snapshot && (typeof snapshot.exists === "function" ? snapshot.exists() : snapshot.exists);
+    if (exists) return snapshot;
+  }
+  return null;
+}
+
+async function applyVerifiedCdekStatus(
+  orderSnapshot: any,
+  entity: any,
+  source: "webhook" | "manual" | "reconcile",
+) {
+  const orderData = orderSnapshot.data() || {};
+  const orderId = String(orderSnapshot.id || orderData.orderId || "").trim();
+  const cdekStatus = getCdekEntityStatus(entity, orderData.cdekStatus || "CREATED");
+  const cdekNumber = entity?.cdek_number || entity?.cdekNumber || entity?.number || orderData.cdekNumber || null;
+  const checkedAt = new Date().toISOString();
+  const crmPatch = getCdekCrmStatusPatch(cdekStatus, orderData.status, checkedAt);
+  if (crmPatch.cdekDeliveredAt && orderData.cdekDeliveredAt) crmPatch.cdekDeliveredAt = orderData.cdekDeliveredAt;
+  if (crmPatch.cdekAcceptedAt && orderData.cdekAcceptedAt) crmPatch.cdekAcceptedAt = orderData.cdekAcceptedAt;
+  const patch = stripUndefined({
+    cdekUuid: entity?.uuid || orderData.cdekUuid,
+    cdekNumber,
+    cdekStatus,
+    cdekLastCheckedAt: checkedAt,
+    ...crmPatch,
+  });
+  await persistOrderPatch(orderId, patch);
+
+  if (String(cdekStatus) !== String(orderData.cdekStatus || "")) {
+    await dispatchPushEvent("cdek_status_changed", `cdek-status:${orderId}:${cdekStatus}`, {
+      orderId,
+      clientName: orderData.clientName,
+      status: getCdekStatusLabel(cdekStatus),
+      cdekNumber: String(cdekNumber || ""),
+    }).catch(error => console.warn(`[push] cdek ${source}:`, error?.message || error));
+    await writeAuditLog({
+      action: "cdek_status_changed",
+      entityType: "order",
+      entityId: orderId,
+      before: { cdekStatus: orderData.cdekStatus || null, status: orderData.status || null },
+      after: { cdekStatus, status: crmPatch.status || orderData.status || null },
+      metadata: { source, cdekNumber: String(cdekNumber || "") },
+      actor: { type: "server", service: "cdek" },
+    });
+  }
+  return { orderId, cdekStatus, cdekNumber, crmStatus: crmPatch.status || orderData.status || "" };
+}
+
+async function ensureCdekStatusWebhook() {
+  if (process.env.NODE_ENV !== "production") return { status: "skipped" };
+  const baseUrl = String(process.env.SERVER_URL || process.env.WEBHOOK_URL || "https://ybcrm.ru").replace(/\/$/, "");
+  const webhookUrl = `${baseUrl}/api/cdek/webhook`;
+  const token = await getCdekToken();
+  const settings = await getCdekSettings();
+  const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
+  const response = await axios.get(`${settings.baseUrl}/webhooks`, { headers, timeout: 15_000 });
+  const responseData = response.data;
+  const webhooks = Array.isArray(responseData)
+    ? responseData
+    : Array.isArray(responseData?.entity)
+      ? responseData.entity
+      : Array.isArray(responseData?.entities)
+        ? responseData.entities
+        : responseData?.entity
+          ? [responseData.entity]
+          : [];
+  const orderStatusHooks = webhooks.filter((item: any) => String(item?.type || "").toUpperCase() === "ORDER_STATUS");
+  const normalizeUrl = (value: unknown) => String(value || "").replace(/\/$/, "");
+  if (orderStatusHooks.some((item: any) => normalizeUrl(item?.url) === webhookUrl)) {
+    console.log("[cdek] ORDER_STATUS webhook active");
+    return { status: "active" };
+  }
+  if (orderStatusHooks.length) {
+    console.warn("[cdek] ORDER_STATUS webhook already points to another URL; automatic replacement skipped");
+    return { status: "conflict" };
+  }
+  const createResponse = await axios.post(
+    `${settings.baseUrl}/webhooks`,
+    { type: "ORDER_STATUS", url: webhookUrl },
+    { headers, timeout: 15_000 },
+  );
+  const requestError = getCdekRequestError(createResponse.data);
+  if (requestError) throw new Error(requestError);
+  console.log("[cdek] ORDER_STATUS webhook registered");
+  return { status: "registered" };
+}
+
+async function ensureCdekStatusWebhookWithRetry(attempt = 1): Promise<void> {
+  try {
+    await ensureCdekStatusWebhook();
+  } catch (error: any) {
+    console.warn(`[cdek] webhook registration attempt ${attempt} failed:`, error?.response?.data || error?.message || error);
+    if (attempt < 3) setTimeout(() => void ensureCdekStatusWebhookWithRetry(attempt + 1), attempt * 30_000);
+  }
+}
+
+app.post("/api/cdek/webhook", async (req, res) => {
+  const event = parseCdekOrderStatusWebhook(req.body);
+  if (!event) return res.status(400).json({ error: "Некорректное уведомление СДЭК" });
+  try {
+    const orderSnapshot = await findOrderByCdekReference(event);
+    if (!orderSnapshot) {
+      console.warn(`[cdek] webhook order not found cdek=${event.cdekNumber || "unknown"}`);
+      return res.status(202).json({ success: true, ignored: true });
+    }
+    const orderData = orderSnapshot.data() || {};
+    const orderUuid = String(orderData.cdekUuid || event.uuid).trim();
+    const token = await getCdekToken();
+    const settings = await getCdekSettings();
+    const response = await axios.get(`${settings.baseUrl}/orders/${encodeURIComponent(orderUuid)}`, {
+      headers: { Authorization: `Bearer ${token}` },
+      timeout: 15_000,
+    });
+    const entity = response.data?.entity || response.data;
+    if (!entity?.uuid) throw new Error("СДЭК не подтвердил накладную");
+    const result = await applyVerifiedCdekStatus(orderSnapshot, entity, "webhook");
+    res.json({ success: true, orderId: result.orderId, status: result.cdekStatus });
+  } catch (error: any) {
+    console.error("[cdek] webhook processing failed:", error?.response?.data || error?.message || error);
+    res.status(503).json({ error: "Не удалось проверить статус СДЭК" });
+  }
+});
 
 async function createCdekWaybillPdf(
   orderUuid: string,
@@ -13704,6 +13802,7 @@ async function startServer() {
     console.log(`Server running on http://localhost:${PORT}`);
     console.log("App Version: 1.3");
     setTimeout(() => void sendReleaseNotification(), 1_000);
+    setTimeout(() => void ensureCdekStatusWebhookWithRetry(), 3_000);
   });
 }
 
