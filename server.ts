@@ -2172,32 +2172,42 @@ async function sendPaymentReceivedToTelegram(input: {
   }
 }
 
-async function sendReleaseNotification() {
+async function sendReleaseNotification(attempt = 1) {
   const token = String(process.env.TG_BOT_TOKEN || "").trim();
   if (!adminDb || !token || !RELEASE_TELEGRAM_CHAT_ID || !RELEASE_COMMIT_SHA) return;
   const notificationId = createHash("sha256").update(`release:${RELEASE_COMMIT_SHA}`).digest("hex");
   const ref = adminDb.collection("telegram_release_notifications").doc(notificationId);
-  const reserved = await adminDb.runTransaction(async (transaction: any) => {
-    const snapshot = await transaction.get(ref);
-    const data = snapshot.exists ? snapshot.data() || {} : {};
-    const updatedAtMs = typeof data.updatedAt?.toMillis === "function"
-      ? data.updatedAt.toMillis()
-      : Date.parse(String(data.updatedAt || ""));
-    if (data.status === "sent") return false;
-    if (data.status === "sending" && Number.isFinite(updatedAtMs) && Date.now() - updatedAtMs < 5 * 60_000) {
-      return false;
-    }
-    transaction.set(ref, {
-      commit: RELEASE_COMMIT_SHA,
-      chatId: RELEASE_TELEGRAM_CHAT_ID,
-      threadId: RELEASE_TELEGRAM_THREAD_ID,
-      status: "sending",
-      attempts: FieldValue.increment(1),
-      updatedAt: FieldValue.serverTimestamp(),
-    }, { merge: true });
-    return true;
-  });
-  if (!reserved) return;
+  let reserved = false;
+  try {
+    reserved = await adminDb.runTransaction(async (transaction: any) => {
+      const snapshot = await transaction.get(ref);
+      const data = snapshot.exists ? snapshot.data() || {} : {};
+      const updatedAtMs = typeof data.updatedAt?.toMillis === "function"
+        ? data.updatedAt.toMillis()
+        : Date.parse(String(data.updatedAt || ""));
+      if (data.status === "sent") return false;
+      if (data.status === "sending" && Number.isFinite(updatedAtMs) && Date.now() - updatedAtMs < 5 * 60_000) {
+        return false;
+      }
+      transaction.set(ref, {
+        commit: RELEASE_COMMIT_SHA,
+        chatId: RELEASE_TELEGRAM_CHAT_ID,
+        threadId: RELEASE_TELEGRAM_THREAD_ID,
+        status: "sending",
+        attempts: FieldValue.increment(1),
+        updatedAt: FieldValue.serverTimestamp(),
+      }, { merge: true });
+      return true;
+    });
+  } catch (error: any) {
+    console.warn("[telegram] release reservation:", error?.message || error);
+    if (attempt < 3) setTimeout(() => void sendReleaseNotification(attempt + 1), attempt * 5_000);
+    return;
+  }
+  if (!reserved) {
+    console.log(`[telegram] release skipped: ${RELEASE_COMMIT_SHA.slice(0, 7)} already sent or being sent`);
+    return;
+  }
   const shortCommit = RELEASE_COMMIT_SHA.slice(0, 7);
   let releaseNotes = "";
   try {
@@ -2225,10 +2235,12 @@ async function sendReleaseNotification() {
       updatedAt: FieldValue.serverTimestamp(),
       error: FieldValue.delete(),
     }, { merge: true });
+    console.log(`[telegram] release sent: ${shortCommit} to topic ${RELEASE_TELEGRAM_THREAD_ID}`);
   } catch (error: any) {
     const message = String(error?.response?.data?.description || error?.message || "Ошибка Telegram").slice(0, 1000);
-    await ref.set({ status: "failed", error: message, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+    await ref.set({ status: "failed", error: message, updatedAt: FieldValue.serverTimestamp() }, { merge: true }).catch(() => undefined);
     console.warn("[telegram] release:", message);
+    if (attempt < 3) setTimeout(() => void sendReleaseNotification(attempt + 1), attempt * 5_000);
   }
 }
 
