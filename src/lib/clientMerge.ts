@@ -20,6 +20,10 @@ export const formatClientPhone = (value: unknown) => {
   return phone ? `+${phone}` : '';
 };
 
+export const canRecordClientContact = (client: ClientRecord) => Boolean(
+  String(client.phone || client.userId || client.firestoreId || '').trim(),
+);
+
 export const normalizeInstagramUsername = (value: unknown) => {
   let clean = String(value || '').trim();
   if (!clean) return '';

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  canRecordClientContact,
   clientMatchesOrder,
   formatClientPhone,
   getInstagramProfileUrl,
@@ -13,6 +14,12 @@ import {
   normalizeInstagramUsername,
   sortClientsBySales,
 } from '../src/lib/clientMerge';
+
+test('allows a new contact after earlier written or answered statuses', () => {
+  assert.equal(canRecordClientContact({ phone: '89990001122', lastContactStatus: 'написали' }), true);
+  assert.equal(canRecordClientContact({ firestoreId: 'client-1', lastContactStatus: 'ответил' }), true);
+  assert.equal(canRecordClientContact({ lastContactStatus: 'написали' }), false);
+});
 
 test('builds a working Instagram profile link from usernames and legacy URLs', () => {
   assert.equal(normalizeInstagramUsername('@yaasbae'), 'yaasbae');

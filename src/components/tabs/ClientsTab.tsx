@@ -11,6 +11,7 @@ import { db, auth } from '../../firebase';
 import { doc, updateDoc, onSnapshot, setDoc, writeBatch, collection, getDocs, getDoc, orderBy, query, addDoc, where, serverTimestamp, limit } from 'firebase/firestore';
 import { OrderData } from '../AnalyticsDashboard';
 import {
+  canRecordClientContact,
   clientMatchesOrder,
   formatClientPhone,
   getInstagramProfileUrl,
@@ -1237,7 +1238,7 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
                                   рассылка: {new Date(contact.broadcast.sentAt).toLocaleDateString('ru-RU')} · {contact.broadcast.status}
                                 </p>
                               )}
-                              {contact.status !== 'написали' && contact.status !== 'ответил' && (
+                              {canRecordClientContact(client) && (
                                 <button
                                   type="button"
                                   onClick={() => void markAsContacted(client)}
@@ -1353,7 +1354,7 @@ export const ClientsTab: React.FC<ClientsTabProps> = ({
                         <button
                           type="button"
                           onClick={() => void markAsContacted(client)}
-                          disabled={contact.status === 'написали' || contact.status === 'ответил' || quickSavingPhone === String(phone)}
+                          disabled={!canRecordClientContact(client) || quickSavingPhone === String(phone)}
                           className="inline-flex h-12 items-center justify-center gap-2 rounded-[8px] border border-[#2EBA7F]/30 bg-[#2EBA7F]/10 px-3 text-[13px] font-semibold text-[#0A9B62] disabled:cursor-not-allowed disabled:opacity-40"
                         >
                           {quickSavingPhone === String(phone)
