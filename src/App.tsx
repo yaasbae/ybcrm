@@ -822,7 +822,7 @@ export default function App() {
           )}
 
           {view === 'regulations' && (
-            <RegulationsPage />
+            <RegulationsPage canEdit={isOwner} />
           )}
 
           {view === 'cdek' && (

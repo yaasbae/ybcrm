@@ -10,6 +10,7 @@ import { initializeFirestore, doc, getDoc, collection, getDocs, addDoc, setDoc, 
 import { getStorage, ref as storageRef, uploadBytes as fbUploadBytes, getDownloadURL as fbGetDownloadURL } from "firebase/storage";
 import { initializeApp as initializeAdminApp, applicationDefault, getApps as getAdminApps } from "firebase-admin/app";
 import { FieldValue, getFirestore as getAdminFirestore } from "firebase-admin/firestore";
+import { validateRegulation } from "./src/lib/regulations";
 import { getAuth as getAdminAuth } from "firebase-admin/auth";
 import fs from "fs";
 import https from "https";
@@ -318,6 +319,7 @@ function isPublicApiRequest(req: express.Request) {
 
 function isOwnerOnlyApiRequest(req: express.Request) {
   const path = req.path;
+  if (/^\/regulations(?:\/|$)/.test(path) && req.method !== "GET") return true;
   if (/^\/ai-jobs(?:\/|$)/.test(path)) return true;
   if (/^\/ai-incidents(?:\/|$)/.test(path)) return true;
   if (/^\/tochka\/(save-token|jwt-diagnostics|accounts-diagnostics|retailers)$/.test(path)) return true;
@@ -886,6 +888,48 @@ const CRM_ACCESS_VIEWS = [
 ];
 const CRM_NOTIFICATION_TOPICS = ["all", "orders", "payments", "cdek", "shifts", "social", "stock", "production"];
 const CRM_ORDER_ACTIONS = ["create", "edit", "status", "exchange", "payments", "refund", "cdek", "delete", "export"];
+
+app.get("/api/regulations", async (_req, res) => {
+  if (!adminDb) return res.status(503).json({ error: "База данных недоступна" });
+  try {
+    const snapshot = await adminDb.collection("regulations").get();
+    const articles = snapshot.docs
+      .map((document: any) => ({ id: document.id, ...document.data() }))
+      .map((value: unknown) => validateRegulation(value))
+      .filter((result: ReturnType<typeof validateRegulation>) => result.errors.length === 0)
+      .map((result: ReturnType<typeof validateRegulation>) => result.regulation);
+    res.json({ articles });
+  } catch (error: any) {
+    console.error("[regulations] list:", error?.message || error);
+    res.status(500).json({ error: "Не удалось загрузить регламенты" });
+  }
+});
+
+app.put("/api/regulations/:id", async (req: any, res) => {
+  if (!adminDb) return res.status(503).json({ error: "База данных недоступна" });
+  const { regulation, errors } = validateRegulation({ ...req.body, id: req.params.id });
+  if (errors.length > 0) return res.status(400).json({ error: errors[0], details: errors });
+  try {
+    const saved = {
+      ...regulation,
+      updatedAt: new Date().toISOString(),
+      updatedBy: String(req.crmUser?.email || ""),
+    };
+    await adminDb.collection("regulations").doc(regulation.id).set(saved);
+    await writeAuditLog({
+      action: "regulation.saved",
+      actor: req.crmUser,
+      entityType: "regulation",
+      entityId: regulation.id,
+      after: saved,
+      metadata: { title: regulation.title },
+    });
+    res.json({ article: saved });
+  } catch (error: any) {
+    console.error("[regulations] save:", error?.message || error);
+    res.status(500).json({ error: "Не удалось сохранить регламент" });
+  }
+});
 
 function normalizedAllowedValues(value: unknown, allowed: string[]) {
   const allowedSet = new Set(allowed);
