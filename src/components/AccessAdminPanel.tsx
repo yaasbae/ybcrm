@@ -23,7 +23,7 @@ type AccountAccess = {
 const PAGE_OPTIONS = [
   ['home', 'Главная'], ['calculator', 'Юнит'], ['finance', 'Финансы'], ['payroll', 'ФОТ'],
   ['analytics', 'Аналитика'], ['orders', 'Заказы'], ['clients', 'Клиенты'], ['marketing', 'Маркетинг'],
-  ['products', 'Склад'], ['production', 'Производство'], ['storefront', 'Магазин'], ['handbook', 'Справочник'],
+  ['products', 'Склад'], ['production', 'Производство'], ['storefront', 'Магазин'], ['handbook', 'Справочник'], ['regulations', 'Регламенты'],
   ['cdek', 'СДЭК'], ['integrations', 'API'], ['social', 'Соцсети'], ['instagram', 'Instagram'],
   ['bot', 'Бот'], ['content', 'Контент'], ['broadcast', 'Рассылки'], ['broadcast-v2', 'Рассылки 2'], ['studio', 'Студия'], ['ai-agent', 'ИИ'],
 ] as const;

@@ -881,7 +881,7 @@ async function writeAuditLog(input: {
 
 const CRM_ACCESS_VIEWS = [
   "home", "calculator", "finance", "payroll", "analytics", "orders", "clients", "marketing",
-  "products", "production", "storefront", "handbook", "cdek", "integrations", "social",
+  "products", "production", "storefront", "handbook", "regulations", "cdek", "integrations", "social",
   "instagram", "bot", "content", "broadcast", "broadcast-v2", "studio", "ai-agent",
 ];
 const CRM_NOTIFICATION_TOPICS = ["all", "orders", "payments", "cdek", "shifts", "social", "stock", "production"];

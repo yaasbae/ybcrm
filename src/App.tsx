@@ -12,6 +12,7 @@ const PublicProductView = lazy(() => import("./components/PublicProductView").th
 const FinanceDashboard = lazy(() => import("./components/FinanceDashboard").then(m => ({ default: m.FinanceDashboard })));
 const PayrollPage = lazy(() => import("./components/PayrollPage").then(m => ({ default: m.PayrollPage })));
 const HandbookPage = lazy(() => import("./components/HandbookPage").then(m => ({ default: m.HandbookPage })));
+const RegulationsPage = lazy(() => import("./components/RegulationsPage").then(m => ({ default: m.RegulationsPage })));
 const BroadcastPage = lazy(() => import("./components/BroadcastPage").then(m => ({ default: m.BroadcastPage })));
 const BroadcastV2Page = lazy(() => import("./components/BroadcastV2Page").then(m => ({ default: m.BroadcastV2Page })));
 const BotPage = lazy(() => import("./components/BotPage").then(m => ({ default: m.BotPage })));
@@ -35,14 +36,14 @@ import { cn } from "./lib/utils";
 import {
   LogIn, LogOut, User as UserIcon, AlertCircle, Fingerprint,
   DollarSign, Calculator, LayoutDashboard, Package, Bot, ShoppingBag,
-  UserCircle, Star, Calendar as CalendarIcon, BookOpen, Send, Sparkles, Wand2, Truck, ReceiptText, PlugZap, Instagram, Store, MessagesSquare, FileClock, Factory
+  UserCircle, Star, Calendar as CalendarIcon, BookOpen, Send, Sparkles, Wand2, Truck, ReceiptText, PlugZap, Instagram, Store, MessagesSquare, FileClock, Factory, LibraryBig
 } from "lucide-react";
 import { motion } from "motion/react";
 import { PushNotificationButton } from "./components/PushNotificationButton";
 import { SiteChatWidget } from "./components/SiteChatWidget";
 import { logAuditEvent } from "./lib/auditLog";
 
-type AppView = 'home' | 'calculator' | 'analytics' | 'orders' | 'clients' | 'marketing' | 'order-form' | 'products' | 'production' | 'storefront' | 'ai-agent' | 'ai-chat' | 'ai-jobs' | 'ai-incidents' | 'public-product' | 'public-payment' | 'finance' | 'payroll' | 'handbook' | 'broadcast' | 'broadcast-v2' | 'bot' | 'content' | 'studio' | 'cdek' | 'integrations' | 'instagram' | 'social' | 'audit';
+type AppView = 'home' | 'calculator' | 'analytics' | 'orders' | 'clients' | 'marketing' | 'order-form' | 'products' | 'production' | 'storefront' | 'ai-agent' | 'ai-chat' | 'ai-jobs' | 'ai-incidents' | 'public-product' | 'public-payment' | 'finance' | 'payroll' | 'handbook' | 'regulations' | 'broadcast' | 'broadcast-v2' | 'bot' | 'content' | 'studio' | 'cdek' | 'integrations' | 'instagram' | 'social' | 'audit';
 
 const viewRoutes: Record<Exclude<AppView, 'public-product' | 'public-payment'>, string> = {
   home: '/',
@@ -62,6 +63,7 @@ const viewRoutes: Record<Exclude<AppView, 'public-product' | 'public-payment'>, 
   finance: '/finance',
   payroll: '/payroll',
   handbook: '/handbook',
+  regulations: '/regulations',
   broadcast: '/broadcast',
   'broadcast-v2': '/broadcast-v2',
   bot: '/bot',
@@ -91,6 +93,7 @@ const VIEW_LABELS: Partial<Record<AppView, string>> = {
   production: 'Производство',
   storefront: 'Магазин',
   handbook: 'Справочник',
+  regulations: 'Регламенты',
   cdek: 'СДЭК',
   integrations: 'API',
   social: 'Соцсети',
@@ -679,6 +682,7 @@ export default function App() {
                 { id: 'production', label: 'Произв.', icon: Factory },
                 { id: 'storefront',label: 'Магазин',  icon: Store },
                 { id: 'handbook',  label: 'Справ.',   icon: BookOpen },
+                { id: 'regulations', label: 'Регламент', icon: LibraryBig },
                 { id: 'cdek',      label: 'СДЭК',     icon: Truck },
                 { id: 'integrations', label: 'API',    icon: PlugZap },
                 { id: 'social',    label: 'Соцсети',   icon: MessagesSquare },
@@ -815,6 +819,10 @@ export default function App() {
 
           {view === 'handbook' && (
             <HandbookPage />
+          )}
+
+          {view === 'regulations' && (
+            <RegulationsPage />
           )}
 
           {view === 'cdek' && (
