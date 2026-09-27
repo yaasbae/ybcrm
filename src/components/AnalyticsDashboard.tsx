@@ -497,6 +497,21 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
       const orderRef = doc(db, 'orders_new', existingOrder?.firestoreId || orderId);
       const beforeSnap = await getDoc(orderRef).catch(() => null);
       const before = beforeSnap?.exists() ? beforeSnap.data() : data.find(order => order.orderId === orderId);
+      const cdekUuid = String(before?.cdekUuid || existingOrder?.cdekUuid || '').trim();
+      const cdekStatus = String(before?.cdekStatus || existingOrder?.cdekStatus || '').trim().toUpperCase();
+      if (cdekUuid && cdekStatus !== 'REMOVED') {
+        const cdekResponse = await crmFetch(
+          `/api/cdek/order/${encodeURIComponent(cdekUuid)}?orderId=${encodeURIComponent(orderId)}`,
+          { method: 'DELETE' },
+        );
+        const cdekResult = await cdekResponse.json().catch(() => ({}));
+        if (!cdekResponse.ok) {
+          const message = [cdekResult?.error, typeof cdekResult?.details === 'string' ? cdekResult.details : '']
+            .filter(Boolean)
+            .join('\n');
+          throw new Error(message || 'СДЭК не подтвердил удаление накладной');
+        }
+      }
       const deletedAt = new Date().toISOString();
       const patch = {
         deleted: true,
@@ -515,6 +530,7 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
       return true;
     } catch (err) {
       console.error("Delete failed", err);
+      window.alert(err instanceof Error ? err.message : 'Не удалось удалить заказ');
       return false;
     }
   };

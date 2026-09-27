@@ -55,6 +55,12 @@ import { getCdekCrmStatusPatch, getCdekStatusLabel, parseCdekOrderStatusWebhook 
 import { enqueueAiJob, installAiJobQueue } from "./src/server/aiJobQueue.ts";
 import { parseIncidentTriage, redactIncidentText } from "./src/lib/incidentTriage.ts";
 import { readOpenAiOutputText } from "./src/server/openAiResponses.ts";
+import {
+  canChangeCdekDelivery,
+  canDeleteCdekWaybill,
+  canEditCdekWaybill,
+  canRequestCdekRefusal,
+} from "./src/lib/cdekOperations.ts";
 
 const _require = createRequire(import.meta.url);
 const Database = _require("better-sqlite3");
@@ -3363,7 +3369,8 @@ async function createCdekWaybillPdf(
 }
 
 app.post("/api/cdek/create-order", async (req, res) => {
-  if (!await requireCrmOrderAction(req, res, req.body?.exchange === true ? 'exchange' : 'cdek')) return;
+  const user: any = await requireCrmOrderAction(req, res, req.body?.exchange === true ? 'exchange' : 'cdek');
+  if (!user) return;
   try {
     const token = await getCdekToken();
     const settings = await getCdekSettings();
@@ -3521,6 +3528,13 @@ app.post("/api/cdek/create-order", async (req, res) => {
     ).catch(() => null);
 
     if (resolvedExisting) {
+      if (!canEditCdekWaybill(resolvedExisting.status)) {
+        return res.status(409).json({
+          error: "Накладная уже передана в движение и не может быть изменена как новый заказ",
+          details: `Текущий статус СДЭК: ${getCdekStatusLabel(resolvedExisting.status)}. Используйте отдельную команду изменения адреса или ПВЗ.`,
+          cdekStatus: resolvedExisting.status,
+        });
+      }
       const updatePayload = stripUndefined({
         ...cdekPayload,
         uuid: resolvedExisting.uuid,
@@ -3602,8 +3616,10 @@ app.post("/api/cdek/create-order", async (req, res) => {
           cdekUuid: updatedUuid,
           cdekNumber: updatedNumber,
           recovered: resolvedExisting.recovered,
+          previousCodAmount: Number(existingData?.cdekPayload?.codAmount || 0),
+          codAmount,
         },
-        actor: { type: "server", service: "cdek" },
+        actor: { type: "user", uid: user.uid, email: user.email || null, name: user.name || null },
       });
 
       return res.json({
@@ -3723,7 +3739,7 @@ app.post("/api/cdek/create-order", async (req, res) => {
         cdekUuid,
         cdekNumber,
       },
-      actor: { type: "server", service: "cdek" },
+      actor: { type: "user", uid: user.uid, email: user.email || null, name: user.name || null },
     });
 
     res.json({ success: true, recreated: recreate, cdekUuid, cdekNumber, data: response.data, details: cdekOrderDetails });
@@ -3731,6 +3747,234 @@ app.post("/api/cdek/create-order", async (req, res) => {
     const details = error.response?.data || error.message;
     console.error("[cdek] create-order error:", JSON.stringify(details, null, 2));
     res.status(error.response?.status || 500).json({ error: "Не удалось создать заказ СДЭК", details });
+  }
+});
+
+app.delete("/api/cdek/order/:uuid", async (req, res) => {
+  const user: any = await requireCrmOrderAction(req, res, 'delete');
+  if (!user) return;
+  try {
+    const orderId = String(req.query.orderId || "").trim();
+    const requestedUuid = String(req.params.uuid || "").trim();
+    if (!orderId || !requestedUuid) return res.status(400).json({ error: "Нужны номер заказа CRM и uuid накладной СДЭК" });
+
+    const snapshot: any = await getOrderSnapshot(orderId);
+    const exists = typeof snapshot?.exists === "function" ? snapshot.exists() : Boolean(snapshot?.exists);
+    if (!exists) return res.status(404).json({ error: "Заказ CRM не найден" });
+    const existingData = snapshot.data() || {};
+    const storedUuid = String(existingData.cdekUuid || "").trim();
+    if (storedUuid && storedUuid !== requestedUuid) {
+      return res.status(409).json({ error: "Накладная уже заменена. Обновите карточку заказа." });
+    }
+
+    const token = await getCdekToken();
+    const settings = await getCdekSettings();
+    const resolved = await resolveCdekOrder(requestedUuid, String(existingData.cdekExternalNumber || orderId), token, settings.baseUrl);
+    if (!resolved) return res.status(404).json({ error: "Накладная не найдена в СДЭК" });
+    if (!canDeleteCdekWaybill(resolved.status)) {
+      return res.status(409).json({
+        error: "Нельзя удалить заказ: посылка уже передана СДЭК",
+        details: `Статус СДЭК: ${getCdekStatusLabel(resolved.status)}. Для отправленной посылки используйте отказ и возврат.`,
+        cdekStatus: resolved.status,
+      });
+    }
+
+    const response = await axios.delete(`${settings.baseUrl}/orders/${encodeURIComponent(resolved.uuid)}`, {
+      headers: { Authorization: `Bearer ${token}` },
+      timeout: 15_000,
+    });
+    const requestError = getCdekRequestError(response.data);
+    if (requestError) throw new Error(`СДЭК не удалил накладную: ${requestError}`);
+
+    const removedAt = new Date().toISOString();
+    const patch = {
+      cdekStatus: "REMOVED",
+      cdekRemovedAt: removedAt,
+      cdekLastCheckedAt: removedAt,
+    };
+    await persistOrderPatch(orderId, patch);
+    await writeAuditLog({
+      action: "cdek_waybill_deleted",
+      entityType: "order",
+      entityId: orderId,
+      before: existingData,
+      after: { ...existingData, ...patch },
+      metadata: { source: "cdek", cdekUuid: resolved.uuid, cdekNumber: resolved.number, liveStatus: resolved.status },
+      actor: { type: "user", uid: user.uid, email: user.email || null, name: user.name || null },
+    });
+    res.json({ success: true, cdekStatus: "REMOVED", cdekUuid: resolved.uuid, cdekNumber: resolved.number });
+  } catch (error: any) {
+    const details = error.response?.data || error.message;
+    console.error("[cdek] delete order error:", details);
+    res.status(error.response?.status || 500).json({ error: "Не удалось удалить накладную в СДЭК", details });
+  }
+});
+
+app.post("/api/cdek/change-delivery", async (req, res) => {
+  const user: any = await requireCrmOrderAction(req, res, 'cdek');
+  if (!user) return;
+  try {
+    const body = req.body || {};
+    const orderId = String(body.orderId || "").trim();
+    const deliveryType = String(body.deliveryType || "pvz").trim();
+    const requestedPoint = String(body.deliveryPoint || "").trim();
+    const requestedAddress = String(body.toAddress || "").trim();
+    let toCityCode = Number(body.toCityCode || 0);
+    if (!orderId) return res.status(400).json({ error: "Нужен номер заказа CRM" });
+    if (deliveryType === "pvz" && !requestedPoint) return res.status(400).json({ error: "Выберите новый ПВЗ СДЭК" });
+    if (deliveryType === "door" && (!toCityCode || !requestedAddress)) return res.status(400).json({ error: "Выберите город и укажите новый адрес" });
+
+    const snapshot: any = await getOrderSnapshot(orderId);
+    const exists = typeof snapshot?.exists === "function" ? snapshot.exists() : Boolean(snapshot?.exists);
+    if (!exists) return res.status(404).json({ error: "Заказ CRM не найден" });
+    const existingData = snapshot.data() || {};
+    const storedUuid = String(existingData.cdekUuid || "").trim();
+    if (!storedUuid) return res.status(400).json({ error: "У заказа нет накладной СДЭК" });
+
+    const token = await getCdekToken();
+    const settings = await getCdekSettings();
+    const resolved = await resolveCdekOrder(storedUuid, String(existingData.cdekExternalNumber || orderId), token, settings.baseUrl);
+    if (!resolved) return res.status(404).json({ error: "Накладная не найдена в СДЭК" });
+    if (!canChangeCdekDelivery(resolved.status)) {
+      const suggestion = canEditCdekWaybill(resolved.status)
+        ? "Посылка ещё не передана СДЭК — используйте обычное изменение накладной."
+        : "Для этого статуса изменение доставки недоступно.";
+      return res.status(409).json({
+        error: "СДЭК не разрешает изменить условия доставки в текущем статусе",
+        details: `Статус: ${getCdekStatusLabel(resolved.status)}. ${suggestion}`,
+        cdekStatus: resolved.status,
+      });
+    }
+
+    let deliveryPoint = requestedPoint;
+    let deliveryPointAddress = String(body.deliveryPointAddress || "").trim();
+    let canonicalCity = String(body.toCity || existingData.clientCity || "").trim();
+    const deliveryPayload: any = { order_uuid: resolved.uuid };
+    if (deliveryType === "pvz") {
+      const pointResponse = await axios.get(`${settings.baseUrl}/deliverypoints`, {
+        headers: { Authorization: `Bearer ${token}` },
+        params: { code: deliveryPoint },
+        timeout: 15_000,
+      });
+      const points = Array.isArray(pointResponse.data) ? pointResponse.data : [];
+      const point = points.find((item: any) => String(item?.code || "").toLowerCase() === deliveryPoint.toLowerCase());
+      if (!point) return res.status(400).json({ error: "Выбранный ПВЗ СДЭК не найден" });
+      toCityCode = Number(point?.location?.city_code || toCityCode || 0);
+      canonicalCity = [point?.location?.city, point?.location?.region].filter(Boolean).join(", ") || canonicalCity;
+      deliveryPointAddress = `${point?.name || point?.code}${point?.location?.address ? ` · ${point.location.address}` : ""}`;
+      deliveryPayload.delivery_point = deliveryPoint;
+    } else {
+      deliveryPoint = "";
+      deliveryPointAddress = "";
+      deliveryPayload.to_location = { code: toCityCode, address: requestedAddress };
+    }
+    if (/^\d{4}-\d{2}-\d{2}$/.test(String(body.date || ""))) deliveryPayload.date = String(body.date);
+    if (String(body.timeFrom || "").trim()) deliveryPayload.time_from = String(body.timeFrom).trim();
+    if (String(body.timeTo || "").trim()) deliveryPayload.time_to = String(body.timeTo).trim();
+    if (String(body.comment || "").trim()) deliveryPayload.comment = String(body.comment).trim().slice(0, 255);
+
+    const response = await axios.post(`${settings.baseUrl}/delivery`, stripUndefined(deliveryPayload), {
+      headers: { Authorization: `Bearer ${token}` },
+      timeout: 15_000,
+    });
+    const requestError = getCdekRequestError(response.data);
+    if (requestError) throw new Error(`СДЭК не изменил доставку: ${requestError}`);
+
+    const changedAt = new Date().toISOString();
+    const previousPayload = existingData.cdekPayload && typeof existingData.cdekPayload === "object" ? existingData.cdekPayload : {};
+    const nextPayload = {
+      ...previousPayload,
+      deliveryType,
+      toCityCode,
+      toCity: canonicalCity,
+      deliveryPoint,
+      deliveryPointAddress,
+      toAddress: deliveryType === "door" ? requestedAddress : "",
+    };
+    const patch = stripUndefined({
+      cdekStatus: resolved.status,
+      cdekLastCheckedAt: changedAt,
+      cdekDeliveryChangedAt: changedAt,
+      cdekDeliveryChangePending: true,
+      cdekPayload: nextPayload,
+      clientCity: canonicalCity,
+      clientAddress: deliveryType === "pvz" ? deliveryPointAddress : requestedAddress,
+    });
+    await persistOrderPatch(orderId, patch);
+    await writeAuditLog({
+      action: "cdek_delivery_changed",
+      entityType: "order",
+      entityId: orderId,
+      before: existingData,
+      after: { ...existingData, ...patch },
+      metadata: { source: "cdek", cdekUuid: resolved.uuid, cdekNumber: resolved.number, liveStatus: resolved.status, deliveryType },
+      actor: { type: "user", uid: user.uid, email: user.email || null, name: user.name || null },
+    });
+    res.json({ success: true, cdekUuid: resolved.uuid, cdekNumber: resolved.number, cdekStatus: resolved.status, pending: true, data: response.data });
+  } catch (error: any) {
+    const details = error.response?.data || error.message;
+    console.error("[cdek] change delivery error:", details);
+    res.status(error.response?.status || 500).json({ error: "Не удалось изменить адрес или ПВЗ в СДЭК", details });
+  }
+});
+
+app.post("/api/cdek/order/:uuid/refusal", async (req, res) => {
+  const user: any = await requireCrmOrderAction(req, res, 'cdek');
+  if (!user) return;
+  try {
+    const orderId = String(req.body?.orderId || "").trim();
+    const requestedUuid = String(req.params.uuid || "").trim();
+    if (!orderId || !requestedUuid) return res.status(400).json({ error: "Нужны номер заказа CRM и uuid накладной СДЭК" });
+    const snapshot: any = await getOrderSnapshot(orderId);
+    const exists = typeof snapshot?.exists === "function" ? snapshot.exists() : Boolean(snapshot?.exists);
+    if (!exists) return res.status(404).json({ error: "Заказ CRM не найден" });
+    const existingData = snapshot.data() || {};
+    if (String(existingData.cdekUuid || "").trim() !== requestedUuid) {
+      return res.status(409).json({ error: "Накладная уже заменена. Обновите карточку заказа." });
+    }
+
+    const token = await getCdekToken();
+    const settings = await getCdekSettings();
+    const resolved = await resolveCdekOrder(requestedUuid, String(existingData.cdekExternalNumber || orderId), token, settings.baseUrl);
+    if (!resolved) return res.status(404).json({ error: "Накладная не найдена в СДЭК" });
+    if (!canRequestCdekRefusal(resolved.status)) {
+      return res.status(409).json({
+        error: "Отказ и возврат недоступны в текущем статусе СДЭК",
+        details: `Статус: ${getCdekStatusLabel(resolved.status)}.`,
+        cdekStatus: resolved.status,
+      });
+    }
+
+    const response = await axios.post(`${settings.baseUrl}/orders/${encodeURIComponent(resolved.uuid)}/refusal`, {}, {
+      headers: { Authorization: `Bearer ${token}` },
+      timeout: 15_000,
+    });
+    const requestError = getCdekRequestError(response.data);
+    if (requestError) throw new Error(`СДЭК не принял отказ: ${requestError}`);
+
+    const requestedAt = new Date().toISOString();
+    const patch = {
+      cdekStatus: "REFUSAL_REQUESTED",
+      cdekRefusalRequestedAt: requestedAt,
+      cdekLastCheckedAt: requestedAt,
+      status: "Возврат",
+      isShipped: true,
+    };
+    await persistOrderPatch(orderId, patch);
+    await writeAuditLog({
+      action: "cdek_refusal_requested",
+      entityType: "order",
+      entityId: orderId,
+      before: existingData,
+      after: { ...existingData, ...patch },
+      metadata: { source: "cdek", cdekUuid: resolved.uuid, cdekNumber: resolved.number, liveStatus: resolved.status },
+      actor: { type: "user", uid: user.uid, email: user.email || null, name: user.name || null },
+    });
+    res.json({ success: true, cdekStatus: "REFUSAL_REQUESTED", cdekUuid: resolved.uuid, cdekNumber: resolved.number, data: response.data });
+  } catch (error: any) {
+    const details = error.response?.data || error.message;
+    console.error("[cdek] refusal error:", details);
+    res.status(error.response?.status || 500).json({ error: "Не удалось оформить отказ и возврат через СДЭК", details });
   }
 });
 

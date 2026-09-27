@@ -451,6 +451,7 @@ const parsePackageNumber = (value: unknown, fallback: number): number => {
 const getApiErrorMessage = (data: any, fallback: string): string => {
   if (!data) return fallback;
   if (typeof data === 'string') return data;
+  if (typeof data.details === 'string') return [data.error, data.details].filter(Boolean).join(': ');
   if (data.details?.error_description) {
     const description = String(data.details.error_description);
     if (description === 'No such account secure') {
@@ -1870,8 +1871,17 @@ const CdekOrderBlock: React.FC<{
     }
   }, [deliveryPoint, order.clientAddress, order.orderId, selectedPoint, updateOrderData]);
 
-  const createCdekOrder = async (recreate = false) => {
+  const currentCodAmount = Math.max(0, Number(saved.codAmount) || 0);
+  const outstandingPaymentAmount = Math.round(getOutstandingPaymentAmount(order) * 100) / 100;
+
+  const createCdekOrder = async (recreate = false, codAmountOverride?: number) => {
     if (recreate && !window.confirm(`Создать новую накладную СДЭК на ${repeatShipmentDate}, сохранив этот заказ в CRM?`)) return;
+    const hasCodOverride = Number.isFinite(codAmountOverride);
+    const nextCodAmount = hasCodOverride
+      ? Math.max(0, Math.round(Number(codAmountOverride) * 100) / 100)
+      : String(order.paymentType || '').toLowerCase().includes('налож')
+        ? getOrderPaymentDue(order)
+        : currentCodAmount;
     setSubmitting(true);
     setError('');
     setStatusText('');
@@ -1882,7 +1892,7 @@ const CdekOrderBlock: React.FC<{
         recipientPhone: order.clientPhone,
         itemName: joinOrderItems(orderItems) || `Заказ ${order.orderId}`,
         itemCost: Number(order.revenue) || 0,
-        codAmount: String(order.paymentType || '').toLowerCase().includes('налож') ? getOrderPaymentDue(order) : 0,
+        codAmount: nextCodAmount,
         deliveryCost: Number(order.deliveryPrice) || 0,
         tariffCode,
         deliveryType,
@@ -1904,13 +1914,15 @@ const CdekOrderBlock: React.FC<{
       if (deliveryType === 'pvz' && !deliveryPoint) throw new Error('Выберите ПВЗ СДЭК');
       if (deliveryType === 'door' && !toAddress) throw new Error('Укажите адрес доставки');
 
-      updateOrderData(order.orderId, 'clientCity', cityQuery);
-      updateOrderData(
-        order.orderId,
-        'clientAddress',
-        deliveryType === 'pvz' ? selectedPointLabel : toAddress,
-      );
-      persistPayload(payload);
+      if (!hasCodOverride) {
+        updateOrderData(order.orderId, 'clientCity', cityQuery);
+        updateOrderData(
+          order.orderId,
+          'clientAddress',
+          deliveryType === 'pvz' ? selectedPointLabel : toAddress,
+        );
+        persistPayload(payload);
+      }
       const res = await crmFetch('/api/cdek/create-order', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1922,12 +1934,13 @@ const CdekOrderBlock: React.FC<{
       if (data.cdekUuid) updateOrderData(order.orderId, 'cdekUuid', data.cdekUuid);
       if (data.cdekNumber) updateOrderData(order.orderId, 'cdekNumber', data.cdekNumber);
       updateOrderData(order.orderId, 'cdekStatus', data.updated ? 'updated' : 'created');
+      if (hasCodOverride) persistPayload({ codAmount: nextCodAmount });
       let nextStatusText = data.updated
         ? `Накладная № ${data.cdekNumber || order.cdekNumber || shortCdekId(data.cdekUuid || order.cdekUuid || '')} обновлена`
         : data.cdekNumber
           ? `Накладная: ${data.cdekNumber}`
           : `Создан. ID: ${shortCdekId(data.cdekUuid || '')}`;
-      if (!recreate && !order.paymentUrl) {
+      if (!hasCodOverride && !recreate && !order.paymentUrl) {
         try {
           const amount = isYandexSplitPayment(order.paymentType)
             ? getOrderTotalAmount(order)
@@ -1954,10 +1967,116 @@ const CdekOrderBlock: React.FC<{
           // Накладная уже создана; счёт можно повторно создать отдельной кнопкой в блоке оплаты.
         }
       }
-      setStatusText(data.recreated ? `Повторная накладная: ${data.cdekNumber || shortCdekId(data.cdekUuid || '')}` : nextStatusText);
+      if (hasCodOverride) {
+        setStatusText(nextCodAmount > 0
+          ? `В СДЭК установлен наложенный платёж ${formatCurrency(nextCodAmount)}`
+          : 'Наложенный платёж в СДЭК снят');
+      } else {
+        setStatusText(data.recreated ? `Повторная накладная: ${data.cdekNumber || shortCdekId(data.cdekUuid || '')}` : nextStatusText);
+      }
       setEditing(false);
     } catch (e: any) {
       setError(e.message || 'Не удалось создать СДЭК');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleSetCodAmount = async () => {
+    if (!order.cdekUuid || outstandingPaymentAmount <= 0) return;
+    const confirmed = window.confirm(
+      `Установить в СДЭК наложенный платёж ${formatCurrency(outstandingPaymentAmount)} для заказа #${order.orderId}? Клиент должен будет оплатить эту сумму при получении.`,
+    );
+    if (!confirmed) return;
+    await createCdekOrder(false, outstandingPaymentAmount);
+  };
+
+  const handleRemoveCodAmount = async () => {
+    if (!order.cdekUuid || currentCodAmount <= 0) return;
+    const confirmed = window.confirm(
+      `Снять наложенный платёж ${formatCurrency(currentCodAmount)} с накладной СДЭК заказа #${order.orderId}? После этого СДЭК не будет требовать эту сумму при выдаче.`,
+    );
+    if (!confirmed) return;
+    await createCdekOrder(false, 0);
+  };
+
+  const changeDeliveryInTransit = async () => {
+    if (!order.cdekUuid) return;
+    if (deliveryType === 'pvz' && (!toCityCode || !deliveryPoint)) {
+      setError('Выберите город и новый ПВЗ СДЭК');
+      return;
+    }
+    if (deliveryType === 'door' && (!toCityCode || !toAddress.trim())) {
+      setError('Выберите город и укажите новый адрес');
+      return;
+    }
+    const destination = deliveryType === 'pvz' ? selectedPointLabel : toAddress;
+    if (!window.confirm(
+      `Изменить доставку уже отправленной посылки #${order.orderId}?\n\nНовое место: ${destination}\n\nCRM сначала проверит фактический статус в СДЭК.`,
+    )) return;
+
+    setSubmitting(true);
+    setError('');
+    setStatusText('Проверяем статус и отправляем изменение в СДЭК…');
+    try {
+      const response = await crmFetch('/api/cdek/change-delivery', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          orderId: order.orderId,
+          deliveryType,
+          toCityCode,
+          toCity: cityQuery,
+          deliveryPoint,
+          deliveryPointAddress: deliveryType === 'pvz' ? selectedPointLabel : '',
+          toAddress,
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(getApiErrorMessage(data, 'СДЭК не изменил адрес или ПВЗ'));
+      updateOrderData(order.orderId, 'clientCity', cityQuery);
+      updateOrderData(order.orderId, 'clientAddress', destination);
+      persistPayload({
+        deliveryType,
+        toCityCode,
+        toCity: cityQuery,
+        deliveryPoint: deliveryType === 'pvz' ? deliveryPoint : '',
+        deliveryPointAddress: deliveryType === 'pvz' ? selectedPointLabel : '',
+        toAddress: deliveryType === 'door' ? toAddress : '',
+      });
+      if (data.cdekStatus) updateOrderData(order.orderId, 'cdekStatus', data.cdekStatus);
+      setStatusText('Изменение принято СДЭК. Проверьте новый адрес после обновления статуса.');
+      setEditing(false);
+    } catch (e: any) {
+      setError(e.message || 'Не удалось изменить доставку в СДЭК');
+      setStatusText('');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const requestCdekRefusal = async () => {
+    if (!order.cdekUuid) return;
+    if (!window.confirm(
+      `Оформить отказ и возврат посылки СДЭК по заказу #${order.orderId}?\n\nЭто не временная пауза: СДЭК начнёт возвращать посылку отправителю.`,
+    )) return;
+    setSubmitting(true);
+    setError('');
+    setStatusText('Проверяем статус посылки…');
+    try {
+      const response = await crmFetch(`/api/cdek/order/${encodeURIComponent(order.cdekUuid)}/refusal`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orderId: order.orderId }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(getApiErrorMessage(data, 'СДЭК не принял отказ и возврат'));
+      updateOrderData(order.orderId, 'cdekStatus', 'REFUSAL_REQUESTED');
+      updateOrderData(order.orderId, 'status', 'Возврат');
+      setStatusText('СДЭК принял запрос на отказ и возврат посылки');
+    } catch (e: any) {
+      setError(e.message || 'Не удалось оформить отказ и возврат');
+      setStatusText('');
     } finally {
       setSubmitting(false);
     }
@@ -2074,6 +2193,7 @@ const CdekOrderBlock: React.FC<{
               <p className="mt-0.5 truncate text-[11px] font-bold text-zinc-400">
                 {order.cdekNumber ? `Накладная № ${order.cdekNumber}` : order.cdekUuid ? `ID ${shortCdekId(order.cdekUuid)}` : submitting ? 'Создаём накладную автоматически…' : 'Данные готовы'}
               </p>
+              {order.cdekStatus && <p className="mt-0.5 truncate text-[9px] font-bold uppercase text-blue-600">Статус: {String(order.cdekStatus).replace(/_/g, ' ')}</p>}
             </div>
           </div>
           <button
@@ -2150,6 +2270,48 @@ const CdekOrderBlock: React.FC<{
             </button>
           )}
         </div>
+        {order.cdekUuid && (outstandingPaymentAmount > 0 || currentCodAmount > 0) && (
+          <div className={cn(
+            'rounded-lg border p-2.5',
+            currentCodAmount > 0
+              ? outstandingPaymentAmount <= 0
+                ? 'border-red-200 bg-red-50/80'
+                : 'border-amber-200 bg-amber-50/80'
+              : 'border-orange-200 bg-orange-50/70',
+          )}>
+            <p className={cn(
+              'text-[10px] font-black uppercase tracking-wider',
+              currentCodAmount > 0 && outstandingPaymentAmount <= 0 ? 'text-red-700' : 'text-orange-700',
+            )}>
+              {currentCodAmount > 0
+                ? `Наложенный платёж СДЭК: ${formatCurrency(currentCodAmount)}`
+                : `Остаток не оплачен: ${formatCurrency(outstandingPaymentAmount)}`}
+            </p>
+            <p className="mt-1 text-[10px] font-medium leading-4 text-zinc-600">
+              {currentCodAmount > 0 && outstandingPaymentAmount <= 0
+                ? 'CRM видит полную оплату. Снимите наложенный платёж, чтобы клиент не заплатил повторно.'
+                : currentCodAmount > 0
+                  ? 'СДЭК потребует эту сумму при выдаче посылки.'
+                  : 'Установите остаток вручную, если клиент должен оплатить его при получении.'}
+            </p>
+            <button
+              type="button"
+              onClick={currentCodAmount > 0 ? handleRemoveCodAmount : handleSetCodAmount}
+              disabled={submitting || !settingsChecked}
+              className={cn(
+                'mt-2 inline-flex min-h-10 w-full items-center justify-center gap-2 rounded-lg px-3 text-[10px] font-black uppercase tracking-wider text-white transition-colors disabled:opacity-50',
+                currentCodAmount > 0 ? 'bg-red-600 hover:bg-red-700' : 'bg-orange-500 hover:bg-orange-600',
+              )}
+            >
+              {submitting ? <RefreshCcw className="h-4 w-4 animate-spin" /> : <Wallet className="h-4 w-4" />}
+              {submitting
+                ? 'Обновляем СДЭК…'
+                : currentCodAmount > 0
+                  ? 'Снять наложенный платёж'
+                  : `Включить наложенный платёж ${formatCurrency(outstandingPaymentAmount)}`}
+            </button>
+          </div>
+        )}
         {order.cdekUuid && (
           <div className="flex items-end gap-2 rounded-lg border border-amber-200 bg-amber-50/70 p-2.5">
             <label className="min-w-0 flex-1">
@@ -2171,6 +2333,17 @@ const CdekOrderBlock: React.FC<{
               {submitting ? 'Создаю…' : 'Повторить накладную'}
             </button>
           </div>
+        )}
+        {order.cdekUuid && (
+          <button
+            type="button"
+            onClick={requestCdekRefusal}
+            disabled={submitting || String(order.cdekStatus || '').toUpperCase() === 'REFUSAL_REQUESTED'}
+            className="inline-flex min-h-10 w-full items-center justify-center gap-2 rounded-lg border border-red-200 bg-white px-3 text-[10px] font-black uppercase tracking-wider text-red-600 transition-colors hover:bg-red-50 disabled:opacity-50"
+          >
+            {submitting ? <RefreshCcw className="h-4 w-4 animate-spin" /> : <AlertCircle className="h-4 w-4" />}
+            {String(order.cdekStatus || '').toUpperCase() === 'REFUSAL_REQUESTED' ? 'Возврат уже запрошен' : 'Отказ и возврат посылки'}
+          </button>
         )}
         {error && <p className="text-[11px] font-bold leading-4 text-red-500">{error}</p>}
         {statusText && <p className="text-[11px] font-bold text-emerald-600">{statusText}</p>}
@@ -2355,6 +2528,20 @@ const CdekOrderBlock: React.FC<{
             : order.cdekUuid ? 'Сохранить изменения' : 'Создать накладную'}
         </button>
       </div>
+      {order.cdekUuid && (
+        <button
+          type="button"
+          onClick={changeDeliveryInTransit}
+          disabled={submitting || !settingsChecked}
+          className={cn(
+            'w-full rounded-lg border border-blue-200 bg-blue-50 font-black uppercase tracking-widest text-blue-700 transition-all hover:bg-blue-100 disabled:opacity-60 flex items-center justify-center gap-1.5',
+            mobile ? 'min-h-[44px] py-2.5 text-[11px]' : 'h-10 text-[11px]',
+          )}
+        >
+          {submitting ? <RefreshCcw className="h-3 w-3 animate-spin" /> : <MapPin className="h-3 w-3" />}
+          Изменить адрес или ПВЗ посылки в пути
+        </button>
+      )}
       {order.cdekUuid && !order.cdekNumber && (
         <button
           type="button"
