@@ -61,6 +61,10 @@ import {
   canEditCdekWaybill,
   canRequestCdekRefusal,
 } from "./src/lib/cdekOperations.ts";
+import {
+  sanitizeStorefrontProduct,
+  sanitizeStorefrontSettings,
+} from "./src/lib/storefrontCommerce.ts";
 
 const _require = createRequire(import.meta.url);
 const Database = _require("better-sqlite3");
@@ -302,6 +306,9 @@ app.use("/api", (req, res, next) => {
 
 function isPublicApiRequest(req: express.Request) {
   const path = req.path;
+  if (req.method === "GET" && path === "/storefront/bootstrap") return true;
+  if (req.method === "GET" && (path === "/storefront/cdek/cities" || path === "/storefront/cdek/points")) return true;
+  if (req.method === "POST" && path === "/storefront/cdek/calculate") return true;
   if (path === "/ai-jobs/run") {
     const workerSecret = String(process.env.AI_JOB_WORKER_SECRET || "");
     const bearer = String(req.headers.authorization || "").replace(/^Bearer\s+/i, "");
@@ -3024,6 +3031,56 @@ app.post("/api/cdek/calculate", async (req, res) => {
   }
 });
 
+app.get("/api/storefront/cdek/cities", async (req, res) => {
+  try {
+    const query = String(req.query.q || "").trim().slice(0, 80);
+    if (query.length < 2) return res.json([]);
+    const token = await getCdekToken();
+    const settings = await getCdekSettings();
+    const canonicalQuery = CDEK_CITY_ALIASES.get(normalizeCdekCitySearch(query)) || query;
+    const response = await axios.get(`${settings.baseUrl}/location/cities`, {
+      headers: { Authorization: `Bearer ${token}` },
+      params: { city: canonicalQuery, size: 20, country_codes: "RU" },
+      timeout: 15_000,
+    });
+    const rows = rankCdekCities(Array.isArray(response.data) ? response.data : [], canonicalQuery)
+      .slice(0, 10)
+      .map(city => ({ code: Number(city.code), city: String(city.city || ""), region: String(city.region || ""), country: String(city.country || "") }));
+    res.setHeader("Cache-Control", "public, max-age=300");
+    res.json(rows);
+  } catch (error: any) {
+    const cdekError = getCdekError(error);
+    res.status(cdekError.status).json({ error: "Не удалось найти город" });
+  }
+});
+
+app.post("/api/storefront/cdek/calculate", async (req, res) => {
+  try {
+    const cityCode = Number(req.body?.to_city_code || 0);
+    if (!Number.isInteger(cityCode) || cityCode <= 0) return res.status(400).json({ error: "Выберите город" });
+    const token = await getCdekToken();
+    const settings = await getCdekSettings();
+    const response = await axios.post(`${settings.baseUrl}/calculator/tarifflist`, {
+      from_location: { code: settings.senderCityCode },
+      to_location: { code: cityCode },
+      packages: [{ weight: 700, length: 30, width: 20, height: 10 }],
+    }, { headers: { Authorization: `Bearer ${token}` }, timeout: 15_000 });
+    const tariffs = Array.isArray(response.data?.tariff_codes)
+      ? response.data.tariff_codes.map((item: any) => ({
+          tariff_code: Number(item.tariff_code),
+          tariff_name: String(item.tariff_name || ""),
+          delivery_sum: Number(item.delivery_sum || 0),
+          period_min: Number(item.period_min || 0),
+          period_max: Number(item.period_max || 0),
+        })).filter((item: any) => item.tariff_code && item.delivery_sum > 0)
+      : [];
+    res.json({ tariff_codes: tariffs });
+  } catch (error: any) {
+    const cdekError = getCdekError(error);
+    res.status(cdekError.status).json({ error: "Не удалось рассчитать доставку" });
+  }
+});
+
 app.get("/api/cdek/deliverypoints", async (req, res) => {
   try {
     const token = await getCdekToken();
@@ -3048,6 +3105,31 @@ app.get("/api/cdek/deliverypoints", async (req, res) => {
   } catch (error: any) {
     const cdekError = getCdekError(error);
     res.status(cdekError.status).json({ error: "Ошибка поиска ПВЗ СДЭК", ...cdekError });
+  }
+});
+
+app.get("/api/storefront/cdek/points", async (req, res) => {
+  try {
+    const cityCode = Number(req.query.city_code || 0);
+    if (!Number.isInteger(cityCode) || cityCode <= 0) return res.status(400).json({ error: "Выберите город" });
+    const token = await getCdekToken();
+    const settings = await getCdekSettings();
+    const response = await axios.get(`${settings.baseUrl}/deliverypoints`, {
+      headers: { Authorization: `Bearer ${token}` },
+      params: { city_code: cityCode, type: "PVZ", size: 300 },
+      timeout: 20_000,
+    });
+    const points = (Array.isArray(response.data) ? response.data : []).slice(0, 300).map((point: any) => ({
+      code: String(point.code || ""),
+      name: String(point.name || ""),
+      address_full: String(point.location?.address || point.address || ""),
+      location: { address: String(point.location?.address || point.address || "") },
+    })).filter((point: any) => point.code);
+    res.setHeader("Cache-Control", "public, max-age=300");
+    res.json(points);
+  } catch (error: any) {
+    const cdekError = getCdekError(error);
+    res.status(cdekError.status).json({ error: "Не удалось загрузить пункты выдачи" });
   }
 });
 
@@ -4511,6 +4593,46 @@ app.get("/api/products", async (req, res) => {
     res.json({ success: true, products });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Публичная витрина получает только данные, которые разрешено показывать покупателю.
+// Себестоимость, экономика товара и служебные настройки CRM сюда не попадают.
+app.get("/api/storefront/bootstrap", async (_req, res) => {
+  try {
+    let productRows: Array<{ id: string; data: Record<string, unknown> }> = [];
+    let settings: Record<string, unknown> = {};
+    if (adminDb) {
+      const [productsSnapshot, settingsSnapshot] = await Promise.all([
+        adminDb.collection("products").get(),
+        adminDb.collection("settings").doc("storefront").get(),
+      ]);
+      productRows = productsSnapshot.docs.map((snapshot: any) => ({ id: snapshot.id, data: snapshot.data() || {} }));
+      settings = settingsSnapshot.exists ? settingsSnapshot.data() || {} : {};
+    } else if (db) {
+      const [productsSnapshot, settingsSnapshot] = await Promise.all([
+        getDocs(collection(db, "products")),
+        getDoc(doc(db, "settings", "storefront")),
+      ]);
+      productRows = productsSnapshot.docs.map((snapshot: any) => ({ id: snapshot.id, data: snapshot.data() || {} }));
+      settings = settingsSnapshot.exists() ? settingsSnapshot.data() || {} : {};
+    } else {
+      return res.status(503).json({ error: "Каталог временно недоступен" });
+    }
+
+    const products = productRows
+      .map(row => sanitizeStorefrontProduct(row.id, row.data))
+      .filter(Boolean);
+    res.setHeader("Cache-Control", "public, max-age=30, stale-while-revalidate=120");
+    res.json({
+      success: true,
+      generatedAt: new Date().toISOString(),
+      products,
+      settings: sanitizeStorefrontSettings(settings),
+    });
+  } catch (error: any) {
+    console.error("[storefront] bootstrap:", error?.message || error);
+    res.status(500).json({ error: "Не удалось загрузить каталог и контент" });
   }
 });
 

@@ -46,6 +46,7 @@ interface ProductItem {
   countryOfOrigin?: string;
   postUrl?: string;
   posts?: { name: string; url: string }[];
+  storefrontPublished?: boolean;
 }
 
 interface ProductsProps {
@@ -302,7 +303,8 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
         description: newProduct.description || '',
         countryOfOrigin: newProduct.countryOfOrigin || '',
         postUrl: newProduct.postUrl || '',
-        posts: newProduct.posts || []
+        posts: newProduct.posts || [],
+        storefrontPublished: newProduct.storefrontPublished !== false,
       };
 
       await setDoc(doc(db, 'products', id), productData);
@@ -776,6 +778,18 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
               <label className="min-w-0">
                 <span className={labelClass}>Страна производства</span>
                 <input className={inputClass} value={newProduct.countryOfOrigin || ''} onChange={e => setNewProduct({...newProduct, countryOfOrigin: e.target.value})} />
+              </label>
+              <label className="flex min-h-11 min-w-0 items-center gap-3 rounded-xl border border-slate-200 bg-white px-3">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4 accent-[#7D7DE6]"
+                  checked={newProduct.storefrontPublished !== false}
+                  onChange={e => setNewProduct({ ...newProduct, storefrontPublished: e.target.checked })}
+                />
+                <span className="min-w-0">
+                  <b className="block text-xs text-slate-800">Показывать на сайте</b>
+                  <small className="block text-[10px] text-slate-400">Выключите, чтобы скрыть товар из каталога</small>
+                </span>
               </label>
               <div className="min-w-0 sm:col-span-2 xl:col-span-3 2xl:col-span-4">
                 <MaterialCompositionEditor
@@ -1666,6 +1680,9 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
                         <div className="flex min-w-0 items-center gap-2">
                           <div className="min-w-0">
                             <span className="block truncate text-[14px] font-semibold leading-5 text-[#1F2937]" title={product.name}>{product.name}</span>
+                            <span className={cn("mt-0.5 inline-flex rounded-full px-2 py-0.5 text-[8px] font-bold uppercase tracking-[0.08em]", product.storefrontPublished === false ? "bg-slate-100 text-slate-400" : "bg-emerald-50 text-emerald-600")}>
+                              {product.storefrontPublished === false ? 'Скрыт с сайта' : 'На сайте'}
+                            </span>
                             <span className="mt-0.5 block truncate text-[10px] font-semibold uppercase tracking-[0.08em] text-[#9CA3AF]">
                               {[
                                 product.patternNumber ? `Лекало ${product.patternNumber}` : 'Без лекала',
