@@ -65,6 +65,11 @@ import {
   sanitizeStorefrontProduct,
   sanitizeStorefrontSettings,
 } from "./src/lib/storefrontCommerce.ts";
+import {
+  normalizeStorefrontCheckout,
+  storefrontSignature,
+  verifyStorefrontSignature,
+} from "./src/lib/storefrontCheckout.ts";
 
 const _require = createRequire(import.meta.url);
 const Database = _require("better-sqlite3");
@@ -100,6 +105,7 @@ const MCP_PUBLIC_BASE_URL = (process.env.MCP_PUBLIC_BASE_URL || "https://ybcrm.r
 const MCP_UPSTREAM_URL = String(process.env.MCP_UPSTREAM_URL || "").replace(/\/$/, "");
 const MCP_OAUTH_PIN = String(process.env.MCP_OAUTH_PIN || "").trim();
 const MCP_TOKEN_SECRET = String(process.env.CRM_JWT_SECRET || process.env.MCP_TOKEN_SECRET || "").trim();
+const STOREFRONT_SHARED_SECRET = String(process.env.STOREFRONT_SHARED_SECRET || "").trim();
 
 const TG_API_ID = Number(process.env.TG_API_ID || 2040);
 const TG_API_HASH = String(process.env.TG_API_HASH || "").trim();
@@ -309,6 +315,9 @@ function isPublicApiRequest(req: express.Request) {
   if (req.method === "GET" && path === "/storefront/bootstrap") return true;
   if (req.method === "GET" && (path === "/storefront/cdek/cities" || path === "/storefront/cdek/points")) return true;
   if (req.method === "POST" && path === "/storefront/cdek/calculate") return true;
+  if (req.method === "POST" && path === "/storefront/checkout") return true;
+  if (req.method === "POST" && ["/cdek/create-order", "/tochka/create-payment", "/yandex-pay/create-payment"].includes(path)
+    && isTrustedStorefrontServiceRequest(req)) return true;
   if (path === "/ai-jobs/run") {
     const workerSecret = String(process.env.AI_JOB_WORKER_SECRET || "");
     const bearer = String(req.headers.authorization || "").replace(/^Bearer\s+/i, "");
@@ -986,6 +995,38 @@ async function requireCrmOrderAction(req: any, res: any, action: OrderAction) {
     res.status(503).json({ error: 'Не удалось проверить права аккаунта' });
     return null;
   }
+}
+
+function isTrustedStorefrontServiceRequest(req: any) {
+  return verifyStorefrontSignature({
+    secret: STOREFRONT_SHARED_SECRET,
+    timestamp: req.headers?.['x-storefront-timestamp'],
+    requestId: req.headers?.['x-storefront-request-id'],
+    signature: req.headers?.['x-storefront-signature'],
+    payload: req.body || {},
+  });
+}
+
+async function requireCrmOrderActionOrStorefront(req: any, res: any, action: OrderAction) {
+  if (isTrustedStorefrontServiceRequest(req)) {
+    return { uid: 'storefront-service', email: '', name: 'YAASBAE Storefront', service: true };
+  }
+  return requireCrmOrderAction(req, res, action);
+}
+
+async function storefrontInternalPost(pathname: string, payload: Record<string, unknown>) {
+  const timestamp = String(Date.now());
+  const requestId = randomUUID();
+  const signature = storefrontSignature(STOREFRONT_SHARED_SECRET, timestamp, requestId, payload);
+  return axios.post(`http://127.0.0.1:${PORT}${pathname}`, payload, {
+    headers: {
+      'content-type': 'application/json',
+      'x-storefront-timestamp': timestamp,
+      'x-storefront-request-id': requestId,
+      'x-storefront-signature': signature,
+    },
+    timeout: 35_000,
+  });
 }
 
 function decodeFirestoreRestValue(value: any): any {
@@ -3451,7 +3492,7 @@ async function createCdekWaybillPdf(
 }
 
 app.post("/api/cdek/create-order", async (req, res) => {
-  const user: any = await requireCrmOrderAction(req, res, req.body?.exchange === true ? 'exchange' : 'cdek');
+  const user: any = await requireCrmOrderActionOrStorefront(req, res, req.body?.exchange === true ? 'exchange' : 'cdek');
   if (!user) return;
   try {
     const token = await getCdekToken();
@@ -4596,27 +4637,42 @@ app.get("/api/products", async (req, res) => {
   }
 });
 
+// Если локальному запуску не выданы Application Default Credentials,
+// не пытаемся заново дожидаться таймаута Admin SDK на каждом запросе.
+// В Cloud Run флаг остаётся true, потому что Admin SDK там авторизован.
+let storefrontAdminAvailable: boolean | null = adminDb ? null : false;
+const storefrontCheckoutRateWindows = new Map<string, { count: number; resetAt: number }>();
+
 // Публичная витрина получает только данные, которые разрешено показывать покупателю.
 // Себестоимость, экономика товара и служебные настройки CRM сюда не попадают.
 app.get("/api/storefront/bootstrap", async (_req, res) => {
   try {
     let productRows: Array<{ id: string; data: Record<string, unknown> }> = [];
     let settings: Record<string, unknown> = {};
-    if (adminDb) {
-      const [productsSnapshot, settingsSnapshot] = await Promise.all([
-        adminDb.collection("products").get(),
-        adminDb.collection("settings").doc("storefront").get(),
-      ]);
-      productRows = productsSnapshot.docs.map((snapshot: any) => ({ id: snapshot.id, data: snapshot.data() || {} }));
-      settings = settingsSnapshot.exists ? settingsSnapshot.data() || {} : {};
-    } else if (db) {
+    let loadedWithAdmin = false;
+    if (adminDb && storefrontAdminAvailable !== false) {
+      try {
+        const [productsSnapshot, settingsSnapshot] = await Promise.all([
+          adminDb.collection("products").get(),
+          adminDb.collection("settings").doc("storefront").get(),
+        ]);
+        productRows = productsSnapshot.docs.map((snapshot: any) => ({ id: snapshot.id, data: snapshot.data() || {} }));
+        settings = settingsSnapshot.exists ? settingsSnapshot.data() || {} : {};
+        loadedWithAdmin = true;
+        storefrontAdminAvailable = true;
+      } catch (adminError: any) {
+        storefrontAdminAvailable = false;
+        console.warn("[storefront] Admin SDK fallback:", adminError?.message || adminError);
+      }
+    }
+    if (!loadedWithAdmin && db) {
       const [productsSnapshot, settingsSnapshot] = await Promise.all([
         getDocs(collection(db, "products")),
         getDoc(doc(db, "settings", "storefront")),
       ]);
       productRows = productsSnapshot.docs.map((snapshot: any) => ({ id: snapshot.id, data: snapshot.data() || {} }));
       settings = settingsSnapshot.exists() ? settingsSnapshot.data() || {} : {};
-    } else {
+    } else if (!loadedWithAdmin) {
       return res.status(503).json({ error: "Каталог временно недоступен" });
     }
 
@@ -4633,6 +4689,180 @@ app.get("/api/storefront/bootstrap", async (_req, res) => {
   } catch (error: any) {
     console.error("[storefront] bootstrap:", error?.message || error);
     res.status(500).json({ error: "Не удалось загрузить каталог и контент" });
+  }
+});
+
+app.post("/api/storefront/checkout", async (req: any, res) => {
+  const rateKey = String(req.ip || req.socket?.remoteAddress || "unknown");
+  const now = Date.now();
+  const currentRate = storefrontCheckoutRateWindows.get(rateKey);
+  const rate = !currentRate || currentRate.resetAt <= now ? { count: 0, resetAt: now + 60_000 } : currentRate;
+  rate.count += 1;
+  storefrontCheckoutRateWindows.set(rateKey, rate);
+  if (rate.count > 10) return res.status(429).json({ error: "Слишком много попыток оформления. Подождите минуту." });
+  if (!STOREFRONT_SHARED_SECRET) return res.status(503).json({ error: "Защищённое оформление заказа ещё не настроено" });
+  if (!isTrustedStorefrontServiceRequest(req)) return res.status(401).json({ error: "Подпись запроса недействительна" });
+
+  const requestId = String(req.headers?.['x-storefront-request-id'] || '').trim();
+  const normalized = normalizeStorefrontCheckout(req.body);
+  if (!normalized.value) return res.status(400).json({ error: normalized.error || "Некорректные данные заказа" });
+  if (!adminDb && !db) return res.status(503).json({ error: "База данных временно недоступна" });
+
+  const requestHash = createHash('sha256').update(requestId).digest('hex');
+  const orderId = `WEB-${requestHash.slice(0, 12).toUpperCase()}`;
+  const checkoutRef = adminDb?.collection('storefront_checkout_requests').doc(requestHash) || null;
+  try {
+    if (checkoutRef) {
+      const previous = await checkoutRef.get();
+      const previousData = previous.exists ? previous.data() || {} : {};
+      if (previousData.status === 'completed' && previousData.response?.paymentUrl) {
+        return res.json({ ...previousData.response, existing: true });
+      }
+      await checkoutRef.set({
+        requestIdHash: requestHash,
+        orderId,
+        status: 'processing',
+        attempts: Number(previousData.attempts || 0) + 1,
+        updatedAt: FieldValue.serverTimestamp(),
+        createdAt: previous.exists ? previousData.createdAt || FieldValue.serverTimestamp() : FieldValue.serverTimestamp(),
+      }, { merge: true });
+    }
+
+    const checkout = normalized.value;
+    const productRows = await Promise.all(checkout.cart.map(async line => {
+      if (adminDb) {
+        const snapshot = await adminDb.collection('products').doc(line.productId).get();
+        return snapshot.exists ? { id: snapshot.id, data: snapshot.data() || {} } : null;
+      }
+      const snapshot = await getDoc(doc(db, 'products', line.productId));
+      return snapshot.exists() ? { id: snapshot.id, data: snapshot.data() || {} } : null;
+    }));
+    const orderLines = checkout.cart.map((line, index) => {
+      const row = productRows[index];
+      const product = row ? sanitizeStorefrontProduct(row.id, row.data) : null;
+      if (!product) throw Object.assign(new Error(`Товар ${line.productId} недоступен для заказа`), { statusCode: 409 });
+      const lineTotal = Math.round(product.price * line.quantity * 100) / 100;
+      return { ...line, product, lineTotal };
+    });
+    const productsTotal = Math.round(orderLines.reduce((sum, line) => sum + line.lineTotal, 0) * 100) / 100;
+
+    const cdekToken = await getCdekToken();
+    const cdekSettings = await getCdekSettings();
+    const [pointResponse, tariffResponse] = await Promise.all([
+      axios.get(`${cdekSettings.baseUrl}/deliverypoints`, {
+        headers: { Authorization: `Bearer ${cdekToken}` },
+        params: { code: checkout.delivery.pointCode },
+        timeout: 15_000,
+      }),
+      axios.post(`${cdekSettings.baseUrl}/calculator/tarifflist`, {
+        from_location: { code: cdekSettings.senderCityCode },
+        to_location: { code: checkout.delivery.cityCode },
+        packages: [{ weight: 700, length: 30, width: 20, height: 10 }],
+      }, { headers: { Authorization: `Bearer ${cdekToken}` }, timeout: 15_000 }),
+    ]);
+    const point = (Array.isArray(pointResponse.data) ? pointResponse.data : []).find((candidate: any) =>
+      String(candidate?.code || '').toLowerCase() === checkout.delivery.pointCode.toLowerCase());
+    if (!point || Number(point?.location?.city_code || 0) !== checkout.delivery.cityCode) {
+      return res.status(409).json({ error: "Пункт выдачи не относится к выбранному городу. Выберите его заново." });
+    }
+    const tariff = (Array.isArray(tariffResponse.data?.tariff_codes) ? tariffResponse.data.tariff_codes : [])
+      .find((candidate: any) => Number(candidate?.tariff_code || 0) === checkout.delivery.tariffCode);
+    const deliveryCost = Math.round(Number(tariff?.delivery_sum || 0) * 100) / 100;
+    if (!tariff || deliveryCost <= 0) return res.status(409).json({ error: "Тариф СДЭК изменился. Рассчитайте доставку заново." });
+    const total = Math.round((productsTotal + deliveryCost) * 100) / 100;
+    const pointAddress = String(point?.location?.address || point?.address || checkout.delivery.pointAddress || '').trim();
+    const itemNames = orderLines.map(line => `${line.product.name} × ${line.quantity}`);
+    const orderDocument = {
+      orderId,
+      id: orderId,
+      date: new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Moscow' }),
+      clientName: checkout.customer.name,
+      clientPhone: checkout.customer.phone,
+      clientEmail: checkout.customer.email,
+      clientCity: checkout.delivery.city,
+      item: itemNames.join(', '),
+      items: itemNames,
+      itemProductIds: orderLines.map(line => line.product.id),
+      itemPrices: orderLines.map(line => line.lineTotal),
+      itemColors: orderLines.map(line => line.product.color || ''),
+      itemSizes: orderLines.map(line => line.size || ''),
+      itemFits: orderLines.map(line => line.fit || ''),
+      itemQuantities: orderLines.map(line => line.quantity),
+      revenue: productsTotal,
+      deliveryPrice: deliveryCost,
+      totalAmount: total,
+      paidAmount: 0,
+      initialPaymentAmount: total,
+      invoiceType: 'full',
+      paymentType: checkout.paymentMethod === 'split' ? 'Яндекс Сплит · полная оплата' : 'Полная оплата',
+      paymentProvider: checkout.paymentMethod === 'split' ? 'yandex_split' : 'tochka',
+      source: 'Сайт yaasbae.store',
+      deliveryMethod: `СДЭК ПВЗ ${checkout.delivery.pointCode}`,
+      deliveryPoint: checkout.delivery.pointCode,
+      deliveryAddress: pointAddress,
+      status: 'Новый',
+      createdBy: 'storefront',
+      storefrontRequestIdHash: requestHash,
+      createdAt: adminDb ? FieldValue.serverTimestamp() : serverTimestamp(),
+      updatedAt: adminDb ? FieldValue.serverTimestamp() : serverTimestamp(),
+      paymentAccountingVersion: 2,
+    };
+    const existingOrder = await getOrderSnapshot(orderId).catch(() => null);
+    const existed = Boolean(existingOrder && (typeof existingOrder.exists === 'function' ? existingOrder.exists() : existingOrder.exists));
+    if (adminDb) await adminDb.collection('orders_new').doc(orderId).set(orderDocument, { merge: true });
+    else await setDoc(doc(db, 'orders_new', orderId), orderDocument, { merge: true });
+    if (!existed) {
+      await writeAuditLog({
+        action: 'storefront_order_created', entityType: 'order', entityId: orderId, after: orderDocument,
+        metadata: { source: 'storefront', paymentMethod: checkout.paymentMethod },
+        actor: { type: 'service', service: 'storefront' },
+      });
+      await dispatchPushEvent('order_created', `order-created:${orderId}`, { orderId, clientName: checkout.customer.name }).catch(() => null);
+      await sendNewOrderToTelegram(orderId, { type: 'storefront' }).catch(error => console.warn('[telegram] storefront order:', error?.message || error));
+    }
+
+    const cdekPayload = {
+      orderId,
+      recipientName: checkout.customer.name,
+      recipientPhone: checkout.customer.phone,
+      tariffCode: checkout.delivery.tariffCode,
+      toCityCode: checkout.delivery.cityCode,
+      toCity: checkout.delivery.city,
+      deliveryType: 'pvz',
+      deliveryPoint: checkout.delivery.pointCode,
+      deliveryPointAddress: pointAddress,
+      itemName: itemNames.join('; '),
+      itemCost: productsTotal,
+      deliveryCost,
+      comment: `Сайт YAASBAE · ${checkout.customer.email}`,
+    };
+    const cdekResult = await storefrontInternalPost('/api/cdek/create-order', cdekPayload);
+    const paymentPath = checkout.paymentMethod === 'split' ? '/api/yandex-pay/create-payment' : '/api/tochka/create-payment';
+    const paymentResult = await storefrontInternalPost(paymentPath, {
+      orderId,
+      amount: total,
+      description: `YAASBAE заказ ${orderId}`,
+    });
+    const paymentUrl = String(paymentResult.data?.paymentUrl || '');
+    if (!paymentUrl) throw new Error('Платёжный сервис не вернул ссылку оплаты');
+    const response = {
+      success: true,
+      orderId,
+      productsTotal,
+      deliveryCost,
+      total,
+      cdekNumber: cdekResult.data?.cdekNumber || null,
+      paymentUrl,
+      paymentProvider: checkout.paymentMethod,
+    };
+    if (checkoutRef) await checkoutRef.set({ status: 'completed', response, completedAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+    return res.json(response);
+  } catch (error: any) {
+    const status = Number(error?.statusCode || error?.response?.status || 500);
+    const message = error?.response?.data?.error || error?.message || "Не удалось оформить заказ";
+    console.error('[storefront] checkout:', error?.response?.data || error?.message || error);
+    if (checkoutRef) await checkoutRef.set({ status: 'failed', error: String(message).slice(0, 500), updatedAt: FieldValue.serverTimestamp() }, { merge: true }).catch(() => null);
+    return res.status(status >= 400 && status < 600 ? status : 500).json({ error: message, details: error?.response?.data?.details });
   }
 });
 
@@ -10817,7 +11047,7 @@ app.post('/api/yandex-pay/test', async (_req, res) => {
 });
 
 app.post('/api/yandex-pay/create-payment', async (req, res) => {
-  if (!await requireCrmOrderAction(req, res, 'payments')) return;
+  if (!await requireCrmOrderActionOrStorefront(req, res, 'payments')) return;
   const { orderId, amount, description } = req.body || {};
   const paymentAmount = Number(amount);
   if (!orderId || !Number.isFinite(paymentAmount) || paymentAmount <= 0) return res.status(400).json({ error: 'Нужны orderId и сумма больше 0' });
@@ -11060,7 +11290,7 @@ app.post('/api/yandex-pay', handleYandexPayWebhook);
 
 // Создать ссылку/QR на оплату
 app.post('/api/tochka/create-payment', async (req, res) => {
-  if (!await requireCrmOrderAction(req, res, 'payments')) return;
+  if (!await requireCrmOrderActionOrStorefront(req, res, 'payments')) return;
   const { orderId, amount, description } = req.body;
   let paymentAmount = Number(amount);
   if (!orderId || !Number.isFinite(paymentAmount) || paymentAmount <= 0) return res.status(400).json({ error: 'Нужны orderId и amount больше 0' });
