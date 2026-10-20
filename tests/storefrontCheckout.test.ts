@@ -2,10 +2,19 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   normalizeStorefrontCheckout,
+  checkoutQuoteMatches,
   stableJson,
   storefrontSignature,
   verifyStorefrontSignature,
 } from '../src/lib/storefrontCheckout.ts';
+
+test('changed price or shipping cannot silently redirect to a different payable amount', () => {
+  assert.equal(checkoutQuoteMatches(20260, 20260), true);
+  assert.equal(checkoutQuoteMatches(20260, 20360), false);
+  assert.equal(checkoutQuoteMatches(100.10, 100.1), true);
+  assert.equal(checkoutQuoteMatches(100, Infinity), false);
+  assert.equal(checkoutQuoteMatches(undefined, 100), true);
+});
 
 test('stable JSON and HMAC do not depend on object key order', () => {
   const first = { customer: { phone: '79990000000', name: 'Анна' }, cart: [{ productId: 'p1', quantity: 1 }] };
@@ -37,4 +46,21 @@ test('checkout data is normalized and validated', () => {
     paymentMethod: 'tochka',
   });
   assert.equal(normalizeStorefrontCheckout({}).error, 'Корзина пуста');
+});
+
+test('checkout never silently drops, truncates or changes malformed cart lines', () => {
+  const validLine = { productId: 'p1', quantity: 1 };
+  const invalid = [
+    [validLine, null], [validLine, { productId: '', quantity: 1 }],
+    [{ productId: 'products/p1', quantity: 1 }],
+    ...[0, -1, 1.5, 21, Infinity, NaN, '2', undefined].map(quantity => [{ productId: 'p1', quantity }]),
+    Array.from({ length: 31 }, () => validLine),
+    [{ ...validLine, size: { unexpected: true } }],
+    [{ ...validLine, fit: 'x'.repeat(61) }],
+  ];
+  for (const cart of invalid) {
+    const result = normalizeStorefrontCheckout({ cart });
+    assert.equal(result.value, undefined);
+    assert.match(result.error || '', /Некорректный состав корзины/);
+  }
 });

@@ -21,6 +21,7 @@ export type StorefrontCheckoutInput = {
     tariffCode: number;
   };
   paymentMethod: 'tochka' | 'split';
+  expectedTotal?: number;
 };
 
 export function stableJson(value: unknown): string {
@@ -58,6 +59,16 @@ export function verifyStorefrontSignature(input: {
 
 export function normalizeStorefrontCheckout(value: unknown): { value?: StorefrontCheckoutInput; error?: string } {
   const row = value && typeof value === 'object' ? value as Record<string, any> : {};
+  if (!Array.isArray(row.cart) || !row.cart.length) return { error: 'Корзина пуста' };
+  // Checkout must reject malformed lines, never silently drop or clamp them.
+  if (row.cart.length > 30 || row.cart.some((line: any) =>
+    !line || typeof line !== 'object' || Array.isArray(line)
+    || typeof line.productId !== 'string' || !line.productId.trim()
+    || line.productId.trim().length > 160 || line.productId.includes('/')
+    || typeof line.quantity !== 'number' || !Number.isInteger(line.quantity) || line.quantity < 1 || line.quantity > 20
+    || (line.size !== undefined && (typeof line.size !== 'string' || line.size.length > 40))
+    || (line.fit !== undefined && (typeof line.fit !== 'string' || line.fit.length > 60))
+  )) return { error: 'Некорректный состав корзины. Проверьте товары и количество.' };
   const cart = normalizeStorefrontCart(row.cart);
   const name = String(row.customer?.name || '').trim().replace(/\s+/g, ' ').slice(0, 160);
   const phone = normalizeStorefrontPhone(row.customer?.phone);
@@ -76,12 +87,18 @@ export function normalizeStorefrontCheckout(value: unknown): { value?: Storefron
     return { error: 'Выберите город, тариф и пункт выдачи СДЭК' };
   }
   if (!paymentMethod) return { error: 'Выберите способ оплаты' };
+  if (row.expectedTotal !== undefined && (typeof row.expectedTotal !== 'number' || !Number.isFinite(row.expectedTotal) || row.expectedTotal <= 0)) return { error: 'Некорректная ожидаемая сумма заказа' };
   return {
     value: {
       cart,
       customer: { name, phone, email },
       delivery: { cityCode, city, pointCode, pointAddress, tariffCode },
       paymentMethod,
+      ...(row.expectedTotal !== undefined ? { expectedTotal: row.expectedTotal } : {}),
     },
   };
+}
+
+export function checkoutQuoteMatches(expected: number | undefined, actual: number): boolean {
+  return Number.isFinite(actual) && actual > 0 && (expected === undefined || Math.round(expected * 100) === Math.round(actual * 100));
 }

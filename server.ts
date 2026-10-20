@@ -64,12 +64,16 @@ import {
 import {
   sanitizeStorefrontProduct,
   sanitizeStorefrontSettings,
+  isStorefrontSizeAvailable,
 } from "./src/lib/storefrontCommerce.ts";
 import {
   normalizeStorefrontCheckout,
-  storefrontSignature,
+  checkoutQuoteMatches,
   verifyStorefrontSignature,
 } from "./src/lib/storefrontCheckout.ts";
+import { classifyCheckoutClaim } from "./src/lib/storefrontCheckoutClaim.ts";
+import { createStorefrontOperations } from "./src/lib/storefrontOperations.ts";
+import { isStorefrontPreviewRequestAllowed } from "./src/lib/storefrontPreview.ts";
 
 const _require = createRequire(import.meta.url);
 const Database = _require("better-sqlite3");
@@ -293,6 +297,12 @@ app.use(express.text({ type: ['text/*', 'application/jwt', 'application/octet-st
 app.use(express.urlencoded({ extended: true, limit: '20mb' }));
 
 const apiRateWindows = new Map<string, { count: number; resetAt: number }>();
+const storefrontPreviewOnly = process.env.STOREFRONT_PREVIEW_ONLY === 'true';
+app.use('/api', (req, res, next) => {
+  if (!storefrontPreviewOnly) return next();
+  if (isStorefrontPreviewRequestAllowed(req.method, req.path)) return next();
+  return res.status(503).json({ error: 'Локальный предпросмотр: запись и платежи отключены' });
+});
 app.use("/api", (req, res, next) => {
   const now = Date.now();
   const key = String(req.ip || req.socket.remoteAddress || "unknown");
@@ -316,8 +326,6 @@ function isPublicApiRequest(req: express.Request) {
   if (req.method === "GET" && (path === "/storefront/cdek/cities" || path === "/storefront/cdek/points")) return true;
   if (req.method === "POST" && path === "/storefront/cdek/calculate") return true;
   if (req.method === "POST" && path === "/storefront/checkout") return true;
-  if (req.method === "POST" && ["/cdek/create-order", "/tochka/create-payment", "/yandex-pay/create-payment"].includes(path)
-    && isTrustedStorefrontServiceRequest(req)) return true;
   if (path === "/ai-jobs/run") {
     const workerSecret = String(process.env.AI_JOB_WORKER_SECRET || "");
     const bearer = String(req.headers.authorization || "").replace(/^Bearer\s+/i, "");
@@ -1007,26 +1015,17 @@ function isTrustedStorefrontServiceRequest(req: any) {
   });
 }
 
+const storefrontOperations = createStorefrontOperations();
+
 async function requireCrmOrderActionOrStorefront(req: any, res: any, action: OrderAction) {
-  if (isTrustedStorefrontServiceRequest(req)) {
+  if (storefrontOperations.isInternal(req)) {
     return { uid: 'storefront-service', email: '', name: 'YAASBAE Storefront', service: true };
   }
   return requireCrmOrderAction(req, res, action);
 }
 
-async function storefrontInternalPost(pathname: string, payload: Record<string, unknown>) {
-  const timestamp = String(Date.now());
-  const requestId = randomUUID();
-  const signature = storefrontSignature(STOREFRONT_SHARED_SECRET, timestamp, requestId, payload);
-  return axios.post(`http://127.0.0.1:${PORT}${pathname}`, payload, {
-    headers: {
-      'content-type': 'application/json',
-      'x-storefront-timestamp': timestamp,
-      'x-storefront-request-id': requestId,
-      'x-storefront-signature': signature,
-    },
-    timeout: 35_000,
-  });
+async function executeStorefrontOperation(pathname: string, payload: Record<string, unknown>) {
+  return storefrontOperations.invoke(pathname, payload);
 }
 
 function decodeFirestoreRestValue(value: any): any {
@@ -2870,10 +2869,11 @@ function rankCdekCities(cities: any[], query: string) {
 
 async function getCdekSettings() {
   let saved: any = {};
-  if (adminDb) {
+  const usePreviewEnv = storefrontPreviewOnly && Boolean(process.env.CDEK_CLIENT_ID && process.env.CDEK_CLIENT_SECRET);
+  if (!usePreviewEnv && adminDb) {
     const snap = await adminDb.collection("settings").doc("cdek_api").get().catch(() => null);
     saved = snap?.exists ? snap.data() : {};
-  } else if (db) {
+  } else if (!usePreviewEnv && db) {
     const snap = await getServerDocument("settings", "cdek_api").catch(() => null);
     saved = snap?.exists?.() ? snap.data() : {};
   }
@@ -3491,7 +3491,7 @@ async function createCdekWaybillPdf(
   };
 }
 
-app.post("/api/cdek/create-order", async (req, res) => {
+app.post("/api/cdek/create-order", storefrontOperations.register("/api/cdek/create-order", async (req, res) => {
   const user: any = await requireCrmOrderActionOrStorefront(req, res, req.body?.exchange === true ? 'exchange' : 'cdek');
   if (!user) return;
   try {
@@ -3871,7 +3871,7 @@ app.post("/api/cdek/create-order", async (req, res) => {
     console.error("[cdek] create-order error:", JSON.stringify(details, null, 2));
     res.status(error.response?.status || 500).json({ error: "Не удалось создать заказ СДЭК", details });
   }
-});
+}));
 
 app.delete("/api/cdek/order/:uuid", async (req, res) => {
   const user: any = await requireCrmOrderAction(req, res, 'delete');
@@ -4706,26 +4706,34 @@ app.post("/api/storefront/checkout", async (req: any, res) => {
   const requestId = String(req.headers?.['x-storefront-request-id'] || '').trim();
   const normalized = normalizeStorefrontCheckout(req.body);
   if (!normalized.value) return res.status(400).json({ error: normalized.error || "Некорректные данные заказа" });
-  if (!adminDb && !db) return res.status(503).json({ error: "База данных временно недоступна" });
+  if (!adminDb) return res.status(503).json({ error: "Защищённое оформление временно недоступно" });
 
   const requestHash = createHash('sha256').update(requestId).digest('hex');
   const orderId = `WEB-${requestHash.slice(0, 12).toUpperCase()}`;
   const checkoutRef = adminDb?.collection('storefront_checkout_requests').doc(requestHash) || null;
+  const payloadHash = createHash('sha256').update(JSON.stringify(normalized.value)).digest('hex');
+  let ownsCheckout = false;
   try {
     if (checkoutRef) {
-      const previous = await checkoutRef.get();
-      const previousData = previous.exists ? previous.data() || {} : {};
-      if (previousData.status === 'completed' && previousData.response?.paymentUrl) {
-        return res.json({ ...previousData.response, existing: true });
-      }
-      await checkoutRef.set({
+      const claim = await adminDb.runTransaction(async transaction => {
+        const previous = await transaction.get(checkoutRef);
+        const decision = classifyCheckoutClaim(previous.exists ? previous.data() || {} : null, payloadHash);
+        if (decision.state !== 'claimed') return decision;
+        transaction.create(checkoutRef, {
         requestIdHash: requestHash,
+        payloadHash,
         orderId,
         status: 'processing',
-        attempts: Number(previousData.attempts || 0) + 1,
+        attempts: 1,
         updatedAt: FieldValue.serverTimestamp(),
-        createdAt: previous.exists ? previousData.createdAt || FieldValue.serverTimestamp() : FieldValue.serverTimestamp(),
-      }, { merge: true });
+        createdAt: FieldValue.serverTimestamp(),
+        });
+        return { state: 'claimed' as const };
+      });
+      if (claim.state === 'completed') return res.json({ ...claim.response, existing: true });
+      if (claim.state === 'conflict') return res.status(409).json({ error: "Данные оформления изменились. Обновите страницу оформления." });
+      if (claim.state === 'pending') return res.status(409).json({ error: "Заказ уже обрабатывается или требует проверки. Не создавайте повторный заказ, свяжитесь с магазином.", orderId });
+      ownsCheckout = true;
     }
 
     const checkout = normalized.value;
@@ -4741,6 +4749,7 @@ app.post("/api/storefront/checkout", async (req: any, res) => {
       const row = productRows[index];
       const product = row ? sanitizeStorefrontProduct(row.id, row.data) : null;
       if (!product) throw Object.assign(new Error(`Товар ${line.productId} недоступен для заказа`), { statusCode: 409 });
+      if (!isStorefrontSizeAvailable(product.sizeGrid, line.size)) throw Object.assign(new Error('Выбранный размер больше недоступен. Проверьте карточку товара.'), { statusCode: 409 });
       const lineTotal = Math.round(product.price * line.quantity * 100) / 100;
       return { ...line, product, lineTotal };
     });
@@ -4763,13 +4772,14 @@ app.post("/api/storefront/checkout", async (req: any, res) => {
     const point = (Array.isArray(pointResponse.data) ? pointResponse.data : []).find((candidate: any) =>
       String(candidate?.code || '').toLowerCase() === checkout.delivery.pointCode.toLowerCase());
     if (!point || Number(point?.location?.city_code || 0) !== checkout.delivery.cityCode) {
-      return res.status(409).json({ error: "Пункт выдачи не относится к выбранному городу. Выберите его заново." });
+      throw Object.assign(new Error("Пункт выдачи не относится к выбранному городу. Выберите его заново."), { statusCode: 409 });
     }
     const tariff = (Array.isArray(tariffResponse.data?.tariff_codes) ? tariffResponse.data.tariff_codes : [])
       .find((candidate: any) => Number(candidate?.tariff_code || 0) === checkout.delivery.tariffCode);
     const deliveryCost = Math.round(Number(tariff?.delivery_sum || 0) * 100) / 100;
-    if (!tariff || deliveryCost <= 0) return res.status(409).json({ error: "Тариф СДЭК изменился. Рассчитайте доставку заново." });
+    if (!tariff || deliveryCost <= 0) throw Object.assign(new Error("Тариф СДЭК изменился. Рассчитайте доставку заново."), { statusCode: 409 });
     const total = Math.round((productsTotal + deliveryCost) * 100) / 100;
+    if (!checkoutQuoteMatches(checkout.expectedTotal, total)) throw Object.assign(new Error('Стоимость товаров или доставки изменилась. Обновите корзину перед оплатой.'), { statusCode: 409 });
     const pointAddress = String(point?.location?.address || point?.address || checkout.delivery.pointAddress || '').trim();
     const itemNames = orderLines.map(line => `${line.product.name} × ${line.quantity}`);
     const orderDocument = {
@@ -4809,8 +4819,9 @@ app.post("/api/storefront/checkout", async (req: any, res) => {
     };
     const existingOrder = await getOrderSnapshot(orderId).catch(() => null);
     const existed = Boolean(existingOrder && (typeof existingOrder.exists === 'function' ? existingOrder.exists() : existingOrder.exists));
-    if (adminDb) await adminDb.collection('orders_new').doc(orderId).set(orderDocument, { merge: true });
-    else await setDoc(doc(db, 'orders_new', orderId), orderDocument, { merge: true });
+    // Create-only: never reset paidAmount, status or delivery on an existing order.
+    if (existed) throw Object.assign(new Error('Заказ уже существует и требует проверки магазина'), { statusCode: 409 });
+    await adminDb.collection('orders_new').doc(orderId).create(orderDocument);
     if (!existed) {
       await writeAuditLog({
         action: 'storefront_order_created', entityType: 'order', entityId: orderId, after: orderDocument,
@@ -4836,9 +4847,9 @@ app.post("/api/storefront/checkout", async (req: any, res) => {
       deliveryCost,
       comment: `Сайт YAASBAE · ${checkout.customer.email}`,
     };
-    const cdekResult = await storefrontInternalPost('/api/cdek/create-order', cdekPayload);
+    const cdekResult = await executeStorefrontOperation('/api/cdek/create-order', cdekPayload);
     const paymentPath = checkout.paymentMethod === 'split' ? '/api/yandex-pay/create-payment' : '/api/tochka/create-payment';
-    const paymentResult = await storefrontInternalPost(paymentPath, {
+    const paymentResult = await executeStorefrontOperation(paymentPath, {
       orderId,
       amount: total,
       description: `YAASBAE заказ ${orderId}`,
@@ -4861,7 +4872,7 @@ app.post("/api/storefront/checkout", async (req: any, res) => {
     const status = Number(error?.statusCode || error?.response?.status || 500);
     const message = error?.response?.data?.error || error?.message || "Не удалось оформить заказ";
     console.error('[storefront] checkout:', error?.response?.data || error?.message || error);
-    if (checkoutRef) await checkoutRef.set({ status: 'failed', error: String(message).slice(0, 500), updatedAt: FieldValue.serverTimestamp() }, { merge: true }).catch(() => null);
+    if (checkoutRef && ownsCheckout) await checkoutRef.set({ status: 'failed', error: String(message).slice(0, 500), updatedAt: FieldValue.serverTimestamp() }, { merge: true }).catch(() => null);
     return res.status(status >= 400 && status < 600 ? status : 500).json({ error: message, details: error?.response?.data?.details });
   }
 });
@@ -11046,7 +11057,7 @@ app.post('/api/yandex-pay/test', async (_req, res) => {
   }
 });
 
-app.post('/api/yandex-pay/create-payment', async (req, res) => {
+app.post('/api/yandex-pay/create-payment', storefrontOperations.register('/api/yandex-pay/create-payment', async (req, res) => {
   if (!await requireCrmOrderActionOrStorefront(req, res, 'payments')) return;
   const { orderId, amount, description } = req.body || {};
   const paymentAmount = Number(amount);
@@ -11114,7 +11125,7 @@ app.post('/api/yandex-pay/create-payment', async (req, res) => {
     console.error('[yandex-pay] create-payment:', details);
     res.status(error?.response?.status || 500).json({ error: error?.response?.data?.message || error?.message || 'Не удалось создать Сплит', details });
   }
-});
+}));
 
 app.get('/api/yandex-pay/find-payment', async (req, res) => {
   if (!await requireCrmOrderAction(req, res, 'payments')) return;
@@ -11289,7 +11300,7 @@ app.post('/api/yandex-pay/v1/webhook', handleYandexPayWebhook);
 app.post('/api/yandex-pay', handleYandexPayWebhook);
 
 // Создать ссылку/QR на оплату
-app.post('/api/tochka/create-payment', async (req, res) => {
+app.post('/api/tochka/create-payment', storefrontOperations.register('/api/tochka/create-payment', async (req, res) => {
   if (!await requireCrmOrderActionOrStorefront(req, res, 'payments')) return;
   const { orderId, amount, description } = req.body;
   let paymentAmount = Number(amount);
@@ -11524,7 +11535,7 @@ app.post('/api/tochka/create-payment', async (req, res) => {
     }).catch(() => {});
     res.status(500).json({ error: e.message, details: errData });
   }
-});
+}));
 
 // Найти оплату в Точке по номеру заказа и привязать operationId к заказу.
 app.get('/api/tochka/find-payment', async (req, res) => {
@@ -13249,7 +13260,7 @@ Generate a photorealistic image of the person from IMAGE 2 wearing the exact gar
 
 function startTelegramBot() {
   if (!BOT_TOKEN) { console.warn("TG_BOT_TOKEN не задан — бот не запущен"); return; }
-  if (process.env.BOT_DISABLED === "true") { console.log("BOT_DISABLED=true — бот не запущен локально"); return; }
+  if (storefrontPreviewOnly || process.env.BOT_DISABLED === "true") { console.log("Бот отключён для локального просмотра"); return; }
 
   const bot = new Telegraf(BOT_TOKEN, { handlerTimeout: 600_000 });
 
@@ -14135,7 +14146,7 @@ async function geminiWriteBroadcastCopy(userText: string): Promise<string> {
 }
 
 function startContentBot() {
-  if (process.env.BOT_DISABLED === "true") return;
+  if (storefrontPreviewOnly || process.env.BOT_DISABLED === "true") return;
 
   const bot = new Telegraf(CONTENT_BOT_TOKEN, { handlerTimeout: 600_000 });
 
@@ -14450,11 +14461,13 @@ async function startServer() {
       res.sendFile(path.join(distPath, "index.html"));
     });
   }
-  app.listen(PORT, "0.0.0.0", () => {
+  app.listen(PORT, storefrontPreviewOnly ? "127.0.0.1" : "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
     console.log("App Version: 1.3");
-    setTimeout(() => void sendReleaseNotification(), 1_000);
-    setTimeout(() => void ensureCdekStatusWebhookWithRetry(), 3_000);
+    if (!storefrontPreviewOnly) {
+      if (process.env.DISABLE_RELEASE_NOTIFICATIONS !== 'true') setTimeout(() => void sendReleaseNotification(), 1_000);
+      setTimeout(() => void ensureCdekStatusWebhookWithRetry(), 3_000);
+    }
   });
 }
 
