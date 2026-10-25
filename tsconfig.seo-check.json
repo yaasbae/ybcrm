@@ -1,0 +1,1 @@
+{"extends":"./tsconfig.json","include":["src/**/*.ts","src/**/*.tsx","server.ts","tests/storefront-seo.test.ts"],"exclude":["node_modules","functions","mcp","google-cloud-sdk"]}

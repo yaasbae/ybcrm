@@ -1,3 +1,4 @@
+import { publicSeoEntries } from './src/lib/storefrontSeo.ts';
 import express from "express";
 import { createServer as createViteServer } from "vite";
 import path from "path";
@@ -323,6 +324,7 @@ app.use("/api", (req, res, next) => {
 function isPublicApiRequest(req: express.Request) {
   const path = req.path;
   if (req.method === "GET" && path === "/storefront/bootstrap") return true;
+  if (req.method === "GET" && path === "/storefront/seo") return true;
   if (req.method === "GET" && (path === "/storefront/cdek/cities" || path === "/storefront/cdek/points")) return true;
   if (req.method === "POST" && path === "/storefront/cdek/calculate") return true;
   if (req.method === "POST" && path === "/storefront/checkout") return true;
@@ -4645,6 +4647,16 @@ const storefrontCheckoutRateWindows = new Map<string, { count: number; resetAt: 
 
 // Публичная витрина получает только данные, которые разрешено показывать покупателю.
 // Себестоимость, экономика товара и служебные настройки CRM сюда не попадают.
+app.get("/api/storefront/seo", async (_req, res) => {
+  if (!adminDb) return res.status(503).json({ error: "SEO временно недоступно" });
+  try {
+    const [snapshot, products] = await Promise.all([adminDb.collection("settings").doc("storefrontSeo").get(), adminDb.collection("products").get()]);
+    const visible = products.docs.map((item: any) => sanitizeStorefrontProduct(item.id,item.data())).filter(Boolean);
+    res.setHeader("Cache-Control", "public, max-age=30, stale-while-revalidate=60");
+    res.json({ version: 1, entries: publicSeoEntries(snapshot.data(),visible) });
+  } catch { res.status(503).json({ error: "SEO временно недоступно" }); }
+});
+
 app.get("/api/storefront/bootstrap", async (_req, res) => {
   try {
     let productRows: Array<{ id: string; data: Record<string, unknown> }> = [];

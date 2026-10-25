@@ -115,3 +115,12 @@ test('право payments работает только для активног�
   const snapshot = await getDoc(doc(employeeDb('cashier'), 'orders_new', 'order-1'));
   assert.equal(snapshot.data()?.paymentStatus, 'paid');
 });
+
+test('SEO-черновики доступны только администратору', { skip: !hasEmulator }, async () => {
+  await environment.withSecurityRulesDisabled(async context => { await setDoc(doc(context.firestore(), 'settings', 'storefrontSeo'), { entries: { home: { draft: { title: 'private draft' } } } }); });
+  await assertFails(getDoc(doc(environment.unauthenticatedContext().firestore(), 'settings', 'storefrontSeo')));
+  await assertFails(getDoc(doc(employeeDb(), 'settings', 'storefrontSeo')));
+  await assertFails(setDoc(doc(employeeDb(), 'settings', 'storefrontSeo'), { entries: {} }));
+  await assertSucceeds(getDoc(doc(ownerDb(), 'settings', 'storefrontSeo')));
+  await assertSucceeds(setDoc(doc(ownerDb(), 'settings', 'storefrontSeo'), { entries: {} }));
+});

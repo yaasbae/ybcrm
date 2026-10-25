@@ -8,6 +8,7 @@ import {
   Settings2, ShoppingBag, Trash2, Upload,
 } from 'lucide-react';
 import { db, handleFirestoreError, OperationType, storage } from '../firebase';
+import { StorefrontSeoPanel } from './StorefrontSeoPanel';
 import { createStudioCutout } from '../lib/studioImage';
 
 type HeroSlide = {
@@ -112,7 +113,7 @@ const sections: { id: SectionId; label: string; description: string; icon: React
   { id: 'articles', label: 'Статьи', description: 'Карточки и тексты', icon: Newspaper },
   { id: 'pages', label: 'Страницы', description: 'О нас и документы', icon: FileText },
   { id: 'navigation', label: 'Меню и контакты', description: 'Шапка и подвал', icon: Menu },
-  { id: 'seo', label: 'SEO и соцсети', description: 'Поиск и превью', icon: Search },
+  { id: 'seo', label: 'SEO-центр', description: 'Товары, страницы и улучшения', icon: Search },
 ];
 
 function mergeSettings(value: Partial<StorefrontSettings>): StorefrontSettings {
@@ -284,11 +285,7 @@ export const StorefrontPage: React.FC = () => {
           <Card title="Контакты и социальные сети" description="Информация показывается в подвале и на служебных страницах."><div className="grid gap-4 sm:grid-cols-2"><Field label="Юридическое название" value={settings.footer.legalName} onChange={legalName => change(current => ({ ...current, footer: { ...current.footer, legalName } }))} /><Field label="Адрес" value={settings.footer.address} onChange={address => change(current => ({ ...current, footer: { ...current.footer, address } }))} /><Field label="Электронная почта" type="email" value={settings.footer.email} onChange={email => change(current => ({ ...current, footer: { ...current.footer, email } }))} /><Field label="Телефон" value={settings.footer.phone} onChange={phone => change(current => ({ ...current, footer: { ...current.footer, phone } }))} /><Field label="Telegram" value={settings.footer.telegram} onChange={telegram => change(current => ({ ...current, footer: { ...current.footer, telegram } }))} /><Field label="VK" value={settings.footer.vk} onChange={vk => change(current => ({ ...current, footer: { ...current.footer, vk } }))} /><Field label="Instagram" value={settings.footer.instagram} onChange={instagram => change(current => ({ ...current, footer: { ...current.footer, instagram } }))} /></div></Card>
         </>}
 
-        {active === 'seo' && <>
-          <Card title="Поисковые системы" description="Заголовок и описание, которые увидят покупатели в Яндексе и Google."><div className="grid gap-4"><Field label="SEO-заголовок" hint={`${settings.seo.title.length}/60`} value={settings.seo.title} onChange={title => change(current => ({ ...current, seo: { ...current.seo, title } }))} /><Textarea label="SEO-описание" hint={`${settings.seo.description.length}/160`} rows={3} value={settings.seo.description} onChange={description => change(current => ({ ...current, seo: { ...current.seo, description } }))} /><Field label="Ключевые слова" hint="через запятую" value={settings.seo.keywords} onChange={keywords => change(current => ({ ...current, seo: { ...current.seo, keywords } }))} /></div><div className="mt-5 rounded-xl border border-zinc-200 p-4"><small className="text-xs text-emerald-700">yaasbae.store</small><h3 className="mt-1 text-lg font-medium text-blue-800">{settings.seo.title || 'Заголовок сайта'}</h3><p className="mt-1 max-w-2xl text-xs leading-5 text-zinc-500">{settings.seo.description || 'Описание сайта для поисковой выдачи.'}</p></div></Card>
-          <Card title="Изображение для ссылок" description="Показывается при отправке сайта в Telegram, VK и других сервисах."><div className="max-w-xl"><ImageField value={settings.seo.ogImage} slot="seo-og" uploading={uploading} ratio="aspect-[1.91/1]" onUpload={file => upload(file, 'seo_og', ogImage => change(current => ({ ...current, seo: { ...current.seo, ogImage } })))} onClear={() => change(current => ({ ...current, seo: { ...current.seo, ogImage: '' } }))} /></div></Card>
-          <div className="flex gap-3 rounded-2xl border border-blue-100 bg-blue-50 p-4 text-blue-900"><Settings2 className="mt-0.5 shrink-0" size={17} /><p className="text-xs leading-5">После изменения SEO поисковым системам может потребоваться несколько дней, чтобы обновить информацию в выдаче.</p></div>
-        </>}
+        {active === 'seo' && <StorefrontSeoPanel />}
       </div>
     </div>
 
