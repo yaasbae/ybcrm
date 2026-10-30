@@ -1,3 +1,5 @@
+import {validCheckoutProof,purchaseReceipt} from './src/lib/storefrontAnalytics.ts';
+import {siteIntegrations} from './src/lib/storefrontIntegrations.ts';
 import { publicSeoEntries } from './src/lib/storefrontSeo.ts';
 import express from "express";
 import { createServer as createViteServer } from "vite";
@@ -325,6 +327,7 @@ function isPublicApiRequest(req: express.Request) {
   const path = req.path;
   if (req.method === "GET" && path === "/storefront/bootstrap") return true;
   if (req.method === "GET" && path === "/storefront/seo") return true;
+  if (req.method === "POST" && path === "/storefront/analytics/confirmation") return true;
   if (req.method === "GET" && (path === "/storefront/cdek/cities" || path === "/storefront/cdek/points")) return true;
   if (req.method === "POST" && path === "/storefront/cdek/calculate") return true;
   if (req.method === "POST" && path === "/storefront/checkout") return true;
@@ -4653,7 +4656,7 @@ app.get("/api/storefront/seo", async (_req, res) => {
     const [snapshot, products] = await Promise.all([adminDb.collection("settings").doc("storefrontSeo").get(), adminDb.collection("products").get()]);
     const visible = products.docs.map((item: any) => sanitizeStorefrontProduct(item.id,item.data())).filter(Boolean);
     res.setHeader("Cache-Control", "public, max-age=30, stale-while-revalidate=60");
-    res.json({ version: 1, entries: publicSeoEntries(snapshot.data(),visible) });
+    res.json({ version: 1, entries: publicSeoEntries(snapshot.data(),visible), integrations:siteIntegrations(snapshot.data()?.integrations) });
   } catch { res.status(503).json({ error: "SEO временно недоступно" }); }
 });
 
@@ -4704,6 +4707,28 @@ app.get("/api/storefront/bootstrap", async (_req, res) => {
   }
 });
 
+// Read-only conversion receipt: never accept a client-supplied paid flag or order ID.
+const analyticsReceiptRates=new Map<string,{count:number;until:number}>();
+app.post('/api/storefront/analytics/confirmation',async(req:any,res)=>{
+ res.setHeader('Cache-Control','no-store');
+ if(!isTrustedStorefrontServiceRequest(req))return res.status(401).json({error:'Подпись запроса недействительна'});
+ const proof=req.body?.checkoutId;
+ if(!validCheckoutProof(proof)||req.headers['x-storefront-request-id']!==proof)return res.status(400).json({error:'Некорректный запрос'});
+ const now=Date.now(),ip=String(req.ip||'unknown');
+ for(const [key,value] of analyticsReceiptRates)if(value.until<now)analyticsReceiptRates.delete(key);
+ const rate=analyticsReceiptRates.get(ip)||{count:0,until:now+60000};rate.count++;analyticsReceiptRates.set(ip,rate);
+ if(rate.count>60)return res.status(429).json({error:'Повторите позже'});
+ if(!adminDb)return res.status(503).json({error:'Сервис временно недоступен'});
+ try{
+  const hash=createHash('sha256').update(proof).digest('hex'),orderId=`WEB-${hash.slice(0,12).toUpperCase()}`;
+  const [claim,order]=await Promise.all([adminDb.collection('storefront_checkout_requests').doc(hash).get(),adminDb.collection('orders_new').doc(orderId).get()]);
+  const data=claim.data(),createdAt=data?.createdAt?.toMillis?.();
+  const receipt=claim.exists&&order.exists&&data?.orderId===orderId?purchaseReceipt(orderId,createdAt,order.data()||{}):null;
+  if(!receipt)return res.status(404).json({error:'Подтверждение недоступно'});
+  return res.json(receipt);
+ }catch{return res.status(503).json({error:'Сервис временно недоступен'});}
+});
+
 app.post("/api/storefront/checkout", async (req: any, res) => {
   const rateKey = String(req.ip || req.socket?.remoteAddress || "unknown");
   const now = Date.now();
@@ -4723,7 +4748,7 @@ app.post("/api/storefront/checkout", async (req: any, res) => {
   const requestHash = createHash('sha256').update(requestId).digest('hex');
   const orderId = `WEB-${requestHash.slice(0, 12).toUpperCase()}`;
   const checkoutRef = adminDb?.collection('storefront_checkout_requests').doc(requestHash) || null;
-  const payloadHash = createHash('sha256').update(JSON.stringify(normalized.value)).digest('hex');
+  const payloadHash = createHash('sha256').update(JSON.stringify(Object.fromEntries(Object.entries(normalized.value).filter(([key])=>key!=='attribution')))).digest('hex');
   let ownsCheckout = false;
   try {
     if (checkoutRef) {
@@ -4824,6 +4849,7 @@ app.post("/api/storefront/checkout", async (req: any, res) => {
       deliveryAddress: pointAddress,
       status: 'Новый',
       createdBy: 'storefront',
+      ...(checkout.attribution?{attribution:checkout.attribution}:{}),
       storefrontRequestIdHash: requestHash,
       createdAt: adminDb ? FieldValue.serverTimestamp() : serverTimestamp(),
       updatedAt: adminDb ? FieldValue.serverTimestamp() : serverTimestamp(),

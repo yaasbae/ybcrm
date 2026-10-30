@@ -1,3 +1,4 @@
+import {checkoutAttribution} from './storefrontIntegrations.ts';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import {
   isStorefrontEmail,
@@ -22,6 +23,7 @@ export type StorefrontCheckoutInput = {
   };
   paymentMethod: 'tochka' | 'split';
   expectedTotal?: number;
+  attribution?: Record<string,string>;
 };
 
 export function stableJson(value: unknown): string {
@@ -91,6 +93,7 @@ export function normalizeStorefrontCheckout(value: unknown): { value?: Storefron
   return {
     value: {
       cart,
+      ...(checkoutAttribution(row.attribution)?{attribution:checkoutAttribution(row.attribution)}:{}),
       customer: { name, phone, email },
       delivery: { cityCode, city, pointCode, pointAddress, tariffCode },
       paymentMethod,

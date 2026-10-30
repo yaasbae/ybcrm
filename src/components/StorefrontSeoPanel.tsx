@@ -1,3 +1,4 @@
+import {StorefrontIntegrations} from './StorefrontIntegrations';
 import React,{useEffect,useMemo,useState} from 'react';
 import {collection,doc,onSnapshot,runTransaction} from 'firebase/firestore';
 import {db} from '../firebase';
@@ -15,5 +16,5 @@ export function StorefrontSeoPanel(){
   try{return await runTransaction(db,async transaction=>{const ref=doc(db,'settings','storefrontSeo'),snapshot=await transaction.get(ref),source=snapshot.data()||{},current=seoRecords(source);const next=nextSeoRecord(current[key],fields,revision,publish,new Date().toISOString());if(source.entries&&(typeof source.entries!=='object'||Array.isArray(source.entries)))throw new Error('SEO_INVALID');const entries={...(source.entries||{}),[key]:next};const payload={version:1,entries,updatedAt:new Date().toISOString()};if(new TextEncoder().encode(JSON.stringify(payload)).length>800000)throw new Error('SEO_LIMIT');transaction.set(ref,payload,{merge:true});return next;});}
   catch(e){if(e instanceof Error&&e.message==='SEO_CONFLICT')throw new Error('Страницу уже изменил другой редактор. Обновите данные перед сохранением; ваш текст остаётся в форме.');if(e instanceof Error&&e.message==='SEO_LIMIT')throw new Error('Достигнут объём SEO-хранилища. Нужна архивация истории; правки остаются в форме.');throw new Error('Не удалось сохранить SEO. Проверьте права администратора и соединение. Правки остаются в форме.');}
  }
- return <StorefrontSeoEditor targets={targets} records={records} onSave={save} error={error} disabled={!loaded||!productsLoaded||Boolean(error)}/>;
+ return <><StorefrontIntegrations/><StorefrontSeoEditor targets={targets} records={records} onSave={save} error={error} disabled={!loaded||!productsLoaded||Boolean(error)}/></>;
 }

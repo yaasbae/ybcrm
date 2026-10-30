@@ -102,3 +102,9 @@ test('invalid signatures, changed quotes and unavailable sizes cannot create CRM
  assert.equal((await h.submit({...payload(),cart:[{productId:'test-product',quantity:1,size:'XS'}]})).code,409);
  assert.equal(h.orders().length,0);assert.equal(h.operations.length,0);
 });
+
+test('campaign changes keep the original site order and never expose contact fields as attribution',async()=>{
+ const h=harness(),id=randomUUID(),body={...payload(),attribution:{source:'chatgpt',medium:'ai_referral',email:'PRIVATE'}};
+ const first=await h.submit(body,id);assert.equal(first.code,200);assert.equal(h.orders()[0].attribution.source,'chatgpt');assert.equal('email' in h.orders()[0].attribution,false);
+ const second=await h.submit({...body,attribution:{source:'google'}},id);assert.equal(second.code,200);assert.equal(second.body.existing,true);assert.equal(h.orders().length,1);assert.equal(h.operations.length,2);
+});

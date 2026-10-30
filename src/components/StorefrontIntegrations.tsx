@@ -1,0 +1,18 @@
+import React,{useEffect,useState} from 'react';
+import {doc,onSnapshot,runTransaction} from 'firebase/firestore';
+import {db} from '../firebase';
+import {integrationPatterns,siteIntegrations,type SiteIntegrations} from '../lib/storefrontIntegrations';
+
+const labels:Record<keyof SiteIntegrations,string>={metrikaId:'Номер счётчика Яндекс Метрики',ga4Id:'Google Analytics 4 (G-…)',yandexVerification:'Код подтверждения Яндекс Вебмастера',googleVerification:'Код подтверждения Google Search Console'};
+export function StorefrontIntegrations(){
+ const [fields,setFields]=useState<SiteIntegrations>(siteIntegrations(null)),[revision,setRevision]=useState(0),[loaded,setLoaded]=useState(false),[dirty,setDirty]=useState(false),[busy,setBusy]=useState(false),[message,setMessage]=useState('');
+ useEffect(()=>onSnapshot(doc(db,'settings','storefrontSeo'),snapshot=>{if(!dirty){setFields(siteIntegrations(snapshot.data()?.integrations));setRevision(Number(snapshot.data()?.integrationRevision)||0);}setLoaded(true);},()=>{setLoaded(false);setMessage('Не удалось загрузить настройки. Нужны права администратора.');}),[dirty]);
+ async function save(){
+  for(const [key,pattern] of Object.entries(integrationPatterns))if(fields[key as keyof SiteIntegrations].trim()&&!pattern.test(fields[key as keyof SiteIntegrations].trim())){setMessage(`Проверьте поле «${labels[key as keyof SiteIntegrations]}»: нужен идентификатор, а не HTML-код.`);return;}
+  setBusy(true);setMessage('');
+  try{const next=await runTransaction(db,async transaction=>{const ref=doc(db,'settings','storefrontSeo'),snapshot=await transaction.get(ref),current=Number(snapshot.data()?.integrationRevision)||0;if(current!==revision)throw new Error('conflict');transaction.set(ref,{integrations:siteIntegrations(fields),integrationRevision:current+1},{merge:true});return current+1;});setRevision(next);setDirty(false);setMessage('Настройки сохранены. Подтверждение домена и поступление событий проверьте в кабинетах сервисов.');}
+  catch(e){setMessage(e instanceof Error&&e.message==='conflict'?'Настройки изменены другим редактором. Обновите страницу перед сохранением. Ваш текст остаётся в форме.':'Не удалось сохранить настройки. Проверьте соединение и права администратора.');}
+  finally{setBusy(false);}
+ }
+ return <fieldset disabled={busy} className="mb-6 min-w-0 rounded-2xl border border-zinc-200 bg-white p-5 sm:p-6"><h2 className="text-lg font-medium">Аналитика и поисковые кабинеты</h2><p className="mt-2 text-xs leading-5 text-zinc-500">Вставляйте только номера и коды. Пароли, API-ключи и скрипты сюда не нужны. Пустые поля отключают соответствующее подключение.</p><div className="mt-5 grid gap-4 sm:grid-cols-2">{Object.entries(labels).map(([key,label])=><label key={key} className="block text-xs text-zinc-600">{label}<input className="mt-2 w-full rounded-xl border border-zinc-200 px-3 py-2.5 text-sm outline-none focus:border-zinc-500" value={fields[key as keyof SiteIntegrations]} maxLength={160} onChange={e=>{setFields(f=>({...f,[key]:e.target.value}));setDirty(true);setMessage('');}} autoComplete="off" spellCheck={false}/></label>)}</div><p className="mt-4 text-[11px] leading-5 text-zinc-400">Статистика включается после согласия посетителя. Вебвизор и рекламные сигналы отключены. В GA4 отключите автоматические просмотры по изменению истории браузера: сайт отправляет просмотры сам, чтобы не было дублей.</p><button disabled={!loaded||busy||!dirty} onClick={()=>void save()} className="mt-4 min-h-11 rounded-xl bg-zinc-950 px-4 text-xs text-white disabled:opacity-40">{busy?'Сохраняем…':'Сохранить подключения'}</button>{message&&<p role="status" className="mt-3 text-xs leading-5 text-zinc-500">{message}</p>}</fieldset>;
+}

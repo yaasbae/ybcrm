@@ -13,12 +13,12 @@ export function validateSeoFields(value: SeoFields): string[] {
  return Object.entries(limits).filter(([k,n])=>typeof value[k as keyof SeoFields]!=='string'||String(value[k as keyof SeoFields]).length>n).map(([k,n])=>`${k}: максимум ${n} символов`);
 }
 export function seoTargets(products: SeoProduct[]): SeoTarget[] {
- return [{key:'home',label:'Главная',path:'/',type:'page'},{key:'catalog',label:'Каталог',path:'/catalog/',type:'page'},{key:'articles',label:'Истории',path:'/articles/',type:'page'}, ...products.filter(p=>/^[a-zA-Z0-9_-]{1,160}$/.test(p.id)).map(p=>({key:`product_${p.id}`,label:[p.name,p.color].filter(Boolean).join(' · '),path:`/product/?id=${encodeURIComponent(p.id)}`,type:'product' as const,product:p}))];
+ return [{key:'home',label:'Главная',path:'/',type:'page'},{key:'catalog',label:'Каталог',path:'/catalog/',type:'page'},{key:'articles',label:'Истории',path:'/articles/',type:'page'},{key:'fit',label:'Под твой рост',path:'/fit/',type:'page'}, ...products.filter(p=>/^[a-zA-Z0-9_-]{1,160}$/.test(p.id)).map(p=>({key:`product_${p.id}`,label:[p.name,p.color].filter(Boolean).join(' · '),path:`/product/?id=${encodeURIComponent(p.id)}`,type:'product' as const,product:p}))];
 }
 export function defaultSeo(target: SeoTarget): SeoFields {
  const p=target.product, label=p ? [p.name,p.color].filter(Boolean).join(' — ') : target.label;
  const title=p ? `${label} | YAASBAE` : target.key==='home' ? 'YAASBAE — женская одежда' : `${target.label} | YAASBAE`;
- const description=p ? `${label}. ${p.description?.replace(/<[^>]*>/g,'').replace(/\s+/g,' ')||'Фото, размеры и актуальная стоимость в магазине YAASBAE.'}`.slice(0,160) : target.key==='articles' ? 'Истории бренда YAASBAE, коллекции и съёмки.' : 'Женская одежда YAASBAE: коллекция, фотографии, размеры и актуальные цены в интернет-магазине.';
+ const description=p ? `${label}. ${p.description?.replace(/<[^>]*>/g,'').replace(/\s+/g,' ')||'Фото, размеры и актуальная стоимость в магазине YAASBAE.'}`.slice(0,160) : target.key==='fit' ? 'Одежда YAASBAE под твой рост: как выбрать модель и размер, обсудить посадку и желаемую длину с менеджером перед пошивом.' : target.key==='articles' ? 'Истории бренда YAASBAE, коллекции и съёмки.' : 'Женская одежда YAASBAE: коллекция, фотографии, размеры и актуальные цены в интернет-магазине.';
  return {...emptySeo,title,description,h1:p?.name||(target.key==='home'?'Женская одежда YAASBAE':target.label),imageAlt:label};
 }
 export function resolvedSeo(target: SeoTarget, override?: unknown): SeoFields {
@@ -28,7 +28,7 @@ export function resolvedSeo(target: SeoTarget, override?: unknown): SeoFields {
 export function publicSeoEntries(source: unknown, products?: SeoProduct[]): Record<string, SeoFields> {
  const doc=source&&typeof source==='object'?source as Record<string,unknown>:{};
  const entries=doc.entries&&typeof doc.entries==='object'?doc.entries as Record<string,unknown>:{};
- return Object.fromEntries(Object.entries(entries).filter(([k,v])=>/^(home|catalog|articles|product_[a-zA-Z0-9_-]{1,160})$/.test(k)&&(!products||!k.startsWith('product_')||products.some(p=>`product_${p.id}`===k))&&v&&typeof v==='object'&&(v as SeoRecord).published).map(([k,v])=>{const {focusQuery:_query,...fields}=seoFields((v as SeoRecord).published);return [k,{...fields,focusQuery:''}];}));
+ return Object.fromEntries(Object.entries(entries).filter(([k,v])=>/^(home|catalog|articles|fit|product_[a-zA-Z0-9_-]{1,160})$/.test(k)&&(!products||!k.startsWith('product_')||products.some(p=>`product_${p.id}`===k))&&v&&typeof v==='object'&&(v as SeoRecord).published).map(([k,v])=>{const {focusQuery:_query,...fields}=seoFields((v as SeoRecord).published);return [k,{...fields,focusQuery:''}];}));
 }
 export function nextSeoRecord(current: SeoRecord|undefined, draft: SeoFields, expectedRevision: number, publish: boolean, now: string): SeoRecord {
  if((current?.revision||0)!==expectedRevision)throw new Error('SEO_CONFLICT');
@@ -51,7 +51,7 @@ export function seoIssues(target: SeoTarget, fields: SeoFields, titles: string[]
 export function seoRecords(source: unknown): Record<string,SeoRecord> {
  const doc=source&&typeof source==='object'?source as Record<string,unknown>:{};
  const entries=doc.entries&&typeof doc.entries==='object'?doc.entries as Record<string,unknown>:{};
- return Object.fromEntries(Object.entries(entries).filter(([k,v])=>/^(home|catalog|articles|product_[a-zA-Z0-9_-]{1,160})$/.test(k)&&v&&typeof v==='object').map(([key,value])=>{const r=value as SeoRecord;return [key,{revision:Number.isSafeInteger(r.revision)&&r.revision>=0?r.revision:0,draft:seoFields(r.draft),published:r.published?seoFields(r.published):null,publishedAt:typeof r.publishedAt==='string'?r.publishedAt.slice(0,40):'',history:Array.isArray(r.history)?r.history.slice(0,3).map(h=>({fields:seoFields(h.fields),at:typeof h.at==='string'?h.at.slice(0,40):''})):[]}];}));
+ return Object.fromEntries(Object.entries(entries).filter(([k,v])=>/^(home|catalog|articles|fit|product_[a-zA-Z0-9_-]{1,160})$/.test(k)&&v&&typeof v==='object').map(([key,value])=>{const r=value as SeoRecord;return [key,{revision:Number.isSafeInteger(r.revision)&&r.revision>=0?r.revision:0,draft:seoFields(r.draft),published:r.published?seoFields(r.published):null,publishedAt:typeof r.publishedAt==='string'?r.publishedAt.slice(0,40):'',history:Array.isArray(r.history)?r.history.slice(0,3).map(h=>({fields:seoFields(h.fields),at:typeof h.at==='string'?h.at.slice(0,40):''})):[]}];}));
 }
 export function productSeoSchema(product:SeoProduct,fields:SeoFields,url:string){
  const schema:Record<string,unknown>={'@context':'https://schema.org','@type':'Product',name:fields.h1||product.name,description:fields.body||product.description||fields.description,sku:product.id,brand:{'@type':'Brand',name:'YAASBAE'},image:product.photos||[],url};

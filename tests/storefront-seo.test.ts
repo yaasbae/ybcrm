@@ -16,7 +16,7 @@ test('saving draft preserves live SEO; publishing maintains bounded rollback his
  assert.throws(()=>nextSeoRecord(current,{...a,title:'x'.repeat(181)},current.revision,false,'now'));
 });
 test('safe canonical targets, useful defaults and duplicate feedback',()=>{
- const targets=seoTargets([product,{...product,id:'../bad'}]);assert.equal(targets.length,4);const target=targets[3];assert.equal(target.path,'/product/?id=123');assert.match(resolvedSeo(target).title,/розовый/);
+ const targets=seoTargets([product,{...product,id:'../bad'}]);assert.equal(targets.length,5);const target=targets[4];assert.equal(target.path,'/product/?id=123');assert.match(resolvedSeo(target).title,/розовый/);
  assert.ok(seoIssues(target,{...emptySeo,title:'Same'},['Same','Same']).some(v=>v.includes('повторяется')));
  assert.equal(seoFields({title:' hi ',noindex:'false',body:{unsafe:true}}).noindex,false);
 });
