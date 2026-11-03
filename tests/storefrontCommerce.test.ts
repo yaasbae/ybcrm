@@ -50,6 +50,7 @@ test('storefront product exposes only public fields', () => {
     id: 'p1',
     name: 'Олимпийка',
     price: 12990,
+    height: '', modelName: '', productLength: '', isNew: false,
     photos: ['https://cdn.example/look.webp'],
     color: '',
     sizeGrid: '',

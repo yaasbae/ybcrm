@@ -1,3 +1,5 @@
+import {ProductCatalogFields, type CatalogFields} from './ProductCatalogFields';
+import {productCatalogAttributes} from '../lib/productFacets';
 import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Package, Plus, X, Camera, Save, 
@@ -22,7 +24,7 @@ import {
 } from '../lib/productMaterials';
 import { createStudioCutout } from '../lib/studioImage';
 
-interface ProductItem {
+interface ProductItem extends CatalogFields {
   id: string;
   photos: string[];
   name: string;
@@ -223,6 +225,7 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
     composition: '',
     materials: ensureProductMaterials([], ''),
     collectionName: '',
+    modelName: '', productLength: '', isNew: false, oldPrice: 0, storefrontCategory: '',
     seasonality: '',
     sizeDetails: '',
     description: '',
@@ -246,6 +249,10 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
 
   const handleAddProduct = async () => {
     if (!newProduct.name) return;
+    if (newProduct.oldPrice && (!Number.isFinite(newProduct.oldPrice) || newProduct.oldPrice <= Number(newProduct.sellingPrice || 0) || newProduct.oldPrice > 1e9)) {
+      setError('Проверьте цену до скидки: она должна быть выше цены продажи и не больше 1 млрд ₽. Очистите её, если скидки нет.');
+      return;
+    }
 
     const stillUploading = Object.values(photoUploadStatus).some(s => s === 'processing' || s === 'uploading');
     if (stillUploading) {
@@ -287,7 +294,9 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
         color: newProduct.color || '',
         sizeGrid: newProduct.sizeGrid || '',
         girths: newProduct.girths || '',
-        height: newProduct.height || '',
+        ...productCatalogAttributes(newProduct),
+        oldPrice: productCatalogAttributes(newProduct).oldPrice || 0,
+        storefrontCategory: String(newProduct.storefrontCategory || '').trim().slice(0,100),
         weight: newProduct.weight || '',
         applicationType: newProduct.applicationType || '',
         patternNumber: newProduct.patternNumber || '',
@@ -331,6 +340,7 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
         composition: '',
         materials: ensureProductMaterials([], ''),
         collectionName: '',
+        modelName: '', productLength: '', isNew: false, oldPrice: 0, storefrontCategory: '',
         seasonality: '',
         sizeDetails: '',
         description: '',
@@ -350,13 +360,13 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
       const headers = [
         'Наименование', 'Цвет', 'Размерная сетка', 'Обхваты', 'Рост', 
         'Вес', 'Вид нанесения', 'Номер лекала', 'Год выпуска', 'Коллекция', 'Сезонность',
-        'Состав материалов', 'Описание размеров', 'Описание товара', 'Страна'
+        'Состав материалов', 'Описание размеров', 'Описание товара', 'Страна', 'Модель', 'Длина', 'Цена до скидки', 'Новинка', 'Категория на сайте'
       ];
       
       const rows = products.map(p => [
         p.name, p.color, p.sizeGrid, p.girths, p.height,
         p.weight, p.applicationType, p.patternNumber, p.releaseYear, p.collectionName, p.seasonality,
-        formatProductMaterials(p.materials, p.composition), p.sizeDetails, p.description, p.countryOfOrigin
+        formatProductMaterials(p.materials, p.composition), p.sizeDetails, p.description, p.countryOfOrigin, p.modelName, p.productLength, p.oldPrice, p.isNew ? 'Да' : '', p.storefrontCategory
       ].map(val => `"${String(val || '').replace(/"/g, '""')}"`).join(','));
 
       const csvContent = [headers.join(','), ...rows].join('\n');
@@ -633,6 +643,7 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
       composition: '',
       materials: ensureProductMaterials([], ''),
       collectionName: '',
+      modelName: '', productLength: '', isNew: false, oldPrice: 0, storefrontCategory: '',
       seasonality: '',
       sizeDetails: '',
       description: '',
@@ -799,6 +810,7 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
                   onChange={materials => setNewProduct(current => ({ ...current, materials, composition: getPrimaryComposition(materials) }))}
                 />
               </div>
+              <div className="min-w-0 sm:col-span-2 xl:col-span-3 2xl:col-span-4"><ProductCatalogFields value={newProduct} onChange={patch=>setNewProduct(current=>({...current,...patch}))}/></div>
               <label className="min-w-0 sm:col-span-2">
                 <span className={labelClass}>Описание размеров</span>
                 <input className={inputClass} value={newProduct.sizeDetails || ''} onChange={e => setNewProduct({...newProduct, sizeDetails: e.target.value})} />
@@ -1187,6 +1199,7 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
                         className="w-full px-4 py-3 bg-slate-50 border border-slate-100 rounded-2xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all"
                       />
                     </div>
+                    <div className="md:col-span-2"><ProductCatalogFields value={newProduct} onChange={patch=>setNewProduct(current=>({...current,...patch}))}/></div>
                     <div className="md:col-span-2">
                       <MaterialCompositionEditor
                         materials={newProduct.materials}
@@ -1320,19 +1333,7 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
                       <label className="text-[11px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2">
                         <Ruler size={14} /> Рост
                       </label>
-                      <select
-                        value={newProduct.height}
-                        onChange={(e) => setNewProduct({...newProduct, height: e.target.value})}
-                        className="w-full px-4 py-3 bg-slate-50 border border-slate-100 rounded-2xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all"
-                      >
-                        <option value="">Выберите рост...</option>
-                        {['150-155', '160-165', '170-175', '180-185'].map(opt => (
-                          <option key={opt} value={opt}>{opt}</option>
-                        ))}
-                        {newProduct.height && !['150-155', '160-165', '170-175', '180-185'].includes(newProduct.height) && (
-                          <option value={newProduct.height}>{newProduct.height}</option>
-                        )}
-                      </select>
+                      <input value={newProduct.height||''} maxLength={300} placeholder="Например, 160–165, 170–175" onChange={e=>setNewProduct({...newProduct,height:e.target.value})} className="w-full min-h-11 rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"/>
                     </div>
                     <div className="space-y-2">
                       <label className="text-[11px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2">

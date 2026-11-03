@@ -1,3 +1,4 @@
+import {productCatalogAttributes} from "./productFacets.ts";
 export type StorefrontCartInput = {
   productId: string;
   quantity: number;
@@ -17,6 +18,11 @@ export type StorefrontProductSource = {
   photos?: string[];
   storefrontPhotos?: string[];
   color?: string;
+  height?: string;
+  modelName?: string;
+  productLength?: string;
+  isNew?: boolean;
+  oldPrice?: number;
   sizeGrid?: string;
   applicationType?: string;
   description?: string;
@@ -46,6 +52,7 @@ export function sanitizeStorefrontProduct(id: string, source: StorefrontProductS
     id: String(source.id || id).trim() || id,
     name,
     price,
+    ...productCatalogAttributes(source),
     photos,
     color: String(source.color || '').trim(),
     sizeGrid: String(source.sizeGrid || '').trim(),
