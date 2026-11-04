@@ -1,3 +1,6 @@
+import { getOrderTotalAmount } from "./src/lib/orderPayments.ts";
+import { getConfirmedPaidAmount } from "./src/lib/orderPayments.ts";
+import { registerCustomerAccount } from "./src/lib/customerAccount.ts";
 import {validCheckoutProof,purchaseReceipt} from './src/lib/storefrontAnalytics.ts';
 import {siteIntegrations} from './src/lib/storefrontIntegrations.ts';
 import { publicSeoEntries } from './src/lib/storefrontSeo.ts';
@@ -331,6 +334,7 @@ function isPublicApiRequest(req: express.Request) {
   if (req.method === "GET" && (path === "/storefront/cdek/cities" || path === "/storefront/cdek/points")) return true;
   if (req.method === "POST" && path === "/storefront/cdek/calculate") return true;
   if (req.method === "POST" && path === "/storefront/checkout") return true;
+  if (req.method === "POST" && path === "/storefront/account") return true;
   if (path === "/ai-jobs/run") {
     const workerSecret = String(process.env.AI_JOB_WORKER_SECRET || "");
     const bearer = String(req.headers.authorization || "").replace(/^Bearer\s+/i, "");
@@ -4658,6 +4662,17 @@ app.get("/api/storefront/seo", async (_req, res) => {
     res.setHeader("Cache-Control", "public, max-age=30, stale-while-revalidate=60");
     res.json({ version: 1, entries: publicSeoEntries(snapshot.data(),visible), integrations:siteIntegrations(snapshot.data()?.integrations) });
   } catch { res.status(503).json({ error: "SEO временно недоступно" }); }
+});
+
+
+// Customer accounts never use employee Firebase Auth or public Firestore access.
+registerCustomerAccount(app, {
+  db: adminDb,
+  secret: STOREFRONT_SHARED_SECRET,
+  trusted: isTrustedStorefrontServiceRequest,
+  enabled: Boolean(STOREFRONT_SHARED_SECRET),
+  telegramClientId: process.env.TELEGRAM_LOGIN_CLIENT_ID,
+  amounts: data => ({ total: getOrderTotalAmount(data), paid: getConfirmedPaidAmount(data) }),
 });
 
 app.get("/api/storefront/bootstrap", async (_req, res) => {
