@@ -39,6 +39,27 @@ export async function verifyVkCode(body:Record<string,unknown>,fetcher=fetch){
   if(!profileResponse.ok||!phone||String(profile?.user?.user_id)!==String(token.user_id))throw failure(401,'Разрешите VK ID передать номер телефона');
   return {phone,vkId:String(token.user_id)};
 }
+export async function verifyYandexCode(body:Record<string,unknown>,fetcher=fetch){
+  const code=text(body.code,4096),verifier=text(body.verifier,256),state=text(body.state,256);
+  const redirectUri=text(body.redirectUri,200);
+  if(!/^[a-zA-Z0-9_-]{4,4096}$/.test(code)||!/^[a-zA-Z0-9_-]{43,128}$/.test(verifier)||
+    !/^[a-zA-Z0-9_-]{32,256}$/.test(state)||
+    !['https://yaasbae.store/account/yandex/','https://www.yaasbae.store/account/yandex/'].includes(redirectUri))
+    throw failure(400,'Некорректный вход Яндекс');
+  const exchange=await fetcher('https://oauth.yandex.ru/token',{method:'POST',
+    headers:{'content-type':'application/x-www-form-urlencoded'},
+    body:new URLSearchParams({grant_type:'authorization_code',code,client_id:'3b81620356be4f3a860d6cabef82b382',code_verifier:verifier}),
+    signal:AbortSignal.timeout(10000)});
+  const token:any=await exchange.json();
+  if(!exchange.ok||token.error||!token.access_token)throw failure(401,'Не удалось подтвердить Яндекс ID');
+  const profileResponse=await fetcher('https://login.yandex.ru/info?format=json',{
+    headers:{Authorization:`OAuth ${token.access_token}`},signal:AbortSignal.timeout(10000)});
+  const profile:any=await profileResponse.json();
+  const phone=normalizedPhone(profile?.default_phone?.number);
+  if(!profileResponse.ok||String(profile?.client_id)!=='3b81620356be4f3a860d6cabef82b382'||
+    !profile?.id||!phone)throw failure(401,'Разрешите Яндекс ID передать номер телефона');
+  return {phone,yandexId:String(profile.id)};
+}
 type Dependencies={db:any;secret:string;trusted:(req:any)=>boolean;amounts:(data:Record<string,any>)=>{total:number;paid:number};enabled:boolean;telegramClientId?:string;now?:()=>number};
 export function registerCustomerAccount(app:any,deps:Dependencies){
   app.post('/api/storefront/account',async(req:any,res:any)=>{
@@ -47,7 +68,7 @@ export function registerCustomerAccount(app:any,deps:Dependencies){
     try{
       if(!deps.secret||!deps.trusted(req))throw failure(401,'Нет доступа');
       const body=req.body||{};
-      if(!['telegram-config','telegram-login','vk-login','session','logout'].includes(body.action))throw failure(400,'Некорректный запрос');
+      if(!['telegram-config','telegram-login','vk-login','yandex-login','session','logout'].includes(body.action))throw failure(400,'Некорректный запрос');
       if(!deps.db||!deps.enabled)throw failure(503,'Вход в кабинет ещё не подключён. Попробуйте позже.');
       if(body.action==='telegram-config')return res.json({clientId:deps.telegramClientId||''});
       if(body.action==='telegram-login'){
@@ -64,6 +85,14 @@ export function registerCustomerAccount(app:any,deps:Dependencies){
       }
       if(body.action==='vk-login'){
         const identity=await verifyVkCode(body);
+        const token=randomBytes(32).toString('hex');
+        await deps.db.collection('storefront_account_sessions').doc(hash(token)).create({
+          ...identity,expires:now+604800000,expiresAt:new Date(now+604800000)
+        });
+        return res.json({sessionToken:token});
+      }
+      if(body.action==='yandex-login'){
+        const identity=await verifyYandexCode(body);
         const token=randomBytes(32).toString('hex');
         await deps.db.collection('storefront_account_sessions').doc(hash(token)).create({
           ...identity,expires:now+604800000,expiresAt:new Date(now+604800000)
