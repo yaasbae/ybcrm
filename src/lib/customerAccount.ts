@@ -44,7 +44,7 @@ export async function verifyYandexCode(body:Record<string,unknown>,fetcher=fetch
   const redirectUri=text(body.redirectUri,200);
   if(!/^[a-zA-Z0-9_-]{4,4096}$/.test(code)||!/^[a-zA-Z0-9_-]{43,128}$/.test(verifier)||
     !/^[a-zA-Z0-9_-]{32,256}$/.test(state)||
-    !['https://yaasbae.store/account/yandex/','https://www.yaasbae.store/account/yandex/'].includes(redirectUri))
+    !['https://yaasbae.store/account/yandex','https://www.yaasbae.store/account/yandex'].includes(redirectUri))
     throw failure(400,'Некорректный вход Яндекс');
   const exchange=await fetcher('https://oauth.yandex.ru/token',{method:'POST',
     headers:{'content-type':'application/x-www-form-urlencoded'},
