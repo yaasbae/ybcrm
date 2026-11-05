@@ -26,7 +26,7 @@ export async function verifyVkCode(body:Record<string,unknown>,fetcher=fetch){
   const redirectUri=text(body.redirectUri,200);
   if(!/^[a-zA-Z0-9_-]{20,4096}$/.test(code)||!/^[a-zA-Z0-9_-]{8,256}$/.test(deviceId)||
     !/^[a-zA-Z0-9_-]{43,128}$/.test(verifier)||!/^[a-zA-Z0-9_-]{32,256}$/.test(state)||
-    !['https://yaasbae.store/account/vk/','https://www.yaasbae.store/account/vk/'].includes(redirectUri))throw failure(400,'Некорректный вход VK');
+    !['https://yaasbae.store/','https://www.yaasbae.store/'].includes(redirectUri))throw failure(400,'Некорректный вход VK');
   const exchange=new URL('https://id.vk.ru/oauth2/auth');
   for(const [key,value] of Object.entries({grant_type:'authorization_code',redirect_uri:redirectUri,client_id:'54876412',code_verifier:verifier,state,device_id:deviceId}))exchange.searchParams.set(key,value);
   const response=await fetcher(exchange,{method:'POST',body:new URLSearchParams({code}),signal:AbortSignal.timeout(10000)});
