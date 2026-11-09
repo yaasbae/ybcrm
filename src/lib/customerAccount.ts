@@ -3,7 +3,7 @@ import {createHash,randomBytes,createPublicKey,verify} from 'node:crypto';
 const hash=(v:string)=>createHash('sha256').update(v).digest('hex');
 const text=(v:unknown,max=250)=>typeof v==='string'?v.trim().slice(0,max):'';
 const number=(v:unknown)=>{const n=Number(v);return Number.isFinite(n)&&n>=0?n:0;};
-const failure=(status:number,message:string)=>Object.assign(new Error(message),{status});
+const failure=(status:number,message:string,code='')=>Object.assign(new Error(message),{status,code});
 export function customerOrder(id:string,data:Record<string,any>,amounts:(data:Record<string,any>)=>{total:number;paid:number}){
   const items=Array.isArray(data.items)?data.items.slice(0,100):[];
   const date=typeof data.date==='string'?text(data.date,30):'';
@@ -28,17 +28,23 @@ export async function verifyVkCode(body:Record<string,unknown>,fetcher=fetch){
   // then let VK verify their authenticity during the exchange.
   if(!code||!deviceId||/[\u0000-\u001f\u007f]/.test(code+deviceId)||
     !/^[a-zA-Z0-9_-]{43,128}$/.test(verifier)||!/^[a-zA-Z0-9_-]{32,256}$/.test(state)||
-    !['https://yaasbae.store/','https://www.yaasbae.store/'].includes(redirectUri))throw failure(400,'Некорректный вход VK');
+    !['https://yaasbae.store/','https://www.yaasbae.store/'].includes(redirectUri))throw failure(400,'Некорректный вход VK','vk_request_invalid');
   const exchange=new URL('https://id.vk.ru/oauth2/auth');
   for(const [key,value] of Object.entries({grant_type:'authorization_code',redirect_uri:redirectUri,client_id:'54876412',code_verifier:verifier,state,device_id:deviceId}))exchange.searchParams.set(key,value);
   const response=await fetcher(exchange,{method:'POST',body:new URLSearchParams({code}),signal:AbortSignal.timeout(10000)});
   const token:any=await response.json();
-  if(!response.ok||token.error||token.state!==state||!token.access_token||!token.user_id)throw failure(401,'Не удалось подтвердить VK ID');
+  if(!response.ok||token.error||token.state!==state||!token.access_token||!token.user_id){
+    console.warn('[storefront-account] VK exchange rejected',{status:response.status,providerError:typeof token.error==='string'?token.error.slice(0,60):''});
+    throw failure(401,'Не удалось подтвердить VK ID','vk_exchange_rejected');
+  }
   const profileUrl=new URL('https://id.vk.ru/oauth2/user_info');profileUrl.searchParams.set('client_id','54876412');
   const profileResponse=await fetcher(profileUrl,{method:'POST',body:new URLSearchParams({access_token:token.access_token}),signal:AbortSignal.timeout(10000)});
   const profile:any=await profileResponse.json();
   const phone=normalizedPhone(profile?.user?.phone);
-  if(!profileResponse.ok||!phone||String(profile?.user?.user_id)!==String(token.user_id))throw failure(401,'Разрешите VK ID передать номер телефона');
+  if(!profileResponse.ok||!phone||String(profile?.user?.user_id)!==String(token.user_id)){
+    console.warn('[storefront-account] VK profile rejected',{status:profileResponse.status,phonePresent:Boolean(phone),userMatches:String(profile?.user?.user_id)===String(token.user_id)});
+    throw failure(401,'Разрешите VK ID передать номер телефона',!phone?'vk_phone_missing':'vk_profile_rejected');
+  }
   return {phone,vkId:String(token.user_id)};
 }
 export async function verifyYandexCode(body:Record<string,unknown>,fetcher=fetch){
@@ -119,6 +125,6 @@ export function registerCustomerAccount(app:any,deps:Dependencies){
       const discount=Number.isFinite(rawDiscount)&&rawDiscount>=0&&rawDiscount<=100?rawDiscount:null;
       const profile=contact?{name:text(contact.fullName||contact.name,120),email:text(contact.email,160),city:text(contact.city,120),loyaltyCardId:text(contact.loyaltyCardId,80),totalSpent:number(contact.totalSpent),ordersCount:number(contact.ordersCount)}:null;
       return res.json({phone,discount,profile,orders:orders.docs.filter((d:any)=>normalizedPhone(d.data().clientPhone)===phone&&d.data().status!=='Черновик').map((d:any)=>customerOrder(d.id,d.data(),deps.amounts)).sort((a:any,b:any)=>b.date.localeCompare(a.date)),updatedAt:new Date(now).toISOString()});
-    }catch(error:any){const status=[400,401,429,503].includes(error?.status)?error.status:503;if(status===503)console.warn('[storefront-account] unavailable',{action:String(req.body?.action||'').slice(0,30),name:String(error?.name||'Error').slice(0,60),code:String(error?.code||'').slice(0,60)});return res.status(status).json({error:status===503?'Кабинет временно недоступен. Попробуйте позже.':error.message});}
+    }catch(error:any){const status=[400,401,429,503].includes(error?.status)?error.status:503;if(status===503)console.warn('[storefront-account] unavailable',{action:String(req.body?.action||'').slice(0,30),name:String(error?.name||'Error').slice(0,60),code:String(error?.code||'').slice(0,60)});return res.status(status).json({error:status===503?'Кабинет временно недоступен. Попробуйте позже.':error.message,...(String(error?.code||'').startsWith('vk_')?{code:error.code}:{})});}
   });
 }
