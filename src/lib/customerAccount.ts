@@ -41,9 +41,9 @@ export async function verifyVkCode(body:Record<string,unknown>,fetcher=fetch){
   const profileResponse=await fetcher(profileUrl,{method:'POST',body:new URLSearchParams({access_token:token.access_token}),signal:AbortSignal.timeout(10000)});
   const profile:any=await profileResponse.json();
   const phone=normalizedPhone(profile?.user?.phone);
-  if(!profileResponse.ok||!phone||String(profile?.user?.user_id)!==String(token.user_id)){
+  if(!profileResponse.ok||String(profile?.user?.user_id)!==String(token.user_id)){
     console.warn('[storefront-account] VK profile rejected',{status:profileResponse.status,phonePresent:Boolean(phone),userMatches:String(profile?.user?.user_id)===String(token.user_id)});
-    throw failure(401,'Разрешите VK ID передать номер телефона',!phone?'vk_phone_missing':'vk_profile_rejected');
+    throw failure(401,'Не удалось подтвердить профиль VK ID','vk_profile_rejected');
   }
   return {phone,vkId:String(token.user_id)};
 }
@@ -114,7 +114,9 @@ export function registerCustomerAccount(app:any,deps:Dependencies){
       if(body.action==='logout'){await ref.delete();return res.json({ok:true});}
       if(!snapshot.exists||!session||session.expires<=now)throw failure(401,'Войдите в кабинет');
       const phone=normalizedPhone(session.phone);
-      if(!phone)throw failure(401,'Войдите через Telegram');
+      // A verified VK identity can open a cabinet without exposing any CRM
+      // records. Orders and discounts require a separately verified phone.
+      if(!phone)return res.json({phone:'',discount:null,profile:null,orders:[],updatedAt:new Date(now).toISOString()});
       // Only an exact verified owner query; never read the entire orders collection.
       const orders=await deps.db.collection('orders_new').where('clientPhone','in',[phone,'+'+phone,...(phone.startsWith('7')&&phone.length===11?['8'+phone.slice(1)]:[])]).limit(201).get();
       if(orders.docs.length>200)throw failure(503,'История большая. Обратитесь в магазин для полной выписки.');
