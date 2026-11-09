@@ -38,6 +38,7 @@ import {
 } from '../../lib/orderPayments';
 import { motion, AnimatePresence } from 'motion/react';
 import { OrderData } from '../AnalyticsDashboard';
+import { OrderItemComment } from '../OrderItemComment';
 import { auth, db } from '../../firebase';
 import { collection, doc, getDoc, getDocs, limit, onSnapshot, orderBy, query, setDoc } from 'firebase/firestore';
 import { emitPushEvent } from '../../lib/pushNotifications';
@@ -2749,6 +2750,7 @@ const OrderSummaryRow = React.memo(({
                     {[orderItemColors[index], orderItemSizes[index], orderItemHeights[index]].filter(Boolean).join(' / ')}
                   </p>
                 )}
+                <OrderItemComment order={order} index={index} editable={order.isFirebase === true} />
               </div>
               <p className="whitespace-nowrap text-[12px] font-semibold text-zinc-400 tabular-nums">
                 {formatCurrency(orderItemPrices[index] || (orderItems.length === 1 ? order.revenue : 0))} × 1
@@ -2934,6 +2936,7 @@ const OrderDetailView: React.FC<{
     updateOrderData(order.orderId, 'itemSizes', nextSizes);
     updateOrderData(order.orderId, 'itemHeights', nextHeights);
     updateOrderData(order.orderId, 'itemSewn', nextSewnItems);
+    updateOrderData(order.orderId, 'itemComments', [...currentItems.map((_, index) => order.itemComments?.[index] || ''), '']);
     updateOrderData(order.orderId, 'item', joinOrderItems(nextItems));
   };
 
@@ -2951,6 +2954,7 @@ const OrderDetailView: React.FC<{
     updateOrderData(order.orderId, 'itemSizes', nextSizes);
     updateOrderData(order.orderId, 'itemHeights', nextHeights);
     updateOrderData(order.orderId, 'itemSewn', nextSewnItems);
+    updateOrderData(order.orderId, 'itemComments', items.map((_, index) => order.itemComments?.[index] || '').filter((_, index) => index !== indexToRemove));
     updateOrderData(order.orderId, 'item', joinOrderItems(nextItems));
     updateOrderData(order.orderId, 'revenue', getItemPricesTotal(nextPrices));
   };
@@ -3154,6 +3158,7 @@ const OrderDetailView: React.FC<{
                       <dt className="text-[#667085]">Рост</dt><dd className="font-medium text-[#111827]">{editing ? <input value={heights[index] || ''} onChange={event => updateItemValue('itemHeights', index, event.target.value)} className={editControlClass} /> : heights[index] || '—'}</dd>
                       {editing && <><dt className="text-[#667085]">Цена</dt><dd><input type="number" value={prices[index] || ''} onChange={event => updateItemValue('itemPrices', index, Number(event.target.value) || 0)} className={editControlClass} /></dd></>}
                     </dl>
+                    <OrderItemComment order={order} index={index} editable={order.isFirebase === true} />
                   </div>
                 </div>
               );
@@ -3340,6 +3345,7 @@ const OrderRow = React.memo(({
 
   const saveOrderItems = (items: string[], prices = editItemPrices, colors = editItemColors, sizes = editItemSizes, heights = editItemHeights) => {
     const cleaned = items.map(item => item.trim()).filter(Boolean);
+    const cleanedComments = items.flatMap((item, index) => item.trim() ? [order.itemComments?.[index] || ''] : []);
     const cleanedPrices = cleaned.map((_, index) => Number(prices[index]) || 0);
     const cleanedColors = cleaned.map((_, index) => String(colors[index] || '').trim());
     const cleanedSizes = cleaned.map((_, index) => String(sizes[index] || '').trim());
@@ -3352,6 +3358,7 @@ const OrderRow = React.memo(({
       invoiceType: order.invoiceType || getInvoiceTypeFromPaymentType(order.paymentType),
     });
     updateOrderData(order.orderId, 'items', cleaned);
+    updateOrderData(order.orderId, 'itemComments', cleanedComments);
     updateOrderData(order.orderId, 'itemPrices', cleanedPrices);
     updateOrderData(order.orderId, 'itemColors', cleanedColors);
     updateOrderData(order.orderId, 'itemSizes', cleanedSizes);
@@ -3999,6 +4006,7 @@ const OrderCard = React.memo(({
 
   const saveMobileItems = (items: string[], prices = editItemPrices, colors = editItemColors, sizes = editItemSizes, heights = editItemHeights) => {
     const cleaned = items.map(item => item.trim()).filter(Boolean);
+    const cleanedComments = items.flatMap((item, index) => item.trim() ? [order.itemComments?.[index] || ''] : []);
     const cleanedPrices = cleaned.map((_, index) => Number(prices[index]) || 0);
     const cleanedColors = cleaned.map((_, index) => String(colors[index] || '').trim());
     const cleanedSizes = cleaned.map((_, index) => String(sizes[index] || '').trim());
@@ -4010,6 +4018,7 @@ const OrderCard = React.memo(({
       invoiceType,
     });
     updateOrderData(order.orderId, 'items', cleaned);
+    updateOrderData(order.orderId, 'itemComments', cleanedComments);
     updateOrderData(order.orderId, 'itemPrices', cleanedPrices);
     updateOrderData(order.orderId, 'itemColors', cleanedColors);
     updateOrderData(order.orderId, 'itemSizes', cleanedSizes);
@@ -4502,6 +4511,7 @@ const OrderCard = React.memo(({
                       {[orderItemColors[index], orderItemSizes[index], orderItemHeights[index]].filter(Boolean).join(' / ')}
                     </p>
                   )}
+                  <OrderItemComment order={order} index={index} editable={order.isFirebase === true} />
                 </div>
                 <p className="text-[11px] font-semibold text-zinc-400">
                   {formatCurrency(orderItemPrices[index] || (orderItems.length === 1 ? order.revenue : 0))} × 1

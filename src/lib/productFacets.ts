@@ -1,12 +1,14 @@
 /** Public, explicitly entered product attributes. Never infer fit or a promotion from a name. */
 export type ProductLength = '' | 'mini' | 'midi' | 'maxi';
+import { productSale } from './productSale';
 export const lengthLabels: Record<string,string> = {mini:'Мини',midi:'Мидл',maxi:'Макси'};
 export function productCatalogAttributes(raw: unknown) {
  const row=raw&&typeof raw==='object'?raw as Record<string,unknown>:{};
  const text=(key:string,max:number)=>typeof row[key]==='string'?(row[key] as string).trim().slice(0,max):'';
  const length=text('productLength',20);
  const old=typeof row.oldPrice==='number'&&Number.isFinite(row.oldPrice)&&row.oldPrice>0&&row.oldPrice<=1e9?Math.round(row.oldPrice*100)/100:0;
- return {height:text('height',300),modelName:text('modelName',120),productLength:(['mini','midi','maxi'].includes(length)?length:'') as ProductLength,isNew:row.isNew===true,...(old?{oldPrice:old}:{})};
+ const sale=productSale(Number(row.sellingPrice),row.discountAmount,row.saleBadgeText,row.saleBadgeColor);
+ return {height:text('height',300),modelName:text('modelName',120),productLength:(['mini','midi','maxi'].includes(length)?length:'') as ProductLength,isNew:row.isNew===true,...(old?{oldPrice:old}:{}),...(sale.discountAmount?{discountAmount:sale.discountAmount,saleBadgeText:sale.saleBadgeText,saleBadgeColor:sale.saleBadgeColor}:{})};
 }
 export type FacetProduct = {
  id:string;price:number;oldPrice?:number;category?:string;color?:string;sizes?:string[];height?:string;

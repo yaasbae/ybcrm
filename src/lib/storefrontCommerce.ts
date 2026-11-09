@@ -1,4 +1,5 @@
 import {productCatalogAttributes} from "./productFacets.ts";
+import { productSale } from './productSale.ts';
 export type StorefrontCartInput = {
   productId: string;
   quantity: number;
@@ -23,6 +24,9 @@ export type StorefrontProductSource = {
   productLength?: string;
   isNew?: boolean;
   oldPrice?: number;
+  discountAmount?: number;
+  saleBadgeText?: string;
+  saleBadgeColor?: string;
   sizeGrid?: string;
   applicationType?: string;
   description?: string;
@@ -41,6 +45,7 @@ export type StorefrontProductSource = {
 export function sanitizeStorefrontProduct(id: string, source: StorefrontProductSource) {
   const name = String(source.name || '').trim();
   const price = Math.max(0, Math.round((Number(source.sellingPrice) || 0) * 100) / 100);
+  const sale = productSale(price, source.discountAmount, source.saleBadgeText, source.saleBadgeColor);
   const photoSource = Array.isArray(source.storefrontPhotos) && source.storefrontPhotos.length
     ? source.storefrontPhotos
     : source.photos;
@@ -51,8 +56,11 @@ export function sanitizeStorefrontProduct(id: string, source: StorefrontProductS
   return {
     id: String(source.id || id).trim() || id,
     name,
-    price,
+    price: sale.salePrice,
     ...productCatalogAttributes(source),
+    ...(sale.discountAmount ? { oldPrice: price } : {}),
+    ...(sale.discountAmount ? { basePrice: price, discountAmount: sale.discountAmount,
+      saleBadgeText: sale.saleBadgeText, saleBadgeColor: sale.saleBadgeColor } : {}),
     photos,
     color: String(source.color || '').trim(),
     sizeGrid: String(source.sizeGrid || '').trim(),

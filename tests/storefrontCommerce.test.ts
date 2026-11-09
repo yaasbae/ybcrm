@@ -24,6 +24,17 @@ test('storefront category is independent from production printing method', () =>
   assert.equal(sanitizeStorefrontProduct('p1', { ...source, storefrontCategory: 'Костюмы' })?.category, 'Костюмы');
 });
 
+test('manual discount changes checkout price and keeps the original price for display', () => {
+  const source = { name: 'Бомбер', sellingPrice: 18900, discountAmount: 2000, saleBadgeText: '11.11', saleBadgeColor: 'pink', photos: ['https://example.com/p.jpg'] };
+  const product = sanitizeStorefrontProduct('p1', source);
+  assert.equal(product?.price, 16900);
+  assert.equal(product?.basePrice, 18900);
+  assert.equal(product?.oldPrice, 18900);
+  assert.equal(product?.saleBadgeText, '11.11');
+  assert.equal(product?.saleBadgeColor, 'pink');
+  assert.equal(sanitizeStorefrontProduct('p1', { ...source, discountAmount: 19000 })?.price, 18900);
+});
+
 test('public materials expose only descriptive fields and invalid prices never publish', () => {
   const source = {
     name: 'Test product', sellingPrice: 100, photos: ['https://example.com/photo.webp'],

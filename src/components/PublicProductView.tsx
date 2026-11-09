@@ -5,6 +5,7 @@ import { motion } from 'motion/react';
 import { ShoppingBag, ChevronLeft, Ruler, Palette, Info, Package, Layers } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { ensureProductMaterials, type ProductMaterial } from '../lib/productMaterials';
+import { productSale } from '../lib/productSale';
 
 interface ProductItem {
   id: string;
@@ -23,6 +24,9 @@ interface ProductItem {
   composition?: string;
   materials?: ProductMaterial[];
   sellingPrice?: number;
+  discountAmount?: number;
+  saleBadgeText?: string;
+  saleBadgeColor?: string;
 }
 
 export const PublicProductView: React.FC<{ productId: string }> = ({ productId }) => {
@@ -72,6 +76,8 @@ export const PublicProductView: React.FC<{ productId: string }> = ({ productId }
   }
 
   const productMaterials = ensureProductMaterials(product.materials, product.composition).filter(item => item.composition);
+  const sale = productSale(Number(product.sellingPrice || 0), product.discountAmount, product.saleBadgeText, product.saleBadgeColor);
+  const badgeColors = { red: 'bg-red-600 text-white', white: 'bg-white text-zinc-900 border border-zinc-200', pink: 'bg-pink-400 text-white', black: 'bg-zinc-950 text-white', transparent: 'bg-transparent text-zinc-950 border border-zinc-900' };
 
   return (
     <div className="min-h-screen bg-[#FBFBFD] font-sans text-[#1D1D1F]">
@@ -124,9 +130,11 @@ export const PublicProductView: React.FC<{ productId: string }> = ({ productId }
               <h1 className="text-4xl md:text-5xl font-black tracking-tight text-slate-900 leading-tight">
                 {product.name}
               </h1>
-              <p className="text-3xl font-bold text-blue-600">
-                {product.sellingPrice?.toLocaleString()} ₽
-              </p>
+              {sale.discountAmount > 0 && sale.saleBadgeText && <span className={`inline-flex rounded-md px-2.5 py-1 text-xs font-bold ${badgeColors[sale.saleBadgeColor]}`}>{sale.saleBadgeText}</span>}
+              <div>
+                <p className="text-2xl font-semibold text-slate-500">{product.sellingPrice?.toLocaleString('ru-RU')} ₽</p>
+                {sale.discountAmount > 0 && <p className="text-3xl font-bold text-red-600">{sale.salePrice.toLocaleString('ru-RU')} ₽</p>}
+              </div>
             </div>
 
             <div className="grid grid-cols-2 gap-4">

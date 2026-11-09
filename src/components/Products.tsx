@@ -22,7 +22,6 @@ import {
   getPrimaryComposition,
   type ProductMaterial,
 } from '../lib/productMaterials';
-import { createStudioCutout } from '../lib/studioImage';
 
 interface ProductItem extends CatalogFields {
   id: string;
@@ -251,6 +250,11 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
     if (!newProduct.name) return;
     if (newProduct.oldPrice && (!Number.isFinite(newProduct.oldPrice) || newProduct.oldPrice <= Number(newProduct.sellingPrice || 0) || newProduct.oldPrice > 1e9)) {
       setError('Проверьте цену до скидки: она должна быть выше цены продажи и не больше 1 млрд ₽. Очистите её, если скидки нет.');
+      return;
+    }
+    const discountAmount = Number(newProduct.discountAmount || 0);
+    if (!Number.isFinite(discountAmount) || discountAmount < 0 || discountAmount >= Number(newProduct.sellingPrice || 0) && discountAmount > 0 || discountAmount > 1e9) {
+      setError('Скидка должна быть в рублях, больше нуля и меньше цены товара.');
       return;
     }
 
@@ -546,13 +550,12 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
       const thisIndex = currentIndex++;
       try {
         setPhotoUploadStatus(prev => ({ ...prev, [thisIndex]: 'processing' }));
-        const studioFile = await createStudioCutout(file, 1920);
-        const compressedFile = await imageCompression(studioFile, {
+        const compressedFile = await imageCompression(file, {
           maxSizeMB: 2.0,
           maxWidthOrHeight: 1920,
           useWebWorker: true,
           initialQuality: 0.9,
-          fileType: 'image/webp' as const
+          fileType: 'image/jpeg' as const
         });
 
         const reader = new FileReader();
@@ -569,8 +572,8 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
           // Фоновая загрузка в Firebase Storage
           try {
             const blob = await fetch(base64).then(r => r.blob());
-            const storageRef = ref(storage, `products/${pendingProductId}/photo_${thisIndex}_${Date.now()}.webp`);
-            await uploadBytes(storageRef, blob, { contentType: 'image/webp' });
+            const storageRef = ref(storage, `products/${pendingProductId}/photo_${thisIndex}_${Date.now()}.jpg`);
+            await uploadBytes(storageRef, blob, { contentType: 'image/jpeg' });
             const url = await getDownloadURL(storageRef);
 
             // Заменяем base64 на Storage URL
@@ -1100,7 +1103,7 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
                             />
                             {(status === 'uploading' || status === 'processing') && (
                               <div className="absolute inset-0 flex items-center justify-center bg-black/10">
-                                <div className="flex flex-col items-center gap-1 text-[8px] font-bold uppercase text-slate-600"><div className="w-5 h-5 border-2 border-slate-500 border-t-transparent rounded-full animate-spin" />{status === 'processing' ? 'Удаляем фон' : 'Загрузка'}</div>
+                                <div className="flex flex-col items-center gap-1 text-[8px] font-bold uppercase text-slate-600"><div className="w-5 h-5 border-2 border-slate-500 border-t-transparent rounded-full animate-spin" />{status === 'processing' ? 'Подготовка' : 'Загрузка'}</div>
                               </div>
                             )}
                             {status === 'error' && (

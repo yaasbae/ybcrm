@@ -76,6 +76,7 @@ export interface OrderData {
   itemColors?: string[];
   itemSizes?: string[];
   itemHeights?: string[];
+  itemComments?: string[];
   itemSewn?: boolean[];
   deliveryMethod: string;
   year: number;

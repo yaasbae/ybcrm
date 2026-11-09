@@ -49,6 +49,7 @@ import { normalizeTelegramPhone, telegramDelivery, telegramAuthError } from "./s
 import { isReservedTelegramServiceTopic } from "./src/lib/telegramServiceTopics.ts";
 import { normalizeBotSubscriberIds, validateBotBroadcastMessage } from "./src/lib/botBroadcast.ts";
 import { resolveOrderActions, type OrderAction } from "./src/lib/orderPermissionConfig.ts";
+import { buildItemCommentPatch, ItemCommentError } from "./src/lib/orderItemComments.ts";
 import {
   findAcceptedSbpPaymentByQr,
   findSbpStatementPayment,
@@ -4273,6 +4274,38 @@ async function getOrderSnapshot(orderId: string): Promise<any> {
   const matched = await getDocs(query(collection(db, "orders_new"), where("orderId", "==", orderId)));
   return matched.docs[0] || direct;
 }
+
+app.post('/api/orders/:id/item-comment', async (req, res) => {
+  const user = await requireCrmOrderAction(req, res, 'edit');
+  if (!user) return;
+  if (!adminDb) return res.status(503).json({ error: 'База заказов временно недоступна.' });
+  const orderId = String(req.params.id || '');
+  if (!/^[\w-]{1,100}$/.test(orderId)) return res.status(400).json({ error: 'Неверный номер заказа.' });
+  try {
+    const snapshot = await getOrderSnapshot(orderId);
+    if (!snapshot?.exists) return res.status(404).json({ error: 'Заказ не найден.' });
+    const comment = await adminDb.runTransaction(async (transaction: any) => {
+      const fresh = await transaction.get(snapshot.ref);
+      if (!fresh.exists || fresh.data()?.deleted) throw new ItemCommentError('Заказ не найден.');
+      const patch = buildItemCommentPatch(fresh.data(), req.body);
+      if (patch) {
+        const now = new Date().toISOString();
+        transaction.update(snapshot.ref, { ...patch, updatedAt: now });
+        transaction.set(adminDb.collection('audit_logs').doc(), {
+          action: 'order_item_comment_updated', entityType: 'order',
+          entityId: String(fresh.data()?.orderId || fresh.id), actor: { uid: user.uid },
+          metadata: { itemIndex: req.body.itemIndex }, createdAt: now,
+        });
+      }
+      return String((patch || fresh.data()).itemComments?.[req.body.itemIndex] || '');
+    });
+    res.json({ success: true, comment });
+  } catch (error) {
+    if (error instanceof ItemCommentError) return res.status(409).json({ error: error.message });
+    console.warn('[orders] item comment save failed');
+    res.status(503).json({ error: 'Комментарий не сохранён. Повторите попытку.' });
+  }
+});
 
 async function persistOrderPatch(orderId: string, patch: Record<string, unknown>): Promise<void> {
   let adminError: unknown = null;
