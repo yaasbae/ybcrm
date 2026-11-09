@@ -39,6 +39,7 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { OrderData } from '../AnalyticsDashboard';
 import { OrderItemComment } from '../OrderItemComment';
+import { isOrderPinnedAtTop } from '../../lib/orderListPriority';
 import { auth, db } from '../../firebase';
 import { collection, doc, getDoc, getDocs, limit, onSnapshot, orderBy, query, setDoc } from 'firebase/firestore';
 import { emitPushEvent } from '../../lib/pushNotifications';
@@ -2639,7 +2640,7 @@ const OrderSummaryRow = React.memo(({
       "yb-order-row group border-b transition-colors",
       isReceivedOrderStatus(order.status)
         ? "border-emerald-100 bg-emerald-50/70 hover:bg-emerald-100/70"
-        : order.isPinned
+        : isOrderPinnedAtTop(order)
           ? "border-zinc-100 bg-amber-50/40 hover:bg-amber-50/60"
           : isOverdueOrder(order)
             ? "border-zinc-100 bg-red-50/20 hover:bg-red-50/40"
@@ -2803,15 +2804,15 @@ const OrderSummaryRow = React.memo(({
             }}
             className={cn(
               "grid h-9 w-9 place-items-center rounded-lg border border-transparent transition-colors",
-              order.isPinned
+              isOrderPinnedAtTop(order)
                 ? "bg-amber-100 text-amber-600 hover:bg-amber-200"
                 : "text-zinc-300 hover:bg-zinc-100 hover:text-zinc-600"
             )}
-            title={order.isPinned ? "Открепить важный заказ" : "Закрепить важный заказ"}
-            aria-label={order.isPinned ? `Открепить заказ ${displayOrderId}` : `Закрепить заказ ${displayOrderId}`}
-            aria-pressed={Boolean(order.isPinned)}
+            title={isOrderPinnedAtTop(order) ? "Открепить важный заказ" : "Закрепить важный заказ"}
+            aria-label={isOrderPinnedAtTop(order) ? `Открепить заказ ${displayOrderId}` : `Закрепить заказ ${displayOrderId}`}
+            aria-pressed={isOrderPinnedAtTop(order)}
           >
-            <Pin className={cn("h-4 w-4", order.isPinned && "fill-current")} />
+            <Pin className={cn("h-4 w-4", isOrderPinnedAtTop(order) && "fill-current")} />
           </button>
           <button
             type="button"
@@ -4391,7 +4392,7 @@ const OrderCard = React.memo(({
       "yb-order-mobile-card m-3 flex flex-col gap-3 rounded-2xl border border-zinc-200/80 p-4 transition-colors",
       isReceivedOrderStatus(order.status)
         ? "border-emerald-200 bg-emerald-50/70"
-        : order.isPinned
+        : isOrderPinnedAtTop(order)
           ? "border-amber-200 bg-amber-50/40"
           : isOverdueOrder(order)
             ? "bg-red-50/30"
@@ -4409,15 +4410,15 @@ const OrderCard = React.memo(({
             }}
             className={cn(
               "inline-flex h-11 items-center gap-1.5 rounded-lg px-2 text-[9px] font-medium transition-colors",
-              order.isPinned
+              isOrderPinnedAtTop(order)
                 ? "bg-amber-100 text-amber-700"
                 : "text-zinc-400 hover:bg-zinc-100 hover:text-zinc-600"
             )}
-            aria-label={order.isPinned ? "Открепить важный заказ" : "Закрепить важный заказ"}
-            aria-pressed={Boolean(order.isPinned)}
+            aria-label={isOrderPinnedAtTop(order) ? "Открепить важный заказ" : "Закрепить важный заказ"}
+            aria-pressed={isOrderPinnedAtTop(order)}
           >
-            <Pin className={cn("h-3.5 w-3.5", order.isPinned && "fill-current")} />
-            {order.isPinned ? 'Закреплён' : 'Закрепить'}
+            <Pin className={cn("h-3.5 w-3.5", isOrderPinnedAtTop(order) && "fill-current")} />
+            {isOrderPinnedAtTop(order) ? 'Закреплён' : 'Закрепить'}
           </button>
           <OrderStatusMenu
             orderId={order.orderId}
@@ -5128,7 +5129,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
     [pagedOrders, selectedOrderKeys]
   );
   const pinnedOrderCount = useMemo(
-    () => new Set(data.filter(order => order.isPinned).map(order => order.orderId)).size,
+    () => new Set(data.filter(isOrderPinnedAtTop).map(order => order.orderId)).size,
     [data]
   );
 
