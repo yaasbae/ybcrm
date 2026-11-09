@@ -248,10 +248,6 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
 
   const handleAddProduct = async () => {
     if (!newProduct.name) return;
-    if (newProduct.oldPrice && (!Number.isFinite(newProduct.oldPrice) || newProduct.oldPrice <= Number(newProduct.sellingPrice || 0) || newProduct.oldPrice > 1e9)) {
-      setError('Проверьте цену до скидки: она должна быть выше цены продажи и не больше 1 млрд ₽. Очистите её, если скидки нет.');
-      return;
-    }
     const discountAmount = Number(newProduct.discountAmount || 0);
     if (!Number.isFinite(discountAmount) || discountAmount < 0 || discountAmount >= Number(newProduct.sellingPrice || 0) && discountAmount > 0 || discountAmount > 1e9) {
       setError('Скидка должна быть в рублях, больше нуля и меньше цены товара.');
@@ -299,7 +295,7 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
         sizeGrid: newProduct.sizeGrid || '',
         girths: newProduct.girths || '',
         ...productCatalogAttributes(newProduct),
-        oldPrice: productCatalogAttributes(newProduct).oldPrice || 0,
+        oldPrice: discountAmount > 0 ? Number(newProduct.sellingPrice || 0) : 0,
         storefrontCategory: String(newProduct.storefrontCategory || '').trim().slice(0,100),
         weight: newProduct.weight || '',
         applicationType: newProduct.applicationType || '',
@@ -827,6 +823,36 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
                   onChange={materials => setNewProduct(current => ({ ...current, materials, composition: getPrimaryComposition(materials) }))}
                 />
               </div>
+              <details open className="min-w-0 sm:col-span-2 xl:col-span-3 2xl:col-span-4 overflow-hidden rounded-2xl border border-slate-200 bg-white">
+                <summary className="flex cursor-pointer list-none items-center justify-between gap-3 bg-slate-50 px-4 py-4">
+                  <span className="inline-flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-slate-700"><Calculator size={15} className="text-[#7D7DE6]" /> Расчёт себестоимости</span>
+                  <b className="text-sm text-red-600">Итого: {Number(newProduct.costPrice || 0).toLocaleString('ru-RU')} ₽</b>
+                </summary>
+                <div className="space-y-5 p-4">
+                  <label className="block max-w-xl">
+                    <span className={labelClass}>Сценарий юнит-экономики</span>
+                    <select className={inputClass} value={newProduct.unitEconomics?.scenarioId || ''} onChange={e => applyScenario(e.target.value)}>
+                      <option value="">Без сценария</option>
+                      {scenarios.map(scenario => <option key={scenario.id} value={scenario.id}>{scenario.name}</option>)}
+                    </select>
+                  </label>
+                  <section className="space-y-3">
+                    <div className="flex items-center justify-between"><b className="text-[11px] uppercase tracking-wider text-indigo-600">Ткань</b><span className="text-xs font-bold text-indigo-600">{((newProduct.unitEconomics?.fabric?.main || 0) + (newProduct.unitEconomics?.fabric?.lining || 0) + (newProduct.unitEconomics?.fabric?.padding || 0)).toLocaleString('ru-RU')} ₽</span></div>
+                    <div className="grid gap-2 lg:grid-cols-3">{([
+                      { id: 'main' as const, label: 'Основная ткань', unit: 'м' },
+                      { id: 'lining' as const, label: 'Подкладка', unit: 'м' },
+                      { id: 'padding' as const, label: 'Утеплитель', unit: 'кг' },
+                    ]).map(item => { const detail = newProduct.unitEconomics?.fabricDetails?.[item.id] || { qty: '', unit: item.unit, unitPrice: '' }; return <div key={item.id} className="rounded-xl bg-indigo-50/60 p-3"><b className="text-xs text-slate-700">{item.label}</b><div className="mt-2 grid grid-cols-[1fr_58px_1fr] gap-2"><input aria-label={`${item.label}, количество`} type="number" placeholder="Кол-во" className={inputClass} value={detail.qty} onChange={e => updateFabricDetail(item.id, 'qty', Number(e.target.value))}/><select aria-label={`${item.label}, единица`} className={inputClass} value={detail.unit || item.unit} onChange={e => updateFabricDetail(item.id, 'unit', e.target.value)}><option value="м">м</option><option value="кг">кг</option></select><input aria-label={`${item.label}, цена`} type="number" placeholder="₽/ед" className={inputClass} value={detail.unitPrice} onChange={e => updateFabricDetail(item.id, 'unitPrice', Number(e.target.value))}/></div></div>; })}</div>
+                  </section>
+                  <section className="space-y-3">
+                    <div className="flex items-center justify-between"><b className="text-[11px] uppercase tracking-wider text-amber-600">Фурнитура и нанесение</b><span className="text-xs font-bold text-amber-600">{(Object.values(newProduct.unitEconomics?.accessories || {}).reduce((sum: number, value: any) => sum + Number(value || 0), 0) as number).toLocaleString('ru-RU')} ₽</span></div>
+                    <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">{([
+                      ['lock','Замок','шт'],['application','Нанесение','шт'],['embroidery','Вышивка','шт'],['eyelets','Люверсы','шт'],['fixators','Фиксаторы','шт'],['waistElastic','Резинка пояс','м'],['hatElastic','Резинка шапка','м'],['label','Этикетка','шт'],['compositionTag','Бирка составник','шт'],
+                    ] as const).map(([id,label,unit]) => { const detail = newProduct.unitEconomics?.accessoriesDetails?.[id] || { qty: '', unitPrice: '' }; return <div key={id} className="rounded-xl bg-amber-50/60 p-3"><b className="text-xs text-slate-700">{label}</b><div className="mt-2 grid grid-cols-2 gap-2"><input aria-label={`${label}, количество`} type="number" placeholder={`Кол-во, ${unit}`} className={inputClass} value={detail.qty} onChange={e => updateAccessoryDetail(id, 'qty', Number(e.target.value))}/><input aria-label={`${label}, цена`} type="number" placeholder={`₽/${unit}`} className={inputClass} value={detail.unitPrice} onChange={e => updateAccessoryDetail(id, 'unitPrice', Number(e.target.value))}/></div></div>; })}</div>
+                  </section>
+                  <section className="space-y-3"><b className="text-[11px] uppercase tracking-wider text-emerald-600">Пошив</b><div className="grid gap-2 sm:grid-cols-2"><label><span className={labelClass}>Прямой пошив, ₽</span><input type="number" className={inputClass} value={newProduct.unitEconomics?.sewing || ''} onChange={e => updateCostField('sewing', Number(e.target.value))}/></label><label><span className={labelClass}>Аутсорс, ₽</span><input type="number" className={inputClass} value={newProduct.unitEconomics?.outsourcedSewing || ''} onChange={e => updateCostField('outsourcedSewing', Number(e.target.value))}/></label></div></section>
+                </div>
+              </details>
               <div className="min-w-0 sm:col-span-2 xl:col-span-3 2xl:col-span-4"><ProductCatalogFields value={newProduct} onChange={patch=>setNewProduct(current=>({...current,...patch}))}/></div>
               <label className="min-w-0 sm:col-span-2">
                 <span className={labelClass}>Описание размеров</span>
