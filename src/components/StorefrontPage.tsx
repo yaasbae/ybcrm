@@ -1,14 +1,16 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { doc, onSnapshot, setDoc } from 'firebase/firestore';
+import { collection, doc, onSnapshot, orderBy, query, setDoc } from 'firebase/firestore';
 import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
 import imageCompression from 'browser-image-compression';
 import {
   Check, ExternalLink, FileText, Image as ImageIcon, Images, Info,
   LayoutDashboard, LoaderCircle, Menu, Newspaper, Plus, Save, Search,
-  Settings2, ShoppingBag, Trash2, Upload,
+  Settings2, ShoppingBag, Trash2, Upload, Pencil,
 } from 'lucide-react';
 import { db, handleFirestoreError, OperationType, storage } from '../firebase';
 import { StorefrontSeoPanel } from './StorefrontSeoPanel';
+import { lengthLabels, type ProductLength } from '../lib/productFacets';
+import { productSale, type SaleBadgeColor } from '../lib/productSale';
 
 type HeroSlide = {
   id: string;
@@ -112,10 +114,11 @@ const defaults: StorefrontSettings = {
   featuredProductIds: [],
 };
 
-type SectionId = 'overview' | 'home' | 'articles' | 'pages' | 'navigation' | 'seo';
+type SectionId = 'overview' | 'products' | 'home' | 'articles' | 'pages' | 'navigation' | 'seo';
 
 const sections: { id: SectionId; label: string; description: string; icon: React.ElementType }[] = [
   { id: 'overview', label: 'Обзор', description: 'Что подключено', icon: LayoutDashboard },
+  { id: 'products', label: 'Товары сайта', description: 'Витрина из склада', icon: ShoppingBag },
   { id: 'home', label: 'Главная', description: 'Слайдер и блоки', icon: Images },
   { id: 'articles', label: 'Статьи', description: 'Карточки и тексты', icon: Newspaper },
   { id: 'pages', label: 'Страницы', description: 'О нас и документы', icon: FileText },
@@ -212,8 +215,30 @@ function ImageField({ value, slot, uploading, onUpload, onClear, ratio = 'aspect
   return <div className="overflow-hidden rounded-xl border border-zinc-200 bg-zinc-50"><div className={`${ratio} grid place-items-center overflow-hidden bg-zinc-100`}>{value ? <img className="h-full w-full object-cover" src={value} alt="" /> : <ImageIcon className="text-zinc-300" />}</div><div className="flex flex-wrap items-center gap-2 p-2"><ImageUploader label={value ? 'Заменить' : 'Добавить'} busy={uploading === slot} onChange={onUpload} />{value && <button type="button" onClick={onClear} className="h-10 rounded-xl px-3 text-[11px] text-zinc-500 transition hover:bg-white hover:text-red-600">Удалить</button>}</div></div>;
 }
 
-export const StorefrontPage: React.FC = () => {
+type StorefrontCatalogProduct = {
+  id: string;
+  name?: string;
+  photos?: string[];
+  sellingPrice?: number;
+  discountAmount?: number;
+  saleBadgeText?: string;
+  saleBadgeColor?: SaleBadgeColor;
+  storefrontCategory?: string;
+  modelName?: string;
+  productLength?: ProductLength;
+  color?: string;
+  sizeGrid?: string;
+  height?: string;
+  description?: string;
+  storefrontPublished?: boolean;
+  stockQuantity?: number;
+  reservedQuantity?: number;
+};
+
+export const StorefrontPage: React.FC<{ onEditProduct?: (id: string) => void }> = ({ onEditProduct }) => {
   const [settings, setSettings] = useState<StorefrontSettings>(defaults);
+  const [products, setProducts] = useState<StorefrontCatalogProduct[]>([]);
+  const [productsLoading, setProductsLoading] = useState(true);
   const [active, setActive] = useState<SectionId>('overview');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -229,6 +254,15 @@ export const StorefrontPage: React.FC = () => {
     setLoading(false);
     setDirty(false);
   }, error => { setLoading(false); setNotice('Не удалось загрузить настройки витрины'); console.error(error); }), []);
+
+  useEffect(() => onSnapshot(query(collection(db, 'products'), orderBy('name', 'asc')), snapshot => {
+    setProducts(snapshot.docs.map(product => ({ id: product.id, ...product.data() })) as StorefrontCatalogProduct[]);
+    setProductsLoading(false);
+  }, error => {
+    setProductsLoading(false);
+    setNotice('Не удалось загрузить товары сайта');
+    try { handleFirestoreError(error, OperationType.LIST, 'products'); } catch { /* notice already shown */ }
+  }), []);
 
   const change = (updater: (current: StorefrontSettings) => StorefrontSettings) => { setSettings(updater); setDirty(true); };
   const upload = async (file: File, slot: string, apply: (url: string) => void) => {
@@ -292,6 +326,22 @@ export const StorefrontPage: React.FC = () => {
           </Card>
           <Card title="Каталог связан со складом" description="Название, описание, размеры, стоимость и фотографии товара меняются в «Складе» и автоматически появляются на сайте."><div className="flex items-center gap-3 rounded-xl bg-zinc-950 p-4 text-white"><ShoppingBag size={18} /><p className="text-xs leading-5 text-zinc-300">Не создавайте карточки товаров здесь повторно — это приведёт к расхождению остатков.</p></div></Card>
         </>}
+
+        {active === 'products' && <Card title="Товары сайта" description="Здесь только та часть корневых карточек склада, которая видна покупателю. Редактирование выполняется в «Складе», чтобы не создавать второй источник данных.">
+          {productsLoading ? <div className="grid min-h-40 place-items-center"><LoaderCircle className="animate-spin text-zinc-400" /></div> : products.length === 0 ? <div className="rounded-xl bg-zinc-50 p-6 text-center text-sm text-zinc-500">На складе пока нет товаров.</div> : <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+            {products.map(product => {
+              const sale = productSale(Number(product.sellingPrice || 0), product.discountAmount, product.saleBadgeText, product.saleBadgeColor);
+              const available = typeof product.stockQuantity === 'number' ? Math.max(0, product.stockQuantity - Math.max(0, Number(product.reservedQuantity || 0))) : null;
+              return <article key={product.id} className="overflow-hidden rounded-2xl border border-zinc-200 bg-white">
+                <div className="relative aspect-[4/5] bg-zinc-100">{product.photos?.[0] ? <img src={product.photos[0]} alt="" className="h-full w-full object-contain" /> : <div className="grid h-full place-items-center"><ImageIcon className="text-zinc-300" /></div>}{sale.saleBadgeText && sale.discountAmount > 0 && <span className="absolute left-3 top-3 rounded-full bg-zinc-950 px-2.5 py-1 text-[10px] font-bold text-white">{sale.saleBadgeText}</span>}<span className={`absolute right-3 top-3 rounded-full px-2.5 py-1 text-[9px] font-bold uppercase ${product.storefrontPublished === false ? 'bg-zinc-200 text-zinc-600' : 'bg-emerald-100 text-emerald-700'}`}>{product.storefrontPublished === false ? 'Скрыт' : 'На сайте'}</span></div>
+                <div className="space-y-3 p-4"><div><p className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400">{product.storefrontCategory || 'Без категории'}</p><h3 className="mt-1 text-sm font-semibold text-zinc-900">{product.name || 'Без названия'}</h3><p className="mt-1 text-xs text-zinc-500">{[product.modelName, product.productLength ? lengthLabels[product.productLength] : '', product.color].filter(Boolean).join(' · ') || 'Характеристики не заполнены'}</p></div>
+                  <div className="flex items-end justify-between gap-3"><div><b className="text-sm text-zinc-900">{sale.salePrice.toLocaleString('ru-RU')} ₽</b>{sale.discountAmount > 0 && <span className="ml-2 text-xs text-zinc-400 line-through">{Number(product.sellingPrice || 0).toLocaleString('ru-RU')} ₽</span>}<p className="mt-1 text-[10px] text-zinc-400">{available === null ? 'Наличие не передаётся' : available > 0 ? `В наличии: ${available}` : 'Под заказ'}</p></div><button type="button" onClick={() => onEditProduct?.(product.id)} className="inline-flex h-9 items-center gap-2 rounded-xl border border-zinc-200 px-3 text-[11px] font-semibold text-zinc-700 transition hover:border-zinc-400"><Pencil size={13} />Редактировать</button></div>
+                  {(product.sizeGrid || product.height) && <p className="border-t border-zinc-100 pt-3 text-[11px] leading-5 text-zinc-500">{product.sizeGrid && `Размеры: ${product.sizeGrid}`}{product.sizeGrid && product.height && ' · '}{product.height && `Рост: ${product.height}`}</p>}
+                </div>
+              </article>;
+            })}
+          </div>}
+        </Card>}
 
         {active === 'home' && <>
           <Card title="Бегущая строка" description="Акция или предложение над меню на всех страницах."><div className="grid gap-4 sm:grid-cols-2"><Toggle checked={settings.ticker.enabled} label="Показывать строку" onChange={enabled => change(current => ({ ...current, ticker: { ...current.ticker, enabled } }))} /><Field label="Текст" value={settings.ticker.text} onChange={text => change(current => ({ ...current, ticker: { ...current.ticker, text } }))} /><Field label="Ссылка" value={settings.ticker.href} onChange={href => change(current => ({ ...current, ticker: { ...current.ticker, href } }))} /><label className="block text-[11px] font-semibold text-zinc-600">Длительность прокрутки, секунд<input className={fieldClass} type="number" min={15} max={120} value={settings.ticker.durationSec} onChange={event => change(current => ({ ...current, ticker: { ...current.ticker, durationSec: Number(event.target.value) } }))} /></label></div></Card>

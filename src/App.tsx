@@ -796,7 +796,10 @@ export default function App() {
           )}
 
           {view === 'storefront' && (
-            <StorefrontPage />
+            <StorefrontPage onEditProduct={(productId) => {
+              window.history.pushState({}, '', `/products?product=${encodeURIComponent(productId)}`);
+              setView('products');
+            }} />
           )}
 
           {view === 'ai-agent' && (

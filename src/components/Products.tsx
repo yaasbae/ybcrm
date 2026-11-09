@@ -401,6 +401,20 @@ export const Products: React.FC<ProductsProps> = ({ onBack }) => {
     setIsAdding(true);
   };
 
+  useEffect(() => {
+    if (loading || products.length === 0) return;
+    const productId = new URLSearchParams(window.location.search).get('product');
+    if (!productId || editingId === productId) return;
+    const product = products.find(item => item.id === productId);
+    if (!product) {
+      setError('Товар из ссылки не найден на складе.');
+      window.history.replaceState({}, '', '/products');
+      return;
+    }
+    handleEditProduct(product);
+    window.history.replaceState({}, '', '/products');
+  }, [loading, products, editingId]);
+
   const handleToggleProduct = (product: ProductItem) => {
     if (expandedProductId === product.id) {
       handleCancelForm();
