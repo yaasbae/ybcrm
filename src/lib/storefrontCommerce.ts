@@ -105,6 +105,7 @@ const STOREFRONT_SETTING_KEYS = [
   'storeUrl', 'logoUrl', 'announcementText', 'announcementEnabled', 'menu',
   'heroSlides', 'heroItems', 'lookbook', 'popular', 'about', 'campaign',
   'articlesTitle', 'articles', 'pages', 'footer', 'seo', 'featuredProductIds',
+  'ticker', 'tailoredFit', 'appearance', 'catalog',
 ] as const;
 
 export function sanitizeStorefrontSettings(source: unknown) {

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { doc, onSnapshot, setDoc } from 'firebase/firestore';
 import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
 import imageCompression from 'browser-image-compression';
@@ -40,6 +40,10 @@ type ContentPage = {
 };
 
 type StorefrontSettings = {
+  ticker: { enabled: boolean; text: string; href: string; durationSec: number };
+  tailoredFit: { enabled: boolean; kicker: string; title: string; description: string; imageUrl: string; imageCaption: string; buttonLabel: string; buttonUrl: string; note: string; steps: string[] };
+  appearance: { stickyHero: boolean; headerTransparency: number; productInfoTransparency: number };
+  catalog: { quickBuyEnabled: boolean; sizeLabel: string; cartLabel: string; checkoutLabel: string };
   storeUrl: string;
   logoUrl: string;
   announcementText: string;
@@ -80,6 +84,10 @@ const defaultArticles: Article[] = [
 ];
 
 const defaults: StorefrontSettings = {
+  ticker: { enabled: true, text: 'Новая коллекция YAASBAE — смотреть каталог ↗︎', href: '/catalog', durationSec: 42 },
+  tailoredFit: { enabled: true, kicker: 'Посадка / YAASBAE', title: 'Создаём для тебя\nпод твой рост.', description: 'Любимая модель — в твоих пропорциях. Обсудим твой рост и желаемую длину перед пошивом.', imageUrl: '', imageCaption: 'Твоя модель. Твои пропорции.', buttonLabel: 'Выбрать модель', buttonUrl: '/catalog', note: 'По предзаказу · пошив 7–10 дней. Доставка — отдельно.', steps: ['Выбери модель', 'Согласуем посадку', 'Создадим для тебя'] },
+  appearance: { stickyHero: true, headerTransparency: 40, productInfoTransparency: 40 },
+  catalog: { quickBuyEnabled: true, sizeLabel: 'Выбрать размер', cartLabel: 'В корзину', checkoutLabel: 'Купить сейчас ↗︎' },
   storeUrl: 'https://yaasbae.store',
   logoUrl: '',
   announcementText: 'Бесплатная доставка от 15 000 ₽',
@@ -116,6 +124,21 @@ const sections: { id: SectionId; label: string; description: string; icon: React
   { id: 'seo', label: 'SEO-центр', description: 'Товары, страницы и улучшения', icon: Search },
 ];
 
+const siteRoutes = [
+  ['/', 'Главная', 'Публичная · слайды, рост, популярные товары, бренд и истории'],
+  ['/catalog/', 'Каталог', 'Публичная · товары и фильтры из «Склада»'],
+  ['/product/?id=…', 'Товар', 'Публичная · карточка из «Склада»'],
+  ['/fit/', 'Под твой рост', 'Публичная · отдельная страница'],
+  ['/articles/', 'Истории', 'Публичная · тексты из вкладки «Статьи»'],
+  ['/documents/', 'Документы', 'Доступна по ссылкам · тексты из вкладки «Страницы»'],
+  ['/cart/', 'Корзина', 'Служебная · закрыта от индексации'],
+  ['/checkout/', 'Оформление', 'Служебная · откроется после проверки оплаты'],
+  ['/account/', 'Личный кабинет', 'Служебная · данные клиентов и заказов из CRM'],
+  ['/account/orders/', 'Заказы', 'Служебная · статусы и суммы из CRM'],
+  ['/favorites/', 'Избранное', 'Служебная · закрыта от индексации'],
+  ['/register/', 'Регистрация', 'Служебная · вход через провайдеров'],
+] as const;
+
 function mergeSettings(value: Partial<StorefrontSettings>): StorefrontSettings {
   const legacySlides = Array.isArray(value.heroSlides) && value.heroSlides.length ? value.heroSlides : defaults.heroSlides;
   const heroItems = Array.isArray(value.heroItems) && value.heroItems.length
@@ -124,6 +147,10 @@ function mergeSettings(value: Partial<StorefrontSettings>): StorefrontSettings {
   return {
     ...defaults,
     ...value,
+    ticker: { ...defaults.ticker, ...(value.ticker || {}) },
+    tailoredFit: { ...defaults.tailoredFit, ...(value.tailoredFit || {}) },
+    appearance: { ...defaults.appearance, ...(value.appearance || {}) },
+    catalog: { ...defaults.catalog, ...(value.catalog || {}) },
     menu: { ...defaults.menu, ...(value.menu || {}) },
     heroItems,
     heroSlides: heroItems.filter(item => item.enabled).map(item => item.imageUrl).filter(Boolean),
@@ -195,9 +222,12 @@ export const StorefrontPage: React.FC = () => {
   const [uploading, setUploading] = useState<string | null>(null);
   const [notice, setNotice] = useState('');
   const [dirty, setDirty] = useState(false);
+  const baseline = useRef<StorefrontSettings>(defaults);
 
   useEffect(() => onSnapshot(doc(db, 'settings', 'storefront'), snapshot => {
-    setSettings(snapshot.exists() ? mergeSettings(snapshot.data() as Partial<StorefrontSettings>) : defaults);
+    const loaded = snapshot.exists() ? mergeSettings(snapshot.data() as Partial<StorefrontSettings>) : defaults;
+    baseline.current = loaded;
+    setSettings(loaded);
     setLoading(false);
     setDirty(false);
   }, error => { setLoading(false); setNotice('Не удалось загрузить настройки витрины'); console.error(error); }), []);
@@ -213,10 +243,14 @@ export const StorefrontPage: React.FC = () => {
 
   const save = async () => {
     setSaving(true); setNotice('');
-    const normalized = { ...settings, heroSlides: settings.heroItems.filter(item => item.enabled).map(item => item.imageUrl).filter(Boolean), updatedAt: new Date().toISOString() };
+    const changed = Object.fromEntries((Object.keys(settings) as (keyof StorefrontSettings)[])
+      .filter(key => JSON.stringify(settings[key]) !== JSON.stringify(baseline.current[key]))
+      .map(key => [key, settings[key]]));
+    if ('heroItems' in changed) changed.heroSlides = settings.heroItems.filter(item => item.enabled).map(item => item.imageUrl).filter(Boolean);
+    if (!Object.keys(changed).length) { setDirty(false); setSaving(false); return; }
     try {
-      await setDoc(doc(db, 'settings', 'storefront'), normalized, { merge: true });
-      setSettings(current => ({ ...current, heroSlides: normalized.heroSlides }));
+      await setDoc(doc(db, 'settings', 'storefront'), { ...changed, updatedAt: new Date().toISOString() }, { merge: true });
+      baseline.current = settings;
       setDirty(false); setNotice('Готово. Изменения сохранены и доступны витрине.');
     } catch (error) {
       setNotice('Не удалось сохранить настройки');
@@ -225,7 +259,7 @@ export const StorefrontPage: React.FC = () => {
   };
 
   const completeness = useMemo(() => {
-    const checks = [settings.logoUrl, settings.heroItems.some(item => item.imageUrl && item.enabled), settings.about.title, settings.articles.some(item => item.published), settings.pages.delivery.body, settings.pages.returns.body, settings.footer.email, settings.seo.title, settings.seo.description];
+    const checks = [settings.logoUrl, settings.heroItems.some(item => item.imageUrl && item.enabled), settings.about.title, settings.articles.some(item => item.published && item.body.trim()), settings.pages.delivery.body, settings.pages.returns.body && !settings.pages.returns.body.includes('Опишите здесь'), settings.pages.privacy.body && !settings.pages.privacy.body.includes('Укажите здесь'), settings.pages.offer.body && !settings.pages.offer.body.includes('Укажите здесь'), settings.footer.email && settings.footer.email !== defaults.footer.email, settings.footer.phone && settings.footer.phone !== defaults.footer.phone, settings.seo.title, settings.seo.description];
     return Math.round(checks.filter(Boolean).length / checks.length * 100);
   }, [settings]);
 
@@ -245,6 +279,7 @@ export const StorefrontPage: React.FC = () => {
 
       <div className="min-w-0 space-y-5">
         {active === 'overview' && <>
+          <Card title="Карта страниц" description="Публичные, служебные и закрытые от индексации маршруты магазина."><div className="divide-y divide-zinc-100">{siteRoutes.map(([path,title,description])=><div key={path} className="grid gap-1 py-3 sm:grid-cols-[140px_1fr_2fr]"><code className="text-[11px] text-zinc-500">{path}</code><b className="text-xs font-medium">{title}</b><span className="text-xs text-zinc-500">{description}</span></div>)}</div></Card>
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
             {([
               ['Главная страница', `${settings.heroItems.filter(item => item.enabled).length} слайда · ${settings.lookbook.images.length} фото`, Images],
@@ -254,20 +289,24 @@ export const StorefrontPage: React.FC = () => {
           </div>
           <Card title="Статус витрины" description="Основные связи сайта и CRM.">
             <div className="divide-y divide-zinc-100">{[
-              ['Каталог и цены', 'Раздел «Склад»', true], ['СДЭК', 'Расчёт и пункты выдачи', true], ['Точка Банк', 'Оплата заказа', true], ['Контент сайта', `Заполнено на ${completeness}%`, completeness === 100],
+              ['Каталог и цены', 'Раздел «Склад»', true], ['СДЭК', 'Расчёт и пункты выдачи работает; заказ нужно проверить отдельно', false], ['Точка Банк и Сплит', 'Сквозной тест оплаты ещё не подтверждён', false], ['Контент сайта', `Заполнено на ${completeness}%`, completeness === 100],
             ].map(([title, text, ready]) => <div key={String(title)} className="flex items-center justify-between gap-4 py-3 first:pt-0 last:pb-0"><div className="flex items-center gap-3"><span className={`grid h-8 w-8 place-items-center rounded-full ${ready ? 'bg-emerald-50 text-emerald-600' : 'bg-amber-50 text-amber-600'}`}>{ready ? <Check size={14} /> : <Info size={14} />}</span><div><b className="block text-xs text-zinc-800">{title}</b><small className="text-[11px] text-zinc-400">{text}</small></div></div><span className={`rounded-full px-2 py-1 text-[9px] font-bold uppercase tracking-wide ${ready ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'}`}>{ready ? 'Готово' : 'Заполнить'}</span></div>)}</div>
           </Card>
           <Card title="Каталог связан со складом" description="Название, описание, размеры, стоимость и фотографии товара меняются в «Складе» и автоматически появляются на сайте."><div className="flex items-center gap-3 rounded-xl bg-zinc-950 p-4 text-white"><ShoppingBag size={18} /><p className="text-xs leading-5 text-zinc-300">Не создавайте карточки товаров здесь повторно — это приведёт к расхождению остатков.</p></div></Card>
         </>}
 
         {active === 'home' && <>
+          <Card title="Бегущая строка" description="Акция или предложение над меню на всех страницах."><div className="grid gap-4 sm:grid-cols-2"><Toggle checked={settings.ticker.enabled} label="Показывать строку" onChange={enabled => change(current => ({ ...current, ticker: { ...current.ticker, enabled } }))} /><Field label="Текст" value={settings.ticker.text} onChange={text => change(current => ({ ...current, ticker: { ...current.ticker, text } }))} /><Field label="Ссылка" value={settings.ticker.href} onChange={href => change(current => ({ ...current, ticker: { ...current.ticker, href } }))} /><label className="block text-[11px] font-semibold text-zinc-600">Длительность прокрутки, секунд<input className={fieldClass} type="number" min={15} max={120} value={settings.ticker.durationSec} onChange={event => change(current => ({ ...current, ticker: { ...current.ticker, durationSec: Number(event.target.value) } }))} /></label></div></Card>
+          <Card title="Блок «Создаём под твой рост»" description="Фото, условия пошива и три шага под главным баннером."><div className="grid gap-5 xl:grid-cols-[280px_1fr]"><ImageField value={settings.tailoredFit.imageUrl} slot="tailored-fit" uploading={uploading} ratio="aspect-[4/5]" onUpload={file => upload(file, 'tailored_fit', imageUrl => change(current => ({ ...current, tailoredFit: { ...current.tailoredFit, imageUrl } })))} onClear={() => change(current => ({ ...current, tailoredFit: { ...current.tailoredFit, imageUrl: '' } }))} /><div className="grid gap-3 sm:grid-cols-2"><Toggle checked={settings.tailoredFit.enabled} label="Показывать блок" onChange={enabled => change(current => ({ ...current, tailoredFit: { ...current.tailoredFit, enabled } }))} /><Field label="Метка" value={settings.tailoredFit.kicker} onChange={kicker => change(current => ({ ...current, tailoredFit: { ...current.tailoredFit, kicker } }))} /><Field label="Заголовок" value={settings.tailoredFit.title} onChange={title => change(current => ({ ...current, tailoredFit: { ...current.tailoredFit, title } }))} /><Field label="Подпись на фото" value={settings.tailoredFit.imageCaption} onChange={imageCaption => change(current => ({ ...current, tailoredFit: { ...current.tailoredFit, imageCaption } }))} /><div className="sm:col-span-2"><Textarea label="Описание" rows={3} value={settings.tailoredFit.description} onChange={description => change(current => ({ ...current, tailoredFit: { ...current.tailoredFit, description } }))} /></div>{settings.tailoredFit.steps.map((step,index)=><Field key={index} label={`Шаг ${index+1}`} value={step} onChange={value => change(current => ({ ...current, tailoredFit: { ...current.tailoredFit, steps: current.tailoredFit.steps.map((item,i) => i===index?value:item) } }))} />)}<Field label="Текст кнопки" value={settings.tailoredFit.buttonLabel} onChange={buttonLabel => change(current => ({ ...current, tailoredFit: { ...current.tailoredFit, buttonLabel } }))} /><Field label="Ссылка кнопки" value={settings.tailoredFit.buttonUrl} onChange={buttonUrl => change(current => ({ ...current, tailoredFit: { ...current.tailoredFit, buttonUrl } }))} /><div className="sm:col-span-2"><Field label="Условия под кнопкой" value={settings.tailoredFit.note} onChange={note => change(current => ({ ...current, tailoredFit: { ...current.tailoredFit, note } }))} /></div></div></div></Card>
+          <Card title="Подача каталога" description="Быстрая покупка и подписи на карточках товаров."><div className="grid gap-4 sm:grid-cols-2"><Toggle checked={settings.catalog.quickBuyEnabled} label="Быстрая покупка" onChange={quickBuyEnabled => change(current => ({ ...current, catalog: { ...current.catalog, quickBuyEnabled } }))} /><Field label="Выбор размера" value={settings.catalog.sizeLabel} onChange={sizeLabel => change(current => ({ ...current, catalog: { ...current.catalog, sizeLabel } }))} /><Field label="Кнопка корзины" value={settings.catalog.cartLabel} onChange={cartLabel => change(current => ({ ...current, catalog: { ...current.catalog, cartLabel } }))} /><Field label="Кнопка покупки" value={settings.catalog.checkoutLabel} onChange={checkoutLabel => change(current => ({ ...current, catalog: { ...current.catalog, checkoutLabel } }))} /></div></Card>
+          <Card title="Поведение дизайна" description="Закрепление главного баннера и прозрачность элементов."><div className="grid gap-4 sm:grid-cols-3"><Toggle checked={settings.appearance.stickyHero} label="Закрепить баннер" onChange={stickyHero => change(current => ({ ...current, appearance: { ...current.appearance, stickyHero } }))} /><label className="block text-[11px] font-semibold text-zinc-600">Прозрачность меню, %<input className={fieldClass} type="number" min={0} max={85} value={settings.appearance.headerTransparency} onChange={event => change(current => ({ ...current, appearance: { ...current.appearance, headerTransparency: Number(event.target.value) } }))} /></label><label className="block text-[11px] font-semibold text-zinc-600">Прозрачность информации, %<input className={fieldClass} type="number" min={0} max={85} value={settings.appearance.productInfoTransparency} onChange={event => change(current => ({ ...current, appearance: { ...current.appearance, productInfoTransparency: Number(event.target.value) } }))} /></label></div></Card>
           <Card title="Главный слайдер" description="Фон загруженной фотографии удаляется автоматически: модель появится прямо на белом фоне сайта. Можно добавлять, скрывать и заменять слайды." action={<button type="button" onClick={() => change(current => ({ ...current, heroItems: [...current.heroItems, { id: id(), imageUrl: '', eyebrow: 'New story', title: 'Название слайда', buttonLabel: 'Смотреть', buttonUrl: '/catalog', enabled: true }] }))} className="inline-flex h-9 items-center gap-1.5 rounded-xl bg-zinc-950 px-3 text-[10px] font-semibold text-white"><Plus size={13} /> Добавить</button>}>
             <div className="space-y-4">{settings.heroItems.map((slide, index) => <div key={slide.id} className="grid gap-4 rounded-2xl border border-zinc-200 p-3 sm:p-4 xl:grid-cols-[210px_minmax(0,1fr)]"><ImageField value={slide.imageUrl} slot={`hero-${slide.id}`} uploading={uploading} ratio="aspect-[4/5]" onUpload={file => upload(file, `hero_${slide.id}`, imageUrl => change(current => ({ ...current, heroItems: current.heroItems.map(item => item.id === slide.id ? { ...item, imageUrl } : item) })), true)} onClear={() => change(current => ({ ...current, heroItems: current.heroItems.map(item => item.id === slide.id ? { ...item, imageUrl: '' } : item) }))} /><div className="space-y-3"><div className="flex items-center justify-between gap-3"><b className="text-xs text-zinc-500">Слайд {String(index + 1).padStart(2, '0')}</b><div className="flex items-center gap-3"><Toggle checked={slide.enabled} label={slide.enabled ? 'Показывается' : 'Скрыт'} onChange={enabled => change(current => ({ ...current, heroItems: current.heroItems.map(item => item.id === slide.id ? { ...item, enabled } : item) }))} /><button type="button" disabled={settings.heroItems.length < 2} onClick={() => change(current => ({ ...current, heroItems: current.heroItems.filter(item => item.id !== slide.id) }))} className="grid h-9 w-9 place-items-center rounded-xl text-zinc-400 transition hover:bg-red-50 hover:text-red-600 disabled:opacity-30"><Trash2 size={15} /></button></div></div><div className="grid gap-3 sm:grid-cols-2"><Field label="Надпись над заголовком" value={slide.eyebrow} onChange={eyebrow => change(current => ({ ...current, heroItems: current.heroItems.map(item => item.id === slide.id ? { ...item, eyebrow } : item) }))} /><Field label="Заголовок" value={slide.title} onChange={title => change(current => ({ ...current, heroItems: current.heroItems.map(item => item.id === slide.id ? { ...item, title } : item) }))} /><Field label="Текст кнопки" value={slide.buttonLabel} onChange={buttonLabel => change(current => ({ ...current, heroItems: current.heroItems.map(item => item.id === slide.id ? { ...item, buttonLabel } : item) }))} /><Field label="Ссылка кнопки" value={slide.buttonUrl} onChange={buttonUrl => change(current => ({ ...current, heroItems: current.heroItems.map(item => item.id === slide.id ? { ...item, buttonUrl } : item) }))} /></div></div></div>)}</div>
           </Card>
           <Card title="Блок «Нам доверяют»" description="Текст и фотографии сообщества или медийных лиц."><div className="grid gap-4 lg:grid-cols-2"><Field label="Метка" value={settings.lookbook.eyebrow} onChange={eyebrow => change(current => ({ ...current, lookbook: { ...current.lookbook, eyebrow } }))} /><Field label="Заголовок" value={settings.lookbook.title} onChange={title => change(current => ({ ...current, lookbook: { ...current.lookbook, title } }))} /><div className="lg:col-span-2"><Textarea label="Описание" rows={3} value={settings.lookbook.description} onChange={description => change(current => ({ ...current, lookbook: { ...current.lookbook, description } }))} /></div></div><div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-5">{settings.lookbook.images.map((imageUrl, index) => <ImageField key={`${imageUrl}-${index}`} value={imageUrl} slot={`lookbook-${index}`} uploading={uploading} ratio="aspect-[3/4]" onUpload={file => upload(file, `lookbook_${index}`, url => change(current => ({ ...current, lookbook: { ...current.lookbook, images: current.lookbook.images.map((item, i) => i === index ? url : item) } })))} onClear={() => change(current => ({ ...current, lookbook: { ...current.lookbook, images: current.lookbook.images.filter((_, i) => i !== index) } }))} />)}<label className="grid min-h-48 cursor-pointer place-items-center rounded-xl border border-dashed border-zinc-300 bg-zinc-50 text-center text-[11px] font-semibold text-zinc-500 transition hover:border-zinc-500"><span><Plus className="mx-auto mb-2" size={18} />Добавить фото</span><input className="sr-only" type="file" accept="image/*" onChange={event => { const file = event.target.files?.[0]; if (file) upload(file, `lookbook_${id()}`, url => change(current => ({ ...current, lookbook: { ...current.lookbook, images: [...current.lookbook.images, url] } }))); event.target.value = ''; }} /></label></div></Card>
           <Card title="Популярные товары" description="Сами товары и цены берутся из «Склада»."><div className="grid gap-4 sm:grid-cols-3"><Field label="Метка" value={settings.popular.eyebrow} onChange={eyebrow => change(current => ({ ...current, popular: { ...current.popular, eyebrow } }))} /><Field label="Заголовок" value={settings.popular.title} onChange={title => change(current => ({ ...current, popular: { ...current.popular, title } }))} /><Field label="Текст ссылки" value={settings.popular.linkLabel} onChange={linkLabel => change(current => ({ ...current, popular: { ...current.popular, linkLabel } }))} /></div></Card>
           <Card title="Блок «О бренде»" description="Имиджевый переход между каталогом и историей бренда."><div className="grid gap-5 xl:grid-cols-[280px_1fr]"><ImageField value={settings.about.imageUrl} slot="about" uploading={uploading} ratio="aspect-[4/5]" onUpload={file => upload(file, 'about', imageUrl => change(current => ({ ...current, about: { ...current.about, imageUrl } })))} onClear={() => change(current => ({ ...current, about: { ...current.about, imageUrl: '' } }))} /><div className="grid content-start gap-3 sm:grid-cols-2"><Field label="Метка" value={settings.about.eyebrow} onChange={eyebrow => change(current => ({ ...current, about: { ...current.about, eyebrow } }))} /><Field label="Заголовок" value={settings.about.title} onChange={title => change(current => ({ ...current, about: { ...current.about, title } }))} /><div className="sm:col-span-2"><Textarea label="Текст" rows={4} value={settings.about.body} onChange={body => change(current => ({ ...current, about: { ...current.about, body } }))} /></div><Field label="Текст ссылки" value={settings.about.buttonLabel} onChange={buttonLabel => change(current => ({ ...current, about: { ...current.about, buttonLabel } }))} /><Field label="Ссылка" value={settings.about.buttonUrl} onChange={buttonUrl => change(current => ({ ...current, about: { ...current.about, buttonUrl } }))} /></div></div></Card>
-          <Card title="Промо-блок коллекции" description="Большой призыв к действию перед статьями."><div className="grid gap-4 sm:grid-cols-2"><Field label="Метка" value={settings.campaign.eyebrow} onChange={eyebrow => change(current => ({ ...current, campaign: { ...current.campaign, eyebrow } }))} /><Field label="Заголовок" value={settings.campaign.title} onChange={title => change(current => ({ ...current, campaign: { ...current.campaign, title } }))} /><Field label="Текст кнопки" value={settings.campaign.buttonLabel} onChange={buttonLabel => change(current => ({ ...current, campaign: { ...current.campaign, buttonLabel } }))} /><Field label="Ссылка кнопки" value={settings.campaign.buttonUrl} onChange={buttonUrl => change(current => ({ ...current, campaign: { ...current.campaign, buttonUrl } }))} /></div></Card>
+          <Card title="Промо-блок коллекции" description="Архивные поля. Этот блок сейчас не показывается на сайте; используйте «Создаём под твой рост»."><div className="grid gap-4 sm:grid-cols-2"><Field label="Метка" value={settings.campaign.eyebrow} onChange={eyebrow => change(current => ({ ...current, campaign: { ...current.campaign, eyebrow } }))} /><Field label="Заголовок" value={settings.campaign.title} onChange={title => change(current => ({ ...current, campaign: { ...current.campaign, title } }))} /><Field label="Текст кнопки" value={settings.campaign.buttonLabel} onChange={buttonLabel => change(current => ({ ...current, campaign: { ...current.campaign, buttonLabel } }))} /><Field label="Ссылка кнопки" value={settings.campaign.buttonUrl} onChange={buttonUrl => change(current => ({ ...current, campaign: { ...current.campaign, buttonUrl } }))} /></div></Card>
         </>}
 
         {active === 'articles' && <>

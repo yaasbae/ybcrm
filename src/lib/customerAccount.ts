@@ -8,7 +8,7 @@ export function customerOrder(id:string,data:Record<string,any>,amounts:(data:Re
   const items=Array.isArray(data.items)?data.items.slice(0,100):[];
   const date=typeof data.date==='string'?text(data.date,30):'';
   const money=amounts(data);
-  return {id:text(id,120),number:text(data.orderId,120)||text(id,120),date,status:text(data.status,80),total:number(money.total),paid:number(money.paid),delivery:number(data.deliveryPrice),tracking:text(data.cdekNumber||data.cdekOrderNumber,80),items:items.map((row:any,i:number)=>({name:typeof row==='string'?text(row):text(row?.name||row?.product||row?.title)||'Изделие',size:text(data.itemSizes?.[i]||row?.size,80),color:text(data.itemColors?.[i]||row?.color,80),quantity:Math.max(1,number(data.itemQuantities?.[i]||row?.quantity||row?.qty)||1),total:number(data.itemPrices?.[i]??row?.lineTotal??(number(row?.price)*Math.max(1,number(row?.quantity)||1)))}))};
+  return {id:text(id,120),number:text(data.orderId,120)||text(id,120),date,status:text(data.status,80),total:number(money.total),paid:number(money.paid),delivery:number(data.deliveryPrice),tracking:text(data.cdekNumber||data.cdekOrderNumber,80),items:items.map((row:any,i:number)=>({productId:text(data.itemProductIds?.[i]||row?.productId,160),name:typeof row==='string'?text(row):text(row?.name||row?.product||row?.title)||'Изделие',size:text(data.itemSizes?.[i]||row?.size,80),color:text(data.itemColors?.[i]||row?.color,80),quantity:Math.max(1,number(data.itemQuantities?.[i]||row?.quantity||row?.qty)||1),total:number(data.itemPrices?.[i]??row?.lineTotal??(number(row?.price)*Math.max(1,number(row?.quantity)||1)))}))};
 }
 export function normalizedPhone(value:unknown){const digits=text(value,40).replace(/\D/g,'');return /^\d{10,15}$/.test(digits)?(digits.length===11&&digits.startsWith('8')?'7'+digits.slice(1):digits):'';}
 export async function verifyTelegramToken(token:string,nonce:string,clientId:string,now=Date.now(),fetcher=fetch){
@@ -24,7 +24,9 @@ export async function verifyTelegramToken(token:string,nonce:string,clientId:str
 export async function verifyVkCode(body:Record<string,unknown>,fetcher=fetch){
   const code=text(body.code,4096),deviceId=text(body.deviceId,256),verifier=text(body.verifier,256),state=text(body.state,256);
   const redirectUri=text(body.redirectUri,200);
-  if(!/^[a-zA-Z0-9_-]{20,4096}$/.test(code)||!/^[a-zA-Z0-9_-]{8,256}$/.test(deviceId)||
+  // VK treats the code and device_id as opaque values; validate size and controls,
+  // then let VK verify their authenticity during the exchange.
+  if(!code||!deviceId||/[\u0000-\u001f\u007f]/.test(code+deviceId)||
     !/^[a-zA-Z0-9_-]{43,128}$/.test(verifier)||!/^[a-zA-Z0-9_-]{32,256}$/.test(state)||
     !['https://yaasbae.store/','https://www.yaasbae.store/'].includes(redirectUri))throw failure(400,'Некорректный вход VK');
   const exchange=new URL('https://id.vk.ru/oauth2/auth');
@@ -112,9 +114,11 @@ export function registerCustomerAccount(app:any,deps:Dependencies){
       if(orders.docs.length>200)throw failure(503,'История большая. Обратитесь в магазин для полной выписки.');
       const contacts=await deps.db.collection('contacts').get();
       const matches=contacts.docs.filter((d:any)=>[d.data().phone,d.data().phoneNumber,d.data().clientPhone].some((value:unknown)=>normalizedPhone(value)===phone));
-      const rawDiscount=matches.length===1?Number(matches[0].data().currentDiscount):NaN;
+      const contact=matches.length===1?matches[0].data():null;
+      const rawDiscount=contact?Number(contact.currentDiscount):NaN;
       const discount=Number.isFinite(rawDiscount)&&rawDiscount>=0&&rawDiscount<=100?rawDiscount:null;
-      return res.json({phone,discount,orders:orders.docs.filter((d:any)=>normalizedPhone(d.data().clientPhone)===phone&&d.data().status!=='Черновик').map((d:any)=>customerOrder(d.id,d.data(),deps.amounts)).sort((a:any,b:any)=>b.date.localeCompare(a.date)),updatedAt:new Date(now).toISOString()});
-    }catch(error:any){const status=[400,401,429,503].includes(error?.status)?error.status:503;return res.status(status).json({error:status===503?'Кабинет временно недоступен. Попробуйте позже.':error.message});}
+      const profile=contact?{name:text(contact.fullName||contact.name,120),email:text(contact.email,160),city:text(contact.city,120),loyaltyCardId:text(contact.loyaltyCardId,80),totalSpent:number(contact.totalSpent),ordersCount:number(contact.ordersCount)}:null;
+      return res.json({phone,discount,profile,orders:orders.docs.filter((d:any)=>normalizedPhone(d.data().clientPhone)===phone&&d.data().status!=='Черновик').map((d:any)=>customerOrder(d.id,d.data(),deps.amounts)).sort((a:any,b:any)=>b.date.localeCompare(a.date)),updatedAt:new Date(now).toISOString()});
+    }catch(error:any){const status=[400,401,429,503].includes(error?.status)?error.status:503;if(status===503)console.warn('[storefront-account] unavailable',{action:String(req.body?.action||'').slice(0,30),name:String(error?.name||'Error').slice(0,60),code:String(error?.code||'').slice(0,60)});return res.status(status).json({error:status===503?'Кабинет временно недоступен. Попробуйте позже.':error.message});}
   });
 }
