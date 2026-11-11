@@ -80,5 +80,15 @@ describe("OrdersService", () => {
     });
     expect(complete.paidAmount).toBe(20_550);
     expect(complete.dueAmount).toBe(0);
+
+    const accepted = normalizeOrder("accepted", {
+      revenue: 19_900,
+      deliveryPrice: 650,
+      paymentAmount: 20_550,
+      paymentStatus: "Accepted",
+      paymentId: "qr-accepted",
+    });
+    expect(accepted.paidAmount).toBe(20_550);
+    expect(accepted.dueAmount).toBe(0);
   });
 });

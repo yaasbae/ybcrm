@@ -12,6 +12,11 @@ export type CdekOrderStatusWebhook = {
   externalNumber: string;
 };
 
+export function isCdekTrackNotificationReady(cdekStatus: string, cdekNumber: unknown) {
+  return String(cdekStatus || '').toUpperCase() === 'RECEIVED_AT_SHIPMENT_WAREHOUSE'
+    && /^[A-Za-z0-9_-]{1,64}$/.test(String(cdekNumber || '').trim());
+}
+
 export function getCdekCrmStatusPatch(
   cdekStatus: string,
   currentStatus = '',

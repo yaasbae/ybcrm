@@ -59,7 +59,7 @@ import {
 } from "./src/lib/tochkaPayments.ts";
 import { getTochkaFundName } from "./src/lib/tochkaFunds.ts";
 import { getCalculatedInitialInvoiceAmount, getPlannedFinalPaymentAmount, getStablePaymentStatus, isConfirmedPaymentStatus } from "./src/lib/orderPayments.ts";
-import { getCdekCrmStatusPatch, getCdekStatusLabel, parseCdekOrderStatusWebhook } from "./src/lib/cdekStatus.ts";
+import { getCdekCrmStatusPatch, getCdekStatusLabel, isCdekTrackNotificationReady, parseCdekOrderStatusWebhook } from "./src/lib/cdekStatus.ts";
 import { enqueueAiJob, installAiJobQueue } from "./src/server/aiJobQueue.ts";
 import { parseIncidentTriage, redactIncidentText } from "./src/lib/incidentTriage.ts";
 import { readOpenAiOutputText } from "./src/server/openAiResponses.ts";
@@ -127,6 +127,8 @@ const BROADCAST_MANAGER_BUTTON_TEXT = "Узнать подробности в б
 const DEFAULT_BROADCAST_DISPLAY_NAME = "YAASBAE Brand";
 const ORDER_TELEGRAM_CHAT_ID = String(process.env.ORDER_TELEGRAM_CHAT_ID || "-1002176316557").trim();
 const ORDER_TELEGRAM_THREAD_ID = Number(process.env.ORDER_TELEGRAM_THREAD_ID || 1244);
+const CDEK_TRACK_TELEGRAM_CHAT_ID = String(process.env.CDEK_TRACK_TELEGRAM_CHAT_ID || ORDER_TELEGRAM_CHAT_ID).trim();
+const CDEK_TRACK_TELEGRAM_THREAD_ID = Number(process.env.CDEK_TRACK_TELEGRAM_THREAD_ID || 1206);
 const RELEASE_TELEGRAM_CHAT_ID = String(process.env.RELEASE_TELEGRAM_CHAT_ID || ORDER_TELEGRAM_CHAT_ID).trim();
 const RELEASE_TELEGRAM_THREAD_ID = Number(process.env.RELEASE_TELEGRAM_THREAD_ID || 12750);
 const AI_INTAKE_TELEGRAM_CHAT_ID = String(process.env.AI_INTAKE_TELEGRAM_CHAT_ID || RELEASE_TELEGRAM_CHAT_ID).trim();
@@ -2280,6 +2282,77 @@ async function sendPaymentReceivedToTelegram(input: {
   }
 }
 
+async function sendCdekTrackToTelegram(input: {
+  orderId: string;
+  order: any;
+  cdekNumber: string;
+}) {
+  const token = String(process.env.TG_BOT_TOKEN || "").trim();
+  const cleanOrderId = String(input.order?.orderId || input.orderId).replace(/^#+/, "").trim();
+  const cdekNumber = String(input.cdekNumber || "").trim();
+  if (!adminDb || !token || !CDEK_TRACK_TELEGRAM_CHAT_ID || !cleanOrderId || !cdekNumber) {
+    return { sent: false, skipped: true };
+  }
+
+  const notificationId = createHash("sha256").update(`cdek-track:${cleanOrderId}:${cdekNumber}`).digest("hex");
+  const notificationRef = adminDb.collection("telegram_cdek_notifications").doc(notificationId);
+  const reserved = await adminDb.runTransaction(async (transaction: any) => {
+    const snapshot = await transaction.get(notificationRef);
+    const data = snapshot.exists ? snapshot.data() || {} : {};
+    const updatedAtMs = typeof data.updatedAt?.toMillis === "function"
+      ? data.updatedAt.toMillis()
+      : Date.parse(String(data.updatedAt || ""));
+    if (data.status === "sent") return false;
+    if (data.status === "sending" && Number.isFinite(updatedAtMs) && Date.now() - updatedAtMs < 5 * 60_000) return false;
+    transaction.set(notificationRef, {
+      orderId: cleanOrderId,
+      cdekNumber,
+      status: "sending",
+      attempts: FieldValue.increment(1),
+      updatedAt: FieldValue.serverTimestamp(),
+    }, { merge: true });
+    return true;
+  });
+  if (!reserved) return { sent: false, duplicate: true };
+
+  const items = Array.isArray(input.order?.items)
+    ? input.order.items.map((item: unknown) => String(item || "").trim()).filter(Boolean)
+    : [String(input.order?.item || "").trim()].filter(Boolean);
+  const text = [
+    `📦 <b>Заказ #${escapeTelegramHtml(cleanOrderId)} принят СДЭК</b>`,
+    `Трек-номер: <code>${escapeTelegramHtml(cdekNumber)}</code>`,
+    input.order?.clientName ? `Клиент: ${escapeTelegramHtml(input.order.clientName)}` : "",
+    items.length ? `Товар: ${escapeTelegramHtml(items.join(", ").slice(0, 500))}` : "",
+    input.order?.manager ? `Менеджер: ${escapeTelegramHtml(input.order.manager)}` : "",
+    `<a href="https://ybcrm.ru/orders?order=${encodeURIComponent(cleanOrderId)}">Открыть заказ в CRM</a>`,
+  ].filter(Boolean).join("\n");
+
+  try {
+    const response = await axios.post(`https://api.telegram.org/bot${token}/sendMessage`, {
+      chat_id: CDEK_TRACK_TELEGRAM_CHAT_ID,
+      message_thread_id: CDEK_TRACK_TELEGRAM_THREAD_ID,
+      text,
+      parse_mode: "HTML",
+      link_preview_options: { is_disabled: true },
+    }, { timeout: 30_000 });
+    const messageId = String(response.data?.result?.message_id || "");
+    await notificationRef.set({
+      status: "sent",
+      messageId,
+      sentAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+      error: FieldValue.delete(),
+    }, { merge: true });
+    console.log("[telegram] cdek track sent:", cleanOrderId);
+    return { sent: true, messageId };
+  } catch (error: any) {
+    const message = String(error?.response?.data?.description || error?.message || "Ошибка Telegram").slice(0, 1000);
+    await notificationRef.set({ status: "failed", error: message, updatedAt: FieldValue.serverTimestamp() }, { merge: true }).catch(() => undefined);
+    console.warn("[telegram] cdek track:", cleanOrderId, message);
+    return { sent: false, error: message };
+  }
+}
+
 async function sendReleaseNotification(attempt = 1) {
   const token = String(process.env.TG_BOT_TOKEN || "").trim();
   if (!adminDb || !token || !RELEASE_TELEGRAM_CHAT_ID || !RELEASE_COMMIT_SHA) return;
@@ -3337,6 +3410,14 @@ async function applyVerifiedCdekStatus(
     ...crmPatch,
   });
   await persistOrderPatch(orderId, patch);
+
+  if (isCdekTrackNotificationReady(cdekStatus, cdekNumber)) {
+    await sendCdekTrackToTelegram({
+      orderId,
+      order: { ...orderData, ...patch },
+      cdekNumber: String(cdekNumber),
+    }).catch(error => console.warn(`[telegram] cdek track ${source}:`, orderId, error?.message || error));
+  }
 
   if (String(cdekStatus) !== String(orderData.cdekStatus || "")) {
     await dispatchPushEvent("cdek_status_changed", `cdek-status:${orderId}:${cdekStatus}`, {
@@ -13442,6 +13523,7 @@ function startTelegramBot() {
     }
     if (isReservedTelegramServiceTopic(chatId, messageThreadId, [
       { chatId: ORDER_TELEGRAM_CHAT_ID, threadId: ORDER_TELEGRAM_THREAD_ID },
+      { chatId: CDEK_TRACK_TELEGRAM_CHAT_ID, threadId: CDEK_TRACK_TELEGRAM_THREAD_ID },
       { chatId: RELEASE_TELEGRAM_CHAT_ID, threadId: RELEASE_TELEGRAM_THREAD_ID },
       ...(aiIntakeTopic.enabled && aiIntakeTopic.threadId
         ? [{ chatId: aiIntakeTopic.chatId, threadId: aiIntakeTopic.threadId }]

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
   getCdekCrmStatusPatch,
+  isCdekTrackNotificationReady,
   parseCdekOrderStatusWebhook,
 } from '../src/lib/cdekStatus.ts';
 
@@ -22,6 +23,12 @@ test('maps verified CDEK statuses to the CRM workflow', () => {
     isShipped: true,
     cdekDeliveredAt: changedAt,
   });
+});
+
+test('sends a track notification only after CDEK accepted the parcel', () => {
+  assert.equal(isCdekTrackNotificationReady('RECEIVED_AT_SHIPMENT_WAREHOUSE', '1100285492'), true);
+  assert.equal(isCdekTrackNotificationReady('READY_FOR_SHIPMENT_IN_SENDER_CITY', '1100285492'), false);
+  assert.equal(isCdekTrackNotificationReady('RECEIVED_AT_SHIPMENT_WAREHOUSE', ''), false);
 });
 
 test('does not overwrite return or cancellation workflows', () => {

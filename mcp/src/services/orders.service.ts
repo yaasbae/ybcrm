@@ -151,7 +151,7 @@ export function normalizeOrder(id: string, data: Record<string, any>): Order {
   const deliveryCost = toNumber(data.deliveryCost ?? data.deliveryPrice ?? data.shippingCost);
   const amountTotal = toNumber(data.amountTotal ?? data.revenue ?? data.totalAmount ?? data.total ?? itemsTotal);
   const plannedInvoiceAmount = toNumber(data.paidAmount ?? data.prepaidAmount ?? data.paymentAmount ?? data.paid);
-  const isPaid = (status: unknown) => ['paid', 'approved', 'completed', 'succeeded', 'success', 'done']
+  const isPaid = (status: unknown) => ['paid', 'approved', 'accepted', 'captured', 'confirmed', 'manual_confirmed', 'completed', 'succeeded', 'success', 'done']
     .some((value) => String(status || '').toLowerCase().includes(value));
   const hasTracking = Boolean(
     data.paymentUrl || data.paymentId || data.paymentStatus ||

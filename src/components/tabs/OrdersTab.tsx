@@ -49,6 +49,7 @@ import { onAuthStateChanged } from 'firebase/auth';
 import { logAuditEvent } from '../../lib/auditLog';
 import { crmFetch } from '../../lib/crmApi';
 import { ORDER_ACTION_OPTIONS } from '../../lib/orderPermissionConfig';
+import { calculateCdekPackageWeight } from '../../lib/cdekPackage';
 
 const normalizeStatusOption = (status: string) => normalizeOrderStatus(status);
 
@@ -5098,6 +5099,10 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
   const [newCdekLength, setNewCdekLength] = useState('30');
   const [newCdekWidth, setNewCdekWidth] = useState('20');
   const [newCdekHeight, setNewCdekHeight] = useState('10');
+  const newCdekPackageWeight = useMemo(
+    () => calculateCdekPackageWeight(newOrderItems, productCatalog),
+    [newOrderItems, productCatalog],
+  );
   const [newOrderFormError, setNewOrderFormError] = useState('');
   const [newOrderSubmitting, setNewOrderSubmitting] = useState(false);
   const [newOrderFormOpen, setNewOrderFormOpen] = useState(false);
@@ -5835,6 +5840,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
     setNewOrderItemColors(nextColors);
     setNewOrderItemSizes(nextSizes);
     setNewOrderItemHeights(nextHeights);
+    setNewCdekWeight(String(calculateCdekPackageWeight(nextItems, productCatalog).weight));
     syncNewOrderItems(nextItems, nextPrices, nextColors, nextSizes, nextHeights, {
       rawRow,
       height: nextHeights[0] || newOrder.height || '',
@@ -5864,6 +5870,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
     setNewOrderItemColors(nextColors);
     setNewOrderItemSizes(nextSizes);
     setNewOrderItemHeights(nextHeights);
+    setNewCdekWeight(String(calculateCdekPackageWeight(nextItems, productCatalog).weight));
     syncNewOrderItems(nextItems, nextPrices, nextColors, nextSizes, nextHeights);
   };
 
@@ -7755,6 +7762,14 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                       </label>
                     ))}
                   </div>
+                  <p className={cn(
+                    'text-[10px] leading-4',
+                    newCdekPackageWeight.fallbackCount > 0 ? 'text-amber-700' : 'text-emerald-700',
+                  )}>
+                    {newCdekPackageWeight.fallbackCount > 0
+                      ? `Для ${newCdekPackageWeight.fallbackCount} поз. вес не заполнен — использовано по 700 г. Проверьте вес.`
+                      : `Вес рассчитан по карточкам товаров: ${newCdekPackageWeight.weight.toLocaleString('ru-RU')} г.`}
+                  </p>
 
                   <button
                     type="button"
