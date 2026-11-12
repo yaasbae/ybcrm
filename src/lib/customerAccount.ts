@@ -131,17 +131,21 @@ export function registerCustomerAccount(app:any,deps:Dependencies){
       const phone=normalizedPhone(session.phone);
       // A verified VK identity can open a cabinet without exposing any CRM
       // records. Orders and discounts require a separately verified phone.
-      if(!phone)return res.json({phone:'',identityName:text(session.identityName,120),selfProfile,discount:null,profile:null,orders:[],updatedAt:new Date(now).toISOString()});
+      if(!phone)return res.json({phone:'',identityName:text(session.identityName,120),selfProfile,linkStatus:'phone_required',discount:null,profile:null,orders:[],updatedAt:new Date(now).toISOString()});
       // Only an exact verified owner query; never read the entire orders collection.
       const orders=await deps.db.collection('orders_new').where('clientPhone','in',[phone,'+'+phone,...(phone.startsWith('7')&&phone.length===11?['8'+phone.slice(1)]:[])]).limit(201).get();
       if(orders.docs.length>200)throw failure(503,'История большая. Обратитесь в магазин для полной выписки.');
       const contacts=await deps.db.collection('contacts').get();
       const matches=contacts.docs.filter((d:any)=>[d.data().phone,d.data().phoneNumber,d.data().clientPhone].some((value:unknown)=>normalizedPhone(value)===phone));
-      const contact=matches.length===1?matches[0].data():null;
+      const contactDoc=matches.length===1?matches[0]:null;
+      const contact=contactDoc?.data()||null;
+      if(contactDoc&&saved?.crmContactId!==contactDoc.id){
+        await customerRef.set({crmContactId:contactDoc.id,crmPhone:phone,linkedAt:new Date(now).toISOString()},{merge:true});
+      }
       const rawDiscount=contact?Number(contact.currentDiscount):NaN;
       const discount=Number.isFinite(rawDiscount)&&rawDiscount>=0&&rawDiscount<=100?rawDiscount:null;
       const profile=contact?{name:text(contact.fullName||contact.name,120),email:text(contact.email,160),city:text(contact.city,120),loyaltyCardId:text(contact.loyaltyCardId,80),totalSpent:number(contact.totalSpent),ordersCount:number(contact.ordersCount)}:null;
-      return res.json({phone,identityName:text(session.identityName,120),selfProfile,discount,profile,orders:orders.docs.filter((d:any)=>normalizedPhone(d.data().clientPhone)===phone&&d.data().status!=='Черновик').map((d:any)=>customerOrder(d.id,d.data(),deps.amounts)).sort((a:any,b:any)=>b.date.localeCompare(a.date)),updatedAt:new Date(now).toISOString()});
+      return res.json({phone,identityName:text(session.identityName,120),selfProfile,linkStatus:contactDoc?'linked':matches.length>1?'ambiguous':orders.docs.length?'orders_only':'not_found',discount,profile,orders:orders.docs.filter((d:any)=>normalizedPhone(d.data().clientPhone)===phone&&d.data().status!=='Черновик').map((d:any)=>customerOrder(d.id,d.data(),deps.amounts)).sort((a:any,b:any)=>b.date.localeCompare(a.date)),updatedAt:new Date(now).toISOString()});
     }catch(error:any){const status=[400,401,429,503].includes(error?.status)?error.status:503;if(status===503)console.warn('[storefront-account] unavailable',{action:String(req.body?.action||'').slice(0,30),name:String(error?.name||'Error').slice(0,60),code:String(error?.code||'').slice(0,60)});return res.status(status).json({error:status===503?'Кабинет временно недоступен. Попробуйте позже.':error.message,...(String(error?.code||'').startsWith('vk_')?{code:error.code}:{})});}
   });
 }
