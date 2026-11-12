@@ -79,7 +79,7 @@ export function registerCustomerAccount(app:any,deps:Dependencies){
     try{
       if(!deps.secret||!deps.trusted(req))throw failure(401,'Нет доступа');
       const body=req.body||{};
-      if(!['telegram-config','telegram-login','vk-login','yandex-login','session','save-profile','logout'].includes(body.action))throw failure(400,'Некорректный запрос');
+      if(!['telegram-config','telegram-login','vk-login','yandex-login','yandex-link','session','save-profile','logout'].includes(body.action))throw failure(400,'Некорректный запрос');
       if(!deps.db||!deps.enabled)throw failure(503,'Вход в кабинет ещё не подключён. Попробуйте позже.');
       if(body.action==='telegram-config')return res.json({clientId:deps.telegramClientId||''});
       if(body.action==='telegram-login'){
@@ -128,8 +128,17 @@ export function registerCustomerAccount(app:any,deps:Dependencies){
       }
       const customerSnapshot=await customerRef.get();
       const saved=customerSnapshot.exists?customerSnapshot.data():null;
+      if(body.action==='yandex-link'){
+        const identity=await verifyYandexCode(body);
+        const existingPhone=normalizedPhone(session.phone);
+        const contactPhone=normalizedPhone(saved?.contactPhone);
+        if((existingPhone&&existingPhone!==identity.phone)||(contactPhone&&contactPhone!==identity.phone))throw failure(400,'Номер Яндекс ID не совпадает с номером профиля');
+        await customerRef.set({verifiedPhone:identity.phone,verifiedYandexId:identity.yandexId,verifiedAt:new Date(now).toISOString()},{merge:true});
+        await ref.set({phone:identity.phone},{merge:true});
+        return res.json({ok:true});
+      }
       const selfProfile=saved?{firstName:text(saved.firstName,60),lastName:text(saved.lastName,60),phone:normalizedPhone(saved.contactPhone),email:text(saved.email,160)}:null;
-      const phone=normalizedPhone(session.phone);
+      const phone=normalizedPhone(session.phone)||normalizedPhone(saved?.verifiedPhone);
       // A verified VK identity can open a cabinet without exposing any CRM
       // records. Orders and discounts require a separately verified phone.
       if(!phone)return res.json({phone:'',identityName:text(session.identityName,120),selfProfile,linkStatus:'phone_required',discount:null,profile:null,orders:[],updatedAt:new Date(now).toISOString()});
