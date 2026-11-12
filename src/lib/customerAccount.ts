@@ -45,7 +45,8 @@ export async function verifyVkCode(body:Record<string,unknown>,fetcher=fetch){
     console.warn('[storefront-account] VK profile rejected',{status:profileResponse.status,phonePresent:Boolean(phone),userMatches:String(profile?.user?.user_id)===String(token.user_id)});
     throw failure(401,'Не удалось подтвердить профиль VK ID','vk_profile_rejected');
   }
-  return {phone,vkId:String(token.user_id)};
+  const identityName=[text(profile?.user?.first_name,60),text(profile?.user?.last_name,60)].filter(Boolean).join(' ');
+  return {phone,vkId:String(token.user_id),identityName};
 }
 export async function verifyYandexCode(body:Record<string,unknown>,fetcher=fetch){
   const code=text(body.code,4096),verifier=text(body.verifier,256),state=text(body.state,256);
@@ -66,7 +67,8 @@ export async function verifyYandexCode(body:Record<string,unknown>,fetcher=fetch
   const phone=normalizedPhone(profile?.default_phone?.number);
   if(!profileResponse.ok||String(profile?.client_id)!=='3b81620356be4f3a860d6cabef82b382'||
     !profile?.id||!phone)throw failure(401,'Разрешите Яндекс ID передать номер телефона');
-  return {phone,yandexId:String(profile.id)};
+  const identityName=[text(profile?.first_name,60),text(profile?.last_name,60)].filter(Boolean).join(' ')||text(profile?.real_name,120);
+  return {phone,yandexId:String(profile.id),identityName};
 }
 type Dependencies={db:any;secret:string;trusted:(req:any)=>boolean;amounts:(data:Record<string,any>)=>{total:number;paid:number};enabled:boolean;telegramClientId?:string;now?:()=>number};
 export function registerCustomerAccount(app:any,deps:Dependencies){
@@ -116,7 +118,7 @@ export function registerCustomerAccount(app:any,deps:Dependencies){
       const phone=normalizedPhone(session.phone);
       // A verified VK identity can open a cabinet without exposing any CRM
       // records. Orders and discounts require a separately verified phone.
-      if(!phone)return res.json({phone:'',discount:null,profile:null,orders:[],updatedAt:new Date(now).toISOString()});
+      if(!phone)return res.json({phone:'',identityName:text(session.identityName,120),discount:null,profile:null,orders:[],updatedAt:new Date(now).toISOString()});
       // Only an exact verified owner query; never read the entire orders collection.
       const orders=await deps.db.collection('orders_new').where('clientPhone','in',[phone,'+'+phone,...(phone.startsWith('7')&&phone.length===11?['8'+phone.slice(1)]:[])]).limit(201).get();
       if(orders.docs.length>200)throw failure(503,'История большая. Обратитесь в магазин для полной выписки.');
@@ -126,7 +128,7 @@ export function registerCustomerAccount(app:any,deps:Dependencies){
       const rawDiscount=contact?Number(contact.currentDiscount):NaN;
       const discount=Number.isFinite(rawDiscount)&&rawDiscount>=0&&rawDiscount<=100?rawDiscount:null;
       const profile=contact?{name:text(contact.fullName||contact.name,120),email:text(contact.email,160),city:text(contact.city,120),loyaltyCardId:text(contact.loyaltyCardId,80),totalSpent:number(contact.totalSpent),ordersCount:number(contact.ordersCount)}:null;
-      return res.json({phone,discount,profile,orders:orders.docs.filter((d:any)=>normalizedPhone(d.data().clientPhone)===phone&&d.data().status!=='Черновик').map((d:any)=>customerOrder(d.id,d.data(),deps.amounts)).sort((a:any,b:any)=>b.date.localeCompare(a.date)),updatedAt:new Date(now).toISOString()});
+      return res.json({phone,identityName:text(session.identityName,120),discount,profile,orders:orders.docs.filter((d:any)=>normalizedPhone(d.data().clientPhone)===phone&&d.data().status!=='Черновик').map((d:any)=>customerOrder(d.id,d.data(),deps.amounts)).sort((a:any,b:any)=>b.date.localeCompare(a.date)),updatedAt:new Date(now).toISOString()});
     }catch(error:any){const status=[400,401,429,503].includes(error?.status)?error.status:503;if(status===503)console.warn('[storefront-account] unavailable',{action:String(req.body?.action||'').slice(0,30),name:String(error?.name||'Error').slice(0,60),code:String(error?.code||'').slice(0,60)});return res.status(status).json({error:status===503?'Кабинет временно недоступен. Попробуйте позже.':error.message,...(String(error?.code||'').startsWith('vk_')?{code:error.code}:{})});}
   });
 }
