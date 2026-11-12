@@ -18,7 +18,7 @@ import { getConfirmedPaidAmount, getNewOrderPaymentAccounting, getOutstandingPay
 import { emitPushEvent } from '../lib/pushNotifications';
 import { logAuditEvent } from '../lib/auditLog';
 import { isClientPurchaseOrder, normalizeClientPhone } from '../lib/clientMerge';
-import { getExchangeOrderId } from '../lib/orderExchange';
+import { buildExchangeStartPatch, getExchangeOrderId, type ExchangeHistoryEntry } from '../lib/orderExchange';
 import { compareOrdersForList } from '../lib/orderListPriority';
 import { getOrderCreationMode } from '../lib/orderCreation';
 import { resolveStoredOrderIdentity } from '../lib/orderRecords';
@@ -53,6 +53,7 @@ export interface OrderData {
   exchangeOriginalOrderId?: string;
   exchangeCdekStatus?: 'pending' | 'created' | 'error';
   exchangeCdekError?: string;
+  exchangeHistory?: ExchangeHistoryEntry[];
   revenue: number;
   deliveryPrice: number;
   paidAmount: number;
@@ -351,16 +352,7 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
         if (isNewExchange) {
           const now = new Date();
           const exchangedOrderId = getExchangeOrderId(order.orderId);
-          const exchangePatch = {
-            status: 'Обмен',
-            orderId: exchangedOrderId,
-            exchangeOriginalOrderId: order.exchangeOriginalOrderId || order.orderId,
-            exchangeAt: now.toISOString(),
-            activityAt: now.toISOString(),
-            exchangeCdekStatus: 'pending',
-            exchangeCdekError: '',
-            updatedAt: now.toISOString(),
-          };
+          const exchangePatch = buildExchangeStartPatch(order, now.toISOString());
           await updateDoc(doc(db, 'orders_new', firestoreId), exchangePatch);
           void logAuditEvent({
             action: 'order_exchange_started',

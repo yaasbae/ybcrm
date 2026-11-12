@@ -3240,6 +3240,27 @@ const OrderDetailView: React.FC<{
         </div>
       </section>
 
+      {Array.isArray(order.exchangeHistory) && order.exchangeHistory.length > 0 && (
+        <section className={cn(cardClass, 'mt-4 px-5 py-4')}>
+          <div className="flex items-center gap-2.5">
+            <span className="grid h-8 w-8 place-items-center rounded-[10px] bg-amber-50 text-amber-600"><RefreshCcw className="h-4 w-4" /></span>
+            <div>
+              <h3 className="text-[14px] font-semibold text-[#111827]">История заказа и обмена</h3>
+              <p className="mt-0.5 text-[11px] text-[#667085]">Исходный заказ сохранён в этой же карточке</p>
+            </div>
+          </div>
+          <div className="mt-3 space-y-2">
+            {order.exchangeHistory.slice().reverse().map((entry, index) => (
+              <div key={`${entry.orderId}-${entry.archivedAt}-${index}`} className="grid gap-2 rounded-[10px] border border-amber-100 bg-amber-50/50 px-4 py-3 text-[12px] md:grid-cols-[120px_minmax(0,1fr)_180px]">
+                <div><span className="text-[#667085]">Заказ</span><p className="mt-1 font-semibold text-[#111827]">#{entry.orderId}</p></div>
+                <div><span className="text-[#667085]">Товар</span><p className="mt-1 font-medium text-[#111827]">{entry.items.join(', ') || '—'}</p></div>
+                <div><span className="text-[#667085]">Старая накладная</span><p className="mt-1 font-medium text-[#111827]">{entry.cdekNumber || '—'}</p></div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
       <section className={cn(cardClass, 'mt-4 px-5 py-4')}>
         <div className="flex items-center justify-between gap-4">
           <div className="flex items-center gap-2.5"><span className="grid h-8 w-8 place-items-center rounded-[10px] bg-[#F1EEFF] text-[#5638F4]"><FileText className="h-4 w-4" /></span><h3 className="text-[14px] font-semibold text-[#111827]">Заметки</h3></div>
