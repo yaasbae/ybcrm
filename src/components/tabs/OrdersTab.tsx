@@ -1612,10 +1612,10 @@ const CdekOrderBlock: React.FC<{
   const [pointsRequested, setPointsRequested] = useState(false);
   const [showDeliveryPoints, setShowDeliveryPoints] = useState(false);
   const [toAddress, setToAddress] = useState(String(saved.toAddress || order.clientAddress || ''));
-  const [weight, setWeight] = useState(String(saved.weight || parsePackageNumber(product?.weight, 700)));
-  const [length, setLength] = useState(String(saved.length || 30));
-  const [width, setWidth] = useState(String(saved.width || 20));
-  const [height, setHeight] = useState(String(saved.height || 10));
+  const [weight, setWeight] = useState(String(Math.max(1500, parsePackageNumber(saved.weight || product?.weight, 1500))));
+  const [length, setLength] = useState(String(Math.max(40, parsePackageNumber(saved.length, 40))));
+  const [width, setWidth] = useState(String(Math.max(30, parsePackageNumber(saved.width, 30))));
+  const [height, setHeight] = useState(String(Math.max(10, parsePackageNumber(saved.height, 10))));
   const [tariffCode, setTariffCode] = useState(String(saved.tariffCode || (initialDeliveryType === 'door' ? 139 : 138)));
   const [cities, setCities] = useState<CdekCityOption[]>([]);
   const [points, setPoints] = useState<CdekDeliveryPoint[]>([]);
@@ -1648,10 +1648,10 @@ const CdekOrderBlock: React.FC<{
     setDeliveryPoint(String(saved.deliveryPoint || inferCdekPointCode(order.clientAddress)));
     setDeliveryPointQuery(String(order.clientAddress || saved.deliveryPoint || ''));
     setToAddress(String(saved.toAddress || order.clientAddress || ''));
-    setWeight(String(saved.weight || parsePackageNumber(product?.weight, 700)));
-    setLength(String(saved.length || 30));
-    setWidth(String(saved.width || 20));
-    setHeight(String(saved.height || 10));
+    setWeight(String(Math.max(1500, parsePackageNumber(saved.weight || product?.weight, 1500))));
+    setLength(String(Math.max(40, parsePackageNumber(saved.length, 40))));
+    setWidth(String(Math.max(30, parsePackageNumber(saved.width, 30))));
+    setHeight(String(Math.max(10, parsePackageNumber(saved.height, 10))));
     setTariffCode(String(saved.tariffCode || (nextDeliveryType === 'door' ? 139 : 138)));
   }, [
     initialDeliveryType, order.clientAddress, order.clientCity, product?.weight,
@@ -1688,7 +1688,7 @@ const CdekOrderBlock: React.FC<{
 
   useEffect(() => {
     if (saved.weight || !product?.weight) return;
-    setWeight(String(parsePackageNumber(product.weight, 700)));
+    setWeight(String(Math.max(1500, parsePackageNumber(product.weight, 1500))));
   }, [product?.weight, saved.weight]);
 
   useEffect(() => {
@@ -2501,9 +2501,9 @@ const CdekOrderBlock: React.FC<{
 
       <div className={cn('grid gap-2 items-end', mobile ? 'grid-cols-2' : 'grid-cols-[92px_92px_92px_92px_minmax(190px,1fr)]')}>
         {[
-          { label: 'Вес, г', value: weight, setValue: setWeight, placeholder: '700' },
-          { label: 'Длина, см', value: length, setValue: setLength, placeholder: '30' },
-          { label: 'Ширина, см', value: width, setValue: setWidth, placeholder: '20' },
+          { label: 'Вес, г', value: weight, setValue: setWeight, placeholder: '1500' },
+          { label: 'Длина, см', value: length, setValue: setLength, placeholder: '40' },
+          { label: 'Ширина, см', value: width, setValue: setWidth, placeholder: '30' },
           { label: 'Высота, см', value: height, setValue: setHeight, placeholder: '10' },
         ].map(field => (
           <label key={field.label} className="space-y-1">
@@ -3235,8 +3235,8 @@ const OrderDetailView: React.FC<{
         <div className={cn('mt-1 grid border-t border-[#E6E9EF] pt-4', mobile ? 'grid-cols-2 gap-4' : 'grid-cols-[1fr_1.5fr_.7fr_.9fr]')}>
           <div><p className="text-[11px] text-[#667085]">Накладная</p><p className="mt-2 text-[13px] font-medium text-[#111827]">{order.cdekNumber || '—'}</p></div>
           <div><p className="text-[11px] text-[#667085]">Адрес доставки</p><p className="mt-2 whitespace-pre-line text-[13px] font-medium leading-5 text-[#111827]">{order.clientCity ? `${order.clientCity}\n` : ''}{order.clientAddress || '—'}</p></div>
-          <div><p className="text-[11px] text-[#667085]">Вес</p><p className="mt-2 text-[13px] font-medium text-[#111827]">{parsePackageNumber(saved.weight || firstProduct?.weight, 700)} г</p></div>
-          <div><p className="text-[11px] text-[#667085]">Габариты</p><p className="mt-2 text-[13px] font-medium text-[#111827]">{saved.length || 30}×{saved.width || 20}×{saved.height || 10}</p></div>
+          <div><p className="text-[11px] text-[#667085]">Вес</p><p className="mt-2 text-[13px] font-medium text-[#111827]">{Math.max(1500, parsePackageNumber(saved.weight || firstProduct?.weight, 1500))} г</p></div>
+          <div><p className="text-[11px] text-[#667085]">Габариты</p><p className="mt-2 text-[13px] font-medium text-[#111827]">{Math.max(40, parsePackageNumber(saved.length, 40))}×{Math.max(30, parsePackageNumber(saved.width, 30))}×{Math.max(10, parsePackageNumber(saved.height, 10))}</p></div>
         </div>
       </section>
 
@@ -5095,9 +5095,9 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
   const [newCdekLoadingCities, setNewCdekLoadingCities] = useState(false);
   const [newCdekLoadingPoints, setNewCdekLoadingPoints] = useState(false);
   const [newCdekCalculating, setNewCdekCalculating] = useState(false);
-  const [newCdekWeight, setNewCdekWeight] = useState('700');
-  const [newCdekLength, setNewCdekLength] = useState('30');
-  const [newCdekWidth, setNewCdekWidth] = useState('20');
+  const [newCdekWeight, setNewCdekWeight] = useState('1500');
+  const [newCdekLength, setNewCdekLength] = useState('40');
+  const [newCdekWidth, setNewCdekWidth] = useState('30');
   const [newCdekHeight, setNewCdekHeight] = useState('10');
   const newCdekPackageWeight = useMemo(
     () => calculateCdekPackageWeight(newOrderItems, productCatalog),
@@ -5968,10 +5968,10 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
         body: JSON.stringify({
           to_city_code: Number(newCdekCityCode),
           packages: [{
-            weight: Number(newCdekWeight) || 700,
-            length: Number(newCdekLength) || 30,
-            width: Number(newCdekWidth) || 20,
-            height: Number(newCdekHeight) || 10,
+            weight: Math.max(1500, Number(newCdekWeight) || 1500),
+            length: Math.max(40, Number(newCdekLength) || 40),
+            width: Math.max(30, Number(newCdekWidth) || 30),
+            height: Math.max(10, Number(newCdekHeight) || 10),
           }],
         }),
       });
@@ -6062,9 +6062,9 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
     setNewCdekPoint('');
     setNewCdekPointQuery('');
     setNewCdekShowPoints(false);
-    setNewCdekWeight('700');
-    setNewCdekLength('30');
-    setNewCdekWidth('20');
+    setNewCdekWeight('1500');
+    setNewCdekLength('40');
+    setNewCdekWidth('30');
     setNewCdekHeight('10');
     setNewCdekCalculating(false);
     setNewOrderFormError('');
@@ -7767,7 +7767,7 @@ export const OrdersTab: React.FC<OrdersTabProps> = ({
                     newCdekPackageWeight.fallbackCount > 0 ? 'text-amber-700' : 'text-emerald-700',
                   )}>
                     {newCdekPackageWeight.fallbackCount > 0
-                      ? `Для ${newCdekPackageWeight.fallbackCount} поз. вес не заполнен — использовано по 700 г. Проверьте вес.`
+                      ? `Для ${newCdekPackageWeight.fallbackCount} поз. вес не заполнен — применён минимум 1500 г. Проверьте вес.`
                       : `Вес рассчитан по карточкам товаров: ${newCdekPackageWeight.weight.toLocaleString('ru-RU')} г.`}
                   </p>
 

@@ -24,9 +24,10 @@ export function calculateCdekPackageWeight(
   itemNames: string[],
   products: CdekCatalogProduct[],
   fallbackPerItem = 700,
+  minimumPackageWeight = 1500,
 ): CdekPackageWeight {
   const items = itemNames.map(item => String(item || '').trim()).filter(Boolean);
-  if (!items.length) return { weight: fallbackPerItem, missingItems: [], fallbackCount: 1 };
+  if (!items.length) return { weight: minimumPackageWeight, missingItems: [], fallbackCount: 1 };
 
   const productByName = new Map(products.map(product => [normalizeName(product.name), product]));
   const missingItems: string[] = [];
@@ -42,5 +43,5 @@ export function calculateCdekPackageWeight(
       missingItems.push(item);
     }
   }
-  return { weight, missingItems, fallbackCount };
+  return { weight: Math.max(minimumPackageWeight, weight), missingItems, fallbackCount };
 }

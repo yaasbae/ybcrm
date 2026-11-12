@@ -3144,10 +3144,16 @@ app.post("/api/cdek/calculate", async (req, res) => {
     const { from_city_code, to_city_code, packages } = req.body;
     const token = await getCdekToken();
     const settings = await getCdekSettings();
+    const safePackages = (Array.isArray(packages) && packages.length ? packages : [{}]).map((item: any) => ({
+      weight: Math.max(1500, Number(item?.weight) || 1500),
+      length: Math.max(40, Number(item?.length) || 40),
+      width: Math.max(30, Number(item?.width) || 30),
+      height: Math.max(10, Number(item?.height) || 10),
+    }));
     const response = await axios.post(`${settings.baseUrl}/calculator/tarifflist`, {
       from_location: { code: from_city_code || settings.senderCityCode },
       to_location: { code: to_city_code },
-      packages: packages || [{ weight: 700, length: 30, width: 20, height: 10 }]
+      packages: safePackages,
     }, { headers: { Authorization: `Bearer ${token}` } });
     res.json(response.data);
   } catch (error: any) {
@@ -3188,7 +3194,7 @@ app.post("/api/storefront/cdek/calculate", async (req, res) => {
     const response = await axios.post(`${settings.baseUrl}/calculator/tarifflist`, {
       from_location: { code: settings.senderCityCode },
       to_location: { code: cityCode },
-      packages: [{ weight: 700, length: 30, width: 20, height: 10 }],
+      packages: [{ weight: 1500, length: 40, width: 30, height: 10 }],
     }, { headers: { Authorization: `Bearer ${token}` }, timeout: 15_000 });
     const tariffs = Array.isArray(response.data?.tariff_codes)
       ? response.data.tariff_codes.map((item: any) => ({
@@ -3609,10 +3615,10 @@ app.post("/api/cdek/create-order", storefrontOperations.register("/api/cdek/crea
     const declaredCost = Math.max(0, Math.round(Number(body.declaredCost ?? 0) * 100) / 100);
     const codAmount = Math.max(0, Math.round(Number(body.codAmount || 0) * 100) / 100);
     const deliveryCost = Math.max(0, Math.round(Number(body.deliveryCost || 0) * 100) / 100);
-    const weight = Math.max(1, Number(body.weight || 700));
-    const length = Math.max(1, Number(body.length || 30));
-    const width = Math.max(1, Number(body.width || 20));
-    const height = Math.max(1, Number(body.height || 10));
+    const weight = Math.max(1500, Number(body.weight || 1500));
+    const length = Math.max(40, Number(body.length || 40));
+    const width = Math.max(30, Number(body.width || 30));
+    const height = Math.max(10, Number(body.height || 10));
     const warehouseOriginTariffs = new Set([136, 137]);
     const doorOriginTariffs = new Set([138, 139]);
 
@@ -4933,7 +4939,7 @@ app.post("/api/storefront/checkout", async (req: any, res) => {
       axios.post(`${cdekSettings.baseUrl}/calculator/tarifflist`, {
         from_location: { code: cdekSettings.senderCityCode },
         to_location: { code: checkout.delivery.cityCode },
-        packages: [{ weight: 700, length: 30, width: 20, height: 10 }],
+        packages: [{ weight: 1500, length: 40, width: 30, height: 10 }],
       }, { headers: { Authorization: `Bearer ${cdekToken}` }, timeout: 15_000 }),
     ]);
     const point = (Array.isArray(pointResponse.data) ? pointResponse.data : []).find((candidate: any) =>

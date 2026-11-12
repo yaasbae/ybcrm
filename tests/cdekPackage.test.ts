@@ -20,4 +20,9 @@ test('sums catalog weights and makes missing weights visible', () => {
     ['Бомбер', 'Неизвестный товар'],
     [{ name: 'Бомбер', weight: '1200' }],
   ), { weight: 1900, missingItems: ['Неизвестный товар'], fallbackCount: 1 });
+
+  assert.deepEqual(calculateCdekPackageWeight(
+    ['Лёгкий товар'],
+    [{ name: 'Лёгкий товар', weight: '600' }],
+  ), { weight: 1500, missingItems: [], fallbackCount: 0 });
 });
