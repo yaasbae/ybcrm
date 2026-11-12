@@ -19,7 +19,7 @@ import { emitPushEvent } from '../lib/pushNotifications';
 import { logAuditEvent } from '../lib/auditLog';
 import { isClientPurchaseOrder, normalizeClientPhone } from '../lib/clientMerge';
 import { getExchangeOrderId } from '../lib/orderExchange';
-import { isOrderPinnedAtTop, isPendingExchangeOrder } from '../lib/orderListPriority';
+import { compareOrdersForList } from '../lib/orderListPriority';
 import { getOrderCreationMode } from '../lib/orderCreation';
 import { resolveStoredOrderIdentity } from '../lib/orderRecords';
 import { getOrderActionForField, ORDER_ACTION_OPTIONS, useOrderPermissions, type OrderAction } from '../lib/orderPermissions';
@@ -1227,15 +1227,7 @@ const AnalyticsDashboardInner: React.FC<AnalyticsDashboardProps> = ({
     const hasSearch = Boolean(searchTerm.trim());
     return stats.uniqueOrders
       .slice()
-      .sort((a: OrderData, b: OrderData) => {
-        const exchangeDifference = Number(isPendingExchangeOrder(b)) - Number(isPendingExchangeOrder(a));
-        if (exchangeDifference) return exchangeDifference;
-        const pinDifference = Number(isOrderPinnedAtTop(b)) - Number(isOrderPinnedAtTop(a));
-        if (pinDifference) return pinDifference;
-        const activityDifference = (b.activityAt?.getTime() || 0) - (a.activityAt?.getTime() || 0);
-        if (activityDifference) return activityDifference;
-        return b.date.getTime() - a.date.getTime();
-      })
+      .sort(compareOrdersForList)
       .filter((o: OrderData) => {
         const matchesMonth = hasSearch || ordersFilterMonth === -1 || o.month === ordersFilterMonth;
         const matchesStatus = hasSearch || !orderStatusFilter

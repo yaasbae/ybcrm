@@ -4,6 +4,7 @@ type OrderListPriorityInput = {
   isPinned?: unknown;
   exchangeAt?: unknown;
   exchangeOriginalOrderId?: unknown;
+  date?: unknown;
 };
 
 const normalizedStatus = (value: unknown) => String(value || '').trim().toLowerCase();
@@ -22,3 +23,17 @@ export const isPendingExchangeOrder = (order: OrderListPriorityInput) =>
 export const isOrderPinnedAtTop = (order: OrderListPriorityInput) =>
   isPendingExchangeOrder(order)
   || (Boolean(order.isPinned) && !isExchangeOrder(order));
+
+const orderDateTime = (value: unknown) => {
+  if (value instanceof Date) return Number.isFinite(value.getTime()) ? value.getTime() : 0;
+  const parsed = new Date(String(value || ''));
+  return Number.isFinite(parsed.getTime()) ? parsed.getTime() : 0;
+};
+
+export const compareOrdersForList = (a: OrderListPriorityInput, b: OrderListPriorityInput) => {
+  const exchangeDifference = Number(isPendingExchangeOrder(b)) - Number(isPendingExchangeOrder(a));
+  if (exchangeDifference) return exchangeDifference;
+  const pinDifference = Number(isOrderPinnedAtTop(b)) - Number(isOrderPinnedAtTop(a));
+  if (pinDifference) return pinDifference;
+  return orderDateTime(b.date) - orderDateTime(a.date);
+};
