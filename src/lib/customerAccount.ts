@@ -78,7 +78,7 @@ export function registerCustomerAccount(app:any,deps:Dependencies){
     try{
       if(!deps.secret||!deps.trusted(req))throw failure(401,'Нет доступа');
       const body=req.body||{};
-      if(!['telegram-config','telegram-login','vk-login','yandex-login','session','logout'].includes(body.action))throw failure(400,'Некорректный запрос');
+      if(!['telegram-config','telegram-login','vk-login','yandex-login','session','save-profile','logout'].includes(body.action))throw failure(400,'Некорректный запрос');
       if(!deps.db||!deps.enabled)throw failure(503,'Вход в кабинет ещё не подключён. Попробуйте позже.');
       if(body.action==='telegram-config')return res.json({clientId:deps.telegramClientId||''});
       if(body.action==='telegram-login'){
@@ -115,10 +115,23 @@ export function registerCustomerAccount(app:any,deps:Dependencies){
       const snapshot=await ref.get(),session=snapshot.data();
       if(body.action==='logout'){await ref.delete();return res.json({ok:true});}
       if(!snapshot.exists||!session||session.expires<=now)throw failure(401,'Войдите в кабинет');
+      const identityKey=session.vkId?`vk:${session.vkId}`:session.yandexId?`yandex:${session.yandexId}`:session.telegramId?`telegram:${session.telegramId}`:'';
+      if(!identityKey)throw failure(401,'Войдите в кабинет');
+      const customerRef=deps.db.collection('storefront_customer_profiles').doc(hash(identityKey));
+      if(body.action==='save-profile'){
+        const firstName=text(body.firstName,60),lastName=text(body.lastName,60),contactPhone=normalizedPhone(body.phone),email=text(body.email,160);
+        if(!firstName||!lastName||!contactPhone||typeof body.firstName!=='string'||typeof body.lastName!=='string'||firstName!==body.firstName.trim()||lastName!==body.lastName.trim()||
+          (email&&!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)))throw failure(400,'Проверьте личные данные');
+        await customerRef.set({firstName,lastName,contactPhone,email,updatedAt:new Date(now).toISOString()},{merge:true});
+        return res.json({ok:true});
+      }
+      const customerSnapshot=await customerRef.get();
+      const saved=customerSnapshot.exists?customerSnapshot.data():null;
+      const selfProfile=saved?{firstName:text(saved.firstName,60),lastName:text(saved.lastName,60),phone:normalizedPhone(saved.contactPhone),email:text(saved.email,160)}:null;
       const phone=normalizedPhone(session.phone);
       // A verified VK identity can open a cabinet without exposing any CRM
       // records. Orders and discounts require a separately verified phone.
-      if(!phone)return res.json({phone:'',identityName:text(session.identityName,120),discount:null,profile:null,orders:[],updatedAt:new Date(now).toISOString()});
+      if(!phone)return res.json({phone:'',identityName:text(session.identityName,120),selfProfile,discount:null,profile:null,orders:[],updatedAt:new Date(now).toISOString()});
       // Only an exact verified owner query; never read the entire orders collection.
       const orders=await deps.db.collection('orders_new').where('clientPhone','in',[phone,'+'+phone,...(phone.startsWith('7')&&phone.length===11?['8'+phone.slice(1)]:[])]).limit(201).get();
       if(orders.docs.length>200)throw failure(503,'История большая. Обратитесь в магазин для полной выписки.');
@@ -128,7 +141,7 @@ export function registerCustomerAccount(app:any,deps:Dependencies){
       const rawDiscount=contact?Number(contact.currentDiscount):NaN;
       const discount=Number.isFinite(rawDiscount)&&rawDiscount>=0&&rawDiscount<=100?rawDiscount:null;
       const profile=contact?{name:text(contact.fullName||contact.name,120),email:text(contact.email,160),city:text(contact.city,120),loyaltyCardId:text(contact.loyaltyCardId,80),totalSpent:number(contact.totalSpent),ordersCount:number(contact.ordersCount)}:null;
-      return res.json({phone,identityName:text(session.identityName,120),discount,profile,orders:orders.docs.filter((d:any)=>normalizedPhone(d.data().clientPhone)===phone&&d.data().status!=='Черновик').map((d:any)=>customerOrder(d.id,d.data(),deps.amounts)).sort((a:any,b:any)=>b.date.localeCompare(a.date)),updatedAt:new Date(now).toISOString()});
+      return res.json({phone,identityName:text(session.identityName,120),selfProfile,discount,profile,orders:orders.docs.filter((d:any)=>normalizedPhone(d.data().clientPhone)===phone&&d.data().status!=='Черновик').map((d:any)=>customerOrder(d.id,d.data(),deps.amounts)).sort((a:any,b:any)=>b.date.localeCompare(a.date)),updatedAt:new Date(now).toISOString()});
     }catch(error:any){const status=[400,401,429,503].includes(error?.status)?error.status:503;if(status===503)console.warn('[storefront-account] unavailable',{action:String(req.body?.action||'').slice(0,30),name:String(error?.name||'Error').slice(0,60),code:String(error?.code||'').slice(0,60)});return res.status(status).json({error:status===503?'Кабинет временно недоступен. Попробуйте позже.':error.message,...(String(error?.code||'').startsWith('vk_')?{code:error.code}:{})});}
   });
 }
