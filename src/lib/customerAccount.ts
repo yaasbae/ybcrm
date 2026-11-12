@@ -3,6 +3,7 @@ import {createHash,randomBytes,createPublicKey,verify} from 'node:crypto';
 const hash=(v:string)=>createHash('sha256').update(v).digest('hex');
 const text=(v:unknown,max=250)=>typeof v==='string'?v.trim().slice(0,max):'';
 const number=(v:unknown)=>{const n=Number(v);return Number.isFinite(n)&&n>=0?n:0;};
+const normalizedName=(v:unknown)=>text(v,160).toLocaleLowerCase('ru-RU').replace(/ё/g,'е').replace(/\s+/g,' ').trim();
 const failure=(status:number,message:string,code='')=>Object.assign(new Error(message),{status,code});
 export function customerOrder(id:string,data:Record<string,any>,amounts:(data:Record<string,any>)=>{total:number;paid:number}){
   const items=Array.isArray(data.items)?data.items.slice(0,100):[];
@@ -137,15 +138,23 @@ export function registerCustomerAccount(app:any,deps:Dependencies){
       if(orders.docs.length>200)throw failure(503,'История большая. Обратитесь в магазин для полной выписки.');
       const contacts=await deps.db.collection('contacts').get();
       const matches=contacts.docs.filter((d:any)=>[d.data().phone,d.data().phoneNumber,d.data().clientPhone].some((value:unknown)=>normalizedPhone(value)===phone));
-      const contactDoc=matches.length===1?matches[0]:null;
+      const accountName=normalizedName(selfProfile?[selfProfile.firstName,selfProfile.lastName].join(' '):session.identityName);
+      const sameName=accountName?matches.filter((d:any)=>normalizedName(d.data().fullName||d.data().name)===accountName):[];
+      const contactDoc=matches.length===1?matches[0]:sameName.length===1?sameName[0]:null;
       const contact=contactDoc?.data()||null;
+      const visibleOrders=orders.docs.filter((d:any)=>{
+        const order=d.data();
+        if(normalizedPhone(order.clientPhone)!==phone||order.status==='Черновик')return false;
+        if(matches.length<=1)return true;
+        return Boolean(contactDoc&&accountName&&normalizedName(order.clientName)===accountName);
+      });
       if(contactDoc&&saved?.crmContactId!==contactDoc.id){
         await customerRef.set({crmContactId:contactDoc.id,crmPhone:phone,linkedAt:new Date(now).toISOString()},{merge:true});
       }
       const rawDiscount=contact?Number(contact.currentDiscount):NaN;
       const discount=Number.isFinite(rawDiscount)&&rawDiscount>=0&&rawDiscount<=100?rawDiscount:null;
       const profile=contact?{name:text(contact.fullName||contact.name,120),email:text(contact.email,160),city:text(contact.city,120),loyaltyCardId:text(contact.loyaltyCardId,80),totalSpent:number(contact.totalSpent),ordersCount:number(contact.ordersCount)}:null;
-      return res.json({phone,identityName:text(session.identityName,120),selfProfile,linkStatus:contactDoc?'linked':matches.length>1?'ambiguous':orders.docs.length?'orders_only':'not_found',discount,profile,orders:orders.docs.filter((d:any)=>normalizedPhone(d.data().clientPhone)===phone&&d.data().status!=='Черновик').map((d:any)=>customerOrder(d.id,d.data(),deps.amounts)).sort((a:any,b:any)=>b.date.localeCompare(a.date)),updatedAt:new Date(now).toISOString()});
+      return res.json({phone,identityName:text(session.identityName,120),selfProfile,linkStatus:contactDoc?'linked':matches.length>1?'ambiguous':visibleOrders.length?'orders_only':'not_found',discount,profile,orders:visibleOrders.map((d:any)=>customerOrder(d.id,d.data(),deps.amounts)).sort((a:any,b:any)=>b.date.localeCompare(a.date)),updatedAt:new Date(now).toISOString()});
     }catch(error:any){const status=[400,401,429,503].includes(error?.status)?error.status:503;if(status===503)console.warn('[storefront-account] unavailable',{action:String(req.body?.action||'').slice(0,30),name:String(error?.name||'Error').slice(0,60),code:String(error?.code||'').slice(0,60)});return res.status(status).json({error:status===503?'Кабинет временно недоступен. Попробуйте позже.':error.message,...(String(error?.code||'').startsWith('vk_')?{code:error.code}:{})});}
   });
 }
