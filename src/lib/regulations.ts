@@ -15,6 +15,8 @@ export type RegulationData = {
   updatedBy?: string;
 };
 
+export const REGULATION_ACKNOWLEDGEMENT_VERSIONS = { orders: 1 } as const;
+
 const cleanText = (value: unknown, max: number) => String(value || '').trim().slice(0, max);
 
 export function normalizeRegulation(value: unknown): RegulationData {
@@ -69,4 +71,17 @@ export function createRegulationId(title: string, existingIds: string[]) {
   let suffix = 2;
   while (existingIds.includes(candidate)) candidate = `${base}-${suffix++}`;
   return candidate;
+}
+
+export function createRegulationAcknowledgementId(uid: string, regulationId: string, version: number) {
+  const cleanUid = String(uid || '').trim();
+  const cleanRegulationId = String(regulationId || '').trim().toLowerCase();
+  if (!cleanUid || cleanUid.includes('/') || !/^[a-z0-9-]{2,80}$/.test(cleanRegulationId) || !Number.isInteger(version) || version < 1) {
+    throw new Error('Некорректные данные подтверждения регламента');
+  }
+  return `${cleanUid}_${cleanRegulationId}_v${version}`;
+}
+
+export function isCurrentRegulationAcknowledgementVersion(regulationId: string, version: number) {
+  return REGULATION_ACKNOWLEDGEMENT_VERSIONS[regulationId as keyof typeof REGULATION_ACKNOWLEDGEMENT_VERSIONS] === version;
 }

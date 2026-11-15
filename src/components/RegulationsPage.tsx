@@ -24,7 +24,7 @@ import {
   X,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
-import { createRegulationId, RegulationData, validateRegulation } from '../lib/regulations';
+import { createRegulationId, REGULATION_ACKNOWLEDGEMENT_VERSIONS, RegulationData, validateRegulation } from '../lib/regulations';
 import { crmFetch } from '../lib/crmApi';
 
 type RegulationBlock = {
@@ -42,6 +42,7 @@ type RegulationArticle = {
   icon: React.ElementType;
   accent: string;
   blocks: RegulationBlock[];
+  acknowledgementVersion?: number;
 };
 
 const toData = (article: RegulationArticle): RegulationData => ({
@@ -161,29 +162,152 @@ const ARTICLES: RegulationArticle[] = [
   {
     id: 'orders',
     group: 'Вкладки CRM',
-    title: 'Заказы',
-    summary: 'Продажи, состав заказа, счета, оплаты, производство и доставка.',
+    title: 'Работа с заказами',
+    summary: 'Полный путь заказа: создание, оплата, производство, СДЭК, обмен и возврат.',
     icon: ShoppingBag,
     accent: 'bg-emerald-50 text-emerald-700',
+    acknowledgementVersion: REGULATION_ACKNOWLEDGEMENT_VERSIONS.orders,
     blocks: [
       {
-        title: 'Создание заказа',
+        title: 'Главное правило',
+        description: 'Один заказ ведётся в одной карточке от создания до получения клиентом.',
         steps: [
-          'Выберите существующего клиента или заполните контактные данные.',
-          'Укажите изделие и все параметры, согласованные с клиентом.',
-          'Проверьте сумму, тип оплаты и способ доставки.',
-          'Создайте заказ и только после проверки отправьте клиенту ссылку или QR-код.',
+          'Не создавайте новый заказ при смене цвета, размера, роста или модели — оформляйте изменение внутри карточки.',
+          'Обмен, повторная накладная и доплата также остаются в первоначальной карточке.',
+          'Карточка всегда должна показывать товар, подтверждённую оплату, текущий этап и следующее действие.',
         ],
       },
       {
-        title: 'Статусы и оплата',
+        title: 'Создание заказа',
         steps: [
-          'Не отмечайте оплату вручную без подтверждения операции.',
-          'После предоплаты контролируйте сумму и срок доплаты.',
-          'Не переводите заказ дальше, пока обязательные данные не заполнены.',
-          'При изменении заказа проверьте, не изменились ли сумма, производство и доставка.',
+          'Сначала найдите клиента по телефону или имени, чтобы не создавать дубль.',
+          'Заполните ФИО, телефон, контакт, город, адрес, доставку, товар, параметры, цены, менеджера и плановую дату.',
+          'Комментарий к изделию добавляйте под этим изделием; общий комментарий используйте только для всего заказа.',
+          'После сохранения заказ получает статус «Новый», даже если счёт уже создан.',
         ],
-        note: 'Повторное нажатие на создание счёта или накладной используйте только после проверки текущего состояния.',
+        note: 'Созданная ссылка или QR-код не подтверждают оплату.',
+      },
+      {
+        title: 'Оплата',
+        steps: [
+          'Статус «Оплачен» ставится только после подтверждения Точка Банка, Яндекс Пэй/Сплит или проверенной ручной операции.',
+          'При полной оплате показывается «Оплачено полностью», задолженность равна нулю.',
+          'При предоплате показываются подтверждённая сумма и остаток; после второй оплаты — «Доплата произведена».',
+          'Если клиент говорит, что оплатил, а подтверждения нет, используйте «Проверить оплату» и не меняйте сумму вручную.',
+        ],
+      },
+      {
+        title: 'Маршрут после оплаты',
+        steps: [
+          'Если товар есть: «Есть на складе» → «Упакован».',
+          'Если товара нет, оплаченный заказ попадает в производственный план как «Новый заказ».',
+          'Производственный путь: «Заказ ткань» → «Накроить» → «Пошив» → «Упакован».',
+          'Доставочный путь: «Упакован» → «Принят СДЭК» → «В пути» → «Доставлен» → «Получен».',
+          'Пропускайте этап только тогда, когда соответствующая работа действительно выполнена.',
+        ],
+      },
+      {
+        title: 'Комментарии и сроки',
+        steps: [
+          'Пишите производственные указания под конкретным товаром, например «только укоротить».',
+          'Для каждого товара используется отдельный комментарий.',
+          'Контролируйте дату создания, плановую и фактическую даты отгрузки.',
+          'При согласованном переносе измените срок и укажите причину.',
+        ],
+      },
+      {
+        title: 'Создание накладной СДЭК',
+        steps: [
+          'Проверьте ФИО, телефон, город, адрес/ПВЗ, доставку, остаток оплаты, вес и габариты.',
+          'Минимум: 1500 г и 40 × 30 × 10 см; если реальные параметры больше, укажите реальные.',
+          'После ответа СДЭК проверьте номер накладной и статус.',
+          'Не нажимайте создание повторно, пока первый запрос обрабатывается.',
+        ],
+        note: 'Создание накладной ещё не означает передачу посылки СДЭК.',
+      },
+      {
+        title: 'Статусы и трек-номер СДЭК',
+        steps: [
+          '«Принят СДЭК», «В пути», «Доставлен» и «Получен» приходят из СДЭК автоматически.',
+          'Уведомление с треком отправляется в Telegram только после подтверждения принятия СДЭК.',
+          'Ручной статус «Отгружен» не должен отправлять уведомление.',
+          'После начала движения не возвращайте заказ в производство — используйте обмен.',
+        ],
+      },
+      {
+        title: 'Изменение товара до отправки',
+        steps: [
+          'Выберите «Изменить товар / обмен», укажите новые параметры и причину.',
+          'Номер заказа остаётся прежним, предыдущий вариант сохраняется в истории.',
+          'После изменения проверьте сумму, срок, производство и доставку.',
+        ],
+      },
+      {
+        title: 'Обмен после отправки',
+        steps: [
+          'Обмен оформляется в той же карточке; служебное отправление получает обозначение с буквой E.',
+          'Старая накладная сохраняется в истории, для обмена создаётся новая.',
+          'Неотправленный обмен находится наверху списка как приоритетный.',
+          'После принятия СДЭК или начала движения заказ возвращается в общий список по дате создания.',
+        ],
+      },
+      {
+        title: 'Повторная накладная',
+        steps: [
+          'Используйте при обмене, отменённой/отклонённой накладной или новом отправлении по тому же заказу.',
+          'Новая накладная становится текущей, старая остаётся в истории.',
+          'Не создавайте новый заказ и не меняйте номер вручную для обхода ошибки.',
+        ],
+      },
+      {
+        title: 'Возврат и отмена',
+        steps: [
+          'Статус «Возврат» означает заявку: укажите причину и сумму.',
+          'Возврат денег завершён только после подтверждения банка или владельца.',
+          'Сохраняются сумма, дата и идентификатор операции; в Telegram отправляется карточка возврата.',
+          'При отмене проверьте оплату, накладную и начатое производство. Не удаляйте заказ вместо отмены.',
+        ],
+      },
+      {
+        title: 'Связанные заказы',
+        steps: [
+          'Для одной накладной связывайте только заказы одного клиента с одинаковыми ФИО, телефоном и доставкой.',
+          'Карточки и финансы заказов остаются раздельными, накладная видна в каждой карточке.',
+          'Заказы разных клиентов объединять запрещено, даже если совпадает адрес.',
+        ],
+      },
+      {
+        title: 'Поиск и приоритет',
+        steps: [
+          'Ищите по номеру, ФИО, телефону, Instagram, товару или трек-номеру.',
+          'Если заказ не найден, сбросьте фильтры и выберите «Все месяцы».',
+          'Закрепляйте только срочные обмены, просрочки и проблемы оплаты/СДЭК; после решения открепите.',
+        ],
+      },
+      {
+        title: 'Ответственность менеджера',
+        steps: [
+          'Создать заказ без дубля, проверить клиента, товар и доставку.',
+          'Отправить счёт, проверить оплату и определить наличие товара.',
+          'Следить за сроком, комментариями, изменениями, обменом и адресом.',
+          'Передавать в производство только заказ с точными параметрами.',
+        ],
+      },
+      {
+        title: 'Ежедневный контроль',
+        steps: [
+          'В начале смены проверьте заказы без оплаты, новые оплаты, просрочки, обмены, доплаты и ошибки СДЭК.',
+          'В конце смены обновите этапы, накладные и комментарии, передайте нерешённые случаи.',
+        ],
+      },
+      {
+        title: 'Запрещено',
+        steps: [
+          'Ставить «Оплачен» без подтверждения операции.',
+          'Создавать новый заказ вместо изменения или обмена.',
+          'Удалять историю товара или накладной и проводить возврат без подтверждения.',
+          'Создавать дубли накладных, объединять разных клиентов или хранить важные договорённости только в личной переписке.',
+        ],
       },
     ],
   },
@@ -381,6 +505,10 @@ export const RegulationsPage: React.FC<RegulationsPageProps> = ({ canEdit = fals
   const [notice, setNotice] = useState('');
   const [editorError, setEditorError] = useState('');
   const [contract, setContract] = useState<{ employeeName: string; position: string; employerName: string; date: string; agreementText: string } | null>(null);
+  const [acknowledgementChecked, setAcknowledgementChecked] = useState(false);
+  const [acknowledgedAt, setAcknowledgedAt] = useState<string | null>(null);
+  const [acknowledgementLoading, setAcknowledgementLoading] = useState(false);
+  const [acknowledgementError, setAcknowledgementError] = useState('');
   const query = search.trim().toLocaleLowerCase('ru');
 
   useEffect(() => {
@@ -417,6 +545,7 @@ export const RegulationsPage: React.FC<RegulationsPageProps> = ({ canEdit = fals
   const activeArticle = query && filteredArticles.length > 0 && !filteredArticles.some((article) => article.id === activeId)
     ? filteredArticles[0]
     : selectedArticle;
+  const acknowledgementVersion = activeArticle.acknowledgementVersion;
   const allGroups = [...groupOrder, ...articles.map((article) => article.group).filter((group) => !groupOrder.includes(group))];
   const groupedArticles = Array.from(new Set(allGroups))
     .map((group) => ({ group, articles: filteredArticles.filter((article) => article.group === group) }))
@@ -426,6 +555,44 @@ export const RegulationsPage: React.FC<RegulationsPageProps> = ({ canEdit = fals
     setActiveId(articleId);
     if (window.innerWidth < 1024) {
       window.requestAnimationFrame(() => document.getElementById('regulation-article')?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+    }
+  };
+
+  useEffect(() => {
+    let active = true;
+    setAcknowledgementChecked(false);
+    setAcknowledgedAt(null);
+    setAcknowledgementError('');
+    if (!acknowledgementVersion) return () => { active = false; };
+    crmFetch(`/api/regulations/${encodeURIComponent(activeArticle.id)}/acknowledgement?version=${acknowledgementVersion}`)
+      .then(async (response) => {
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(payload.error || 'Не удалось проверить ознакомление');
+        if (active) setAcknowledgedAt(payload.acknowledgement?.acknowledgedAt || null);
+      })
+      .catch((error) => {
+        if (active) setAcknowledgementError(error instanceof Error ? error.message : 'Не удалось проверить ознакомление');
+      });
+    return () => { active = false; };
+  }, [activeArticle.id, acknowledgementVersion]);
+
+  const confirmAcknowledgement = async () => {
+    if (!acknowledgementVersion || acknowledgedAt || !acknowledgementChecked || acknowledgementLoading) return;
+    setAcknowledgementLoading(true);
+    setAcknowledgementError('');
+    try {
+      const response = await crmFetch(`/api/regulations/${encodeURIComponent(activeArticle.id)}/acknowledge`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ version: acknowledgementVersion }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || 'Не удалось сохранить ознакомление');
+      setAcknowledgedAt(payload.acknowledgement?.acknowledgedAt || new Date().toISOString());
+    } catch (error) {
+      setAcknowledgementError(error instanceof Error ? error.message : 'Не удалось сохранить ознакомление');
+    } finally {
+      setAcknowledgementLoading(false);
     }
   };
 
@@ -590,6 +757,34 @@ export const RegulationsPage: React.FC<RegulationsPageProps> = ({ canEdit = fals
                   </section>
                 ))}
               </div>
+
+              {acknowledgementVersion && (
+                <section className="mt-6 rounded-3xl border border-emerald-200 bg-emerald-50/70 p-5 sm:p-6" aria-labelledby="regulation-acknowledgement-title">
+                  <div className="flex items-start gap-3">
+                    <UserRoundCheck className="mt-0.5 h-5 w-5 shrink-0 text-emerald-700" />
+                    <div className="min-w-0 flex-1">
+                      <h3 id="regulation-acknowledgement-title" className="text-sm font-semibold text-[#1F2937]">Подтверждение ознакомления</h3>
+                      {acknowledgedAt ? (
+                        <div className="mt-3 rounded-2xl border border-emerald-200 bg-white px-4 py-3">
+                          <p className="text-[13px] font-semibold text-emerald-700">Регламент подписан</p>
+                          <p className="mt-1 text-[11px] text-[#667085]">Ознакомление подтверждено {new Date(acknowledgedAt).toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })} МСК.</p>
+                        </div>
+                      ) : (
+                        <>
+                          <label className="mt-4 flex cursor-pointer items-start gap-3 rounded-2xl border border-emerald-200 bg-white px-4 py-3 text-[12px] leading-5 text-[#344054]">
+                            <input type="checkbox" checked={acknowledgementChecked} onChange={(event) => setAcknowledgementChecked(event.target.checked)} className="mt-0.5 h-4 w-4 shrink-0 accent-emerald-600" />
+                            <span>Я полностью ознакомился с регламентом работы с заказами, понял требования и обязуюсь соблюдать их в CRM.</span>
+                          </label>
+                          <button type="button" disabled={!acknowledgementChecked || acknowledgementLoading} onClick={() => void confirmAcknowledgement()} className="mt-3 inline-flex min-h-11 items-center justify-center rounded-2xl bg-emerald-600 px-5 text-[12px] font-semibold text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-emerald-200">
+                            {acknowledgementLoading ? 'Сохраняем…' : 'Подтвердить ознакомление'}
+                          </button>
+                        </>
+                      )}
+                      {acknowledgementError && <p role="alert" className="mt-3 text-[12px] font-medium text-red-600">{acknowledgementError}</p>}
+                    </div>
+                  </div>
+                </section>
+              )}
 
               <footer className="mt-6 flex items-start gap-3 rounded-3xl bg-[#1F2937] p-5 text-white sm:p-6">
                 <ClipboardCheck className="mt-0.5 h-5 w-5 shrink-0 text-violet-300" />

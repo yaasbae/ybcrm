@@ -17,7 +17,7 @@ import { initializeFirestore, doc, getDoc, collection, getDocs, addDoc, setDoc, 
 import { getStorage, ref as storageRef, uploadBytes as fbUploadBytes, getDownloadURL as fbGetDownloadURL } from "firebase/storage";
 import { initializeApp as initializeAdminApp, applicationDefault, getApps as getAdminApps } from "firebase-admin/app";
 import { FieldValue, getFirestore as getAdminFirestore } from "firebase-admin/firestore";
-import { validateRegulation } from "./src/lib/regulations";
+import { createRegulationAcknowledgementId, isCurrentRegulationAcknowledgementVersion, validateRegulation } from "./src/lib/regulations";
 import { getAuth as getAdminAuth } from "firebase-admin/auth";
 import fs from "fs";
 import https from "https";
@@ -362,7 +362,7 @@ function isPublicApiRequest(req: express.Request) {
 
 function isOwnerOnlyApiRequest(req: express.Request) {
   const path = req.path;
-  if (/^\/regulations(?:\/|$)/.test(path) && req.method !== "GET") return true;
+  if (/^\/regulations(?:\/|$)/.test(path) && req.method !== "GET" && !/^\/regulations\/[^/]+\/acknowledge$/.test(path)) return true;
   if (/^\/ai-jobs(?:\/|$)/.test(path)) return true;
   if (/^\/ai-incidents(?:\/|$)/.test(path)) return true;
   if (/^\/tochka\/(save-token|jwt-diagnostics|accounts-diagnostics|retailers)$/.test(path)) return true;
@@ -971,6 +971,65 @@ app.put("/api/regulations/:id", async (req: any, res) => {
   } catch (error: any) {
     console.error("[regulations] save:", error?.message || error);
     res.status(500).json({ error: "Не удалось сохранить регламент" });
+  }
+});
+
+app.get("/api/regulations/:id/acknowledgement", async (req: any, res) => {
+  if (!adminDb) return res.status(503).json({ error: "База данных недоступна" });
+  const regulationId = String(req.params.id || "").trim().toLowerCase();
+  const version = Number(req.query.version);
+  const uid = String(req.crmUser?.uid || req.crmUser?.sub || "");
+  if (!/^[a-z0-9-]{2,80}$/.test(regulationId) || !isCurrentRegulationAcknowledgementVersion(regulationId, version) || !uid) {
+    return res.status(400).json({ error: "Некорректная версия регламента" });
+  }
+  try {
+    const snapshot = await adminDb.collection("regulation_acknowledgements")
+      .doc(createRegulationAcknowledgementId(uid, regulationId, version)).get();
+    return res.json({ acknowledgement: snapshot.exists ? snapshot.data() : null });
+  } catch (error: any) {
+    console.error("[regulations] acknowledgement:", error?.message || error);
+    return res.status(500).json({ error: "Не удалось проверить ознакомление" });
+  }
+});
+
+app.post("/api/regulations/:id/acknowledge", async (req: any, res) => {
+  if (!adminDb) return res.status(503).json({ error: "База данных недоступна" });
+  const regulationId = String(req.params.id || "").trim().toLowerCase();
+  const version = Number(req.body?.version);
+  const uid = String(req.crmUser?.uid || req.crmUser?.sub || "");
+  if (!/^[a-z0-9-]{2,80}$/.test(regulationId) || !isCurrentRegulationAcknowledgementVersion(regulationId, version) || !uid) {
+    return res.status(400).json({ error: "Некорректная версия регламента" });
+  }
+  const reference = adminDb.collection("regulation_acknowledgements")
+    .doc(createRegulationAcknowledgementId(uid, regulationId, version));
+  try {
+    const result = await adminDb.runTransaction(async (transaction: any) => {
+      const existing = await transaction.get(reference);
+      if (existing.exists) return { acknowledgement: existing.data(), alreadyAcknowledged: true };
+      const acknowledgement = {
+        uid,
+        email: String(req.crmUser?.email || "").trim().toLowerCase(),
+        displayName: String(req.crmUser?.name || "").trim(),
+        regulationId,
+        version,
+        acknowledgedAt: new Date().toISOString(),
+      };
+      transaction.create(reference, acknowledgement);
+      return { acknowledgement, alreadyAcknowledged: false };
+    });
+    if (!result.alreadyAcknowledged) {
+      await writeAuditLog({
+        action: "regulation.acknowledged",
+        actor: req.crmUser,
+        entityType: "regulation",
+        entityId: regulationId,
+        metadata: { version },
+      });
+    }
+    return res.json(result);
+  } catch (error: any) {
+    console.error("[regulations] acknowledge:", error?.message || error);
+    return res.status(500).json({ error: "Не удалось сохранить ознакомление" });
   }
 });
 
