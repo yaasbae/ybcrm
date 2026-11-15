@@ -86,7 +86,31 @@ service cloud.firestore {
 
     // Expenses collection
     match /expenses/{document=**} {
-      allow read, write: if isAuthenticated();
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && (
+        isAdmin() ||
+        request.resource.data.source != 'production' ||
+        (
+          request.resource.data.paid != true &&
+          request.resource.data.status != 'paid' &&
+          !('paidAt' in request.resource.data) &&
+          !('paidBy' in request.resource.data)
+        )
+      );
+      allow update: if isAuthenticated() && (
+        isAdmin() ||
+        (
+          resource.data.source == request.resource.data.source &&
+          resource.data.source != 'production'
+        ) ||
+        (
+          resource.data.source == 'production' &&
+          request.resource.data.source == 'production' &&
+          !request.resource.data.diff(resource.data).affectedKeys()
+            .hasAny(['source', 'paid', 'status', 'paidAt', 'paidBy'])
+        )
+      );
+      allow delete: if isAuthenticated();
     }
 
     // Manual links between bank operations and CRM orders are owner-only.

@@ -30,17 +30,19 @@ export const isProductionQueueStatus = (status: unknown) => {
     || normalized === 'в пошиве';
 };
 
-export type ProductionStage = 'fabric' | 'cutting' | 'sewing';
+export type ProductionStage = 'new' | 'fabric' | 'cutting' | 'sewing';
 
 export const getProductionStage = (status: unknown): ProductionStage | null => {
   const normalized = normalizeStatus(status);
-  if (normalized === 'оплачен' || normalized === 'заказ ткань' || normalized === 'заказать ткань') return 'fabric';
+  if (normalized === 'оплачен') return 'new';
+  if (normalized === 'заказ ткань' || normalized === 'заказать ткань') return 'fabric';
   if (normalized === 'накроить' || normalized === 'нужно накроить' || normalized === 'накроен') return 'cutting';
   if (normalized === 'пошив' || normalized === 'в пошиве') return 'sewing';
   return null;
 };
 
 export const getNextProductionStatus = (stage: ProductionStage) => ({
+  new: 'Заказ ткань',
   fabric: 'Накроить',
   cutting: 'Пошив',
   sewing: 'Готов',

@@ -792,7 +792,7 @@ export default function App() {
           )}
 
           {view === 'production' && (
-            <ProductionPage selectedMonth={selectedMonth} setSelectedMonth={setSelectedMonth} />
+            <ProductionPage selectedMonth={selectedMonth} setSelectedMonth={setSelectedMonth} isOwner={isOwner} />
           )}
 
           {view === 'storefront' && (

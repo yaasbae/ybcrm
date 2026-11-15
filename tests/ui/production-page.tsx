@@ -14,7 +14,7 @@ const Fixture = () => {
     }, 50);
     return () => window.clearTimeout(timeout);
   }, []);
-  return <ProductionPage selectedMonth={month} setSelectedMonth={setMonth} onOpenOrders={() => undefined} />;
+  return <ProductionPage selectedMonth={month} setSelectedMonth={setMonth} onOpenOrders={() => undefined} isOwner />;
 };
 
 createRoot(document.getElementById('root')!).render(<Fixture />);

@@ -35,7 +35,7 @@ import {
   where,
   writeBatch,
 } from 'firebase/firestore';
-import { db } from '../firebase';
+import { auth, db } from '../firebase';
 import { cn } from '../lib/utils';
 import { emitPushEvent } from '../lib/pushNotifications';
 import {
@@ -69,6 +69,7 @@ type ProductionPageProps = {
   selectedMonth: string;
   setSelectedMonth: (month: string) => void;
   onOpenOrders?: () => void;
+  isOwner?: boolean;
 };
 
 type ProductionOrder = {
@@ -167,6 +168,7 @@ export const ProductionPage: React.FC<ProductionPageProps> = ({
   selectedMonth,
   setSelectedMonth,
   onOpenOrders,
+  isOwner = false,
 }) => {
   const [activeTab, setActiveTab] = useState<'journal' | 'payments' | 'orders'>('journal');
   const [productNames, setProductNames] = useState<string[]>([]);
@@ -177,6 +179,7 @@ export const ProductionPage: React.FC<ProductionPageProps> = ({
   const [ordersError, setOrdersError] = useState('');
   const [ordersSearch, setOrdersSearch] = useState('');
   const [statusSavingId, setStatusSavingId] = useState('');
+  const [paymentSavingId, setPaymentSavingId] = useState('');
   const [productName, setProductName] = useState('');
   const [productPickerOpen, setProductPickerOpen] = useState(false);
   const [addingProduct, setAddingProduct] = useState(false);
@@ -504,7 +507,7 @@ export const ProductionPage: React.FC<ProductionPageProps> = ({
   }, [orders, ordersSearch]);
 
   const productionColumns = useMemo(() => {
-    const groups: Record<ProductionStage, ProductionOrder[]> = { fabric: [], cutting: [], sewing: [] };
+    const groups: Record<ProductionStage, ProductionOrder[]> = { new: [], fabric: [], cutting: [], sewing: [] };
     filteredOrders.forEach((order) => {
       const stage = getProductionStage(order.status);
       if (stage) groups[stage].push(order);
@@ -554,6 +557,35 @@ export const ProductionPage: React.FC<ProductionPageProps> = ({
       setOrdersError('Статус заказа не изменился. Проверьте доступ и повторите попытку.');
     } finally {
       setStatusSavingId('');
+    }
+  };
+
+  const markProductionPaymentPaid = async (monthKey: string, half: 1 | 2, amount: number) => {
+    if (!isOwner || amount <= 0) return;
+    const periodId = `${monthKey}-${half}`;
+    const details = getMonthDetails(monthKey);
+    const startDay = half === 1 ? 1 : 16;
+    const endDay = half === 1 ? 15 : details.lastDay;
+    if (!window.confirm(`Подтвердить оплату за ${startDay}–${endDay} ${details.genitiveName} на сумму ${formatMoney(amount)}?`)) return;
+
+    setPaymentSavingId(periodId);
+    setError('');
+    try {
+      const token = await auth.currentUser?.getIdToken();
+      if (!token) throw new Error('Войдите в аккаунт собственника заново.');
+      const response = await fetch('/api/production/payments/mark-paid', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ month: monthKey, half }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || 'Оплата не отмечена.');
+      setNotice(payload.alreadyPaid ? 'Этот период уже был отмечен оплаченным' : 'Оплата за пошив отмечена');
+    } catch (saveError) {
+      console.error(saveError);
+      setError(saveError instanceof Error ? saveError.message : 'Оплата не отмечена. Повторите попытку.');
+    } finally {
+      setPaymentSavingId('');
     }
   };
 
@@ -1215,6 +1247,17 @@ export const ProductionPage: React.FC<ProductionPageProps> = ({
                             <div><p className="text-[9px] text-[#8B95A5]">Дата оплаты</p><p className="mt-1 text-[11px] font-semibold text-[#374151]">{formatDate(half.paymentDate)}</p></div>
                             <p className="text-[16px] font-semibold tabular-nums text-[#1F2937]">{formatMoney(half.amount)}</p>
                           </div>
+                          {isOwner && !half.paid && half.amount > 0 && (
+                            <button
+                              type="button"
+                              disabled={paymentSavingId === `${month.monthKey}-${half.half}`}
+                              onClick={() => void markProductionPaymentPaid(month.monthKey, half.half, half.amount)}
+                              className="mt-4 inline-flex min-h-10 w-full items-center justify-center gap-2 rounded-xl bg-[#1F2937] px-4 text-[11px] font-semibold text-white transition-colors hover:bg-[#111827] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#7D7DE6] focus-visible:ring-offset-2 disabled:cursor-wait disabled:opacity-60 sm:w-auto"
+                            >
+                              {paymentSavingId === `${month.monthKey}-${half.half}` ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
+                              {paymentSavingId === `${month.monthKey}-${half.half}` ? 'Сохраняем…' : 'Я оплатил'}
+                            </button>
+                          )}
                         </div>
                       );
                     })}
@@ -1228,7 +1271,7 @@ export const ProductionPage: React.FC<ProductionPageProps> = ({
             <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <h3 className="text-base font-semibold text-[#1F2937]">План производства</h3>
-                <p className="mt-1 text-[11px] leading-5 text-[#6B7280]">Оплаченные заказы переходят по этапам. Галочка завершает текущую работу и переносит заказ в следующую колонку.</p>
+                <p className="mt-1 text-[11px] leading-5 text-[#6B7280]">Оплаченный заказ сначала попадает в «Новый заказ». После решения менеджера он переходит к заказу ткани, крою и пошиву.</p>
               </div>
               <div className="flex flex-col gap-2 sm:flex-row">
                 <label className="relative block sm:w-72">
@@ -1245,9 +1288,10 @@ export const ProductionPage: React.FC<ProductionPageProps> = ({
             {ordersLoading ? (
               <div className="flex min-h-64 items-center justify-center gap-2 rounded-2xl bg-white text-[11px] text-[#8B95A5]"><Loader2 size={16} className="animate-spin" /> Загружаем заказы</div>
             ) : (
-              <div className="grid gap-4 lg:grid-cols-3">
+              <div className="grid gap-4 lg:grid-cols-2 xl:grid-cols-4">
                 {([
-                  { key: 'fabric' as const, title: 'Заказать ткань', hint: 'Менеджер', icon: Shirt, tone: 'bg-amber-50 text-amber-800' },
+                  { key: 'new' as const, title: 'Новый заказ', hint: 'Оплачен · требуется решение', icon: ClipboardList, tone: 'bg-violet-50 text-violet-800' },
+                  { key: 'fabric' as const, title: 'Заказать ткань', hint: 'Снабжение', icon: Shirt, tone: 'bg-amber-50 text-amber-800' },
                   { key: 'cutting' as const, title: 'Накроить', hint: 'Закройщик', icon: Scissors, tone: 'bg-blue-50 text-blue-800' },
                   { key: 'sewing' as const, title: 'Пошив', hint: 'Швейный цех', icon: Factory, tone: 'bg-emerald-50 text-emerald-800' },
                 ]).map((column) => {
@@ -1274,7 +1318,7 @@ export const ProductionPage: React.FC<ProductionPageProps> = ({
                                 className="mt-4 flex min-h-10 w-full items-center justify-center gap-2 rounded-lg border border-[#DDE1E8] bg-[#F8F9FB] px-3 text-[10px] font-semibold text-[#374151] hover:bg-[#F0F2F5] disabled:opacity-50"
                               >
                                 {statusSavingId === order.id ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
-                                {column.key === 'fabric' ? 'Ткань заказана' : column.key === 'cutting' ? 'Крой готов' : 'Пошив готов'}
+                                {column.key === 'new' ? 'Передать в заказ ткани' : column.key === 'fabric' ? 'Ткань заказана' : column.key === 'cutting' ? 'Крой готов' : 'Пошив готов'}
                               </button>
                             </article>
                           );

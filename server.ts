@@ -9463,6 +9463,70 @@ async function requireFinanceOwner(req: any, res: any) {
   }
 }
 
+app.post('/api/production/payments/mark-paid', async (req: any, res: any) => {
+  if (!adminDb) {
+    return res.status(503).json({ error: 'База данных временно недоступна' });
+  }
+
+  const owner: any = await requireFinanceOwner(req, res);
+  if (!owner) return;
+  if (owner.email_verified !== true) {
+    return res.status(403).json({ error: 'Подтвердите адрес электронной почты владельца' });
+  }
+
+  const month = String(req.body?.month || '').trim();
+  const half = Number(req.body?.half);
+  if (!/^20\d{2}-(0[1-9]|1[0-2])$/.test(month) || ![1, 2].includes(half)) {
+    return res.status(400).json({ error: 'Некорректный период оплаты' });
+  }
+
+  const expenseId = `production-${month}-h${half}`;
+  try {
+    const result = await adminDb.runTransaction(async (transaction: any) => {
+      const expenseRef = adminDb.collection('expenses').doc(expenseId);
+      const expenseSnap = await transaction.get(expenseRef);
+      if (!expenseSnap.exists) return { error: 'Начисление за этот период не найдено', status: 404 };
+
+      const expense = expenseSnap.data() || {};
+      if (expense.source !== 'production' || Number(expense.amount || 0) <= 0) {
+        return { error: 'Эту запись нельзя отметить как оплату производства', status: 409 };
+      }
+      if (expense.paid === true || expense.status === 'paid') {
+        return { ok: true, alreadyPaid: true };
+      }
+
+      const now = new Date().toISOString();
+      const paidBy = String(owner.email || FINANCE_OWNER_EMAIL).toLowerCase();
+      transaction.update(expenseRef, {
+        status: 'paid',
+        paid: true,
+        paidAt: now,
+        paidBy,
+        updatedAt: now,
+      });
+      transaction.set(adminDb.collection('audit_logs').doc(), {
+        action: 'production_payment_marked_paid',
+        entityType: 'expense',
+        entityId: expenseId,
+        actorUid: String(owner.uid || ''),
+        actorEmail: paidBy,
+        createdAt: now,
+        metadata: { month, half, amount: Number(expense.amount || 0) },
+      });
+      return { ok: true, alreadyPaid: false };
+    });
+
+    if ('error' in result) return res.status(result.status).json({ error: result.error });
+    return res.json(result);
+  } catch (error: any) {
+    console.error('[production-payment] mark-paid failed', {
+      expenseId,
+      code: String(error?.code || ''),
+    });
+    return res.status(500).json({ error: 'Не удалось сохранить оплату. Попробуйте ещё раз.' });
+  }
+});
+
 async function triageIncident(payload: Record<string, unknown>) {
   if (!adminDb) throw new Error("База данных недоступна");
   const incidentId = String(payload.incidentId || "").trim();
