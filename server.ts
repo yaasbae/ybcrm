@@ -1,5 +1,7 @@
 import { getOrderTotalAmount } from "./src/lib/orderPayments.ts";
 import { getConfirmedPaidAmount } from "./src/lib/orderPayments.ts";
+import { buildDailySalesReport, formatDailySalesReportTelegram, getMoscowDateKey, getPreviousMoscowDateKey } from "./src/lib/dailySalesReport.ts";
+import { cleanEmployeeNamePart, isTelegramUsernameInputValid, normalizeTelegramUsername } from "./src/lib/employeeProfile.ts";
 import { registerCustomerAccount } from "./src/lib/customerAccount.ts";
 import {validCheckoutProof,purchaseReceipt} from './src/lib/storefrontAnalytics.ts';
 import {siteIntegrations} from './src/lib/storefrontIntegrations.ts';
@@ -131,6 +133,8 @@ const CDEK_TRACK_TELEGRAM_CHAT_ID = String(process.env.CDEK_TRACK_TELEGRAM_CHAT_
 const CDEK_TRACK_TELEGRAM_THREAD_ID = Number(process.env.CDEK_TRACK_TELEGRAM_THREAD_ID || 1206);
 const RELEASE_TELEGRAM_CHAT_ID = String(process.env.RELEASE_TELEGRAM_CHAT_ID || ORDER_TELEGRAM_CHAT_ID).trim();
 const RELEASE_TELEGRAM_THREAD_ID = Number(process.env.RELEASE_TELEGRAM_THREAD_ID || 12750);
+const DAILY_SALES_TELEGRAM_CHAT_ID = String(process.env.DAILY_SALES_TELEGRAM_CHAT_ID || ORDER_TELEGRAM_CHAT_ID).trim();
+const DAILY_SALES_TELEGRAM_THREAD_ID = Number(process.env.DAILY_SALES_TELEGRAM_THREAD_ID || 3);
 const AI_INTAKE_TELEGRAM_CHAT_ID = String(process.env.AI_INTAKE_TELEGRAM_CHAT_ID || RELEASE_TELEGRAM_CHAT_ID).trim();
 const AI_INTAKE_TELEGRAM_THREAD_ID = Number(process.env.AI_INTAKE_TELEGRAM_THREAD_ID || 0);
 const RELEASE_COMMIT_SHA = String(process.env.RELEASE_COMMIT_SHA || "").trim();
@@ -351,6 +355,11 @@ function isPublicApiRequest(req: express.Request) {
   if (path === "/instagram/webhook") return true;
   if (path === "/cdek/webhook") return true;
   if (path === "/cdek/sync-statuses" && req.method === "POST") {
+    const workerSecret = String(process.env.AI_JOB_WORKER_SECRET || "");
+    const bearer = String(req.headers.authorization || "").replace(/^Bearer\s+/i, "");
+    if (workerSecret && secretsEqual(bearer, workerSecret)) return true;
+  }
+  if (path === "/reports/daily-sales" && req.method === "POST") {
     const workerSecret = String(process.env.AI_JOB_WORKER_SECRET || "");
     const bearer = String(req.headers.authorization || "").replace(/^Bearer\s+/i, "");
     if (workerSecret && secretsEqual(bearer, workerSecret)) return true;
@@ -929,7 +938,7 @@ const CRM_ACCESS_VIEWS = [
   "products", "production", "storefront", "handbook", "regulations", "cdek", "integrations", "social",
   "instagram", "bot", "content", "broadcast", "broadcast-v2", "studio", "ai-agent",
 ];
-const CRM_NOTIFICATION_TOPICS = ["all", "orders", "payments", "cdek", "shifts", "social", "stock", "production"];
+const CRM_NOTIFICATION_TOPICS = ["all", "orders", "payments", "cdek", "shifts", "payroll", "fines", "social", "stock", "production"];
 const CRM_ORDER_ACTIONS = ["create", "edit", "status", "exchange", "payments", "refund", "cdek", "delete", "export"];
 
 app.get("/api/regulations", async (_req, res) => {
@@ -1141,6 +1150,10 @@ function accessAccount(uid: string, data: any, ownerEmail: string) {
     uid,
     email,
     displayName: String(data?.displayName || data?.managerName || ""),
+    firstName: String(data?.firstName || ""),
+    lastName: String(data?.lastName || ""),
+    telegramUsername: normalizeTelegramUsername(data?.telegramUsername),
+    telegramLinked: Boolean(data?.telegramLinked),
     disabled: isOwner ? false : data?.active === false,
     createdAt: data?.createdAt || null,
     lastLoginAt: data?.lastLoginAt || null,
@@ -1219,6 +1232,19 @@ app.get("/api/admin/accounts", async (req, res) => {
       rows.forEach((item: any) => profiles.set(item.id, item.data || {}));
     }
 
+    const linkedTelegramUsernames = new Set<string>();
+    try {
+      if (adminDb) {
+        const subscribers = await adminDb.collection("bot_subscribers").get();
+        subscribers.docs.forEach((item: any) => {
+          const username = normalizeTelegramUsername(item.data()?.username);
+          if (username && item.data()?.active !== false) linkedTelegramUsernames.add(username);
+        });
+      }
+    } catch (error: any) {
+      console.warn("[admin] Telegram subscriber list skipped:", error?.message || error);
+    }
+
     let accounts = authUsers.map((account: any) => {
       const profile: any = profiles.get(account.uid) || null;
       const isOwner = String(account.email || "").trim().toLowerCase() === ownerEmail;
@@ -1226,6 +1252,10 @@ app.get("/api/admin/accounts", async (req, res) => {
         uid: account.uid,
         email: account.email || "",
         displayName: account.displayName || "",
+        firstName: String(profile?.firstName || ""),
+        lastName: String(profile?.lastName || ""),
+        telegramUsername: normalizeTelegramUsername(profile?.telegramUsername),
+        telegramLinked: linkedTelegramUsernames.has(normalizeTelegramUsername(profile?.telegramUsername)),
         disabled: Boolean(account.disabled),
         createdAt: account.metadata?.creationTime || null,
         lastLoginAt: account.metadata?.lastSignInTime || null,
@@ -1280,6 +1310,9 @@ app.post("/api/admin/accounts", async (req, res) => {
   const email = String(req.body?.email || "").trim().toLowerCase();
   const password = String(req.body?.password || "");
   const displayName = String(req.body?.displayName || "").trim().slice(0, 120);
+  const firstName = cleanEmployeeNamePart(req.body?.firstName);
+  const lastName = cleanEmployeeNamePart(req.body?.lastName);
+  const telegramUsername = normalizeTelegramUsername(req.body?.telegramUsername);
   const role = String(req.body?.role || "employee").trim().slice(0, 60) || "employee";
   const allowedViews = normalizedAllowedValues(req.body?.allowedViews, CRM_ACCESS_VIEWS);
   const notificationTopics = normalizedAllowedValues(req.body?.notificationTopics, CRM_NOTIFICATION_TOPICS);
@@ -1288,12 +1321,16 @@ app.post("/api/admin/accounts", async (req, res) => {
     : CRM_ORDER_ACTIONS;
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: "Укажите корректную почту" });
   if (password.length < 8) return res.status(400).json({ error: "Пароль должен быть не короче 8 символов" });
+  if (!isTelegramUsernameInputValid(req.body?.telegramUsername)) return res.status(400).json({ error: "Telegram username указан неверно" });
   if (!allowedViews.length) return res.status(400).json({ error: "Выберите хотя бы один раздел CRM" });
   try {
     const account = await getAdminAuth().createUser({ email, password, displayName: displayName || undefined });
     await adminDb.collection("crm_access_profiles").doc(account.uid).set({
       email,
       displayName,
+      firstName,
+      lastName,
+      telegramUsername,
       role,
       allowedViews,
       notificationTopics,
@@ -1308,7 +1345,7 @@ app.post("/api/admin/accounts", async (req, res) => {
       action: "account_created",
       entityType: "account",
       entityId: account.uid,
-      after: { email, displayName, role, allowedViews, notificationTopics, allowedOrderActions, active: true },
+      after: { email, displayName, firstName, lastName, telegramUsername, role, allowedViews, notificationTopics, allowedOrderActions, active: true },
       metadata: { label: `Создан аккаунт ${email}` },
       actor: { type: "crm_user", uid: owner.uid, email: owner.email || "", name: owner.name || "" },
     });
@@ -1326,12 +1363,16 @@ app.patch("/api/admin/accounts/:uid", async (req, res) => {
   if (!uid) return res.status(400).json({ error: "Не указан аккаунт" });
   const role = String(req.body?.role || "employee").trim().slice(0, 60) || "employee";
   const displayName = String(req.body?.displayName || "").trim().slice(0, 120);
+  const firstName = cleanEmployeeNamePart(req.body?.firstName);
+  const lastName = cleanEmployeeNamePart(req.body?.lastName);
+  const telegramUsername = normalizeTelegramUsername(req.body?.telegramUsername);
   const allowedViews = normalizedAllowedValues(req.body?.allowedViews, CRM_ACCESS_VIEWS);
   const notificationTopics = normalizedAllowedValues(req.body?.notificationTopics, CRM_NOTIFICATION_TOPICS);
   const allowedOrderActions = Array.isArray(req.body?.allowedOrderActions)
     ? normalizedAllowedValues(req.body.allowedOrderActions, CRM_ORDER_ACTIONS)
     : CRM_ORDER_ACTIONS;
   const active = req.body?.active !== false;
+  if (!isTelegramUsernameInputValid(req.body?.telegramUsername)) return res.status(400).json({ error: "Telegram username указан неверно" });
   if (!allowedViews.length) return res.status(400).json({ error: "Выберите хотя бы один раздел CRM" });
   try {
     const account = await getAdminAuth().getUser(uid);
@@ -1343,6 +1384,9 @@ app.patch("/api/admin/accounts/:uid", async (req, res) => {
       adminDb.collection("crm_access_profiles").doc(uid).set({
         email: account.email || "",
         displayName,
+        firstName,
+        lastName,
+        telegramUsername,
         role,
         allowedViews,
         notificationTopics,
@@ -1357,7 +1401,7 @@ app.patch("/api/admin/accounts/:uid", async (req, res) => {
       action: "account_access_updated",
       entityType: "account",
       entityId: uid,
-      after: { email: account.email || "", displayName, role, allowedViews, notificationTopics, allowedOrderActions, active },
+      after: { email: account.email || "", displayName, firstName, lastName, telegramUsername, role, allowedViews, notificationTopics, allowedOrderActions, active },
       metadata: { label: `Обновлены права ${account.email || uid}` },
       actor: { type: "crm_user", uid: owner.uid, email: owner.email || "", name: owner.name || "" },
     });
@@ -1442,6 +1486,33 @@ function pushContent(type: PushEventType, data: PushEventData) {
   }
 }
 
+async function sendEmployeeShiftTelegram(data: PushEventData) {
+  const token = String(process.env.TG_BOT_TOKEN || "").trim();
+  const managerEmail = String(data.managerEmail || "").trim().toLowerCase();
+  if (!adminDb || !token || !managerEmail) return { sent: false, skipped: true };
+  const profiles = await adminDb.collection("crm_access_profiles").where("email", "==", managerEmail).limit(1).get();
+  if (profiles.empty) return { sent: false, skipped: true };
+  const profile = profiles.docs[0].data() || {};
+  const topics = Array.isArray(profile.notificationTopics) ? profile.notificationTopics.map(String) : ["all"];
+  if (profile.active === false || (!topics.includes("all") && !topics.includes("shifts"))) return { sent: false, skipped: true };
+  const username = normalizeTelegramUsername(profile.telegramUsername);
+  if (!username) return { sent: false, skipped: true };
+  const subscribers = await adminDb.collection("bot_subscribers").get();
+  const subscriber = subscribers.docs.find((item: any) => {
+    const subscriberData = item.data() || {};
+    return subscriberData.active !== false && normalizeTelegramUsername(subscriberData.username) === username;
+  });
+  if (!subscriber) return { sent: false, skipped: true };
+  const startTime = data.startedAt
+    ? new Date(data.startedAt).toLocaleTimeString("ru-RU", { timeZone: "Europe/Moscow", hour: "2-digit", minute: "2-digit" })
+    : "";
+  await axios.post(`https://api.telegram.org/bot${token}/sendMessage`, {
+    chat_id: subscriber.id,
+    text: `✅ Смена начата${startTime ? ` в ${startTime}` : ""}.\nПлан: 100 контактов по базе. Начисление за смену появится в ФОТ после выполнения нормы.`,
+  }, { timeout: 15_000 });
+  return { sent: true };
+}
+
 async function dispatchPushEvent(type: PushEventType, eventId: string, data: PushEventData = {}) {
   if (!await ensureWebPushConfigured() || !PUSH_EVENT_TYPES.has(type) || !eventId) return { sent: 0, skipped: true };
   const eventKey = createHash("sha256").update(eventId).digest("hex");
@@ -1450,6 +1521,12 @@ async function dispatchPushEvent(type: PushEventType, eventId: string, data: Pus
   } catch (error: any) {
     if (String(error?.code || "").includes("already-exists") || Number(error?.code) === 6) return { sent: 0, duplicate: true };
     throw error;
+  }
+
+  if (type === "manager_shift_started") {
+    await sendEmployeeShiftTelegram(data).catch((error: any) => {
+      console.warn("[employee-telegram] shift notification:", error?.response?.data?.description || error?.message || error);
+    });
   }
 
   const subscriptions = await adminDb.collection("push_subscriptions").where("enabled", "==", true).get();
@@ -2185,6 +2262,124 @@ async function sendNewOrderToTelegram(orderId: string, actor: Record<string, unk
     throw new Error(message);
   }
 }
+
+async function loadDailySalesReportInputs(dateKey: string) {
+  if (!adminDb) throw new Error("Серверная база не подключена");
+  const [ordersSnapshot, shiftsSnapshot, stealthSentSnapshot, broadcastV2Snapshot, legacyBroadcastsSnapshot] = await Promise.all([
+    adminDb.collection("orders_new").get(),
+    adminDb.collection("manager_shifts").where("dateKey", "==", dateKey).get(),
+    adminDb.collection("settings").doc("stealth_sent").get(),
+    adminDb.collection("settings").doc("broadcast_v2_job").get(),
+    adminDb.collection("broadcasts").get(),
+  ]);
+
+  const orders = ordersSnapshot.docs.map((snapshot: any) => ({
+    firestoreId: snapshot.id,
+    ...snapshot.data(),
+  }));
+  const shiftManagers = shiftsSnapshot.docs
+    .map((snapshot: any) => String(snapshot.data()?.managerName || snapshot.data()?.startedBy || "").trim())
+    .filter(Boolean);
+
+  const stealthSent = Array.isArray(stealthSentSnapshot.data()?.phones) ? stealthSentSnapshot.data().phones : [];
+  const stealthCount = stealthSent.filter((entry: any) => (
+    typeof entry === "object" && getMoscowDateKey(entry?.sentAt) === dateKey
+  )).length;
+  const broadcastV2Log = Array.isArray(broadcastV2Snapshot.data()?.log) ? broadcastV2Snapshot.data().log : [];
+  const broadcastV2Count = broadcastV2Log.filter((entry: any) => (
+    entry?.status === "sent" && getMoscowDateKey(entry?.at) === dateKey
+  )).length;
+  const legacyCount = legacyBroadcastsSnapshot.docs.reduce((total: number, snapshot: any) => {
+    const data = snapshot.data() || {};
+    if (getMoscowDateKey(data.sentAt) !== dateKey) return total;
+    return total + Math.max(0, Number(data.sentCount) || (Array.isArray(data.phones) ? data.phones.length : 0));
+  }, 0);
+
+  return {
+    orders,
+    shiftManagers,
+    broadcastSent: stealthCount + broadcastV2Count + legacyCount,
+  };
+}
+
+async function sendDailySalesReport(dateKey: string) {
+  if (!adminDb) throw new Error("Серверная база не подключена");
+  const token = String(process.env.TG_BOT_TOKEN || "").trim();
+  if (!token) throw new Error("TG_BOT_TOKEN не настроен");
+  if (!DAILY_SALES_TELEGRAM_CHAT_ID || !Number.isFinite(DAILY_SALES_TELEGRAM_THREAD_ID)) {
+    throw new Error("Тема ежедневной сводки Telegram не настроена");
+  }
+
+  const reportRef = adminDb.collection("daily_sales_reports").doc(dateKey);
+  const reservation = await adminDb.runTransaction(async (transaction: any) => {
+    const snapshot = await transaction.get(reportRef);
+    const data = snapshot.exists ? snapshot.data() || {} : {};
+    if (data.status === "sent") return "already_sent";
+    const updatedAtMs = typeof data.updatedAt?.toMillis === "function"
+      ? data.updatedAt.toMillis()
+      : Date.parse(String(data.updatedAt || ""));
+    if (data.status === "sending" && Number.isFinite(updatedAtMs) && Date.now() - updatedAtMs < 10 * 60_000) {
+      return "in_progress";
+    }
+    transaction.set(reportRef, {
+      dateKey,
+      chatId: DAILY_SALES_TELEGRAM_CHAT_ID,
+      threadId: DAILY_SALES_TELEGRAM_THREAD_ID,
+      status: "sending",
+      attempts: FieldValue.increment(1),
+      createdAt: snapshot.exists ? data.createdAt || FieldValue.serverTimestamp() : FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    }, { merge: true });
+    return "reserved";
+  });
+  if (reservation !== "reserved") return { sent: false, duplicate: true, status: reservation, dateKey };
+
+  try {
+    const inputs = await loadDailySalesReportInputs(dateKey);
+    const report = buildDailySalesReport({ dateKey, ...inputs });
+    const text = formatDailySalesReportTelegram(report);
+    const response = await axios.post(`https://api.telegram.org/bot${token}/sendMessage`, {
+      chat_id: DAILY_SALES_TELEGRAM_CHAT_ID,
+      message_thread_id: DAILY_SALES_TELEGRAM_THREAD_ID,
+      text,
+      parse_mode: "HTML",
+      disable_web_page_preview: true,
+    }, { timeout: 30_000 });
+    const messageId = String(response.data?.result?.message_id || "");
+    await reportRef.set({
+      status: "sent",
+      messageId,
+      summary: {
+        salesCount: report.sales.length,
+        salesTotal: report.salesTotal,
+        mainPaymentsTotal: report.mainPaymentsTotal,
+        finalPaymentsTotal: report.finalPaymentsTotal,
+        broadcastSent: report.broadcastSent,
+        shiftManagers: report.shiftManagers,
+      },
+      sentAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+      error: FieldValue.delete(),
+    }, { merge: true });
+    return { sent: true, messageId, dateKey, summary: reportRef.id };
+  } catch (error: any) {
+    const message = String(error?.response?.data?.description || error?.message || "Ошибка ежедневной сводки").slice(0, 1000);
+    await reportRef.set({ status: "failed", error: message, updatedAt: FieldValue.serverTimestamp() }, { merge: true }).catch(() => undefined);
+    throw new Error(message);
+  }
+}
+
+app.post("/api/reports/daily-sales", async (req, res) => {
+  const requestedDateKey = String(req.body?.dateKey || "").trim();
+  const dateKey = requestedDateKey || getPreviousMoscowDateKey();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateKey)) return res.status(400).json({ error: "dateKey должен быть в формате YYYY-MM-DD" });
+  try {
+    res.json(await sendDailySalesReport(dateKey));
+  } catch (error: any) {
+    console.error("[daily-sales-report]", error?.message || error);
+    res.status(502).json({ error: error?.message || "Не удалось отправить ежедневную сводку" });
+  }
+});
 
 function escapePaymentCardText(value: unknown) {
   return String(value ?? "")

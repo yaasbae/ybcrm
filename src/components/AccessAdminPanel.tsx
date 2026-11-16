@@ -9,6 +9,10 @@ type AccountAccess = {
   uid: string;
   email: string;
   displayName: string;
+  firstName: string;
+  lastName: string;
+  telegramUsername: string;
+  telegramLinked: boolean;
   disabled: boolean;
   configured: boolean;
   role: string;
@@ -30,13 +34,16 @@ const PAGE_OPTIONS = [
 
 const NOTIFICATION_OPTIONS = [
   ['all', 'Все уведомления'], ['orders', 'Заказы'], ['payments', 'Оплаты'], ['cdek', 'СДЭК'],
-  ['shifts', 'Смены'], ['social', 'Соцсети'], ['stock', 'Склад'], ['production', 'Производство'],
+  ['shifts', 'Смены'], ['payroll', 'ФОТ и зарплата'], ['fines', 'Штрафы'], ['social', 'Соцсети'], ['stock', 'Склад'], ['production', 'Производство'],
 ] as const;
 
 const emptyNewAccount = {
   email: '',
   password: '',
   displayName: '',
+  firstName: '',
+  lastName: '',
+  telegramUsername: '',
   role: 'Сотрудник',
   allowedViews: [] as string[],
   notificationTopics: [] as string[],
@@ -163,6 +170,9 @@ export const AccessAdminPanel: React.FC = () => {
         method: 'PATCH',
         body: JSON.stringify({
           displayName: draft.displayName,
+          firstName: draft.firstName,
+          lastName: draft.lastName,
+          telegramUsername: draft.telegramUsername,
           role: draft.role,
           active: draft.active,
           allowedViews: draft.allowedViews,
@@ -274,9 +284,13 @@ export const AccessAdminPanel: React.FC = () => {
               <div className="grid gap-3 sm:grid-cols-2">
                 <input value={newAccount.displayName} onChange={event => setNewAccount(current => ({ ...current, displayName: event.target.value }))} placeholder="Имя / должность" className="h-11 rounded-lg border border-[#E6E9EF] px-3 text-[12px] outline-none focus:border-violet-300" />
                 <input value={newAccount.role} onChange={event => setNewAccount(current => ({ ...current, role: event.target.value }))} placeholder="Роль: менеджер, аутсорсер…" className="h-11 rounded-lg border border-[#E6E9EF] px-3 text-[12px] outline-none focus:border-violet-300" />
+                <input value={newAccount.firstName} onChange={event => setNewAccount(current => ({ ...current, firstName: event.target.value }))} placeholder="Имя сотрудника" className="h-11 rounded-lg border border-[#E6E9EF] px-3 text-[12px] outline-none focus:border-violet-300" />
+                <input value={newAccount.lastName} onChange={event => setNewAccount(current => ({ ...current, lastName: event.target.value }))} placeholder="Фамилия сотрудника" className="h-11 rounded-lg border border-[#E6E9EF] px-3 text-[12px] outline-none focus:border-violet-300" />
+                <input value={newAccount.telegramUsername} onChange={event => setNewAccount(current => ({ ...current, telegramUsername: event.target.value }))} placeholder="Telegram username, например @alina_x" className="h-11 rounded-lg border border-[#E6E9EF] px-3 text-[12px] outline-none focus:border-violet-300" />
                 <input type="email" value={newAccount.email} onChange={event => setNewAccount(current => ({ ...current, email: event.target.value }))} placeholder="login@ybcrm.ru" className="h-11 rounded-lg border border-[#E6E9EF] px-3 text-[12px] outline-none focus:border-violet-300" />
                 <input type="password" value={newAccount.password} onChange={event => setNewAccount(current => ({ ...current, password: event.target.value }))} placeholder="Начальный пароль — минимум 8 символов" className="h-11 rounded-lg border border-[#E6E9EF] px-3 text-[12px] outline-none focus:border-violet-300" />
               </div>
+              <p className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-[11px] text-blue-800">Для личных уведомлений сотрудник должен один раз открыть @YAASBAE_CLO_bot и нажать «Старт».</p>
               <AccessChoices allowedViews={newAccount.allowedViews} notificationTopics={newAccount.notificationTopics} allowedOrderActions={newAccount.allowedOrderActions} onToggleView={value => toggleNewList('allowedViews', value)} onToggleNotification={value => toggleNewList('notificationTopics', value)} onToggleOrderAction={toggleNewOrderAction} />
               <div className="flex gap-2">
                 <button type="button" onClick={() => void createAccount()} disabled={saving} className="inline-flex h-10 items-center gap-2 rounded-lg bg-violet-600 px-4 text-[11px] font-semibold text-white disabled:opacity-50"><UserPlus className="h-4 w-4" />{saving ? 'Создаю…' : 'Создать аккаунт'}</button>
@@ -293,9 +307,12 @@ export const AccessAdminPanel: React.FC = () => {
                 </div>
                 {draft.role !== 'owner' && <label className="inline-flex items-center gap-2 text-[11px] font-semibold text-[#344054]"><input type="checkbox" checked={draft.active} onChange={event => setDraft(current => current ? { ...current, active: event.target.checked } : current)} /> Аккаунт активен</label>}
               </div>
-              <div className="grid gap-3 sm:grid-cols-2">
+              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
                 <label className="space-y-1"><span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[#98A2B3]">Имя / должность</span><input value={draft.displayName} disabled={draft.role === 'owner'} onChange={event => setDraft(current => current ? { ...current, displayName: event.target.value } : current)} className="h-11 w-full rounded-lg border border-[#E6E9EF] px-3 text-[12px] outline-none disabled:bg-[#F8F9FB]" /></label>
                 <label className="space-y-1"><span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[#98A2B3]">Роль</span><input value={draft.role === 'owner' ? 'Владелец' : draft.role} disabled={draft.role === 'owner'} onChange={event => setDraft(current => current ? { ...current, role: event.target.value } : current)} className="h-11 w-full rounded-lg border border-[#E6E9EF] px-3 text-[12px] outline-none disabled:bg-[#F8F9FB]" /></label>
+                <label className="space-y-1"><span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[#98A2B3]">Имя</span><input value={draft.firstName} disabled={draft.role === 'owner'} onChange={event => setDraft(current => current ? { ...current, firstName: event.target.value } : current)} className="h-11 w-full rounded-lg border border-[#E6E9EF] px-3 text-[12px] outline-none disabled:bg-[#F8F9FB]" /></label>
+                <label className="space-y-1"><span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[#98A2B3]">Фамилия</span><input value={draft.lastName} disabled={draft.role === 'owner'} onChange={event => setDraft(current => current ? { ...current, lastName: event.target.value } : current)} className="h-11 w-full rounded-lg border border-[#E6E9EF] px-3 text-[12px] outline-none disabled:bg-[#F8F9FB]" /></label>
+                <label className="space-y-1 xl:col-span-2"><span className="flex items-center justify-between gap-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-[#98A2B3]"><span>Telegram username</span><span className={cn('normal-case tracking-normal', draft.telegramLinked ? 'text-emerald-600' : 'text-amber-600')}>{draft.telegramLinked ? 'бот подключён' : 'нужно нажать «Старт» в боте'}</span></span><div className="relative"><span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[12px] text-[#98A2B3]">@</span><input value={draft.telegramUsername.replace(/^@/, '')} disabled={draft.role === 'owner'} onChange={event => setDraft(current => current ? { ...current, telegramUsername: event.target.value } : current)} placeholder="alina_x" className="h-11 w-full rounded-lg border border-[#E6E9EF] pl-7 pr-3 text-[12px] outline-none disabled:bg-[#F8F9FB]" /></div></label>
               </div>
               <AccessChoices allowedViews={draft.allowedViews} notificationTopics={draft.notificationTopics} allowedOrderActions={draft.allowedOrderActions} disabled={draft.role === 'owner'} onToggleView={value => toggleDraftList('allowedViews', value)} onToggleNotification={value => toggleDraftList('notificationTopics', value)} onToggleOrderAction={toggleOrderAction} />
               {draft.role === 'owner' ? (
