@@ -1,3 +1,4 @@
+import { checkPochtaConnection } from './src/server/pochtaConnection';
 import { getOrderTotalAmount } from "./src/lib/orderPayments.ts";
 import { getConfirmedPaidAmount } from "./src/lib/orderPayments.ts";
 import { buildDailySalesReport, formatDailySalesReportTelegram, getMoscowDateKey, getPreviousMoscowDateKey } from "./src/lib/dailySalesReport.ts";
@@ -707,6 +708,17 @@ async function requireCrmUser(req: any, res: any) {
     return null;
   }
 }
+
+app.post('/api/pochta/check-connection', async (req: any, res) => {
+  res.set('Cache-Control', 'no-store');
+  const user = req.crmUser;
+  if (String(user?.email || '').toLowerCase() !== FINANCE_OWNER_EMAIL || user.email_verified !== true) {
+    return res.status(403).json({ error: 'Проверка доступна владельцу CRM.' });
+  }
+
+  const status = await checkPochtaConnection(process.env.POCHTA_ACCESS_TOKEN, process.env.POCHTA_USER_KEY);
+  res.json({ status });
+});
 
 const INTERNAL_CHAT_TOOLS = [
   "get_customer", "search_customers", "get_order", "search_orders", "get_sales_summary",

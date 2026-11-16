@@ -30,7 +30,7 @@ type Props = {
   onNavigate?: (view: AppView) => void;
 };
 
-type ApiState = 'connected' | 'partial' | 'missing' | 'checking';
+type ApiState = 'connected' | 'partial' | 'missing' | 'checking' | 'unchecked';
 
 type CdekSettings = {
   configured?: boolean;
@@ -97,6 +97,7 @@ const labelClass = 'text-[11px] font-semibold uppercase tracking-[0.16em] text-[
 function statusCopy(state: ApiState) {
   if (state === 'connected') return { text: 'Подключено', color: 'text-[#2EBA7F]', bg: 'bg-emerald-50', icon: CheckCircle2 };
   if (state === 'partial') return { text: 'Частично', color: 'text-[#F5A623]', bg: 'bg-orange-50', icon: AlertCircle };
+  if (state === 'unchecked') return { text: 'Не проверено', color: 'text-[#6B7280]', bg: 'bg-[#F6F7F9]', icon: AlertCircle };
   if (state === 'checking') return { text: 'Проверка', color: 'text-[#6B7280]', bg: 'bg-[#F6F7F9]', icon: Loader2 };
   return { text: 'Не подключено', color: 'text-[#F06B6B]', bg: 'bg-red-50', icon: AlertCircle };
 }
@@ -152,6 +153,66 @@ function ApiCard({
       </div>
       <div className="p-5">{children}</div>
     </section>
+  );
+}
+
+function PochtaCard() {
+  const [status, setStatus] = useState('');
+  const [checking, setChecking] = useState(false);
+
+  async function checkConnection() {
+    setChecking(true);
+    setStatus('');
+    try {
+      const token = await auth.currentUser?.getIdToken();
+      if (!token) {
+        setStatus('sign-in');
+        return;
+      }
+      const response = await fetch('/api/pochta/check-connection', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (response.status === 401 || response.status === 403) {
+        setStatus(response.status === 401 ? 'sign-in' : 'forbidden');
+        return;
+      }
+      if (!response.ok) throw new Error('Connection check failed');
+      const data = await response.json();
+      setStatus(data.status);
+    } catch {
+      setStatus('unavailable');
+    } finally {
+      setChecking(false);
+    }
+  }
+
+  const messages: Record<string, string> = {
+    connected: 'Почта России подтвердила подключение.',
+    missing: 'На сервере нужно настроить токен приложения и ключ пользователя.',
+    rejected: 'Почта России отклонила ключи. Проверьте данные в кабинете «Отправка».',
+    unavailable: 'Не удалось проверить подключение. Попробуйте ещё раз.',
+    'sign-in': 'Войдите в CRM заново.',
+    forbidden: 'Проверка доступна владельцу CRM.',
+  };
+
+  return (
+    <ApiCard title="Почта России" subtitle="Подключение к сервису «Отправка»." icon={Truck}
+      state={checking ? 'checking' : status === 'connected' ? 'connected' : status === 'missing' || status === 'rejected' ? 'missing' : 'unchecked'}
+      accent="bg-[#0055A5]"
+    >
+      <p className="text-sm text-[#4B5563]">Токен приложения и ключ пользователя настраиваются на сервере.</p>
+      <div className="mt-4 flex flex-wrap items-center gap-3">
+        <ActionButton onClick={checkConnection} disabled={checking} tone="blue">
+          {checking ? 'Проверяем…' : 'Проверить подключение'}
+        </ActionButton>
+        <a href="https://otpravka.pochta.ru/specification#/main" target="_blank" rel="noreferrer"
+          className="text-sm font-semibold text-[#0055A5] underline">
+          Документация Почты России
+        </a>
+      </div>
+      <p role="status" className="mt-2 text-sm text-[#374151]">{messages[status]}</p>
+    </ApiCard>
   );
 }
 
@@ -959,6 +1020,8 @@ export const IntegrationsPage: React.FC<Props> = ({ onNavigate }) => {
             </ActionButton>
           </div>
         </ApiCard>
+
+        <PochtaCard />
 
         <ApiCard
           title="Telegram рассылки"
