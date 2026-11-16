@@ -507,7 +507,7 @@ export const ProductionPage: React.FC<ProductionPageProps> = ({
   }, [orders, ordersSearch]);
 
   const productionColumns = useMemo(() => {
-    const groups: Record<ProductionStage, ProductionOrder[]> = { new: [], fabric: [], cutting: [], sewing: [] };
+    const groups: Record<ProductionStage, ProductionOrder[]> = { new: [], fabric: [], cutting: [], sewing: [], ready: [] };
     filteredOrders.forEach((order) => {
       const stage = getProductionStage(order.status);
       if (stage) groups[stage].push(order);
@@ -520,7 +520,7 @@ export const ProductionPage: React.FC<ProductionPageProps> = ({
     return groups;
   }, [filteredOrders]);
 
-  const completeProductionStage = async (order: ProductionOrder, stage: ProductionStage) => {
+  const completeProductionStage = async (order: ProductionOrder, stage: Exclude<ProductionStage, 'ready'>) => {
     const nextStatus = getNextProductionStatus(stage);
     setStatusSavingId(order.id);
     setOrdersError('');
@@ -546,12 +546,29 @@ export const ProductionPage: React.FC<ProductionPageProps> = ({
         createdAt: now,
       });
       await batch.commit();
+      let telegramWarning = '';
+      try {
+        const token = await auth.currentUser?.getIdToken();
+        if (!token) throw new Error('Нет активной сессии');
+        const notificationResponse = await fetch('/api/telegram/production-stage', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ orderId: order.id, status: nextStatus, transitionId: now }),
+        });
+        if (!notificationResponse.ok) {
+          const payload = await notificationResponse.json().catch(() => ({}));
+          throw new Error(payload.error || 'ошибка Telegram');
+        }
+      } catch (notificationError) {
+        console.warn('[production] Telegram notification failed', notificationError);
+        telegramWarning = ' Статус сохранён, но уведомление Telegram не доставлено.';
+      }
       void emitPushEvent('production_changed', `production-stage:${order.orderId}:${nextStatus}:${now}`, {
         action: `Этап завершён: ${nextStatus}`,
         productName: order.items.join(', ') || order.item,
         quantity: Math.max(1, order.items.length),
       });
-      setNotice(`Заказ #${order.orderNumber.replace(/^#+/, '')} переведён в «${nextStatus}»`);
+      setNotice(`Заказ #${order.orderNumber.replace(/^#+/, '')} переведён в «${nextStatus}».${telegramWarning}`);
     } catch (saveError) {
       console.error(saveError);
       setOrdersError('Статус заказа не изменился. Проверьте доступ и повторите попытку.');
@@ -1288,12 +1305,13 @@ export const ProductionPage: React.FC<ProductionPageProps> = ({
             {ordersLoading ? (
               <div className="flex min-h-64 items-center justify-center gap-2 rounded-2xl bg-white text-[11px] text-[#8B95A5]"><Loader2 size={16} className="animate-spin" /> Загружаем заказы</div>
             ) : (
-              <div className="grid gap-4 lg:grid-cols-2 xl:grid-cols-4">
+              <div className="grid gap-4 lg:grid-cols-2 2xl:grid-cols-5">
                 {([
                   { key: 'new' as const, title: 'Новый заказ', hint: 'Оплачен · требуется решение', icon: ClipboardList, tone: 'bg-violet-50 text-violet-800' },
                   { key: 'fabric' as const, title: 'Заказать ткань', hint: 'Снабжение', icon: Shirt, tone: 'bg-amber-50 text-amber-800' },
                   { key: 'cutting' as const, title: 'Накроить', hint: 'Закройщик', icon: Scissors, tone: 'bg-blue-50 text-blue-800' },
                   { key: 'sewing' as const, title: 'Пошив', hint: 'Швейный цех', icon: Factory, tone: 'bg-emerald-50 text-emerald-800' },
+                  { key: 'ready' as const, title: 'Готов', hint: 'Отшито · можно упаковывать', icon: PackageCheck, tone: 'bg-teal-50 text-teal-800' },
                 ]).map((column) => {
                   const ColumnIcon = column.icon;
                   return (
@@ -1311,7 +1329,7 @@ export const ProductionPage: React.FC<ProductionPageProps> = ({
                               <div className="flex items-start justify-between gap-3"><p className="text-[11px] font-semibold text-[#6B7280]">#{order.orderNumber.replace(/^#+/, '')}</p><span className={cn('text-[9px] font-semibold', overdue ? 'text-red-600' : 'text-[#6B7280]')}>{order.deadlineDate ? `до ${formatOrderDate(order.deadlineDate)}` : 'срок не указан'}</span></div>
                               <p className="mt-3 line-clamp-2 text-[13px] font-semibold leading-5 text-[#1F2937]">{itemDetails[0] || 'Изделие не указано'}</p>
                               {itemDetails.length > 1 && <p className="mt-1 line-clamp-2 text-[10px] leading-4 text-[#8B95A5]">{itemDetails.slice(1).join(' · ')}</p>}
-                              <button
+                              {column.key !== 'ready' && <button
                                 type="button"
                                 onClick={() => void completeProductionStage(order, column.key)}
                                 disabled={statusSavingId === order.id}
@@ -1320,6 +1338,7 @@ export const ProductionPage: React.FC<ProductionPageProps> = ({
                                 {statusSavingId === order.id ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
                                 {column.key === 'new' ? 'Передать в заказ ткани' : column.key === 'fabric' ? 'Ткань заказана' : column.key === 'cutting' ? 'Крой готов' : 'Пошив готов'}
                               </button>
+                              }
                             </article>
                           );
                         }) : <div className="flex min-h-32 items-center justify-center rounded-xl border border-dashed border-[#D5D9E0] px-4 text-center text-[10px] text-[#8B95A5]">На этом этапе заказов нет</div>}

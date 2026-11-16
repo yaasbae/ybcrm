@@ -27,10 +27,11 @@ export const isProductionQueueStatus = (status: unknown) => {
     || normalized === 'нужно накроить'
     || normalized === 'накроен'
     || normalized === 'пошив'
-    || normalized === 'в пошиве';
+    || normalized === 'в пошиве'
+    || normalized === 'готов';
 };
 
-export type ProductionStage = 'new' | 'fabric' | 'cutting' | 'sewing';
+export type ProductionStage = 'new' | 'fabric' | 'cutting' | 'sewing' | 'ready';
 
 export const getProductionStage = (status: unknown): ProductionStage | null => {
   const normalized = normalizeStatus(status);
@@ -38,10 +39,11 @@ export const getProductionStage = (status: unknown): ProductionStage | null => {
   if (normalized === 'заказ ткань' || normalized === 'заказать ткань') return 'fabric';
   if (normalized === 'накроить' || normalized === 'нужно накроить' || normalized === 'накроен') return 'cutting';
   if (normalized === 'пошив' || normalized === 'в пошиве') return 'sewing';
+  if (normalized === 'готов') return 'ready';
   return null;
 };
 
-export const getNextProductionStatus = (stage: ProductionStage) => ({
+export const getNextProductionStatus = (stage: Exclude<ProductionStage, 'ready'>) => ({
   new: 'Заказ ткань',
   fabric: 'Накроить',
   cutting: 'Пошив',

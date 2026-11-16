@@ -2,6 +2,7 @@ import { getOrderTotalAmount } from "./src/lib/orderPayments.ts";
 import { getConfirmedPaidAmount } from "./src/lib/orderPayments.ts";
 import { buildDailySalesReport, formatDailySalesReportTelegram, getMoscowDateKey, getPreviousMoscowDateKey } from "./src/lib/dailySalesReport.ts";
 import { cleanEmployeeNamePart, isTelegramUsernameInputValid, normalizeTelegramUsername } from "./src/lib/employeeProfile.ts";
+import { buildProductionStageTelegramText } from "./src/lib/productionNotifications.ts";
 import { registerCustomerAccount } from "./src/lib/customerAccount.ts";
 import {validCheckoutProof,purchaseReceipt} from './src/lib/storefrontAnalytics.ts';
 import {siteIntegrations} from './src/lib/storefrontIntegrations.ts';
@@ -135,6 +136,8 @@ const RELEASE_TELEGRAM_CHAT_ID = String(process.env.RELEASE_TELEGRAM_CHAT_ID || 
 const RELEASE_TELEGRAM_THREAD_ID = Number(process.env.RELEASE_TELEGRAM_THREAD_ID || 12750);
 const DAILY_SALES_TELEGRAM_CHAT_ID = String(process.env.DAILY_SALES_TELEGRAM_CHAT_ID || ORDER_TELEGRAM_CHAT_ID).trim();
 const DAILY_SALES_TELEGRAM_THREAD_ID = Number(process.env.DAILY_SALES_TELEGRAM_THREAD_ID || 3);
+const PRODUCTION_TELEGRAM_CHAT_ID = String(process.env.PRODUCTION_TELEGRAM_CHAT_ID || ORDER_TELEGRAM_CHAT_ID).trim();
+const PRODUCTION_TELEGRAM_THREAD_ID = Number(process.env.PRODUCTION_TELEGRAM_THREAD_ID || 89);
 const AI_INTAKE_TELEGRAM_CHAT_ID = String(process.env.AI_INTAKE_TELEGRAM_CHAT_ID || RELEASE_TELEGRAM_CHAT_ID).trim();
 const AI_INTAKE_TELEGRAM_THREAD_ID = Number(process.env.AI_INTAKE_TELEGRAM_THREAD_ID || 0);
 const RELEASE_COMMIT_SHA = String(process.env.RELEASE_COMMIT_SHA || "").trim();
@@ -2263,6 +2266,92 @@ async function sendNewOrderToTelegram(orderId: string, actor: Record<string, unk
   }
 }
 
+async function sendProductionStageToTelegram(
+  orderId: string,
+  expectedStatus: string,
+  transitionId: string,
+  actor: Record<string, unknown>,
+) {
+  if (!adminDb) throw new Error("Серверная база не подключена");
+  const token = String(process.env.TG_BOT_TOKEN || "").trim();
+  if (!token) throw new Error("TG_BOT_TOKEN не настроен");
+  if (!PRODUCTION_TELEGRAM_CHAT_ID || !Number.isFinite(PRODUCTION_TELEGRAM_THREAD_ID)) {
+    throw new Error("Тема Telegram для производства не настроена");
+  }
+
+  const orderSnapshot = await mcpFindOrderDoc(orderId);
+  if (!orderSnapshot?.exists) throw new Error(`Заказ ${orderId} не найден`);
+  const order = orderSnapshot.data() || {};
+  const currentStatus = String(order.status || "").trim();
+  if (currentStatus.toLocaleLowerCase("ru-RU") !== expectedStatus.toLocaleLowerCase("ru-RU")) {
+    throw new Error("Статус заказа уже изменился. Обновите страницу.");
+  }
+
+  const notificationId = createHash("sha256")
+    .update(`production:${orderSnapshot.id}:${expectedStatus}:${transitionId}`)
+    .digest("hex");
+  const notificationRef = adminDb.collection("telegram_production_notifications").doc(notificationId);
+  const reservation = await adminDb.runTransaction(async (transaction: any) => {
+    const snapshot = await transaction.get(notificationRef);
+    const data = snapshot.exists ? snapshot.data() || {} : {};
+    if (data.status === "sent") return "already_sent";
+    const updatedAtMs = typeof data.updatedAt?.toMillis === "function"
+      ? data.updatedAt.toMillis()
+      : Date.parse(String(data.updatedAt || ""));
+    if (data.status === "sending" && Number.isFinite(updatedAtMs) && Date.now() - updatedAtMs < 2 * 60_000) {
+      return "in_progress";
+    }
+    transaction.set(notificationRef, {
+      orderId: String(order.orderId || orderSnapshot.id).replace(/^#+/, ""),
+      orderDocumentId: orderSnapshot.id,
+      productionStatus: expectedStatus,
+      transitionId,
+      chatId: PRODUCTION_TELEGRAM_CHAT_ID,
+      threadId: PRODUCTION_TELEGRAM_THREAD_ID,
+      status: "sending",
+      attempts: FieldValue.increment(1),
+      actor,
+      createdAt: snapshot.exists ? data.createdAt || FieldValue.serverTimestamp() : FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    }, { merge: true });
+    return "reserved";
+  });
+  if (reservation !== "reserved") return { sent: false, duplicate: true, status: reservation };
+
+  let lastError: any = null;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      const response = await axios.post(`https://api.telegram.org/bot${token}/sendMessage`, {
+        chat_id: PRODUCTION_TELEGRAM_CHAT_ID,
+        message_thread_id: PRODUCTION_TELEGRAM_THREAD_ID,
+        text: buildProductionStageTelegramText(order, expectedStatus, MCP_PUBLIC_BASE_URL),
+        parse_mode: "HTML",
+        disable_web_page_preview: true,
+      }, { timeout: 30_000 });
+      const messageId = String(response.data?.result?.message_id || "");
+      await notificationRef.set({
+        status: "sent",
+        messageId,
+        sentAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+        error: FieldValue.delete(),
+      }, { merge: true });
+      return { sent: true, messageId };
+    } catch (error: any) {
+      lastError = error;
+      if (attempt < 3) await new Promise(resolve => setTimeout(resolve, attempt * 500));
+    }
+  }
+
+  const message = String(lastError?.response?.data?.description || lastError?.message || "Ошибка Telegram").slice(0, 1000);
+  await notificationRef.set({
+    status: "failed",
+    error: message,
+    updatedAt: FieldValue.serverTimestamp(),
+  }, { merge: true }).catch(() => undefined);
+  throw new Error(message);
+}
+
 async function loadDailySalesReportInputs(dateKey: string) {
   if (!adminDb) throw new Error("Серверная база не подключена");
   const [ordersSnapshot, shiftsSnapshot, stealthSentSnapshot, broadcastV2Snapshot, legacyBroadcastsSnapshot] = await Promise.all([
@@ -2694,6 +2783,31 @@ app.post("/api/telegram/order-created", async (req, res) => {
   } catch (error: any) {
     console.warn("[telegram] order-created:", error?.message || error);
     res.status(502).json({ error: error?.message || "Не удалось отправить заказ в Telegram" });
+  }
+});
+
+app.post("/api/telegram/production-stage", async (req, res) => {
+  const user: any = await requireCrmUser(req, res);
+  if (!user) return;
+  const orderId = String(req.body?.orderId || "").replace(/^#+/, "").trim();
+  const status = String(req.body?.status || "").trim();
+  const transitionId = String(req.body?.transitionId || "").trim();
+  const allowedStatuses = new Set(["Заказ ткань", "Накроить", "Пошив", "Готов"]);
+  if (!orderId || orderId.length > 150) return res.status(400).json({ error: "Неверный номер заказа" });
+  if (!allowedStatuses.has(status)) return res.status(400).json({ error: "Неверный этап производства" });
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(transitionId)) {
+    return res.status(400).json({ error: "Неверное время перехода этапа" });
+  }
+  try {
+    const result = await sendProductionStageToTelegram(orderId, status, transitionId, {
+      type: "crm_user",
+      uid: user.uid,
+      email: user.email || "",
+    });
+    return res.json({ success: true, ...result });
+  } catch (error: any) {
+    console.warn("[telegram] production-stage:", error?.message || error);
+    return res.status(502).json({ error: error?.message || "Не удалось отправить этап в Telegram" });
   }
 });
 

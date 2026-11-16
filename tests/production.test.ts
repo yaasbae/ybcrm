@@ -30,10 +30,12 @@ test('recognizes orders that must be shown in the production queue', () => {
   assert.equal(isProductionQueueStatus('Нужно   накроить'), true);
   assert.equal(isProductionQueueStatus('Накроен'), true);
   assert.equal(isProductionQueueStatus('Пошив'), true);
+  assert.equal(isProductionQueueStatus('Готов'), true);
   assert.equal(getProductionStage('Оплачен'), 'new');
   assert.equal(getProductionStage('Заказ ткань'), 'fabric');
   assert.equal(getProductionStage('Накроить'), 'cutting');
   assert.equal(getProductionStage('Пошив'), 'sewing');
+  assert.equal(getProductionStage('Готов'), 'ready');
   assert.equal(getNextProductionStatus('new'), 'Заказ ткань');
   assert.equal(getNextProductionStatus('fabric'), 'Накроить');
   assert.equal(getNextProductionStatus('cutting'), 'Пошив');
