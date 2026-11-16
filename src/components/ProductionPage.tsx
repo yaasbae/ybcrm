@@ -526,52 +526,25 @@ export const ProductionPage: React.FC<ProductionPageProps> = ({
     setOrdersError('');
     try {
       const now = new Date().toISOString();
-      const orderRef = doc(db, 'orders_new', order.id);
-      const batch = writeBatch(db);
-      batch.update(orderRef, {
-        status: nextStatus,
-        updatedAt: serverTimestamp(),
-        productionHistory: arrayUnion({
-          from: order.status,
-          to: nextStatus,
-          completedAt: now,
-        }),
+      const token = await auth.currentUser?.getIdToken();
+      if (!token) throw new Error('Войдите в CRM заново.');
+      const response = await fetch('/api/production/stage', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orderId: order.id, currentStatus: order.status, transitionId: now }),
       });
-      batch.set(doc(collection(db, 'audit_logs')), {
-        action: 'production_stage_completed',
-        entityType: 'order',
-        entityId: order.orderId,
-        before: { status: order.status },
-        after: { status: nextStatus },
-        createdAt: now,
-      });
-      await batch.commit();
-      let telegramWarning = '';
-      try {
-        const token = await auth.currentUser?.getIdToken();
-        if (!token) throw new Error('Нет активной сессии');
-        const notificationResponse = await fetch('/api/telegram/production-stage', {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ orderId: order.id, status: nextStatus, transitionId: now }),
-        });
-        if (!notificationResponse.ok) {
-          const payload = await notificationResponse.json().catch(() => ({}));
-          throw new Error(payload.error || 'ошибка Telegram');
-        }
-      } catch (notificationError) {
-        console.warn('[production] Telegram notification failed', notificationError);
-        telegramWarning = ' Статус сохранён, но уведомление Telegram не доставлено.';
-      }
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || 'Этап не изменён.');
       void emitPushEvent('production_changed', `production-stage:${order.orderId}:${nextStatus}:${now}`, {
         action: `Этап завершён: ${nextStatus}`,
         productName: order.items.join(', ') || order.item,
         quantity: Math.max(1, order.items.length),
       });
-      setNotice(`Заказ #${order.orderNumber.replace(/^#+/, '')} переведён в «${nextStatus}».${telegramWarning}`);
+      const telegramWarning = payload.telegram?.warning ? ` ${payload.telegram.warning}` : '';
+      setNotice(`Заказ #${order.orderNumber.replace(/^#+/, '')} переведён в «${payload.status || nextStatus}».${telegramWarning}`);
     } catch (saveError) {
       console.error(saveError);
-      setOrdersError('Статус заказа не изменился. Проверьте доступ и повторите попытку.');
+      setOrdersError(saveError instanceof Error ? saveError.message : 'Статус заказа не изменился. Повторите попытку.');
     } finally {
       setStatusSavingId('');
     }

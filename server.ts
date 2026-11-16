@@ -3,6 +3,7 @@ import { getConfirmedPaidAmount } from "./src/lib/orderPayments.ts";
 import { buildDailySalesReport, formatDailySalesReportTelegram, getMoscowDateKey, getPreviousMoscowDateKey } from "./src/lib/dailySalesReport.ts";
 import { cleanEmployeeNamePart, isTelegramUsernameInputValid, normalizeTelegramUsername } from "./src/lib/employeeProfile.ts";
 import { buildProductionStageTelegramText } from "./src/lib/productionNotifications.ts";
+import { getNextProductionStatus, getProductionStage } from "./src/lib/production.ts";
 import { registerCustomerAccount } from "./src/lib/customerAccount.ts";
 import {validCheckoutProof,purchaseReceipt} from './src/lib/storefrontAnalytics.ts';
 import {siteIntegrations} from './src/lib/storefrontIntegrations.ts';
@@ -2786,28 +2787,73 @@ app.post("/api/telegram/order-created", async (req, res) => {
   }
 });
 
-app.post("/api/telegram/production-stage", async (req, res) => {
-  const user: any = await requireCrmUser(req, res);
+app.post("/api/production/stage", async (req, res) => {
+  if (!adminDb) return res.status(503).json({ error: "База данных временно недоступна" });
+  const user: any = await requireCrmOrderAction(req, res, "status");
   if (!user) return;
   const orderId = String(req.body?.orderId || "").replace(/^#+/, "").trim();
-  const status = String(req.body?.status || "").trim();
+  const expectedCurrentStatus = String(req.body?.currentStatus || "").trim();
   const transitionId = String(req.body?.transitionId || "").trim();
-  const allowedStatuses = new Set(["Заказ ткань", "Накроить", "Пошив", "Готов"]);
   if (!orderId || orderId.length > 150) return res.status(400).json({ error: "Неверный номер заказа" });
-  if (!allowedStatuses.has(status)) return res.status(400).json({ error: "Неверный этап производства" });
+  if (!expectedCurrentStatus || expectedCurrentStatus.length > 100) return res.status(400).json({ error: "Не указан текущий этап" });
   if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(transitionId)) {
     return res.status(400).json({ error: "Неверное время перехода этапа" });
   }
   try {
-    const result = await sendProductionStageToTelegram(orderId, status, transitionId, {
-      type: "crm_user",
-      uid: user.uid,
-      email: user.email || "",
+    const orderSnapshot = await mcpFindOrderDoc(orderId);
+    if (!orderSnapshot?.exists) return res.status(404).json({ error: "Заказ не найден" });
+    const transition = await adminDb.runTransaction(async (transaction: any) => {
+      const freshSnapshot = await transaction.get(orderSnapshot.ref);
+      if (!freshSnapshot.exists) return { error: "Заказ не найден", statusCode: 404 };
+      const order = freshSnapshot.data() || {};
+      const currentStatus = String(order.status || "").trim();
+      if (currentStatus.toLocaleLowerCase("ru-RU") !== expectedCurrentStatus.toLocaleLowerCase("ru-RU")) {
+        return { error: "Статус уже изменился. Обновите страницу.", statusCode: 409 };
+      }
+      const stage = getProductionStage(currentStatus);
+      if (!stage || stage === "ready") return { error: "Для этого статуса нет следующего этапа", statusCode: 409 };
+      const nextStatus = getNextProductionStatus(stage);
+      const completedAt = new Date().toISOString();
+      transaction.update(orderSnapshot.ref, {
+        status: nextStatus,
+        updatedAt: FieldValue.serverTimestamp(),
+        productionHistory: FieldValue.arrayUnion({
+          from: currentStatus,
+          to: nextStatus,
+          completedAt,
+          actorUid: String(user.uid || ""),
+        }),
+      });
+      transaction.set(adminDb.collection("audit_logs").doc(), {
+        action: "production_stage_completed",
+        entityType: "order",
+        entityId: String(order.orderId || orderSnapshot.id),
+        actorUid: String(user.uid || ""),
+        actorEmail: String(user.email || ""),
+        before: { status: currentStatus },
+        after: { status: nextStatus },
+        createdAt: completedAt,
+      });
+      return { nextStatus };
     });
-    return res.json({ success: true, ...result });
+    if ("error" in transition) return res.status(transition.statusCode).json({ error: transition.error });
+
+    let telegram = { sent: false, warning: "" } as { sent: boolean; warning: string; messageId?: string };
+    try {
+      const notification = await sendProductionStageToTelegram(orderSnapshot.id, transition.nextStatus, transitionId, {
+        type: "crm_user",
+        uid: user.uid,
+        email: user.email || "",
+      });
+      telegram = { sent: notification.sent === true, warning: "", messageId: notification.messageId };
+    } catch (notificationError: any) {
+      console.warn("[telegram] production-stage:", notificationError?.message || notificationError);
+      telegram = { sent: false, warning: "Статус сохранён, но Telegram-уведомление не доставлено." };
+    }
+    return res.json({ success: true, status: transition.nextStatus, telegram });
   } catch (error: any) {
-    console.warn("[telegram] production-stage:", error?.message || error);
-    return res.status(502).json({ error: error?.message || "Не удалось отправить этап в Telegram" });
+    console.error("[production] stage transition:", error?.message || error);
+    return res.status(500).json({ error: "Не удалось изменить этап производства" });
   }
 });
 

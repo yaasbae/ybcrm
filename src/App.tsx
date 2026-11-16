@@ -650,6 +650,18 @@ export default function App() {
                 <div className="h-px w-8 bg-slate-100 hidden sm:block" />
               </div>
               <div className="flex items-center gap-1.5 text-[#6B7280]">
+                {canAccessView('production') && (
+                  <button
+                    type="button"
+                    onClick={() => handleNavigate('production')}
+                    className={cn(
+                      'flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-[10px] font-semibold sm:hidden',
+                      view === 'production' ? 'border-[#1F2937] bg-[#1F2937] text-white' : 'border-[#E6E9EF] bg-white text-[#4B5563]',
+                    )}
+                  >
+                    <Factory size={13} /> Производство
+                  </button>
+                )}
                 <CalendarIcon className="w-2.5 h-2.5" />
                 <input 
                   type="month" 
