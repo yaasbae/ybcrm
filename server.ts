@@ -1,3 +1,4 @@
+import { parsePochtaCredentials, pochtaSecretRequest } from './src/server/pochtaSettings';
 import { checkPochtaConnection } from './src/server/pochtaConnection';
 import { getOrderTotalAmount } from "./src/lib/orderPayments.ts";
 import { getConfirmedPaidAmount } from "./src/lib/orderPayments.ts";
@@ -709,6 +710,34 @@ async function requireCrmUser(req: any, res: any) {
   }
 }
 
+async function accessPochtaSecret(resource: string, credentials?: NonNullable<ReturnType<typeof parsePochtaCredentials>>) {
+  const { access_token: accessToken } = await applicationDefault().getAccessToken();
+  return pochtaSecretRequest(resource, accessToken, credentials);
+}
+
+app.post('/api/pochta/save-settings', async (req: any, res) => {
+  res.set('Cache-Control', 'no-store');
+  const owner = req.crmUser;
+  if (String(owner?.email || '').toLowerCase() !== FINANCE_OWNER_EMAIL || owner.email_verified !== true) {
+    return res.status(403).json({ error: 'Сохранение доступно владельцу CRM.' });
+  }
+
+  const credentials = parsePochtaCredentials(req.body);
+  if (!credentials) return res.status(400).json({ error: 'Проверьте токен, логин и пароль API.' });
+  const resource = process.env.POCHTA_SETTINGS_SECRET;
+  if (!resource) return res.status(503).json({ error: 'Хранилище ключей Почты России ещё не настроено.' });
+
+  try {
+    const status = await checkPochtaConnection(credentials.token, credentials.userKey);
+    if (status !== 'connected') return res.json({ status });
+    await accessPochtaSecret(resource, credentials);
+    console.info('[pochta] Credentials updated', { actorUid: owner.uid });
+    return res.json({ status: 'saved' });
+  } catch {
+    return res.status(503).json({ error: 'Не удалось сохранить ключи. Попробуйте ещё раз.' });
+  }
+});
+
 app.post('/api/pochta/check-connection', async (req: any, res) => {
   res.set('Cache-Control', 'no-store');
   const user = req.crmUser;
@@ -716,8 +745,17 @@ app.post('/api/pochta/check-connection', async (req: any, res) => {
     return res.status(403).json({ error: 'Проверка доступна владельцу CRM.' });
   }
 
-  const status = await checkPochtaConnection(process.env.POCHTA_ACCESS_TOKEN, process.env.POCHTA_USER_KEY);
-  res.json({ status });
+  try {
+    const resource = process.env.POCHTA_SETTINGS_SECRET;
+    const settings = resource ? await accessPochtaSecret(resource) : null;
+    const status = await checkPochtaConnection(
+      settings?.token ?? process.env.POCHTA_ACCESS_TOKEN,
+      settings?.userKey ?? process.env.POCHTA_USER_KEY,
+    );
+    res.json({ status });
+  } catch {
+    res.status(503).json({ error: 'Не удалось проверить подключение.' });
+  }
 });
 
 const INTERNAL_CHAT_TOOLS = [
