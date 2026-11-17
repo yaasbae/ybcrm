@@ -160,7 +160,11 @@ function PochtaCard() {
   const [status, setStatus] = useState('');
   const [checking, setChecking] = useState(false);
 
-  async function checkConnection() {
+  const [accessToken, setAccessToken] = useState('');
+  const [login, setLogin] = useState('');
+  const [password, setPassword] = useState('');
+
+  async function checkConnection(save = false) {
     setChecking(true);
     setStatus('');
     try {
@@ -169,17 +173,24 @@ function PochtaCard() {
         setStatus('sign-in');
         return;
       }
-      const response = await fetch('/api/pochta/check-connection', {
+      const response = await fetch(save ? '/api/pochta/save-settings' : '/api/pochta/check-connection', {
         method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: save ? JSON.stringify({ token: accessToken, login, password }) : undefined,
       });
       if (response.status === 401 || response.status === 403) {
         setStatus(response.status === 401 ? 'sign-in' : 'forbidden');
         return;
       }
-      if (!response.ok) throw new Error('Connection check failed');
       const data = await response.json();
-      setStatus(data.status);
+      if (response.ok) setStatus(data.status);
+      else if (save) setStatus(response.status === 400 ? 'invalid' : 'save-error');
+      else setStatus('unavailable');
+      if (data.status === 'saved') {
+        setAccessToken('');
+        setLogin('');
+        setPassword('');
+      }
     } catch {
       setStatus('unavailable');
     } finally {
@@ -189,7 +200,10 @@ function PochtaCard() {
 
   const messages: Record<string, string> = {
     connected: 'Почта России подтвердила подключение.',
-    missing: 'На сервере нужно настроить токен приложения и ключ пользователя.',
+    saved: 'Подключение проверено. Данные сохранены.',
+    missing: 'Введите токен приложения, логин и пароль API «Отправки».',
+    invalid: 'Проверьте формат токена, логина и пароля API.',
+    'save-error': 'Не удалось сохранить данные. Попробуйте ещё раз или обратитесь к администратору CRM.',
     rejected: 'Почта России отклонила ключи. Проверьте данные в кабинете «Отправка».',
     unavailable: 'Не удалось проверить подключение. Попробуйте ещё раз.',
     'sign-in': 'Войдите в CRM заново.',
@@ -198,13 +212,31 @@ function PochtaCard() {
 
   return (
     <ApiCard title="Почта России" subtitle="Подключение к сервису «Отправка»." icon={Truck}
-      state={checking ? 'checking' : status === 'connected' ? 'connected' : status === 'missing' || status === 'rejected' ? 'missing' : 'unchecked'}
+      state={checking ? 'checking' : (status === 'connected' || status === 'saved') ? 'connected' : status === 'missing' || status === 'rejected' ? 'missing' : 'unchecked'}
       accent="bg-[#0055A5]"
     >
-      <p className="text-sm text-[#4B5563]">Токен приложения и ключ пользователя настраиваются на сервере.</p>
+      <form autoComplete="off" onSubmit={event => {
+        event.preventDefault();
+        if (!checking) void checkConnection(true);
+      }}>
+        <div className="grid gap-3 md:grid-cols-3">
+          <Field label="Токен приложения">
+            <input className={inputClass} type="password" value={accessToken} onChange={event => setAccessToken(event.target.value)} maxLength={2048} required disabled={checking} autoComplete="off" />
+          </Field>
+          <Field label="Логин API «Отправки»">
+            <input className={inputClass} value={login} onChange={event => setLogin(event.target.value)} maxLength={256} required disabled={checking} autoComplete="off" />
+          </Field>
+          <Field label="Пароль API «Отправки»">
+            <input className={inputClass} type="password" value={password} onChange={event => setPassword(event.target.value)} maxLength={512} required disabled={checking} autoComplete="new-password" />
+          </Field>
+        </div>
+        <div className="mt-4">
+          <ActionButton type="submit" disabled={checking} tone="blue">Проверить и сохранить</ActionButton>
+        </div>
+      </form>
       <div className="mt-4 flex flex-wrap items-center gap-3">
-        <ActionButton onClick={checkConnection} disabled={checking} tone="blue">
-          {checking ? 'Проверяем…' : 'Проверить подключение'}
+        <ActionButton onClick={() => void checkConnection()} disabled={checking} tone="blue">
+          {checking ? 'Проверяем…' : 'Проверить сохранённое подключение'}
         </ActionButton>
         <a href="https://otpravka.pochta.ru/specification#/main" target="_blank" rel="noreferrer"
           className="text-sm font-semibold text-[#0055A5] underline">
@@ -221,14 +253,17 @@ function ActionButton({
   onClick,
   disabled,
   tone = 'dark',
+  type,
 }: {
   children: React.ReactNode;
   onClick?: () => void;
   disabled?: boolean;
   tone?: 'dark' | 'light' | 'blue';
+  type?: 'button' | 'submit';
 }) {
   return (
     <button
+      type={type}
       onClick={onClick}
       disabled={disabled}
       className={cn(
